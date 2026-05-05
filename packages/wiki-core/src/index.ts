@@ -60,3 +60,22 @@ export {
 
 // Debug utilities
 export { setVerbose, isVerbose, debug, debugTagged } from './debug.js';
+
+// Contract resolution
+export {
+  findKbRoot,
+  contractPath,
+  manifestPath,
+  bootstrapDir,
+  templatesDir,
+  loadManifest,
+  getBootstrapTemplates,
+  getRecordTemplates,
+  getTemplate,
+} from './contract.js';
+
+// Bootstrap
+export { bootstrap } from './bootstrap.js';
+
+// Sync
+export { sync } from './sync.js';
