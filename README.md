@@ -32,6 +32,61 @@ The examples below assume:
 
 If your layout differs, adjust the path to `kb`.
 
+## Install Modes
+
+There are two normal ways to use `kb` as a private sister repo.
+
+### Mode 1: Local Sibling Repo
+
+Use this when:
+
+- you already have `kb` checked out locally
+- you are working across your own local repos
+- the same GitHub identity already has access to both repos
+
+Layout:
+
+```text
+projects/
+  kb/
+  my-project/
+```
+
+In this mode, just use the existing `kb` checkout directly.
+
+### Mode 2: Private Collaborator Access
+
+Use this when:
+
+- `kb` is private
+- the consuming repo is private
+- you are accessing `kb` from a different GitHub account
+- that account is added as a collaborator to the private `kb` repo
+
+Flow:
+
+1. Add the other GitHub account as a collaborator on the private `kb` repo.
+2. Accept the invitation from that account.
+3. Clone `kb` locally from that account.
+4. Keep using `kb` as a sibling repo next to the consuming repo.
+
+Example:
+
+```bash
+git clone git@github.com:<kb-owner>/kb.git
+git clone git@github.com:<client-owner>/my-project.git
+```
+
+Local layout stays the same:
+
+```text
+projects/
+  kb/
+  my-project/
+```
+
+If you are the one operating both accounts on the same machine and Git auth is already set up, this is enough. You can clone the private `kb` repo and update it later with normal Git commands.
+
 ## Install kb
 
 From the `kb` repo:
@@ -79,6 +134,20 @@ npm run wiki:mcp
 ```
 
 If your agent runtime supports MCP, point it at that command in the `kb` repo.
+
+## Update a Private `kb` Checkout
+
+If you cloned `kb` through collaborator access, updates are normal Git updates:
+
+```bash
+cd kb
+git pull
+npm install
+npm run typecheck
+npm test
+```
+
+If you remove collaborator access later, that stops future GitHub access to the repo. It does not remove any local clone that already exists.
 
 ## Bootstrap a Consuming Repo
 
