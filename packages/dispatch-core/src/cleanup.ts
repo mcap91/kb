@@ -111,6 +111,7 @@ async function getAllKnownReviewIds(): Promise<Set<string>> {
  * Check if a file/directory is older than the given age threshold.
  */
 async function isOlderThan(path: string, maxAgeMs: number): Promise<boolean> {
+  if (maxAgeMs <= 0) return true;
   try {
     const s = await stat(path);
     return Date.now() - s.mtimeMs > maxAgeMs;

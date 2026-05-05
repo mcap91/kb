@@ -196,7 +196,7 @@ export async function create(
     id,
     title: opts.title,
     date: now,
-    owner: '', // Default empty — can be set by caller
+    owner: 'unassigned',
     slug: typeDef.idStrategy === 'slug' ? id : '',
   };
 

@@ -1,6 +1,7 @@
 import { resolve, join } from 'node:path';
 import { readFile, readdir, stat, access } from 'node:fs/promises';
 import { writeFile } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
 
 import {
   VERSION,
@@ -26,6 +27,20 @@ import type {
 
 const REGISTRY_FILE = 'launchers.v1.json';
 const KEY_FILE = 'token.key';
+const KB_ROOT = fileURLToPath(new URL('../../../', import.meta.url));
+
+function getTsxBinaryPath(): string {
+  return join(
+    KB_ROOT,
+    'node_modules',
+    '.bin',
+    process.platform === 'win32' ? 'tsx.cmd' : 'tsx',
+  );
+}
+
+function getFakeAgentFixturePath(): string {
+  return join(KB_ROOT, 'tests', 'fixtures', 'fake-agent.ts');
+}
 
 // ---------------------------------------------------------------------------
 // Argument parsing helpers
@@ -139,9 +154,9 @@ async function cmdInitConfig(args: string[], verbose: boolean): Promise<number> 
           description: 'Codex CLI (placeholder — configure with your Codex CLI path)',
         },
         'fake-agent': {
-          command: 'npx',
-          args: ['tsx', 'tests/fixtures/fake-agent.ts'],
-          description: 'Deterministic test agent for dogfooding and CI',
+          command: getTsxBinaryPath(),
+          args: [getFakeAgentFixturePath()],
+          description: 'Deterministic test agent for dogfooding and sister-repo validation',
         },
       },
     };
