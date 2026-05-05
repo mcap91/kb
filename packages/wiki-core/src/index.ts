@@ -79,3 +79,9 @@ export { bootstrap } from './bootstrap.js';
 
 // Sync
 export { sync } from './sync.js';
+
+// ID allocation
+export { allocate } from './allocate.js';
+
+// Record creation
+export { create } from './create.js';
