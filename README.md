@@ -125,6 +125,46 @@ Current boundary:
 - `dispatch` is CLI-only
 - `graph` is CLI-only
 
+## MCP Lifecycle
+
+`npm run wiki:mcp` starts a **live stdio MCP server process**. It is not a persistent background daemon.
+
+What persists:
+
+- the `kb` checkout
+- installed dependencies
+- the consuming repo wiki files
+- generated artifacts such as `.search-index.json` and `.graph.json`
+
+What does not persist automatically:
+
+- the running MCP server process
+
+After a VM reboot, shell restart, or disconnected session, agents do **not** have wiki MCP access until the MCP server is started again.
+
+Recommended model:
+
+- configure the agent client to launch `npm run wiki:mcp` from the `kb` repo when the client session starts
+
+Fallback model:
+
+- start it manually in a shell each session
+
+Example manual start:
+
+```bash
+cd /root/kb
+npm run wiki:mcp
+```
+
+If your client supports MCP command configuration, point it at the `kb` repo and have it launch:
+
+```bash
+npm run wiki:mcp
+```
+
+using the `kb` checkout as the working directory.
+
 ## Start the Wiki MCP Server
 
 From the `kb` repo:
@@ -133,7 +173,7 @@ From the `kb` repo:
 npm run wiki:mcp
 ```
 
-If your agent runtime supports MCP, point it at that command in the `kb` repo.
+If your agent runtime supports MCP, the preferred setup is to configure it to run that command automatically from the `kb` repo at session start.
 
 ## Update a Private `kb` Checkout
 
