@@ -270,7 +270,7 @@ Before declaring any work complete, run:
 npm run typecheck && npm test
 ```
 
-Both must pass. There are currently 107 tests across four test files.
+Both must pass. There are currently 108 tests across four test files.
 
 ## What Not To Do
 
