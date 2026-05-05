@@ -301,7 +301,7 @@ The agent registry (`launchers.v1.json`) maps agent names to launcher configurat
 |-------|---------|---------|
 | `claude` | `claude` | Claude Code CLI (placeholder -- configure with your path) |
 | `codex` | `codex` | Codex CLI (placeholder -- configure with your path) |
-| `fake-agent` | `npx tsx tests/fixtures/fake-agent.ts` | Deterministic test agent for dogfooding and CI |
+| `fake-agent` | Absolute `tsx` binary plus absolute `tests/fixtures/fake-agent.ts` path in the `kb` checkout | Deterministic test agent for dogfooding and sister-repo validation |
 
 ### Adding an Agent
 
@@ -324,7 +324,7 @@ After editing the registry, any pending review tokens become invalid because the
 
 ### Fake Agent
 
-The `fake-agent` entry points to `tests/fixtures/fake-agent.ts`. This is a deterministic test agent that reads the handoff from `AGENT_BLACKBOARD_HANDOFF_PATH`, writes a fixed response to `AGENT_BLACKBOARD_RESPONSE_PATH`, and exits with code 0. It is used for:
+The `fake-agent` entry points to the `kb` repo's `tests/fixtures/fake-agent.ts` via absolute paths written by `init-config`. This makes the default launcher work even though handoffs are launched with `cwd = repo_root` in the consuming repository. The fixture reads the handoff from `AGENT_BLACKBOARD_HANDOFF_PATH`, writes a fixed response to `AGENT_BLACKBOARD_RESPONSE_PATH`, and exits with code 0. It is used for:
 
 - Automated testing in `tests/dispatch.test.ts`
 - Dogfooding the full review-launch cycle

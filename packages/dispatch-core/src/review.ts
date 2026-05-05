@@ -310,6 +310,13 @@ export async function review(opts: ReviewOpts): Promise<DispatchResult<ReviewRes
   const handoffRelative = opts.handoff;
   const handoffPath = join(repoRoot, handoffRelative);
 
+  if (!opts.reviewedAndAcceptRisks) {
+    return fail(
+      'REVIEW_FAILED',
+      'Operator acknowledgment required: pass reviewedAndAcceptRisks / --reviewed-and-accept-risks before review.',
+    );
+  }
+
   // -----------------------------------------------------------------------
   // 1. Check that the handoff file exists and enforce size limit
   // -----------------------------------------------------------------------

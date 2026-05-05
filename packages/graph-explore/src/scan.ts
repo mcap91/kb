@@ -15,6 +15,7 @@ import type { GraphNode, GraphWikiPrefix } from './types.js';
 
 /** Directories excluded from graph scanning (slash-terminated for prefix matching). */
 const EXCLUDED_DIRS = [
+  '.git',
   'node_modules',
   'dist',
   '.agent-runs',
@@ -176,8 +177,6 @@ export function scanDirectory(repoRoot: string): GraphNode[] {
       if (entry.isDirectory()) {
         // Skip excluded directories early
         if (isExcluded(relPath + '/x')) continue;
-        // Also skip dotdirs other than .agent-runs (already excluded)
-        if (entry.name.startsWith('.') && entry.name !== '.agent-runs') continue;
         walk(fullPath);
       } else if (entry.isFile()) {
         const node = classifyFile(relPath);

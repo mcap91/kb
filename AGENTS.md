@@ -92,7 +92,7 @@ npm run typecheck                                      Typecheck entire monorepo
 
 ### TypeScript Patterns
 
-- TypeScript 5.x, Node.js 20+, npm workspaces
+- TypeScript, Node.js 20+, npm workspaces
 - All packages use `tsconfig.json` extending `../../tsconfig.base.json`
 - Root `tsconfig.json` has project references to all packages and `tsconfig.tests.json`
 - Use `.js` extensions in import specifiers (TypeScript ESM resolution)
@@ -270,7 +270,7 @@ Before declaring any work complete, run:
 npm run typecheck && npm test
 ```
 
-Both must pass. There are approximately 74 tests across four test files.
+Both must pass. There are currently 107 tests across four test files.
 
 ## What Not To Do
 

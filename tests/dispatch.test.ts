@@ -1,10 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { execSync } from 'node:child_process';
 import { mkdtemp, mkdir, writeFile, readFile, readdir, rm } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 
 const TESTS_DIR = resolve(process.cwd(), 'tests');
+const DISPATCH_CLI = resolve(process.cwd(), 'packages', 'dispatch-cli', 'src', 'index.ts');
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -286,6 +288,28 @@ describe('dispatch', () => {
       expect(result.ok).toBe(false);
       if (!result.ok) {
         expect(result.error).toBe('MISSING_FIELD');
+      }
+    });
+
+    it('rejects review when operator acknowledgment is missing', async () => {
+      await setupFullConfig();
+      const { review } = await import('@kb/dispatch-core');
+
+      const handoff = makeHandoff();
+      const handoffPath = join(repoRoot, 'wiki', 'handoffs', 'HO-0001.md');
+      await writeFile(handoffPath, handoff);
+
+      const result = await review({
+        dir: repoRoot,
+        handoff: 'wiki/handoffs/HO-0001.md',
+        agent: 'fake-agent',
+        reviewedAndAcceptRisks: false,
+      });
+
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.error).toBe('REVIEW_FAILED');
+        expect(result.message).toContain('reviewed-and-accept-risks');
       }
     });
 
@@ -769,6 +793,44 @@ describe('dispatch', () => {
       if (result.ok) {
         expect(result.data.staleTokens).toContain(reviewId);
       }
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Dispatch CLI tests
+  // -----------------------------------------------------------------------
+
+  describe('dispatch-cli', () => {
+    it('init-config writes a sister-repo-safe fake-agent launcher', async () => {
+      let configDir: string;
+      if (process.platform === 'win32') {
+        const appdata = join(tempDir, 'config');
+        process.env['APPDATA'] = appdata;
+        configDir = join(appdata, 'kb-dispatch');
+      } else {
+        const home = join(tempDir, 'posix-home');
+        process.env['HOME'] = home;
+        configDir = join(home, '.config', 'kb-dispatch');
+      }
+
+      execSync(`"${getTsxPath()}" "${DISPATCH_CLI}" init-config`, {
+        cwd: resolve(TESTS_DIR, '..'),
+        env: process.env,
+        encoding: 'utf-8',
+      });
+
+      const registryRaw = await readFile(join(configDir, 'launchers.v1.json'), 'utf-8');
+      const registry = JSON.parse(registryRaw) as {
+        agents: {
+          'fake-agent': {
+            command: string;
+            args: string[];
+          };
+        };
+      };
+
+      expect(registry.agents['fake-agent'].command).toBe(getTsxPath());
+      expect(registry.agents['fake-agent'].args).toEqual([fakeAgentPath]);
     });
   });
 

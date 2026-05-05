@@ -161,6 +161,7 @@ This creates the config directory with:
 
 - `token.key` -- HMAC signing key
 - `launchers.v1.json` -- agent registry with default entries (claude, codex, fake-agent)
+- `fake-agent` is wired to the `kb` checkout via absolute `tsx` + fixture paths so it can launch from consuming repos
 - Token state directories (`pending/`, `launching/`, `consumed/`, `rejected/`)
 
 Config location:
@@ -173,7 +174,7 @@ Config location:
 Copy the handoff template into your repo:
 
 ```
-cp wiki/handoffs/handoff.md wiki/handoffs/HO-0001.md
+cp wiki/templates/handoff.md wiki/handoffs/HO-0001.md
 ```
 
 Edit the handoff to fill in:
