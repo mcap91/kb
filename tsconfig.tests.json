@@ -1,0 +1,14 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "outDir": "dist-tests",
+    "rootDir": "."
+  },
+  "include": ["tests/**/*.ts"],
+  "references": [
+    { "path": "packages/wiki-core" },
+    { "path": "packages/dispatch-core" },
+    { "path": "packages/graph-explore" }
+  ]
+}
