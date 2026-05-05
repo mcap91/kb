@@ -85,3 +85,9 @@ export { allocate } from './allocate.js';
 
 // Record creation
 export { create } from './create.js';
+
+// Lint
+export { lint } from './lint.js';
+
+// View generation
+export { generate } from './generate.js';
