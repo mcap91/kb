@@ -1,0 +1,20 @@
+{
+  "WK": {
+    "next": 2,
+    "allocated": [
+      1
+    ]
+  },
+  "IN": {
+    "next": 1,
+    "allocated": []
+  },
+  "DEC": {
+    "next": 1,
+    "allocated": []
+  },
+  "SRC": {
+    "next": 1,
+    "allocated": []
+  }
+}
