@@ -384,6 +384,52 @@ describe('dispatch', () => {
       }
     });
 
+    it('accepts template-style empty optional scalar fields', async () => {
+      await setupFullConfig();
+      const { review } = await import('@kb/dispatch-core');
+
+      const handoff = [
+        '---',
+        'schema_version: 1',
+        'id: HO-0001',
+        'title: Template-style handoff',
+        'subject: Dogfood validation',
+        'allowed_agents:',
+        '  - fake-agent',
+        'mode: implement',
+        'status: draft',
+        'created: "2026-05-05T00:00:00.000Z"',
+        'updated: "2026-05-05T00:00:00.000Z"',
+        'depends_on: []',
+        'area:',
+        'initiative:',
+        'work_item:',
+        'write_scope:',
+        '  - wiki/issues/WK-0001.md',
+        '---',
+        '',
+        '## Read First',
+        '- AGENTS.md',
+        '',
+        '## Objective',
+        'Verify review accepts template-style optional blank fields.',
+        '',
+      ].join('\n');
+
+      await writeFile(join(repoRoot, 'AGENTS.md'), '# Test agent guide\n');
+      const handoffPath = join(repoRoot, 'wiki', 'handoffs', 'HO-0001.md');
+      await writeFile(handoffPath, handoff);
+
+      const result = await review({
+        dir: repoRoot,
+        handoff: 'wiki/handoffs/HO-0001.md',
+        agent: 'fake-agent',
+        reviewedAndAcceptRisks: true,
+      });
+
+      expect(result.ok).toBe(true);
+    });
+
     it('creates immutable review bundle with correct contents', async () => {
       await setupFullConfig();
       const { review } = await import('@kb/dispatch-core');

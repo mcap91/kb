@@ -84,6 +84,14 @@ function parseSimpleYaml(yaml: string): Record<string, unknown> {
   const lines = yaml.split('\n');
   let currentKey: string | null = null;
   let currentArray: string[] | null = null;
+  let pendingEmptyKey: string | null = null;
+
+  const flushPendingEmptyKey = (): void => {
+    if (pendingEmptyKey !== null) {
+      result[pendingEmptyKey] = '';
+      pendingEmptyKey = null;
+    }
+  };
 
   for (const rawLine of lines) {
     const line = rawLine.trimEnd();
@@ -92,15 +100,26 @@ function parseSimpleYaml(yaml: string): Record<string, unknown> {
     if (line.trim() === '' || line.trim().startsWith('#')) continue;
 
     // Block array continuation: "  - value"
-    if (/^\s+-\s+/.test(line) && currentKey !== null) {
+    if (/^\s+-\s+/.test(line) && (pendingEmptyKey !== null || currentKey !== null)) {
+      if (pendingEmptyKey !== null) {
+        currentKey = pendingEmptyKey;
+        currentArray = [];
+        result[currentKey] = currentArray;
+        pendingEmptyKey = null;
+      }
+
       const value = line.replace(/^\s+-\s+/, '').trim();
       if (currentArray === null) {
         currentArray = [];
       }
       currentArray.push(stripQuotes(value));
-      result[currentKey] = currentArray;
+      if (currentKey !== null) {
+        result[currentKey] = currentArray;
+      }
       continue;
     }
+
+    flushPendingEmptyKey();
 
     // Flush any pending array
     if (currentArray !== null) {
@@ -115,11 +134,16 @@ function parseSimpleYaml(yaml: string): Record<string, unknown> {
     let value = match[2]!.trim();
     currentKey = key;
 
-    if (value === '' || value === '~' || value === 'null') {
-      // Might be a block array starting next line, or just null
+    if (value === '') {
+      pendingEmptyKey = key;
+      currentArray = null;
+      continue;
+    }
+
+    if (value === '~' || value === 'null') {
       result[key] = null;
-      currentArray = [];
-      result[key] = currentArray;
+      pendingEmptyKey = null;
+      currentArray = null;
       continue;
     }
 
@@ -158,6 +182,8 @@ function parseSimpleYaml(yaml: string): Record<string, unknown> {
     result[key] = stripQuotes(value);
     currentArray = null;
   }
+
+  flushPendingEmptyKey();
 
   return result;
 }
