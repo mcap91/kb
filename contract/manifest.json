@@ -1,1 +1,277 @@
-{}
+{
+  "name": "kb-wiki-contract",
+  "contractVersion": "0.1.0",
+  "retrievalEntrypoint": "wiki/catalog.md",
+  "coreFiles": [
+    "wiki/schema.md",
+    "wiki/conventions.md",
+    "wiki/catalog.md",
+    "wiki/index.md"
+  ],
+  "runtimeFiles": [
+    "wiki/.wiki-contract.json",
+    "wiki/.id-state.json"
+  ],
+  "requiredSurfaces": [
+    "wiki/issues",
+    "wiki/initiatives",
+    "wiki/decisions",
+    "wiki/sources",
+    "wiki/areas",
+    "wiki/handoffs"
+  ],
+  "types": {
+    "issue": {
+      "aliases": ["issue", "wk", "work_item", "work-item"],
+      "prefix": "WK",
+      "stateKey": "work_item",
+      "directory": "wiki/issues",
+      "template": "issue.md",
+      "idStrategy": "allocated",
+      "filenameStrategy": "id_only",
+      "reservedFilenames": ["README.md"],
+      "requiredFrontMatter": [
+        "id",
+        "title",
+        "type",
+        "status",
+        "priority",
+        "owner",
+        "created",
+        "updated"
+      ],
+      "optionalFrontMatter": [
+        "resolution",
+        "severity",
+        "area",
+        "initiative",
+        "tags",
+        "origin",
+        "migration",
+        "repo_paths",
+        "docs",
+        "external_links",
+        "links",
+        "depends_on",
+        "blocks",
+        "related",
+        "write_scope",
+        "assignees",
+        "agents",
+        "reviewers",
+        "target",
+        "completed",
+        "started",
+        "superseded_by",
+        "duplicate_of",
+        "deprecated_by"
+      ],
+      "arrayFrontMatter": [
+        "tags",
+        "repo_paths",
+        "docs",
+        "external_links",
+        "links",
+        "depends_on",
+        "blocks",
+        "related",
+        "write_scope",
+        "assignees",
+        "agents",
+        "reviewers"
+      ],
+      "objectFrontMatter": ["origin", "migration"],
+      "enumFrontMatter": {
+        "type": [
+          "bug",
+          "feature",
+          "task",
+          "investigation",
+          "chore",
+          "docs",
+          "infra",
+          "migration"
+        ],
+        "status": [
+          "inbox",
+          "todo",
+          "in_progress",
+          "blocked",
+          "review",
+          "done",
+          "parked",
+          "cancelled",
+          "deprecated",
+          "duplicate",
+          "superseded",
+          "wont_do"
+        ],
+        "priority": ["critical", "high", "medium", "low"]
+      }
+    },
+    "initiative": {
+      "aliases": ["initiative", "in"],
+      "prefix": "IN",
+      "stateKey": "initiative",
+      "directory": "wiki/initiatives",
+      "template": "initiative.md",
+      "idStrategy": "allocated",
+      "filenameStrategy": "id_only",
+      "reservedFilenames": ["README.md"],
+      "requiredFrontMatter": [
+        "id",
+        "title",
+        "status",
+        "priority",
+        "owner",
+        "created",
+        "updated"
+      ],
+      "optionalFrontMatter": [
+        "summary",
+        "area",
+        "tags",
+        "docs",
+        "depends_on",
+        "blocks",
+        "related",
+        "write_scope",
+        "assignees",
+        "agents",
+        "reviewers",
+        "target",
+        "started",
+        "completed"
+      ],
+      "arrayFrontMatter": [
+        "tags",
+        "docs",
+        "depends_on",
+        "blocks",
+        "related",
+        "write_scope",
+        "assignees",
+        "agents",
+        "reviewers"
+      ],
+      "enumFrontMatter": {
+        "status": [
+          "todo",
+          "in_progress",
+          "blocked",
+          "review",
+          "done",
+          "parked",
+          "cancelled",
+          "deprecated"
+        ],
+        "priority": ["critical", "high", "medium", "low"]
+      }
+    },
+    "decision": {
+      "aliases": ["decision", "dec"],
+      "prefix": "DEC",
+      "stateKey": "decision",
+      "directory": "wiki/decisions",
+      "template": "decision.md",
+      "idStrategy": "allocated",
+      "filenameStrategy": "id_only",
+      "reservedFilenames": ["README.md"],
+      "requiredFrontMatter": [
+        "id",
+        "title",
+        "status",
+        "date",
+        "owners"
+      ],
+      "optionalFrontMatter": [
+        "area",
+        "docs",
+        "related",
+        "supersedes",
+        "superseded_by"
+      ],
+      "arrayFrontMatter": ["owners", "docs", "related"],
+      "enumFrontMatter": {
+        "status": [
+          "proposed",
+          "accepted",
+          "rejected",
+          "superseded",
+          "deprecated"
+        ]
+      }
+    },
+    "source": {
+      "aliases": ["source", "src"],
+      "prefix": "SRC",
+      "stateKey": "source",
+      "directory": "wiki/sources",
+      "template": "source.md",
+      "idStrategy": "allocated",
+      "filenameStrategy": "id_only",
+      "reservedFilenames": ["README.md"],
+      "requiredFrontMatter": [
+        "id",
+        "title",
+        "kind",
+        "captured",
+        "updated",
+        "source_uri",
+        "authority",
+        "immutable_hint"
+      ],
+      "optionalFrontMatter": [
+        "related_docs",
+        "related_work",
+        "anchors"
+      ],
+      "arrayFrontMatter": [
+        "related_docs",
+        "related_work",
+        "anchors"
+      ]
+    },
+    "area": {
+      "aliases": ["area"],
+      "directory": "wiki/areas",
+      "template": "area.md",
+      "idStrategy": "slug",
+      "filenameStrategy": "slug_only",
+      "reservedFilenames": ["README.md"],
+      "requiredFrontMatter": [
+        "id",
+        "title",
+        "owners",
+        "updated"
+      ],
+      "optionalFrontMatter": [
+        "docs",
+        "initiatives",
+        "sources",
+        "decisions",
+        "related"
+      ],
+      "arrayFrontMatter": [
+        "owners",
+        "docs",
+        "initiatives",
+        "sources",
+        "decisions",
+        "related"
+      ]
+    }
+  },
+  "excludedPrefixes": ["HO"],
+  "generatedViews": {
+    "canonical": false,
+    "defaultDirectory": "wiki/generated",
+    "standardFiles": [
+      "wiki/catalog.md",
+      "wiki/now.md",
+      "wiki/inbox.md",
+      "wiki/backlog.md",
+      "wiki/archive.md"
+    ]
+  }
+}
