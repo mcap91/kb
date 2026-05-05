@@ -2,7 +2,6 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
-import { fileURLToPath } from 'node:url';
 import {
   buildGraph,
   writeGraphJson,
@@ -26,7 +25,7 @@ import type { GraphExport } from '../packages/graph-explore/src/index.js';
 // Helpers
 // ---------------------------------------------------------------------------
 
-const THIS_DIR = path.dirname(fileURLToPath(import.meta.url));
+const THIS_DIR = path.resolve(process.cwd(), 'tests');
 const FIXTURE_DIR = path.resolve(THIS_DIR, 'fixtures', 'sample-repo');
 
 /** Create a temporary directory with specific files for isolated tests. */
