@@ -242,6 +242,20 @@ describe('graph-explore', () => {
       // Generated views should not appear
       expect(nodeIds).not.toContain('wiki/catalog.md');
     });
+
+    it('includes supported files in non-excluded dot-directories', () => {
+      const tmp = createTmpDir();
+      try {
+        writeFile(tmp.dir, '.github/workflows/ci.yml', 'name: CI\n');
+
+        const nodes = scanDirectory(tmp.dir);
+        const nodeIds = nodes.map(n => n.id);
+
+        expect(nodeIds).toContain('.github/workflows/ci.yml');
+      } finally {
+        tmp.cleanup();
+      }
+    });
   });
 
   // =========================================================================

@@ -47,12 +47,8 @@ const TS_IMPORT_PATTERNS = [
  * - from module import ...
  * - from module.submodule import ...
  */
-const PY_IMPORT_PATTERNS = [
-  // from module import ... (captures the module part)
-  /(?:^|\n)\s*from\s+([\w.]+)\s+import\s/g,
-  // import module (captures the module; handles comma-separated)
-  /(?:^|\n)\s*import\s+([\w.]+(?:\s*,\s*[\w.]+)*)/g,
-];
+const PY_FROM_IMPORT_PATTERN = /(?:^|\n)\s*from\s+([\w.]+)\s+import\s+([^\n#]+)/g;
+const PY_IMPORT_PATTERN = /(?:^|\n)\s*import\s+([\w.]+(?:\s*,\s*[\w.]+)*)/g;
 
 // ---------------------------------------------------------------------------
 // Resolution helpers
@@ -236,25 +232,45 @@ export function extractImports(
       }
     }
   } else if (PY_EXTENSIONS.has(ext)) {
-    for (const pattern of PY_IMPORT_PATTERNS) {
-      const regex = new RegExp(pattern.source, pattern.flags);
-      let match: RegExpExecArray | null;
-      while ((match = regex.exec(content)) !== null) {
-        const rawModule = match[1];
-        // Handle comma-separated imports: import a, b, c
-        const modules = rawModule.split(/\s*,\s*/);
-        for (const mod of modules) {
-          const trimmed = mod.trim();
-          if (!trimmed) continue;
-          const resolved = resolvePyImport(trimmed, sourceFileRel, repoRoot);
-          if (resolved && !seen.has(resolved)) {
-            seen.add(resolved);
-            edges.push({
-              source: sourceFileRel,
-              target: resolved,
-              relation: 'imports',
-            });
-          }
+    const fromRegex = new RegExp(PY_FROM_IMPORT_PATTERN.source, PY_FROM_IMPORT_PATTERN.flags);
+    let fromMatch: RegExpExecArray | null;
+    while ((fromMatch = fromRegex.exec(content)) !== null) {
+      const baseModule = fromMatch[1]!;
+      const importedNames = fromMatch[2]!
+        .split(',')
+        .map((name) => name.trim().split(/\s+as\s+/i)[0]?.trim() ?? '')
+        .filter(Boolean);
+
+      for (const importedName of importedNames) {
+        const resolved =
+          resolvePyImport(`${baseModule}.${importedName}`, sourceFileRel, repoRoot) ??
+          resolvePyImport(baseModule, sourceFileRel, repoRoot);
+        if (resolved && !seen.has(resolved)) {
+          seen.add(resolved);
+          edges.push({
+            source: sourceFileRel,
+            target: resolved,
+            relation: 'imports',
+          });
+        }
+      }
+    }
+
+    const importRegex = new RegExp(PY_IMPORT_PATTERN.source, PY_IMPORT_PATTERN.flags);
+    let importMatch: RegExpExecArray | null;
+    while ((importMatch = importRegex.exec(content)) !== null) {
+      const modules = importMatch[1]!.split(/\s*,\s*/);
+      for (const mod of modules) {
+        const trimmed = mod.trim();
+        if (!trimmed) continue;
+        const resolved = resolvePyImport(trimmed, sourceFileRel, repoRoot);
+        if (resolved && !seen.has(resolved)) {
+          seen.add(resolved);
+          edges.push({
+            source: sourceFileRel,
+            target: resolved,
+            relation: 'imports',
+          });
         }
       }
     }
