@@ -91,3 +91,6 @@ export { lint } from './lint.js';
 
 // View generation
 export { generate } from './generate.js';
+
+// Search
+export { buildSearchIndex, search } from './search.js';
