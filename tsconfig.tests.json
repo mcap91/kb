@@ -6,6 +6,7 @@
     "rootDir": "."
   },
   "include": ["tests/**/*.ts"],
+  "exclude": ["tests/fixtures/sample-repo/**"],
   "references": [
     { "path": "packages/wiki-core" },
     { "path": "packages/dispatch-core" },
