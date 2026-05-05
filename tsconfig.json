@@ -1,0 +1,12 @@
+{
+  "files": [],
+  "references": [
+    { "path": "packages/wiki-core" },
+    { "path": "packages/wiki-cli" },
+    { "path": "packages/wiki-mcp" },
+    { "path": "packages/dispatch-core" },
+    { "path": "packages/dispatch-cli" },
+    { "path": "packages/graph-explore" },
+    { "path": "tsconfig.tests.json" }
+  ]
+}
