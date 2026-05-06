@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { execSync } from 'node:child_process';
 import { resolve } from 'node:path';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 
 const ROOT = resolve(process.cwd());
 const TSX = process.platform === 'win32'
@@ -68,5 +70,50 @@ describe('MCP smoke tests', () => {
   it('tool count matches expected operations', async () => {
     const { tools } = await import('@kb/wiki-mcp');
     expect(tools.length).toBe(8);
+  });
+
+  it('registers real tool schemas and passes tool arguments through MCP', async () => {
+    const mcp = await import('@kb/wiki-mcp');
+
+    expect(typeof mcp.createServer).toBe('function');
+    if (typeof mcp.createServer !== 'function') {
+      return;
+    }
+
+    const server = mcp.createServer();
+    const client = new Client({ name: 'kb-test-client', version: '0.0.1' }, { capabilities: {} });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+
+    await Promise.all([
+      server.connect(serverTransport),
+      client.connect(clientTransport),
+    ]);
+
+    const toolsResult = await client.listTools();
+    const lintTool = toolsResult.tools.find(tool => tool.name === 'lint');
+
+    expect(lintTool).toBeTruthy();
+    expect(lintTool?.inputSchema.properties?.dir).toBeTruthy();
+    expect(lintTool?.inputSchema.required).toContain('dir');
+
+    const lintResult = await client.callTool({
+      name: 'lint',
+      arguments: {
+        dir: resolve(ROOT, 'tests/fixtures/sample-repo'),
+      },
+    });
+    const content = lintResult.content as Array<{ type: string; text?: string }> | undefined;
+
+    expect(lintResult.isError).not.toBe(true);
+    expect(content?.[0]?.type).toBe('text');
+
+    if (content?.[0]?.type === 'text' && typeof content[0].text === 'string') {
+      expect(JSON.parse(content[0].text)).toMatchObject({ ok: true });
+    }
+
+    await Promise.all([
+      client.close(),
+      server.close(),
+    ]);
   });
 });
