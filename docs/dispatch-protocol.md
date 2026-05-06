@@ -358,6 +358,31 @@ Edit `launchers.v1.json` in your config directory to add new agents:
 
 After editing the registry, any pending review tokens become invalid because the registry hash will no longer match. You must re-review handoffs after registry changes.
 
+### Codex Sandbox Caveat On Linux VMs
+
+Some Linux VM or nested-container environments do not support the sandbox startup path used by the Codex CLI. The failure often appears as a `bwrap` / bubblewrap mount or namespace error before the agent reads the reviewed handoff.
+
+What this means operationally:
+
+- `codex` may launch correctly through dispatch but still fail before reading `handoff.snapshot.md`
+- this is an infrastructure problem on the host, not a dispatch review/launch protocol problem
+- `redteam` should still fail closed on those hosts unless a real read-only Codex sandbox is available
+
+`kb` does not ship a default fallback profile that weakens Codex permissions for these hosts.
+
+The recommended responses are:
+
+- fix the host so the Codex sandbox can start successfully
+- use a different host for Codex runs
+- use Claude or another non-bwrap-dependent agent on that host for work that cannot tolerate sandbox startup failure
+
+The supported recommendation in `kb` is:
+
+- if Codex sandboxing is broken on a host, use Claude on that host or run Codex on a different host
+- do not weaken Codex permissions just to get around the sandbox failure
+
+If an operator chooses to customize `launchers.v1.json` locally, that is an explicit local trust decision outside the shipped defaults. Any registry change requires re-reviewing pending handoffs because the registry hash is bound into review tokens.
+
 ### Fake Agent
 
 The `fake-agent` entry points to the `kb` repo's `tests/fixtures/fake-agent.ts` via absolute paths written by `init-config`. The fixture runs inside the reviewed `agent-visible/` bundle, reads the handoff from `AGENT_BLACKBOARD_HANDOFF_PATH`, writes a fixed response to `AGENT_BLACKBOARD_RESPONSE_PATH`, and exits with code 0. It is used for:

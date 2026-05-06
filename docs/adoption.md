@@ -237,6 +237,8 @@ For a single-step operator flow, use:
 npm run dispatch -- review-and-launch --dir ../my-project --handoff wiki/handoffs/HO-0001.md --agent codex --reviewed-and-accept-risks
 ```
 
+If Codex is running on a Linux VM where sandbox startup fails with a `bwrap` / bubblewrap namespace error, treat that as a host problem. The supported path is to use Claude on that host or run Codex on a different host. `kb` does not ship a weaker-permission fallback profile by default.
+
 ### Status and Cleanup
 
 Check dispatch state:

@@ -96,6 +96,8 @@ If the repo already has in-flight handoffs:
 - re-review any pending handoffs after `init-config --force`
 - expect old review tokens to be invalid if the registry changed
 
+If Codex on that host fails before reading the handoff with a `bwrap` / bubblewrap sandbox error, treat that as a host/runtime problem. The supported path is to use Claude on that host or run Codex on a different host. `kb` does not ship a weaker-permission fallback profile by default.
+
 ### 7. Smoke Test the New Flow
 
 Create a small handoff:

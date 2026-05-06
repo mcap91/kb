@@ -600,6 +600,7 @@ describe('dispatch', () => {
       expect(registry.agents.codex.base_argv).toEqual(['codex', 'exec']);
       expect(registry.agents.codex.response_transport.kind).toBe('file');
       expect(registry.agents.codex.response_arg).toEqual(['-o', '{response_path}']);
+      expect(Object.hasOwn(registry.agents, 'codex-danger-full-access')).toBe(false);
       expect(registry.agents['fake-agent'].base_argv[0]).toBe(getTsxPath());
     });
   });
