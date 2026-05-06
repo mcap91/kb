@@ -74,6 +74,18 @@ kb-dispatch/
 
 `init-config` creates this structure, generates the key, and writes a default registry.
 
+## Handoff Authoring
+
+Handoffs are durable repo-local documents in `wiki/handoffs/HO-XXXX.md`.
+
+Creation paths:
+
+- `dispatch create-handoff` allocates the next `HO-XXXX` ID by scanning `wiki/handoffs/`
+- manual authoring is still supported for exceptional cases
+- `wiki create` does not support `HO`
+
+The handoff markdown is the operator-visible source of truth. Runtime state is kept separately under `.agent-runs/`.
+
 ## Handoff Format
 
 Handoff documents are markdown files in `wiki/handoffs/` with YAML frontmatter.
@@ -156,13 +168,18 @@ On successful validation, review creates:
 
 ```
 .agent-runs/reviews/RV-<uuid>/
-  <handoff-filename>           Copy of the handoff file
-  <read-first-file-1>         Copy of each Read First file (flattened names)
-  <read-first-file-2>
-  review-manifest.json         Manifest with file list, hashes, metadata
+  agent-visible/
+    wrapper.md
+    handoff.snapshot.md
+    context/
+      <hashed-file-1>.<ext>
+      <hashed-file-2>.<ext>
+  metadata/
+    input-manifest.json
+    review.json
 ```
 
-File names in the bundle are flattened: path separators are replaced with `__`.
+Read First files are copied into `agent-visible/context/` using stable hashed filenames. `metadata/input-manifest.json` records the original repo-relative source paths and the snapshot paths.
 
 ### Hash Capture
 
@@ -182,7 +199,7 @@ Review creates a signed token containing:
 - `repoRoot` -- resolved repository root path
 - `inputManifestHash` -- hash of the bundle
 - `registryHash` -- hash of the registry
-- `expiry` -- 24 hours from review time
+- `expiry` -- 30 minutes from review time
 
 The token is HMAC-signed with the operator's `token.key` and written to `<config>/pending/<reviewId>.json`.
 
@@ -201,16 +218,17 @@ The launch operation (`dispatch-core/src/launch.ts`) executes a reviewed handoff
 7. **Load agent config** -- look up the agent in the registry
 8. **Move token to launching/** -- atomic state transition
 9. **Create run directory** -- `.agent-runs/runs/<handoffId>/RUN-<uuid>/`
-10. **Build filtered environment** -- only allowlisted env vars plus `AGENT_BLACKBOARD_*` variables
-11. **Write launch metadata** -- `launch-meta.json` in the run directory
-12. **Spawn agent** -- child process with `cwd = repo_root`
-13. **Capture response** -- read from `response.md` in run dir, or fall back to stdout
-14. **Move token to consumed/** -- on non-empty response (or rejected/ on failure)
-15. **Write final metadata** -- update `launch-meta.json` with exit code and timestamps
+10. **Copy reviewed bundle** -- copy `agent-visible/` and metadata into the run directory
+11. **Build filtered environment** -- only allowlisted env vars plus `AGENT_BLACKBOARD_*` variables
+12. **Write launch metadata** -- `metadata/launch.json`
+13. **Spawn agent** -- child process with `cwd = agent-visible`
+14. **Capture response** -- read `response.md` from the run dir, or fall back to stdout for stdout transports
+15. **Move token to consumed/** -- on non-empty response (or `rejected/` on failure)
+16. **Write final metadata** -- `metadata/meta.json` with exit code, timestamps, and response paths
 
-### cwd Invariant
+### Reviewed Bundle Invariant
 
-The agent process is always spawned with `cwd` set to the repository root stored in the token payload. The handoff cannot override this. This ensures the agent operates from a known, operator-controlled location.
+The agent process is always spawned with `cwd` set to the reviewed `agent-visible/` directory inside the run bundle. The handoff cannot override this. This ensures the agent sees the reviewed snapshot, not the live repo root.
 
 ### Environment Allowlist
 
@@ -228,9 +246,9 @@ Launch constructs a filtered environment for the agent process. Only these categ
 |----------|-------|
 | `AGENT_BLACKBOARD_REPO_ROOT` | Resolved repo root path |
 | `AGENT_BLACKBOARD_RUN_DIR` | Run directory path |
-| `AGENT_BLACKBOARD_AGENT_VISIBLE_DIR` | Review bundle directory |
-| `AGENT_BLACKBOARD_HANDOFF_PATH` | Path to `review-manifest.json` in bundle |
-| `AGENT_BLACKBOARD_CONTEXT_DIR` | Same as agent visible dir |
+| `AGENT_BLACKBOARD_AGENT_VISIBLE_DIR` | `agent-visible/` directory inside the run bundle |
+| `AGENT_BLACKBOARD_HANDOFF_PATH` | Path to `agent-visible/handoff.snapshot.md` |
+| `AGENT_BLACKBOARD_CONTEXT_DIR` | Path to `agent-visible/context/` |
 | `AGENT_BLACKBOARD_RESPONSE_PATH` | Path where agent should write response |
 | `AGENT_BLACKBOARD_REVIEW_ID` | The review ID |
 | `AGENT_BLACKBOARD_RUN_ID` | The run ID (`RUN-<uuid>`) |
@@ -249,7 +267,7 @@ The cleanup operation (`dispatch-core/src/cleanup.ts`) removes stale dispatch ar
 
 1. **Remove orphan reviews** -- review bundles in `.agent-runs/reviews/` with no corresponding token in any state directory, older than the retention threshold (default 7 days).
 
-2. **Remove orphan runs** -- run directories in `.agent-runs/runs/` whose `launch-meta.json` references a review ID not present in `.agent-runs/reviews/`, older than the retention threshold.
+2. **Remove orphan runs** -- run directories in `.agent-runs/runs/` whose review metadata references a review ID not present in `.agent-runs/reviews/`, older than the retention threshold.
 
 3. **Recover stale launching tokens** -- tokens stuck in `launching/` beyond the retention threshold or past their expiry. Moved to `rejected/`.
 
@@ -273,8 +291,18 @@ The agent registry (`launchers.v1.json`) maps agent names to launcher configurat
   "version": 1,
   "agents": {
     "agent-name": {
-      "command": "executable",
-      "args": ["arg1", "arg2"],
+      "base_argv": ["executable"],
+      "noninteractive_argv": ["--flag"],
+      "instruction_transport": { "kind": "argv_content" },
+      "wrapper_arg": ["{wrapper_content}"],
+      "response_transport": { "kind": "file" },
+      "response_arg": ["-o", "{response_path}"],
+      "timeout_seconds": 1800,
+      "read_only": {
+        "supported": true,
+        "argv_suffix": ["--sandbox", "read-only"],
+        "response_writable": true
+      },
       "description": "Human-readable description",
       "env": {
         "EXTRA_VAR": "value"
@@ -288,8 +316,14 @@ The agent registry (`launchers.v1.json`) maps agent names to launcher configurat
 
 | Field | Required | Description |
 |-------|----------|-------------|
-| `command` | yes | Executable to spawn |
-| `args` | yes | Command-line arguments (array of strings) |
+| `base_argv` | yes | Base executable and fixed argv prefix |
+| `noninteractive_argv` | yes | Additional non-interactive flags |
+| `instruction_transport` | yes | How the wrapper reaches the agent: `stdin`, `argv_content`, or `argv_path` |
+| `wrapper_arg` | sometimes | Required for non-stdin transports; accepts `{wrapper_content}` or `{wrapper_path}` |
+| `response_transport` | yes | How the agent returns output: `file` or `stdout_capture` |
+| `response_arg` | for file transport | Args containing `{response_path}` |
+| `timeout_seconds` | no | Per-launch timeout |
+| `read_only` | no | Required for `redteam` compatibility |
 | `description` | no | Human-readable description |
 | `env` | no | Additional environment variables to set |
 
@@ -299,8 +333,8 @@ The agent registry (`launchers.v1.json`) maps agent names to launcher configurat
 
 | Agent | Command | Purpose |
 |-------|---------|---------|
-| `claude` | `claude` | Claude Code CLI (placeholder -- configure with your path) |
-| `codex` | `codex` | Codex CLI (placeholder -- configure with your path) |
+| `claude` | `claude` with wrapper-content argv transport and stdout capture | Claude Code CLI adapter |
+| `codex` | `codex exec` with wrapper-content argv transport and `-o {response_path}` | Codex CLI adapter |
 | `fake-agent` | Absolute `tsx` binary plus absolute `tests/fixtures/fake-agent.ts` path in the `kb` checkout | Deterministic test agent for dogfooding and sister-repo validation |
 
 ### Adding an Agent
@@ -312,8 +346,10 @@ Edit `launchers.v1.json` in your config directory to add new agents:
   "version": 1,
   "agents": {
     "my-agent": {
-      "command": "/path/to/my-agent",
-      "args": ["--mode", "auto"],
+      "base_argv": ["/path/to/my-agent"],
+      "noninteractive_argv": ["--mode", "auto"],
+      "instruction_transport": { "kind": "stdin" },
+      "response_transport": { "kind": "stdout_capture" },
       "description": "My custom agent"
     }
   }
@@ -324,7 +360,7 @@ After editing the registry, any pending review tokens become invalid because the
 
 ### Fake Agent
 
-The `fake-agent` entry points to the `kb` repo's `tests/fixtures/fake-agent.ts` via absolute paths written by `init-config`. This makes the default launcher work even though handoffs are launched with `cwd = repo_root` in the consuming repository. The fixture reads the handoff from `AGENT_BLACKBOARD_HANDOFF_PATH`, writes a fixed response to `AGENT_BLACKBOARD_RESPONSE_PATH`, and exits with code 0. It is used for:
+The `fake-agent` entry points to the `kb` repo's `tests/fixtures/fake-agent.ts` via absolute paths written by `init-config`. The fixture runs inside the reviewed `agent-visible/` bundle, reads the handoff from `AGENT_BLACKBOARD_HANDOFF_PATH`, writes a fixed response to `AGENT_BLACKBOARD_RESPONSE_PATH`, and exits with code 0. It is used for:
 
 - Automated testing in `tests/dispatch.test.ts`
 - Dogfooding the full review-launch cycle

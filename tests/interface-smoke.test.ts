@@ -116,4 +116,16 @@ describe('MCP smoke tests', () => {
       server.close(),
     ]);
   });
+
+  it('dispatch MCP tools are available from the dispatch-mcp package', async () => {
+    const { tools } = await import('@kb/dispatch-mcp');
+    expect(tools).toBeInstanceOf(Array);
+    const names = tools.map((t: { name: string }) => t.name);
+    expect(names).toContain('create-handoff');
+    expect(names).toContain('review');
+    expect(names).toContain('launch');
+    expect(names).toContain('review-and-launch');
+    expect(names).toContain('status');
+    expect(names).toContain('cleanup');
+  });
 });

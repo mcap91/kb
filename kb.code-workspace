@@ -1,0 +1,17 @@
+{
+	"folders": [
+		{
+			"path": "."
+		},
+		{
+			"path": "../portfolio-wiki-tools"
+		},
+		{
+			"path": "../bioinfo-agent-toolkit"
+		},
+		{
+			"path": "../test_kb"
+		}
+	],
+	"settings": {}
+}

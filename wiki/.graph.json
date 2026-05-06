@@ -1,0 +1,2451 @@
+{
+  "generated_at": "2026-05-05T23:46:31.597Z",
+  "nodes": [
+    {
+      "id": "../initiatives/IN-0001.md",
+      "kind": "doc_file",
+      "exists": false
+    },
+    {
+      "id": "../issues/WK-0002.md",
+      "kind": "doc_file",
+      "exists": false
+    },
+    {
+      "id": "../issues/WK-0003.md",
+      "kind": "doc_file",
+      "exists": false
+    },
+    {
+      "id": "../issues/WK-0004.md",
+      "kind": "doc_file",
+      "exists": false
+    },
+    {
+      "id": "../issues/WK-0005.md",
+      "kind": "doc_file",
+      "exists": false
+    },
+    {
+      "id": "../issues/WK-0006.md",
+      "kind": "doc_file",
+      "exists": false
+    },
+    {
+      "id": "../issues/WK-0007.md",
+      "kind": "doc_file",
+      "exists": false
+    },
+    {
+      "id": ".claude/skills/handoff/SKILL.md",
+      "kind": "doc_file",
+      "exists": true
+    },
+    {
+      "id": ".claude/skills/plan-me-this/SKILL.md",
+      "kind": "doc_file",
+      "exists": true
+    },
+    {
+      "id": "AGENTS.md",
+      "kind": "doc_file",
+      "exists": true
+    },
+    {
+      "id": "CLAUDE.md",
+      "kind": "doc_file",
+      "exists": true
+    },
+    {
+      "id": "contract/bootstrap/conventions.md",
+      "kind": "doc_file",
+      "exists": true
+    },
+    {
+      "id": "contract/bootstrap/index.md",
+      "kind": "doc_file",
+      "exists": true
+    },
+    {
+      "id": "contract/bootstrap/schema.md",
+      "kind": "doc_file",
+      "exists": true
+    },
+    {
+      "id": "contract/conventions.md",
+      "kind": "doc_file",
+      "exists": true
+    },
+    {
+      "id": "contract/lint.md",
+      "kind": "doc_file",
+      "exists": true
+    },
+    {
+      "id": "contract/manifest.json",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "contract/query.md",
+      "kind": "doc_file",
+      "exists": true
+    },
+    {
+      "id": "contract/retrieval.md",
+      "kind": "doc_file",
+      "exists": true
+    },
+    {
+      "id": "contract/schema.md",
+      "kind": "doc_file",
+      "exists": true
+    },
+    {
+      "id": "contract/taxonomy.md",
+      "kind": "doc_file",
+      "exists": true
+    },
+    {
+      "id": "contract/templates/area.md",
+      "kind": "doc_file",
+      "exists": true
+    },
+    {
+      "id": "contract/templates/decision.md",
+      "kind": "doc_file",
+      "exists": true
+    },
+    {
+      "id": "contract/templates/handoff.md",
+      "kind": "doc_file",
+      "exists": true
+    },
+    {
+      "id": "contract/templates/initiative.md",
+      "kind": "doc_file",
+      "exists": true
+    },
+    {
+      "id": "contract/templates/issue.md",
+      "kind": "doc_file",
+      "exists": true
+    },
+    {
+      "id": "contract/templates/source.md",
+      "kind": "doc_file",
+      "exists": true
+    },
+    {
+      "id": "docs/adoption.md",
+      "kind": "doc_file",
+      "exists": true
+    },
+    {
+      "id": "docs/dispatch-protocol.md",
+      "kind": "doc_file",
+      "exists": true
+    },
+    {
+      "id": "IN-0001",
+      "kind": "wiki_record",
+      "prefix": "IN",
+      "exists": false
+    },
+    {
+      "id": "package-lock.json",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "package.json",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/dispatch-cli/dist/index.d.ts",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/dispatch-cli/dist/index.js",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/dispatch-cli/dist/run.d.ts",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/dispatch-cli/dist/run.js",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/dispatch-cli/package.json",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/dispatch-cli/src/index.ts",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/dispatch-cli/src/run.ts",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/dispatch-cli/tsconfig.json",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/dispatch-core/dist/cleanup.d.ts",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/dispatch-core/dist/cleanup.js",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/dispatch-core/dist/errors.d.ts",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/dispatch-core/dist/errors.js",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/dispatch-core/dist/index.d.ts",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/dispatch-core/dist/index.js",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/dispatch-core/dist/launch.d.ts",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/dispatch-core/dist/launch.js",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/dispatch-core/dist/paths.d.ts",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/dispatch-core/dist/paths.js",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/dispatch-core/dist/review.d.ts",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/dispatch-core/dist/review.js",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/dispatch-core/dist/schemas.d.ts",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/dispatch-core/dist/schemas.js",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/dispatch-core/dist/token.d.ts",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/dispatch-core/dist/token.js",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/dispatch-core/dist/types.d.ts",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/dispatch-core/dist/types.js",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/dispatch-core/dist/wrapper.d.ts",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/dispatch-core/dist/wrapper.js",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/dispatch-core/package.json",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/dispatch-core/src/cleanup.ts",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/dispatch-core/src/errors.ts",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/dispatch-core/src/index.ts",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/dispatch-core/src/launch.ts",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/dispatch-core/src/paths.ts",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/dispatch-core/src/review.ts",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/dispatch-core/src/schemas.ts",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/dispatch-core/src/token.ts",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/dispatch-core/src/types.ts",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/dispatch-core/src/wrapper.ts",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/dispatch-core/tsconfig.json",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/graph-explore/dist/code-extract.d.ts",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/graph-explore/dist/code-extract.js",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/graph-explore/dist/extract.d.ts",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/graph-explore/dist/extract.js",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/graph-explore/dist/graph.d.ts",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/graph-explore/dist/graph.js",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/graph-explore/dist/index.d.ts",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/graph-explore/dist/index.js",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/graph-explore/dist/scan.d.ts",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/graph-explore/dist/scan.js",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/graph-explore/dist/types.d.ts",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/graph-explore/dist/types.js",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/graph-explore/dist/wiki-overlay.d.ts",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/graph-explore/dist/wiki-overlay.js",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/graph-explore/package.json",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/graph-explore/src/code-extract.ts",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/graph-explore/src/extract.ts",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/graph-explore/src/graph.ts",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/graph-explore/src/index.ts",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/graph-explore/src/scan.ts",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/graph-explore/src/types.ts",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/graph-explore/src/wiki-overlay.ts",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/graph-explore/tsconfig.json",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/wiki-cli/dist/commands.d.ts",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/wiki-cli/dist/commands.js",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/wiki-cli/dist/index.d.ts",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/wiki-cli/dist/index.js",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/wiki-cli/dist/run.d.ts",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/wiki-cli/dist/run.js",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/wiki-cli/package.json",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/wiki-cli/src/commands.ts",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/wiki-cli/src/index.ts",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/wiki-cli/src/run.ts",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/wiki-cli/tsconfig.json",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/wiki-core/dist/allocate.d.ts",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/wiki-core/dist/allocate.js",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/wiki-core/dist/bootstrap.d.ts",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/wiki-core/dist/bootstrap.js",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/wiki-core/dist/contract.d.ts",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/wiki-core/dist/contract.js",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/wiki-core/dist/create.d.ts",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/wiki-core/dist/create.js",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/wiki-core/dist/debug.d.ts",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/wiki-core/dist/debug.js",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/wiki-core/dist/errors.d.ts",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/wiki-core/dist/errors.js",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/wiki-core/dist/generate.d.ts",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/wiki-core/dist/generate.js",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/wiki-core/dist/index.d.ts",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/wiki-core/dist/index.js",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/wiki-core/dist/lint.d.ts",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/wiki-core/dist/lint.js",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/wiki-core/dist/schemas.d.ts",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/wiki-core/dist/schemas.js",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/wiki-core/dist/search.d.ts",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/wiki-core/dist/search.js",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/wiki-core/dist/sync.d.ts",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/wiki-core/dist/sync.js",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/wiki-core/dist/types.d.ts",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/wiki-core/dist/types.js",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/wiki-core/package.json",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/wiki-core/src/allocate.ts",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/wiki-core/src/bootstrap.ts",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/wiki-core/src/contract.ts",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/wiki-core/src/create.ts",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/wiki-core/src/debug.ts",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/wiki-core/src/errors.ts",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/wiki-core/src/generate.ts",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/wiki-core/src/index.ts",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/wiki-core/src/lint.ts",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/wiki-core/src/schemas.ts",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/wiki-core/src/search.ts",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/wiki-core/src/sync.ts",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/wiki-core/src/types.ts",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/wiki-core/tsconfig.json",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/wiki-mcp/dist/index.d.ts",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/wiki-mcp/dist/index.js",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/wiki-mcp/dist/server.d.ts",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/wiki-mcp/dist/server.js",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/wiki-mcp/dist/tools.d.ts",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/wiki-mcp/dist/tools.js",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/wiki-mcp/package.json",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/wiki-mcp/src/index.ts",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/wiki-mcp/src/server.ts",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/wiki-mcp/src/tools.ts",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "packages/wiki-mcp/tsconfig.json",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "README.md",
+      "kind": "doc_file",
+      "exists": true
+    },
+    {
+      "id": "tests/dispatch.test.ts",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "tests/fixtures/fake-agent.ts",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "tests/fixtures/sample-repo/.agent-runs/test.json",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "tests/fixtures/sample-repo/docs/api.md",
+      "kind": "doc_file",
+      "exists": true
+    },
+    {
+      "id": "tests/fixtures/sample-repo/docs/guide.md",
+      "kind": "doc_file",
+      "exists": true
+    },
+    {
+      "id": "tests/fixtures/sample-repo/lib/__init__.py",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "tests/fixtures/sample-repo/lib/processor.py",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "tests/fixtures/sample-repo/node_modules/fake-pkg/index.js",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "tests/fixtures/sample-repo/README.md",
+      "kind": "doc_file",
+      "exists": true
+    },
+    {
+      "id": "tests/fixtures/sample-repo/scripts/analyze.py",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "tests/fixtures/sample-repo/src/app.js",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "tests/fixtures/sample-repo/src/index.ts",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "tests/fixtures/sample-repo/src/orphan.ts",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "tests/fixtures/sample-repo/src/reexport.ts",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "tests/fixtures/sample-repo/src/utils/helper.ts",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "tests/fixtures/sample-repo/src/utils/math.ts",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "tests/fixtures/sample-repo/wiki/areas/core.md",
+      "kind": "doc_file",
+      "exists": true
+    },
+    {
+      "id": "tests/fixtures/sample-repo/wiki/catalog.md",
+      "kind": "doc_file",
+      "exists": true
+    },
+    {
+      "id": "tests/fixtures/sample-repo/wiki/handoffs/HO-0001.md",
+      "kind": "doc_file",
+      "exists": true
+    },
+    {
+      "id": "tests/fixtures/sample-repo/wiki/initiatives/IN-0001.md",
+      "kind": "doc_file",
+      "exists": true
+    },
+    {
+      "id": "tests/fixtures/sample-repo/wiki/issues/WK-0001.md",
+      "kind": "doc_file",
+      "exists": true
+    },
+    {
+      "id": "tests/fixtures/sample-repo/wiki/issues/WK-0002.md",
+      "kind": "doc_file",
+      "exists": true
+    },
+    {
+      "id": "tests/graph-explore.test.ts",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "tests/helpers/tmp-repo.ts",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "tests/interface-smoke.test.ts",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "tests/wiki-core.test.ts",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "tsconfig.base.json",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "tsconfig.json",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "tsconfig.tests.json",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "vitest.config.ts",
+      "kind": "code_file",
+      "exists": true
+    },
+    {
+      "id": "wiki/conventions.md",
+      "kind": "doc_file",
+      "exists": true
+    },
+    {
+      "id": "wiki/index.md",
+      "kind": "doc_file",
+      "exists": true
+    },
+    {
+      "id": "wiki/initiatives/IN-0001.md",
+      "kind": "wiki_record",
+      "title": "IN-0001",
+      "prefix": "IN",
+      "exists": true
+    },
+    {
+      "id": "wiki/issues/WK-0001.md",
+      "kind": "wiki_record",
+      "title": "WK-0001",
+      "prefix": "WK",
+      "exists": true
+    },
+    {
+      "id": "wiki/issues/WK-0002.md",
+      "kind": "wiki_record",
+      "title": "WK-0002",
+      "prefix": "WK",
+      "exists": true
+    },
+    {
+      "id": "wiki/issues/WK-0003.md",
+      "kind": "wiki_record",
+      "title": "WK-0003",
+      "prefix": "WK",
+      "exists": true
+    },
+    {
+      "id": "wiki/issues/WK-0004.md",
+      "kind": "wiki_record",
+      "title": "WK-0004",
+      "prefix": "WK",
+      "exists": true
+    },
+    {
+      "id": "wiki/issues/WK-0005.md",
+      "kind": "wiki_record",
+      "title": "WK-0005",
+      "prefix": "WK",
+      "exists": true
+    },
+    {
+      "id": "wiki/issues/WK-0006.md",
+      "kind": "wiki_record",
+      "title": "WK-0006",
+      "prefix": "WK",
+      "exists": true
+    },
+    {
+      "id": "wiki/issues/WK-0007.md",
+      "kind": "wiki_record",
+      "title": "WK-0007",
+      "prefix": "WK",
+      "exists": true
+    },
+    {
+      "id": "wiki/schema.md",
+      "kind": "doc_file",
+      "exists": true
+    },
+    {
+      "id": "wiki/templates/area.md",
+      "kind": "doc_file",
+      "exists": true
+    },
+    {
+      "id": "wiki/templates/decision.md",
+      "kind": "doc_file",
+      "exists": true
+    },
+    {
+      "id": "wiki/templates/handoff.md",
+      "kind": "doc_file",
+      "exists": true
+    },
+    {
+      "id": "wiki/templates/initiative.md",
+      "kind": "doc_file",
+      "exists": true
+    },
+    {
+      "id": "wiki/templates/issue.md",
+      "kind": "doc_file",
+      "exists": true
+    },
+    {
+      "id": "wiki/templates/source.md",
+      "kind": "doc_file",
+      "exists": true
+    }
+  ],
+  "edges": [
+    {
+      "source": "packages/dispatch-cli/dist/index.js",
+      "target": "packages/dispatch-cli/dist/run.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/dispatch-cli/dist/run.js",
+      "target": "packages/dispatch-core/src/index.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/dispatch-cli/src/index.ts",
+      "target": "packages/dispatch-cli/src/run.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/dispatch-cli/src/run.ts",
+      "target": "packages/dispatch-core/src/index.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/dispatch-core/dist/cleanup.d.ts",
+      "target": "packages/dispatch-core/dist/errors.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/dispatch-core/dist/cleanup.d.ts",
+      "target": "packages/dispatch-core/dist/types.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/dispatch-core/dist/cleanup.js",
+      "target": "packages/dispatch-core/dist/errors.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/dispatch-core/dist/cleanup.js",
+      "target": "packages/dispatch-core/dist/paths.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/dispatch-core/dist/index.d.ts",
+      "target": "packages/dispatch-core/dist/cleanup.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/dispatch-core/dist/index.d.ts",
+      "target": "packages/dispatch-core/dist/errors.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/dispatch-core/dist/index.d.ts",
+      "target": "packages/dispatch-core/dist/launch.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/dispatch-core/dist/index.d.ts",
+      "target": "packages/dispatch-core/dist/paths.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/dispatch-core/dist/index.d.ts",
+      "target": "packages/dispatch-core/dist/review.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/dispatch-core/dist/index.d.ts",
+      "target": "packages/dispatch-core/dist/schemas.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/dispatch-core/dist/index.d.ts",
+      "target": "packages/dispatch-core/dist/token.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/dispatch-core/dist/index.d.ts",
+      "target": "packages/dispatch-core/dist/types.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/dispatch-core/dist/index.d.ts",
+      "target": "packages/dispatch-core/dist/wrapper.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/dispatch-core/dist/index.js",
+      "target": "packages/dispatch-core/dist/cleanup.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/dispatch-core/dist/index.js",
+      "target": "packages/dispatch-core/dist/errors.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/dispatch-core/dist/index.js",
+      "target": "packages/dispatch-core/dist/launch.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/dispatch-core/dist/index.js",
+      "target": "packages/dispatch-core/dist/paths.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/dispatch-core/dist/index.js",
+      "target": "packages/dispatch-core/dist/review.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/dispatch-core/dist/index.js",
+      "target": "packages/dispatch-core/dist/schemas.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/dispatch-core/dist/index.js",
+      "target": "packages/dispatch-core/dist/token.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/dispatch-core/dist/index.js",
+      "target": "packages/dispatch-core/dist/wrapper.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/dispatch-core/dist/launch.d.ts",
+      "target": "packages/dispatch-core/dist/errors.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/dispatch-core/dist/launch.d.ts",
+      "target": "packages/dispatch-core/dist/types.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/dispatch-core/dist/launch.js",
+      "target": "packages/dispatch-core/dist/errors.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/dispatch-core/dist/launch.js",
+      "target": "packages/dispatch-core/dist/paths.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/dispatch-core/dist/launch.js",
+      "target": "packages/dispatch-core/dist/schemas.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/dispatch-core/dist/launch.js",
+      "target": "packages/dispatch-core/dist/token.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/dispatch-core/dist/review.d.ts",
+      "target": "packages/dispatch-core/dist/errors.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/dispatch-core/dist/review.d.ts",
+      "target": "packages/dispatch-core/dist/types.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/dispatch-core/dist/review.js",
+      "target": "packages/dispatch-core/dist/errors.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/dispatch-core/dist/review.js",
+      "target": "packages/dispatch-core/dist/paths.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/dispatch-core/dist/review.js",
+      "target": "packages/dispatch-core/dist/schemas.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/dispatch-core/dist/review.js",
+      "target": "packages/dispatch-core/dist/token.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/dispatch-core/dist/token.d.ts",
+      "target": "packages/dispatch-core/dist/errors.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/dispatch-core/dist/token.d.ts",
+      "target": "packages/dispatch-core/dist/paths.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/dispatch-core/dist/token.d.ts",
+      "target": "packages/dispatch-core/dist/types.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/dispatch-core/dist/token.js",
+      "target": "packages/dispatch-core/dist/errors.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/dispatch-core/dist/token.js",
+      "target": "packages/dispatch-core/dist/paths.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/dispatch-core/dist/wrapper.d.ts",
+      "target": "packages/dispatch-core/dist/errors.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/dispatch-core/dist/wrapper.d.ts",
+      "target": "packages/dispatch-core/dist/types.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/dispatch-core/dist/wrapper.js",
+      "target": "packages/dispatch-core/dist/cleanup.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/dispatch-core/dist/wrapper.js",
+      "target": "packages/dispatch-core/dist/launch.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/dispatch-core/dist/wrapper.js",
+      "target": "packages/dispatch-core/dist/review.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/dispatch-core/src/cleanup.ts",
+      "target": "packages/dispatch-core/src/errors.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/dispatch-core/src/cleanup.ts",
+      "target": "packages/dispatch-core/src/paths.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/dispatch-core/src/cleanup.ts",
+      "target": "packages/dispatch-core/src/types.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/dispatch-core/src/index.ts",
+      "target": "packages/dispatch-core/src/cleanup.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/dispatch-core/src/index.ts",
+      "target": "packages/dispatch-core/src/errors.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/dispatch-core/src/index.ts",
+      "target": "packages/dispatch-core/src/launch.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/dispatch-core/src/index.ts",
+      "target": "packages/dispatch-core/src/paths.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/dispatch-core/src/index.ts",
+      "target": "packages/dispatch-core/src/review.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/dispatch-core/src/index.ts",
+      "target": "packages/dispatch-core/src/schemas.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/dispatch-core/src/index.ts",
+      "target": "packages/dispatch-core/src/token.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/dispatch-core/src/index.ts",
+      "target": "packages/dispatch-core/src/types.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/dispatch-core/src/index.ts",
+      "target": "packages/dispatch-core/src/wrapper.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/dispatch-core/src/launch.ts",
+      "target": "packages/dispatch-core/src/errors.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/dispatch-core/src/launch.ts",
+      "target": "packages/dispatch-core/src/paths.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/dispatch-core/src/launch.ts",
+      "target": "packages/dispatch-core/src/schemas.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/dispatch-core/src/launch.ts",
+      "target": "packages/dispatch-core/src/token.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/dispatch-core/src/launch.ts",
+      "target": "packages/dispatch-core/src/types.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/dispatch-core/src/review.ts",
+      "target": "packages/dispatch-core/src/errors.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/dispatch-core/src/review.ts",
+      "target": "packages/dispatch-core/src/paths.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/dispatch-core/src/review.ts",
+      "target": "packages/dispatch-core/src/schemas.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/dispatch-core/src/review.ts",
+      "target": "packages/dispatch-core/src/token.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/dispatch-core/src/review.ts",
+      "target": "packages/dispatch-core/src/types.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/dispatch-core/src/token.ts",
+      "target": "packages/dispatch-core/src/errors.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/dispatch-core/src/token.ts",
+      "target": "packages/dispatch-core/src/paths.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/dispatch-core/src/token.ts",
+      "target": "packages/dispatch-core/src/types.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/dispatch-core/src/wrapper.ts",
+      "target": "packages/dispatch-core/src/cleanup.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/dispatch-core/src/wrapper.ts",
+      "target": "packages/dispatch-core/src/errors.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/dispatch-core/src/wrapper.ts",
+      "target": "packages/dispatch-core/src/launch.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/dispatch-core/src/wrapper.ts",
+      "target": "packages/dispatch-core/src/review.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/dispatch-core/src/wrapper.ts",
+      "target": "packages/dispatch-core/src/types.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/graph-explore/dist/code-extract.d.ts",
+      "target": "packages/graph-explore/dist/types.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/graph-explore/dist/extract.js",
+      "target": "packages/graph-explore/dist/graph.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/graph-explore/dist/graph.d.ts",
+      "target": "packages/graph-explore/dist/types.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/graph-explore/dist/graph.js",
+      "target": "packages/graph-explore/dist/code-extract.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/graph-explore/dist/graph.js",
+      "target": "packages/graph-explore/dist/scan.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/graph-explore/dist/graph.js",
+      "target": "packages/graph-explore/dist/wiki-overlay.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/graph-explore/dist/index.d.ts",
+      "target": "packages/graph-explore/dist/code-extract.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/graph-explore/dist/index.d.ts",
+      "target": "packages/graph-explore/dist/graph.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/graph-explore/dist/index.d.ts",
+      "target": "packages/graph-explore/dist/scan.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/graph-explore/dist/index.d.ts",
+      "target": "packages/graph-explore/dist/types.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/graph-explore/dist/index.d.ts",
+      "target": "packages/graph-explore/dist/wiki-overlay.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/graph-explore/dist/index.js",
+      "target": "packages/graph-explore/dist/code-extract.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/graph-explore/dist/index.js",
+      "target": "packages/graph-explore/dist/graph.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/graph-explore/dist/index.js",
+      "target": "packages/graph-explore/dist/scan.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/graph-explore/dist/index.js",
+      "target": "packages/graph-explore/dist/wiki-overlay.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/graph-explore/dist/scan.d.ts",
+      "target": "packages/graph-explore/dist/types.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/graph-explore/dist/wiki-overlay.d.ts",
+      "target": "packages/graph-explore/dist/types.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/graph-explore/src/code-extract.ts",
+      "target": "packages/graph-explore/src/types.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/graph-explore/src/extract.ts",
+      "target": "packages/graph-explore/src/graph.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/graph-explore/src/graph.ts",
+      "target": "packages/graph-explore/src/code-extract.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/graph-explore/src/graph.ts",
+      "target": "packages/graph-explore/src/scan.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/graph-explore/src/graph.ts",
+      "target": "packages/graph-explore/src/types.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/graph-explore/src/graph.ts",
+      "target": "packages/graph-explore/src/wiki-overlay.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/graph-explore/src/index.ts",
+      "target": "packages/graph-explore/src/code-extract.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/graph-explore/src/index.ts",
+      "target": "packages/graph-explore/src/graph.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/graph-explore/src/index.ts",
+      "target": "packages/graph-explore/src/scan.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/graph-explore/src/index.ts",
+      "target": "packages/graph-explore/src/types.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/graph-explore/src/index.ts",
+      "target": "packages/graph-explore/src/wiki-overlay.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/graph-explore/src/scan.ts",
+      "target": "packages/graph-explore/src/types.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/graph-explore/src/wiki-overlay.ts",
+      "target": "packages/graph-explore/src/types.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-cli/dist/commands.js",
+      "target": "packages/wiki-cli/dist/run.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-cli/dist/commands.js",
+      "target": "packages/wiki-core/src/index.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-cli/dist/index.js",
+      "target": "packages/wiki-cli/dist/run.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-cli/dist/run.js",
+      "target": "packages/wiki-cli/dist/commands.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-cli/dist/run.js",
+      "target": "packages/wiki-core/src/index.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-cli/src/commands.ts",
+      "target": "packages/wiki-cli/src/run.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-cli/src/commands.ts",
+      "target": "packages/wiki-core/src/index.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-cli/src/index.ts",
+      "target": "packages/wiki-cli/src/run.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-cli/src/run.ts",
+      "target": "packages/wiki-cli/src/commands.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-cli/src/run.ts",
+      "target": "packages/wiki-core/src/index.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/dist/allocate.d.ts",
+      "target": "packages/wiki-core/dist/errors.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/dist/allocate.d.ts",
+      "target": "packages/wiki-core/dist/types.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/dist/allocate.js",
+      "target": "packages/wiki-core/dist/contract.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/dist/allocate.js",
+      "target": "packages/wiki-core/dist/debug.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/dist/allocate.js",
+      "target": "packages/wiki-core/dist/errors.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/dist/bootstrap.d.ts",
+      "target": "packages/wiki-core/dist/errors.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/dist/bootstrap.d.ts",
+      "target": "packages/wiki-core/dist/types.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/dist/bootstrap.js",
+      "target": "packages/wiki-core/dist/contract.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/dist/bootstrap.js",
+      "target": "packages/wiki-core/dist/debug.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/dist/bootstrap.js",
+      "target": "packages/wiki-core/dist/errors.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/dist/contract.d.ts",
+      "target": "packages/wiki-core/dist/errors.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/dist/contract.d.ts",
+      "target": "packages/wiki-core/dist/types.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/dist/contract.js",
+      "target": "packages/wiki-core/dist/debug.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/dist/contract.js",
+      "target": "packages/wiki-core/dist/errors.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/dist/create.d.ts",
+      "target": "packages/wiki-core/dist/errors.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/dist/create.d.ts",
+      "target": "packages/wiki-core/dist/types.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/dist/create.js",
+      "target": "packages/wiki-core/dist/allocate.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/dist/create.js",
+      "target": "packages/wiki-core/dist/contract.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/dist/create.js",
+      "target": "packages/wiki-core/dist/debug.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/dist/create.js",
+      "target": "packages/wiki-core/dist/errors.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/dist/generate.d.ts",
+      "target": "packages/wiki-core/dist/errors.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/dist/generate.d.ts",
+      "target": "packages/wiki-core/dist/types.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/dist/generate.js",
+      "target": "packages/wiki-core/dist/contract.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/dist/generate.js",
+      "target": "packages/wiki-core/dist/debug.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/dist/generate.js",
+      "target": "packages/wiki-core/dist/errors.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/dist/index.d.ts",
+      "target": "packages/wiki-core/dist/allocate.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/dist/index.d.ts",
+      "target": "packages/wiki-core/dist/bootstrap.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/dist/index.d.ts",
+      "target": "packages/wiki-core/dist/contract.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/dist/index.d.ts",
+      "target": "packages/wiki-core/dist/create.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/dist/index.d.ts",
+      "target": "packages/wiki-core/dist/debug.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/dist/index.d.ts",
+      "target": "packages/wiki-core/dist/errors.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/dist/index.d.ts",
+      "target": "packages/wiki-core/dist/generate.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/dist/index.d.ts",
+      "target": "packages/wiki-core/dist/lint.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/dist/index.d.ts",
+      "target": "packages/wiki-core/dist/schemas.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/dist/index.d.ts",
+      "target": "packages/wiki-core/dist/search.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/dist/index.d.ts",
+      "target": "packages/wiki-core/dist/sync.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/dist/index.d.ts",
+      "target": "packages/wiki-core/dist/types.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/dist/index.js",
+      "target": "packages/wiki-core/dist/allocate.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/dist/index.js",
+      "target": "packages/wiki-core/dist/bootstrap.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/dist/index.js",
+      "target": "packages/wiki-core/dist/contract.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/dist/index.js",
+      "target": "packages/wiki-core/dist/create.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/dist/index.js",
+      "target": "packages/wiki-core/dist/debug.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/dist/index.js",
+      "target": "packages/wiki-core/dist/errors.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/dist/index.js",
+      "target": "packages/wiki-core/dist/generate.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/dist/index.js",
+      "target": "packages/wiki-core/dist/lint.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/dist/index.js",
+      "target": "packages/wiki-core/dist/schemas.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/dist/index.js",
+      "target": "packages/wiki-core/dist/search.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/dist/index.js",
+      "target": "packages/wiki-core/dist/sync.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/dist/lint.d.ts",
+      "target": "packages/wiki-core/dist/errors.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/dist/lint.d.ts",
+      "target": "packages/wiki-core/dist/types.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/dist/lint.js",
+      "target": "packages/wiki-core/dist/contract.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/dist/lint.js",
+      "target": "packages/wiki-core/dist/debug.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/dist/lint.js",
+      "target": "packages/wiki-core/dist/errors.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/dist/lint.js",
+      "target": "packages/wiki-core/dist/schemas.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/dist/search.d.ts",
+      "target": "packages/wiki-core/dist/errors.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/dist/search.d.ts",
+      "target": "packages/wiki-core/dist/types.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/dist/search.js",
+      "target": "packages/wiki-core/dist/contract.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/dist/search.js",
+      "target": "packages/wiki-core/dist/debug.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/dist/search.js",
+      "target": "packages/wiki-core/dist/errors.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/dist/sync.d.ts",
+      "target": "packages/wiki-core/dist/errors.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/dist/sync.d.ts",
+      "target": "packages/wiki-core/dist/types.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/dist/sync.js",
+      "target": "packages/wiki-core/dist/contract.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/dist/sync.js",
+      "target": "packages/wiki-core/dist/debug.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/dist/sync.js",
+      "target": "packages/wiki-core/dist/errors.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/dist/types.d.ts",
+      "target": "packages/wiki-core/dist/errors.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/src/allocate.ts",
+      "target": "packages/wiki-core/src/contract.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/src/allocate.ts",
+      "target": "packages/wiki-core/src/debug.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/src/allocate.ts",
+      "target": "packages/wiki-core/src/errors.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/src/allocate.ts",
+      "target": "packages/wiki-core/src/types.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/src/bootstrap.ts",
+      "target": "packages/wiki-core/src/contract.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/src/bootstrap.ts",
+      "target": "packages/wiki-core/src/debug.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/src/bootstrap.ts",
+      "target": "packages/wiki-core/src/errors.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/src/bootstrap.ts",
+      "target": "packages/wiki-core/src/types.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/src/contract.ts",
+      "target": "packages/wiki-core/src/debug.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/src/contract.ts",
+      "target": "packages/wiki-core/src/errors.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/src/contract.ts",
+      "target": "packages/wiki-core/src/types.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/src/create.ts",
+      "target": "packages/wiki-core/src/allocate.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/src/create.ts",
+      "target": "packages/wiki-core/src/contract.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/src/create.ts",
+      "target": "packages/wiki-core/src/debug.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/src/create.ts",
+      "target": "packages/wiki-core/src/errors.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/src/create.ts",
+      "target": "packages/wiki-core/src/types.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/src/generate.ts",
+      "target": "packages/wiki-core/src/contract.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/src/generate.ts",
+      "target": "packages/wiki-core/src/debug.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/src/generate.ts",
+      "target": "packages/wiki-core/src/errors.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/src/generate.ts",
+      "target": "packages/wiki-core/src/types.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/src/index.ts",
+      "target": "packages/wiki-core/src/allocate.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/src/index.ts",
+      "target": "packages/wiki-core/src/bootstrap.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/src/index.ts",
+      "target": "packages/wiki-core/src/contract.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/src/index.ts",
+      "target": "packages/wiki-core/src/create.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/src/index.ts",
+      "target": "packages/wiki-core/src/debug.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/src/index.ts",
+      "target": "packages/wiki-core/src/errors.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/src/index.ts",
+      "target": "packages/wiki-core/src/generate.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/src/index.ts",
+      "target": "packages/wiki-core/src/lint.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/src/index.ts",
+      "target": "packages/wiki-core/src/schemas.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/src/index.ts",
+      "target": "packages/wiki-core/src/search.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/src/index.ts",
+      "target": "packages/wiki-core/src/sync.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/src/index.ts",
+      "target": "packages/wiki-core/src/types.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/src/lint.ts",
+      "target": "packages/wiki-core/src/contract.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/src/lint.ts",
+      "target": "packages/wiki-core/src/debug.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/src/lint.ts",
+      "target": "packages/wiki-core/src/errors.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/src/lint.ts",
+      "target": "packages/wiki-core/src/schemas.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/src/lint.ts",
+      "target": "packages/wiki-core/src/types.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/src/search.ts",
+      "target": "packages/wiki-core/src/contract.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/src/search.ts",
+      "target": "packages/wiki-core/src/debug.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/src/search.ts",
+      "target": "packages/wiki-core/src/errors.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/src/search.ts",
+      "target": "packages/wiki-core/src/types.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/src/sync.ts",
+      "target": "packages/wiki-core/src/contract.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/src/sync.ts",
+      "target": "packages/wiki-core/src/debug.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/src/sync.ts",
+      "target": "packages/wiki-core/src/errors.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/src/sync.ts",
+      "target": "packages/wiki-core/src/types.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-core/src/types.ts",
+      "target": "packages/wiki-core/src/errors.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-mcp/dist/index.d.ts",
+      "target": "packages/wiki-mcp/dist/tools.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-mcp/dist/index.js",
+      "target": "packages/wiki-mcp/dist/tools.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-mcp/dist/server.js",
+      "target": "packages/wiki-mcp/dist/tools.js",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-mcp/dist/tools.js",
+      "target": "packages/wiki-core/src/index.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-mcp/src/index.ts",
+      "target": "packages/wiki-mcp/src/tools.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-mcp/src/server.ts",
+      "target": "packages/wiki-mcp/src/tools.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "packages/wiki-mcp/src/tools.ts",
+      "target": "packages/wiki-core/src/index.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "tests/fixtures/sample-repo/src/app.js",
+      "target": "tests/fixtures/sample-repo/src/index.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "tests/fixtures/sample-repo/src/index.ts",
+      "target": "tests/fixtures/sample-repo/src/utils/helper.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "tests/fixtures/sample-repo/src/index.ts",
+      "target": "tests/fixtures/sample-repo/src/utils/math.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "tests/fixtures/sample-repo/src/reexport.ts",
+      "target": "tests/fixtures/sample-repo/src/utils/helper.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "tests/fixtures/sample-repo/src/reexport.ts",
+      "target": "tests/fixtures/sample-repo/src/utils/math.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "tests/graph-explore.test.ts",
+      "target": "packages/graph-explore/src/index.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "tests/helpers/tmp-repo.ts",
+      "target": "packages/wiki-core/src/index.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "tests/wiki-core.test.ts",
+      "target": "packages/wiki-core/src/index.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "tests/wiki-core.test.ts",
+      "target": "tests/helpers/tmp-repo.ts",
+      "relation": "imports"
+    },
+    {
+      "source": "wiki/initiatives/IN-0001.md",
+      "target": "../issues/WK-0002.md",
+      "relation": "markdown_link"
+    },
+    {
+      "source": "wiki/initiatives/IN-0001.md",
+      "target": "../issues/WK-0003.md",
+      "relation": "markdown_link"
+    },
+    {
+      "source": "wiki/initiatives/IN-0001.md",
+      "target": "../issues/WK-0004.md",
+      "relation": "markdown_link"
+    },
+    {
+      "source": "wiki/initiatives/IN-0001.md",
+      "target": "../issues/WK-0005.md",
+      "relation": "markdown_link"
+    },
+    {
+      "source": "wiki/initiatives/IN-0001.md",
+      "target": "../issues/WK-0006.md",
+      "relation": "markdown_link"
+    },
+    {
+      "source": "wiki/initiatives/IN-0001.md",
+      "target": "../issues/WK-0007.md",
+      "relation": "markdown_link"
+    },
+    {
+      "source": "wiki/issues/WK-0002.md",
+      "target": "../initiatives/IN-0001.md",
+      "relation": "markdown_link"
+    },
+    {
+      "source": "wiki/issues/WK-0002.md",
+      "target": "IN-0001",
+      "relation": "initiative"
+    },
+    {
+      "source": "wiki/issues/WK-0003.md",
+      "target": "../initiatives/IN-0001.md",
+      "relation": "markdown_link"
+    },
+    {
+      "source": "wiki/issues/WK-0003.md",
+      "target": "IN-0001",
+      "relation": "initiative"
+    },
+    {
+      "source": "wiki/issues/WK-0004.md",
+      "target": "../initiatives/IN-0001.md",
+      "relation": "markdown_link"
+    },
+    {
+      "source": "wiki/issues/WK-0004.md",
+      "target": "IN-0001",
+      "relation": "initiative"
+    },
+    {
+      "source": "wiki/issues/WK-0005.md",
+      "target": "../initiatives/IN-0001.md",
+      "relation": "markdown_link"
+    },
+    {
+      "source": "wiki/issues/WK-0005.md",
+      "target": "IN-0001",
+      "relation": "initiative"
+    },
+    {
+      "source": "wiki/issues/WK-0006.md",
+      "target": "../initiatives/IN-0001.md",
+      "relation": "markdown_link"
+    },
+    {
+      "source": "wiki/issues/WK-0006.md",
+      "target": "IN-0001",
+      "relation": "initiative"
+    },
+    {
+      "source": "wiki/issues/WK-0007.md",
+      "target": "../initiatives/IN-0001.md",
+      "relation": "markdown_link"
+    },
+    {
+      "source": "wiki/issues/WK-0007.md",
+      "target": "IN-0001",
+      "relation": "initiative"
+    }
+  ],
+  "orphans": [
+    ".claude/skills/handoff/SKILL.md",
+    ".claude/skills/plan-me-this/SKILL.md",
+    "AGENTS.md",
+    "CLAUDE.md",
+    "README.md",
+    "contract/bootstrap/conventions.md",
+    "contract/bootstrap/index.md",
+    "contract/bootstrap/schema.md",
+    "contract/conventions.md",
+    "contract/lint.md",
+    "contract/manifest.json",
+    "contract/query.md",
+    "contract/retrieval.md",
+    "contract/schema.md",
+    "contract/taxonomy.md",
+    "contract/templates/area.md",
+    "contract/templates/decision.md",
+    "contract/templates/handoff.md",
+    "contract/templates/initiative.md",
+    "contract/templates/issue.md",
+    "contract/templates/source.md",
+    "docs/adoption.md",
+    "docs/dispatch-protocol.md",
+    "package-lock.json",
+    "package.json",
+    "packages/dispatch-cli/dist/index.d.ts",
+    "packages/dispatch-cli/dist/run.d.ts",
+    "packages/dispatch-cli/package.json",
+    "packages/dispatch-cli/tsconfig.json",
+    "packages/dispatch-core/dist/errors.d.ts",
+    "packages/dispatch-core/dist/paths.d.ts",
+    "packages/dispatch-core/dist/schemas.d.ts",
+    "packages/dispatch-core/dist/types.d.ts",
+    "packages/dispatch-core/package.json",
+    "packages/dispatch-core/tsconfig.json",
+    "packages/graph-explore/dist/extract.d.ts",
+    "packages/graph-explore/dist/types.d.ts",
+    "packages/graph-explore/package.json",
+    "packages/graph-explore/tsconfig.json",
+    "packages/wiki-cli/dist/commands.d.ts",
+    "packages/wiki-cli/dist/index.d.ts",
+    "packages/wiki-cli/dist/run.d.ts",
+    "packages/wiki-cli/package.json",
+    "packages/wiki-cli/tsconfig.json",
+    "packages/wiki-core/dist/debug.d.ts",
+    "packages/wiki-core/dist/errors.d.ts",
+    "packages/wiki-core/dist/schemas.d.ts",
+    "packages/wiki-core/package.json",
+    "packages/wiki-core/tsconfig.json",
+    "packages/wiki-mcp/dist/server.d.ts",
+    "packages/wiki-mcp/dist/tools.d.ts",
+    "packages/wiki-mcp/package.json",
+    "packages/wiki-mcp/tsconfig.json",
+    "tests/dispatch.test.ts",
+    "tests/fixtures/fake-agent.ts",
+    "tests/fixtures/sample-repo/.agent-runs/test.json",
+    "tests/fixtures/sample-repo/README.md",
+    "tests/fixtures/sample-repo/docs/api.md",
+    "tests/fixtures/sample-repo/docs/guide.md",
+    "tests/fixtures/sample-repo/lib/__init__.py",
+    "tests/fixtures/sample-repo/lib/processor.py",
+    "tests/fixtures/sample-repo/node_modules/fake-pkg/index.js",
+    "tests/fixtures/sample-repo/scripts/analyze.py",
+    "tests/fixtures/sample-repo/src/orphan.ts",
+    "tests/fixtures/sample-repo/wiki/areas/core.md",
+    "tests/fixtures/sample-repo/wiki/catalog.md",
+    "tests/fixtures/sample-repo/wiki/handoffs/HO-0001.md",
+    "tests/fixtures/sample-repo/wiki/initiatives/IN-0001.md",
+    "tests/fixtures/sample-repo/wiki/issues/WK-0001.md",
+    "tests/fixtures/sample-repo/wiki/issues/WK-0002.md",
+    "tests/interface-smoke.test.ts",
+    "tsconfig.base.json",
+    "tsconfig.json",
+    "tsconfig.tests.json",
+    "vitest.config.ts",
+    "wiki/conventions.md",
+    "wiki/index.md",
+    "wiki/issues/WK-0001.md",
+    "wiki/schema.md",
+    "wiki/templates/area.md",
+    "wiki/templates/decision.md",
+    "wiki/templates/handoff.md",
+    "wiki/templates/initiative.md",
+    "wiki/templates/issue.md",
+    "wiki/templates/source.md"
+  ]
+}

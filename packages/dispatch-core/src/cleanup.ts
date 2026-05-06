@@ -174,23 +174,31 @@ export async function cleanup(opts: CleanupOpts = {}): Promise<DispatchResult<Cl
       const reviewIds = await listReviewDirs(opts.dir);
       const reviewIdSet = new Set(reviewIds);
 
-      // A run is orphan if we can't find a review that references its handoff ID
-      // We check by reading the run's launch-meta.json
+      // A run is orphan if we can't find a review that references its review ID.
       for (const { handoffId, runId } of runs) {
         const runDir = join(opts.dir, '.agent-runs', 'runs', handoffId, runId);
-        const metaPath = join(runDir, 'launch-meta.json');
+        const metaPath = join(runDir, 'metadata', 'review.json');
         let isOrphan = false;
 
         try {
           const raw = await readFile(metaPath, 'utf-8');
-          const meta = JSON.parse(raw) as { reviewId?: string };
-          if (meta.reviewId && !reviewIdSet.has(meta.reviewId)) {
+          const meta = JSON.parse(raw) as { review_id?: string; reviewId?: string };
+          const reviewId = meta.review_id ?? meta.reviewId;
+          if (reviewId && !reviewIdSet.has(reviewId)) {
             isOrphan = true;
           }
         } catch {
-          // If no meta, and old enough, consider orphan
-          const old = await isOlderThan(runDir, maxAgeMs);
-          if (old) isOrphan = true;
+          const legacyPath = join(runDir, 'launch-meta.json');
+          try {
+            const raw = await readFile(legacyPath, 'utf-8');
+            const meta = JSON.parse(raw) as { reviewId?: string };
+            if (meta.reviewId && !reviewIdSet.has(meta.reviewId)) {
+              isOrphan = true;
+            }
+          } catch {
+            const old = await isOlderThan(runDir, maxAgeMs);
+            if (old) isOrphan = true;
+          }
         }
 
         if (isOrphan) {

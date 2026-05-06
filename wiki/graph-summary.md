@@ -1,30 +1,35 @@
 ---
 generated: true
-generated_at: "2026-05-05T20:32:57.606Z"
+generated_at: "2026-05-05T23:46:31.597Z"
 ---
 
 # Graph Summary
 
 ## Overview
 
-- **Total nodes:** 188
-- **Total edges:** 244
-- **Orphan nodes:** 82
+- **Total nodes:** 206
+- **Total edges:** 262
+- **Orphan nodes:** 85
 
 ## Nodes by Kind
 
 - **code_file:** 150
-- **doc_file:** 37
-- **wiki_record:** 1
+- **doc_file:** 47
+- **wiki_record:** 9
 
 ## Edges by Relation
 
 - **imports:** 244
+- **initiative:** 6
+- **markdown_link:** 12
 
 ## Orphan Nodes
 
+- `.claude/skills/handoff/SKILL.md`
+- `.claude/skills/plan-me-this/SKILL.md`
 - `AGENTS.md`
 - `CLAUDE.md`
+- `README.md`
 - `contract/bootstrap/conventions.md`
 - `contract/bootstrap/index.md`
 - `contract/bootstrap/schema.md`
@@ -108,7 +113,14 @@ generated_at: "2026-05-05T20:32:57.606Z"
 
 ## Missing Referenced Nodes
 
-No missing referenced nodes.
+- `../initiatives/IN-0001.md` (doc_file)
+- `../issues/WK-0002.md` (doc_file)
+- `../issues/WK-0003.md` (doc_file)
+- `../issues/WK-0004.md` (doc_file)
+- `../issues/WK-0005.md` (doc_file)
+- `../issues/WK-0006.md` (doc_file)
+- `../issues/WK-0007.md` (doc_file)
+- `IN-0001` (wiki_record)
 
 ## Highest In-Degree Nodes
 

@@ -4,6 +4,5 @@ node_modules/
 dist/
 dist-tests/
 .agent-runs/
-wiki/.search-index.json
-wiki/.graph.json
 *.tsbuildinfo
+docs/superpowers/
