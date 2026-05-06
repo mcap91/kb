@@ -1,7 +1,7 @@
 ---
 _generated: true
 title: "Inbox"
-updated: "2026-05-06T20:43:40.280Z"
+updated: "2026-05-06T22:05:41.068Z"
 ---
 
 # Inbox
@@ -14,9 +14,7 @@ New and untriaged items.
 | [WK-0002](wiki/issues/WK-0002.md) | Add static HTML graph viewer for .graph.json | inbox | medium | WK |
 | [WK-0003](wiki/issues/WK-0003.md) | Harden remote-session MCP startup and client configuration guidance | inbox | medium | WK |
 | [WK-0004](wiki/issues/WK-0004.md) | Define private sister-repo deployment and update workflow | inbox | medium | WK |
-| [WK-0005](wiki/issues/WK-0005.md) | Improve consuming-repo AGENTS.md and CLAUDE.md integration | inbox | medium | WK |
 | [WK-0006](wiki/issues/WK-0006.md) | Add adoption health checks for consuming repos | inbox | medium | WK |
-| [WK-0007](wiki/issues/WK-0007.md) | Pilot kb in real consuming repos and capture adoption fixes | inbox | medium | WK |
 | [WK-0008](wiki/issues/WK-0008.md) | Define the PLN record contract, taxonomy, and lifecycle | inbox | high | WK |
 | [WK-0009](wiki/issues/WK-0009.md) | Define the PLN bundle layout and adapter contract | inbox | high | WK |
 | [WK-0010](wiki/issues/WK-0010.md) | Implement PLN creation and bundle normalization workflow | inbox | high | WK |
