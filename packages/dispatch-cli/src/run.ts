@@ -1,50 +1,23 @@
-import { resolve, join } from 'node:path';
-import { readFile, readdir, stat, access } from 'node:fs/promises';
-import { writeFile } from 'node:fs/promises';
-import { fileURLToPath } from 'node:url';
+import { resolve } from 'node:path';
 
 import {
   VERSION,
-  ensureConfigDirs,
-  generateKey,
-  getConfigDir,
-  getTokenDir,
-  review,
-  launch,
   cleanup,
+  createHandoff,
+  initConfig,
+  launch,
+  review,
+  reviewAndLaunch,
+  status,
 } from '@kb/dispatch-core';
 
 import type {
-  AgentRegistry,
   CleanupReport,
+  CreateHandoffResult,
   ReviewResult,
   RunResult,
+  StatusResult,
 } from '@kb/dispatch-core';
-
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
-const REGISTRY_FILE = 'launchers.v1.json';
-const KEY_FILE = 'token.key';
-const KB_ROOT = fileURLToPath(new URL('../../../', import.meta.url));
-
-function getTsxBinaryPath(): string {
-  return join(
-    KB_ROOT,
-    'node_modules',
-    '.bin',
-    process.platform === 'win32' ? 'tsx.cmd' : 'tsx',
-  );
-}
-
-function getFakeAgentFixturePath(): string {
-  return join(KB_ROOT, 'tests', 'fixtures', 'fake-agent.ts');
-}
-
-// ---------------------------------------------------------------------------
-// Argument parsing helpers
-// ---------------------------------------------------------------------------
 
 function getFlag(args: string[], flag: string): boolean {
   return args.includes(flag);
@@ -56,9 +29,13 @@ function getFlagValue(args: string[], flag: string): string | undefined {
   return args[idx + 1];
 }
 
-// ---------------------------------------------------------------------------
-// Help text
-// ---------------------------------------------------------------------------
+function parseCsv(value?: string): string[] {
+  if (!value) return [];
+  return value
+    .split(',')
+    .map((part) => part.trim())
+    .filter(Boolean);
+}
 
 const HELP_TEXT = `
 kb dispatch — reviewed multi-agent dispatch protocol
@@ -68,8 +45,10 @@ Usage:
 
 Commands:
   init-config                Initialize operator dispatch configuration
+  create-handoff             Create a repo-local HO handoff
   review                     Review a handoff document
   launch                     Launch a reviewed handoff
+  review-and-launch          Review and immediately launch a handoff
   cleanup                    Clean up stale dispatch state
   status                     Show current dispatch state
 
@@ -79,7 +58,22 @@ Global Options:
   --verbose                  Enable verbose output
 
 Command Options:
-  init-config                (no additional options)
+  init-config
+    --force                  Overwrite the existing launcher registry
+
+  create-handoff
+    --dir <path>             Repository root directory (required)
+    --title <text>           Handoff title (required)
+    --subject <text>         Handoff subject (required)
+    --allowed-agents <csv>   Allowed agents, comma-separated (required)
+    --mode <mode>            implement | code_review | redteam (required)
+    --work-item <WK-id>      Optional linked work item
+    --write-scope <csv>      Optional write scope paths
+    --read-first <csv>       Optional Read First paths
+    --objective <text>       Optional objective section
+    --constraints <csv>      Optional constraint bullets
+    --expected-output <text> Optional expected output section
+    --context <text>         Optional context section
 
   review
     --dir <path>             Repository root directory (required)
@@ -88,8 +82,14 @@ Command Options:
     --reviewed-and-accept-risks  Explicit operator acknowledgment (required)
 
   launch
-    --review-id <RV-uuid>   Review ID from review step (required)
+    --review-id <RV-uuid>    Review ID from review step (required)
     --dir <path>             Repository root directory (required)
+
+  review-and-launch
+    --dir <path>             Repository root directory (required)
+    --handoff <rel-path>     Relative path to handoff file (required)
+    --agent <name>           Agent name from registry (required)
+    --reviewed-and-accept-risks  Explicit operator acknowledgment (required)
 
   cleanup
     --dir <path>             Repository root directory (defaults to cwd)
@@ -98,110 +98,72 @@ Command Options:
     --dir <path>             Repository root directory (defaults to cwd)
 `.trim();
 
-// ---------------------------------------------------------------------------
-// Command: init-config
-// ---------------------------------------------------------------------------
-
-async function cmdInitConfig(args: string[], verbose: boolean): Promise<number> {
-  if (verbose) console.log('[dispatch] Initializing configuration...');
-
-  // 1. Create config directory structure
-  const configDir = await ensureConfigDirs();
-  console.log(`Config directory: ${configDir}`);
-
-  // 2. Generate HMAC key if not present
-  const keyPath = join(configDir, KEY_FILE);
-  let keyExists = false;
-  try {
-    await access(keyPath);
-    keyExists = true;
-  } catch {
-    // does not exist
+async function cmdInitConfig(args: string[]): Promise<number> {
+  const force = getFlag(args, '--force');
+  const result = await initConfig(force);
+  if (!result.ok) {
+    console.error(`Init failed: [${result.error}] ${result.message}`);
+    return 1;
   }
 
-  if (keyExists) {
-    console.log(`HMAC key already exists: ${keyPath}`);
-  } else {
-    const generatedPath = await generateKey();
-    console.log(`HMAC key generated: ${generatedPath}`);
-  }
-
-  // 3. Write default registry if not present
-  const registryPath = join(configDir, REGISTRY_FILE);
-  let registryExists = false;
-  try {
-    await access(registryPath);
-    registryExists = true;
-  } catch {
-    // does not exist
-  }
-
-  if (registryExists) {
-    console.log(`Registry already exists: ${registryPath}`);
-    console.log('  (not overwriting — delete and re-run to reset)');
-  } else {
-    const defaultRegistry: AgentRegistry = {
-      version: 1,
-      agents: {
-        claude: {
-          command: 'claude',
-          args: ['-p', 'You are operating via the kb dispatch protocol. Read the handoff at $AGENT_BLACKBOARD_HANDOFF_PATH and write your response to $AGENT_BLACKBOARD_RESPONSE_PATH.'],
-          description: 'Claude Code CLI (placeholder — configure with your Claude CLI path)',
-        },
-        codex: {
-          command: 'codex',
-          args: ['--approval-mode', 'full-auto'],
-          description: 'Codex CLI (placeholder — configure with your Codex CLI path)',
-        },
-        'fake-agent': {
-          command: getTsxBinaryPath(),
-          args: [getFakeAgentFixturePath()],
-          description: 'Deterministic test agent for dogfooding and sister-repo validation',
-        },
-      },
-    };
-
-    await writeFile(registryPath, JSON.stringify(defaultRegistry, null, 2));
-    console.log(`Default registry written: ${registryPath}`);
-    console.log('  Agents: claude, codex, fake-agent');
-  }
-
-  console.log('\nInit complete. You can now review and launch handoffs.');
+  console.log(`Config directory: ${result.data.configDir}`);
+  console.log(`HMAC key: ${result.data.keyPath}`);
+  console.log(`Registry: ${result.data.registryPath}`);
+  console.log(`Key created: ${result.data.keyCreated ? 'yes' : 'no'}`);
+  console.log(`Registry created: ${result.data.registryCreated ? 'yes' : 'no'}`);
   return 0;
 }
 
-// ---------------------------------------------------------------------------
-// Command: review
-// ---------------------------------------------------------------------------
+async function cmdCreateHandoff(args: string[]): Promise<number> {
+  const dir = getFlagValue(args, '--dir');
+  const title = getFlagValue(args, '--title');
+  const subject = getFlagValue(args, '--subject');
+  const allowedAgents = parseCsv(getFlagValue(args, '--allowed-agents'));
+  const mode = getFlagValue(args, '--mode');
 
-async function cmdReview(args: string[], verbose: boolean): Promise<number> {
+  if (!dir || !title || !subject || !mode || allowedAgents.length === 0) {
+    console.error('Error: --dir, --title, --subject, --allowed-agents, and --mode are required');
+    return 1;
+  }
+
+  const result = await createHandoff({
+    dir,
+    title,
+    subject,
+    allowed_agents: allowedAgents,
+    mode: mode as 'implement' | 'code_review' | 'redteam',
+    work_item: getFlagValue(args, '--work-item'),
+    area: getFlagValue(args, '--area'),
+    initiative: getFlagValue(args, '--initiative'),
+    write_scope: parseCsv(getFlagValue(args, '--write-scope')),
+    read_first: parseCsv(getFlagValue(args, '--read-first')),
+    objective: getFlagValue(args, '--objective'),
+    constraints: parseCsv(getFlagValue(args, '--constraints')),
+    expected_output: getFlagValue(args, '--expected-output'),
+    context: getFlagValue(args, '--context'),
+  });
+
+  if (!result.ok) {
+    console.error(`Create handoff failed: [${result.error}] ${result.message}`);
+    return 1;
+  }
+
+  const data: CreateHandoffResult = result.data;
+  console.log(`Created ${data.handoffId}`);
+  console.log(`  Path: ${data.handoffRelativePath}`);
+  return 0;
+}
+
+async function cmdReview(args: string[]): Promise<number> {
   const dir = getFlagValue(args, '--dir');
   const handoff = getFlagValue(args, '--handoff');
   const agent = getFlagValue(args, '--agent');
   const accepted = getFlag(args, '--reviewed-and-accept-risks');
+  const verbose = getFlag(args, '--verbose');
 
-  if (!dir) {
-    console.error('Error: --dir <path> is required');
+  if (!dir || !handoff || !agent || !accepted) {
+    console.error('Error: --dir, --handoff, --agent, and --reviewed-and-accept-risks are required');
     return 1;
-  }
-  if (!handoff) {
-    console.error('Error: --handoff <relative-path> is required');
-    return 1;
-  }
-  if (!agent) {
-    console.error('Error: --agent <agent-name> is required');
-    return 1;
-  }
-  if (!accepted) {
-    console.error('Error: --reviewed-and-accept-risks flag is required');
-    console.error('  This flag confirms you have read and reviewed the handoff document.');
-    return 1;
-  }
-
-  if (verbose) {
-    console.log(`[dispatch] Reviewing handoff: ${handoff}`);
-    console.log(`[dispatch] Agent: ${agent}`);
-    console.log(`[dispatch] Dir: ${resolve(dir)}`);
   }
 
   const result = await review({
@@ -214,9 +176,6 @@ async function cmdReview(args: string[], verbose: boolean): Promise<number> {
 
   if (!result.ok) {
     console.error(`Review failed: [${result.error}] ${result.message}`);
-    if (verbose && result.detail) {
-      console.error('Detail:', result.detail);
-    }
     return 1;
   }
 
@@ -232,39 +191,19 @@ async function cmdReview(args: string[], verbose: boolean): Promise<number> {
   return 0;
 }
 
-// ---------------------------------------------------------------------------
-// Command: launch
-// ---------------------------------------------------------------------------
-
-async function cmdLaunch(args: string[], verbose: boolean): Promise<number> {
+async function cmdLaunch(args: string[]): Promise<number> {
   const reviewId = getFlagValue(args, '--review-id');
   const dir = getFlagValue(args, '--dir');
+  const verbose = getFlag(args, '--verbose');
 
-  if (!reviewId) {
-    console.error('Error: --review-id <RV-uuid> is required');
-    return 1;
-  }
-  if (!dir) {
-    console.error('Error: --dir <path> is required');
+  if (!reviewId || !dir) {
+    console.error('Error: --review-id and --dir are required');
     return 1;
   }
 
-  if (verbose) {
-    console.log(`[dispatch] Launching review: ${reviewId}`);
-    console.log(`[dispatch] Dir: ${resolve(dir)}`);
-  }
-
-  const result = await launch({
-    reviewId,
-    dir,
-    verbose,
-  });
-
+  const result = await launch({ reviewId, dir, verbose });
   if (!result.ok) {
     console.error(`Launch failed: [${result.error}] ${result.message}`);
-    if (verbose && result.detail) {
-      console.error('Detail:', result.detail);
-    }
     return 1;
   }
 
@@ -279,34 +218,52 @@ async function cmdLaunch(args: string[], verbose: boolean): Promise<number> {
   console.log(`  Run dir:   ${data.runDir}`);
   console.log(`  Started:   ${data.startedAt}`);
   console.log(`  Completed: ${data.completedAt}`);
-  if (data.response) {
-    const summary = data.response.length > 200
-      ? data.response.slice(0, 200) + '...'
-      : data.response;
-    console.log(`  Response:\n${summary}`);
-  }
   return 0;
 }
 
-// ---------------------------------------------------------------------------
-// Command: cleanup
-// ---------------------------------------------------------------------------
+async function cmdReviewAndLaunch(args: string[]): Promise<number> {
+  const dir = getFlagValue(args, '--dir');
+  const handoff = getFlagValue(args, '--handoff');
+  const agent = getFlagValue(args, '--agent');
+  const accepted = getFlag(args, '--reviewed-and-accept-risks');
+  const verbose = getFlag(args, '--verbose');
 
-async function cmdCleanup(args: string[], verbose: boolean): Promise<number> {
-  const dir = getFlagValue(args, '--dir') ?? process.cwd();
-
-  if (verbose) {
-    console.log(`[dispatch] Running cleanup...`);
-    console.log(`[dispatch] Dir: ${resolve(dir)}`);
+  if (!dir || !handoff || !agent || !accepted) {
+    console.error('Error: --dir, --handoff, --agent, and --reviewed-and-accept-risks are required');
+    return 1;
   }
 
-  const result = await cleanup({ dir, verbose });
+  const result = await reviewAndLaunch({
+    dir,
+    handoff,
+    agent,
+    reviewedAndAcceptRisks: true,
+    verbose,
+  });
 
   if (!result.ok) {
+    console.error(`Review-and-launch failed: [${result.error}] ${result.message}`);
+    return 1;
+  }
+
+  const data: RunResult = result.data;
+  console.log('Review and launch succeeded.');
+  console.log(`  Run ID:    ${data.runId}`);
+  console.log(`  Review ID: ${data.reviewId}`);
+  console.log(`  Handoff:   ${data.handoffId}`);
+  console.log(`  Agent:     ${data.agent}`);
+  console.log(`  Mode:      ${data.mode}`);
+  console.log(`  Run dir:   ${data.runDir}`);
+  return 0;
+}
+
+async function cmdCleanup(args: string[]): Promise<number> {
+  const dir = getFlagValue(args, '--dir') ?? process.cwd();
+  const verbose = getFlag(args, '--verbose');
+
+  const result = await cleanup({ dir, verbose });
+  if (!result.ok) {
     console.error(`Cleanup failed: [${result.error}] ${result.message}`);
-    if (verbose && result.detail) {
-      console.error('Detail:', result.detail);
-    }
     return 1;
   }
 
@@ -317,206 +274,58 @@ async function cmdCleanup(args: string[], verbose: boolean): Promise<number> {
   console.log(`  Stale tokens recovered:   ${report.staleTokens.length}`);
   console.log(`  Expired tokens removed:   ${report.expiredTokens.length}`);
   console.log(`  Total removed:            ${report.totalRemoved}`);
-
-  if (verbose && report.totalRemoved > 0) {
-    if (report.orphanReviews.length > 0) {
-      console.log('\n  Orphan reviews:');
-      for (const id of report.orphanReviews) {
-        console.log(`    - ${id}`);
-      }
-    }
-    if (report.orphanRuns.length > 0) {
-      console.log('\n  Orphan runs:');
-      for (const id of report.orphanRuns) {
-        console.log(`    - ${id}`);
-      }
-    }
-    if (report.staleTokens.length > 0) {
-      console.log('\n  Stale tokens:');
-      for (const id of report.staleTokens) {
-        console.log(`    - ${id}`);
-      }
-    }
-    if (report.expiredTokens.length > 0) {
-      console.log('\n  Expired tokens:');
-      for (const id of report.expiredTokens) {
-        console.log(`    - ${id}`);
-      }
-    }
-  }
-
   return 0;
 }
 
-// ---------------------------------------------------------------------------
-// Command: status
-// ---------------------------------------------------------------------------
-
-interface TokenInfo {
-  reviewId: string;
-  handoffId: string;
-  agent: string;
-  mode: string;
-  expiry: string;
-}
-
-async function listTokensInState(state: string): Promise<TokenInfo[]> {
-  const dir = getTokenDir(state as 'pending' | 'launching' | 'consumed' | 'rejected');
-  let entries: string[];
-  try {
-    entries = await readdir(dir);
-  } catch {
-    return [];
-  }
-
-  const tokens: TokenInfo[] = [];
-  for (const entry of entries) {
-    if (!entry.endsWith('.json')) continue;
-    try {
-      const raw = await readFile(join(dir, entry), 'utf-8');
-      const token = JSON.parse(raw);
-      tokens.push({
-        reviewId: token.payload?.reviewId ?? entry.replace(/\.json$/, ''),
-        handoffId: token.payload?.handoffId ?? 'unknown',
-        agent: token.payload?.agent ?? 'unknown',
-        mode: token.payload?.mode ?? 'unknown',
-        expiry: token.payload?.expiry ?? 'unknown',
-      });
-    } catch {
-      // Skip malformed token files
-    }
-  }
-
-  return tokens;
-}
-
-async function cmdStatus(args: string[], verbose: boolean): Promise<number> {
+async function cmdStatus(args: string[]): Promise<number> {
   const dir = getFlagValue(args, '--dir') ?? process.cwd();
-  const resolvedDir = resolve(dir);
-
-  console.log(`Dispatch status for: ${resolvedDir}\n`);
-
-  // 1. List pending reviews
-  const pendingTokens = await listTokensInState('pending');
-  console.log(`Pending reviews: ${pendingTokens.length}`);
-  if (pendingTokens.length > 0) {
-    for (const t of pendingTokens) {
-      console.log(`  - ${t.reviewId} (${t.handoffId}, agent: ${t.agent}, mode: ${t.mode})`);
-      if (verbose) console.log(`    expires: ${t.expiry}`);
-    }
+  const result = await status(dir);
+  if (!result.ok) {
+    console.error(`Status failed: [${result.error}] ${result.message}`);
+    return 1;
   }
 
-  // 2. List launching (active)
-  const launchingTokens = await listTokensInState('launching');
-  console.log(`Active launches: ${launchingTokens.length}`);
-  if (launchingTokens.length > 0) {
-    for (const t of launchingTokens) {
-      console.log(`  - ${t.reviewId} (${t.handoffId}, agent: ${t.agent})`);
-    }
-  }
-
-  // 3. List consumed (recent completed)
-  const consumedTokens = await listTokensInState('consumed');
-  console.log(`Consumed tokens: ${consumedTokens.length}`);
-  if (verbose && consumedTokens.length > 0) {
-    for (const t of consumedTokens) {
-      console.log(`  - ${t.reviewId} (${t.handoffId}, agent: ${t.agent})`);
-    }
-  }
-
-  // 4. List rejected
-  const rejectedTokens = await listTokensInState('rejected');
-  console.log(`Rejected tokens: ${rejectedTokens.length}`);
-  if (verbose && rejectedTokens.length > 0) {
-    for (const t of rejectedTokens) {
-      console.log(`  - ${t.reviewId} (${t.handoffId}, agent: ${t.agent})`);
-    }
-  }
-
-  // 5. List recent runs in the repo
-  const runsDir = join(resolvedDir, '.agent-runs', 'runs');
-  let runCount = 0;
-  try {
-    const handoffDirs = await readdir(runsDir);
-    for (const handoffId of handoffDirs) {
-      const handoffPath = join(runsDir, handoffId);
-      try {
-        const runs = await readdir(handoffPath);
-        runCount += runs.length;
-        if (verbose) {
-          for (const runId of runs) {
-            console.log(`  Run: ${handoffId}/${runId}`);
-          }
-        }
-      } catch {
-        // skip
-      }
-    }
-  } catch {
-    // .agent-runs/runs/ may not exist
-  }
-
-  console.log(`\nRuns in repo: ${runCount}`);
-
-  // 6. List pending review bundles
-  const reviewsDir = join(resolvedDir, '.agent-runs', 'reviews');
-  let reviewCount = 0;
-  try {
-    const reviews = await readdir(reviewsDir);
-    reviewCount = reviews.length;
-  } catch {
-    // .agent-runs/reviews/ may not exist
-  }
-
-  console.log(`Review bundles in repo: ${reviewCount}`);
-
-  // Summary
-  console.log('\nToken state summary:');
-  console.log(`  pending:   ${pendingTokens.length}`);
-  console.log(`  launching: ${launchingTokens.length}`);
-  console.log(`  consumed:  ${consumedTokens.length}`);
-  console.log(`  rejected:  ${rejectedTokens.length}`);
-
+  const data: StatusResult = result.data;
+  console.log(`Dispatch status for: ${resolve(data.repoRoot)}\n`);
+  console.log(`Pending reviews: ${data.pending.length}`);
+  console.log(`Active launches: ${data.launching.length}`);
+  console.log(`Consumed tokens: ${data.consumed.length}`);
+  console.log(`Rejected tokens: ${data.rejected.length}`);
+  console.log(`Runs in repo: ${data.runCount}`);
+  console.log(`Review bundles in repo: ${data.reviewCount}`);
   return 0;
 }
-
-// ---------------------------------------------------------------------------
-// Main dispatcher
-// ---------------------------------------------------------------------------
 
 export async function run(args: string[]): Promise<number> {
-  // Parse global flags
-  const verbose = getFlag(args, '--verbose');
   const showHelp = getFlag(args, '--help') || getFlag(args, '-h');
   const showVersion = getFlag(args, '--version') || getFlag(args, '-v');
 
-  // --version takes precedence
   if (showVersion) {
     console.log(`kb dispatch v${VERSION}`);
     return 0;
   }
 
-  // Find the command (first non-flag argument)
-  const command = args.find((a) => !a.startsWith('-'));
-
-  // --help or no command
+  const command = args.find((arg) => !arg.startsWith('-'));
   if (showHelp || !command) {
     console.log(HELP_TEXT);
     return 0;
   }
 
-  // Dispatch to command handler
   switch (command) {
     case 'init-config':
-      return cmdInitConfig(args, verbose);
+      return cmdInitConfig(args);
+    case 'create-handoff':
+      return cmdCreateHandoff(args);
     case 'review':
-      return cmdReview(args, verbose);
+      return cmdReview(args);
     case 'launch':
-      return cmdLaunch(args, verbose);
+      return cmdLaunch(args);
+    case 'review-and-launch':
+      return cmdReviewAndLaunch(args);
     case 'cleanup':
-      return cmdCleanup(args, verbose);
+      return cmdCleanup(args);
     case 'status':
-      return cmdStatus(args, verbose);
+      return cmdStatus(args);
     default:
       console.error(`Unknown command: ${command}`);
       console.error('Run with --help to see available commands.');

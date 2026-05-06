@@ -6,6 +6,7 @@
     { "path": "packages/wiki-mcp" },
     { "path": "packages/dispatch-core" },
     { "path": "packages/dispatch-cli" },
+    { "path": "packages/dispatch-mcp" },
     { "path": "packages/graph-explore" },
     { "path": "tsconfig.tests.json" }
   ]

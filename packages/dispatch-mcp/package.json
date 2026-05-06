@@ -1,0 +1,13 @@
+{
+  "name": "@kb/dispatch-mcp",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "main": "src/index.ts",
+  "dependencies": {
+    "@kb/dispatch-core": "*",
+    "@modelcontextprotocol/sdk": "^1.12.1",
+    "zod": "^4.4.3"
+  },
+  "scripts": {}
+}

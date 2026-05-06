@@ -40,9 +40,29 @@ export const handoffFrontmatterSchema = z.object({
 // Agent registry Zod schema
 // ---------------------------------------------------------------------------
 
+export const agentInstructionTransportSchema = z.object({
+  kind: z.enum(['argv_path', 'argv_content', 'stdin']),
+});
+
+export const agentResponseTransportSchema = z.object({
+  kind: z.enum(['file', 'stdout_capture']),
+});
+
+export const agentReadOnlyConfigSchema = z.object({
+  supported: z.boolean(),
+  argv_suffix: z.array(z.string()).optional(),
+  response_writable: z.boolean().optional(),
+});
+
 export const agentLauncherConfigSchema = z.object({
-  command: z.string(),
-  args: z.array(z.string()),
+  base_argv: z.array(z.string()).min(1),
+  noninteractive_argv: z.array(z.string()),
+  instruction_transport: agentInstructionTransportSchema,
+  wrapper_arg: z.array(z.string()).optional(),
+  response_transport: agentResponseTransportSchema,
+  response_arg: z.array(z.string()).optional(),
+  timeout_seconds: z.number().int().positive().optional(),
+  read_only: agentReadOnlyConfigSchema.optional(),
   description: z.string().optional(),
   env: z.record(z.string(), z.string()).optional(),
 });

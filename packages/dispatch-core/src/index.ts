@@ -9,16 +9,24 @@ export type {
   HandoffMode,
   HandoffStatus,
   HandoffFrontmatter,
+  AgentInstructionTransport,
+  AgentResponseTransport,
+  AgentReadOnlyConfig,
   AgentLauncherConfig,
   AgentRegistry,
+  InitConfigResult,
   TokenPayload,
   DispatchToken,
+  CreateHandoffOpts,
+  CreateHandoffResult,
   ReviewOpts,
   ReviewResult,
   LaunchOpts,
   RunResult,
   CleanupOpts,
   CleanupReport,
+  StatusResult,
+  TokenInfo,
 } from './types.js';
 
 // Zod schemas
@@ -26,6 +34,9 @@ export {
   handoffModeSchema,
   handoffStatusSchema,
   handoffFrontmatterSchema,
+  agentInstructionTransportSchema,
+  agentResponseTransportSchema,
+  agentReadOnlyConfigSchema,
   agentLauncherConfigSchema,
   agentRegistrySchema,
   tokenPayloadSchema,
@@ -61,10 +72,29 @@ export { launch } from './launch.js';
 // Cleanup
 export { cleanup } from './cleanup.js';
 
+// Registry and setup
+export {
+  createDefaultRegistry,
+  getRegistryPath,
+  initConfig,
+  loadRegistry,
+  resolveAgentConfig,
+} from './registry.js';
+
+// Handoff creation and loading
+export { createHandoff } from './create-handoff.js';
+export { loadHandoff, DEFAULT_LIMITS } from './handoff.js';
+
+// Status
+export { status } from './status.js';
+
 // Wrapper (convenience functions)
 export {
+  createHandoffRecord,
+  initializeDispatchConfig,
   reviewHandoff,
   launchReview,
   cleanupState,
+  readDispatchStatus,
   reviewAndLaunch,
 } from './wrapper.js';

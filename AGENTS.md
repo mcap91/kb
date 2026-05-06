@@ -31,6 +31,7 @@ kb/
     wiki-mcp/        MCP server exposing wiki operations as tools
     dispatch-core/   Core dispatch operations (review, launch, cleanup, token management)
     dispatch-cli/    CLI entry point for dispatch commands
+    dispatch-mcp/    MCP server exposing dispatch operations as tools
     graph-explore/   Deterministic code-first graph extraction
   contract/
     manifest.json    Record type definitions, field schemas, enum values
@@ -62,6 +63,7 @@ kb/
 | `wiki-mcp` | MCP server. Registers wiki-core operations as MCP tools. |
 | `dispatch-core` | Review, launch, cleanup, token, paths. No CLI. |
 | `dispatch-cli` | Thin CLI wrapper for dispatch operations. |
+| `dispatch-mcp` | MCP server. Registers dispatch-core operations as MCP tools. |
 | `graph-explore` | File scanning, code import extraction, wiki overlay, graph output. |
 
 ### Contract-Driven Design
@@ -83,6 +85,7 @@ All wiki-core operations resolve behavior from the manifest. Do not hardcode rec
 npm run wiki -- <command> [--dir <path>] [options]    Wiki CLI
 npm run wiki:mcp                                       Start MCP server
 npm run dispatch -- <command> [options]                 Dispatch CLI
+npm run dispatch:mcp                                    Start dispatch MCP server
 npm run graph -- --dir <path>                          Graph extraction
 npm test                                               Run all tests (vitest)
 npm run typecheck                                      Typecheck entire monorepo (tsc --build)
@@ -105,6 +108,7 @@ npm run typecheck                                      Typecheck entire monorepo
 - `wiki-cli` imports from `@kb/wiki-core`. It does not import from dispatch or graph.
 - `wiki-mcp` imports from `@kb/wiki-core`. It does not import from dispatch or graph.
 - `dispatch-cli` imports from `@kb/dispatch-core`. It does not import from wiki or graph.
+- `dispatch-mcp` imports from `@kb/dispatch-core`. It does not import from wiki or graph.
 - `graph-explore` is standalone. It reads wiki files directly but does not import wiki-core or dispatch-core.
 - No circular dependencies between packages.
 
@@ -138,7 +142,7 @@ The five manifest-driven record types:
 - `HO` is listed in `manifest.json` under `excludedPrefixes`
 - `wiki create` rejects the `HO` prefix with `INVALID_PREFIX`
 - Handoff template (`contract/templates/handoff.md`) is synced as a shared template surface
-- HO-\* files live in `wiki/handoffs/` and are authored manually
+- HO-\* files live in `wiki/handoffs/` and are created by dispatch tooling or authored manually
 
 ### Handoffs Exclusion Rules
 
@@ -180,6 +184,8 @@ Every handoff must be reviewed before it can be launched. The review step:
 4. Validates Read First paths exist in repo
 5. Checks agent exists in registry
 6. Creates an immutable review bundle in `.agent-runs/reviews/RV-<uuid>/`
+7. Writes `agent-visible/wrapper.md`, `agent-visible/handoff.snapshot.md`, and `agent-visible/context/`
+8. Writes `metadata/input-manifest.json` and `metadata/review.json`
 7. Captures input manifest hash and registry hash
 8. Issues a signed pending token
 
@@ -197,9 +203,9 @@ pending/ --> launching/ --> consumed/
 - `consumed`: Successfully launched and agent responded
 - `rejected`: Expired, failed, or rejected
 
-### cwd = repo_root Invariant
+### Reviewed Bundle Invariant
 
-Agent processes are always spawned with `cwd` set to the repository root. This is enforced by `launch.ts`. The agent never controls its own working directory.
+Agent processes are spawned with `cwd` set to the reviewed `agent-visible/` bundle inside `.agent-runs/runs/<handoffId>/RUN-<uuid>/agent-visible/`. The handoff never controls its own working directory.
 
 ### Environment Allowlist
 
@@ -270,7 +276,7 @@ Before declaring any work complete, run:
 npm run typecheck && npm test
 ```
 
-Both must pass. There are currently 108 tests across four test files.
+Both must pass.
 
 ## What Not To Do
 

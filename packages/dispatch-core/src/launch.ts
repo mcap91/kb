@@ -1,31 +1,25 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { readFile, writeFile, readdir, mkdir, stat } from 'node:fs/promises';
+import {
+  copyFile,
+  mkdir,
+  readFile,
+  readdir,
+  writeFile,
+} from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import { randomUUID } from 'node:crypto';
 
-import { agentRegistrySchema } from './schemas.js';
 import type {
-  AgentRegistry,
   AgentLauncherConfig,
   LaunchOpts,
   RunResult,
-  TokenPayload,
 } from './types.js';
 import type { DispatchResult } from './errors.js';
-import { ok, fail } from './errors.js';
-import { getConfigDir, getReviewDir, getRunDir } from './paths.js';
+import { fail, ok } from './errors.js';
 import { readTokenFile, verifyToken, moveToken } from './token.js';
+import { getReviewDir, getRunDir } from './paths.js';
+import { loadRegistry, resolveAgentConfig } from './registry.js';
 
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
-const REGISTRY_FILE = 'launchers.v1.json';
-
-/**
- * Environment variable allowlist (POSIX-oriented).
- */
 const ENV_ALLOWLIST_POSIX = [
   'HOME',
   'PATH',
@@ -47,9 +41,6 @@ const ENV_ALLOWLIST_POSIX = [
   'XDG_DATA_HOME',
 ];
 
-/**
- * Additional environment variable allowlist for Windows.
- */
 const ENV_ALLOWLIST_WINDOWS = [
   'USERPROFILE',
   'APPDATA',
@@ -60,40 +51,54 @@ const ENV_ALLOWLIST_WINDOWS = [
   'PATHEXT',
 ];
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-function hashBuffer(data: string | Buffer): string {
+function sha256(data: string | Buffer): string {
   return createHash('sha256').update(data).digest('hex');
 }
 
-function computeManifestHash(entries: { path: string; hash: string }[]): string {
-  const sorted = [...entries].sort((a, b) => a.path.localeCompare(b.path));
-  const combined = sorted.map((e) => `${e.path}:${e.hash}`).join('\n');
-  return hashBuffer(combined);
+async function sha256File(path: string): Promise<string> {
+  return sha256(await readFile(path));
 }
 
-/**
- * Build a filtered environment for the agent process.
- *
- * Only safe allowlisted variables plus launcher-set variables are included.
- */
-function buildFilteredEnv(
-  payload: TokenPayload,
+async function copyTree(sourceDir: string, targetDir: string): Promise<void> {
+  await mkdir(targetDir, { recursive: true });
+  const entries = await readdir(sourceDir, { withFileTypes: true });
+
+  for (const entry of entries) {
+    const sourcePath = join(sourceDir, entry.name);
+    const targetPath = join(targetDir, entry.name);
+    if (entry.isDirectory()) {
+      await copyTree(sourcePath, targetPath);
+    } else {
+      await copyFile(sourcePath, targetPath);
+    }
+  }
+}
+
+function replacePlaceholders(value: string, replacements: Record<string, string>): string {
+  return value
+    .replaceAll('{repo_root}', replacements.repo_root)
+    .replaceAll('{wrapper_path}', replacements.wrapper_path)
+    .replaceAll('{wrapper_content}', replacements.wrapper_content)
+    .replaceAll('{response_path}', replacements.response_path);
+}
+
+function buildEnv(
+  repoRoot: string,
   runDir: string,
-  bundlePath: string,
+  agentVisibleDir: string,
+  handoffPath: string,
+  contextDir: string,
+  responsePath: string,
+  reviewId: string,
+  runId: string,
   launcherEnv?: Record<string, string>,
 ): Record<string, string> {
   const env: Record<string, string> = {};
-
-  // Build the full allowlist based on platform
   const allowlist = [...ENV_ALLOWLIST_POSIX];
   if (process.platform === 'win32') {
     allowlist.push(...ENV_ALLOWLIST_WINDOWS);
   }
 
-  // Copy allowed environment variables from current process
   for (const key of allowlist) {
     const value = process.env[key];
     if (value !== undefined) {
@@ -101,64 +106,120 @@ function buildFilteredEnv(
     }
   }
 
-  // Add launcher-configured env vars
   if (launcherEnv) {
     Object.assign(env, launcherEnv);
   }
 
-  // Add dispatch-specific environment variables
-  const responsePath = join(runDir, 'response.md');
-  env['AGENT_BLACKBOARD_REPO_ROOT'] = payload.repoRoot;
+  env['AGENT_BLACKBOARD_REPO_ROOT'] = repoRoot;
   env['AGENT_BLACKBOARD_RUN_DIR'] = runDir;
-  env['AGENT_BLACKBOARD_AGENT_VISIBLE_DIR'] = bundlePath;
-  env['AGENT_BLACKBOARD_HANDOFF_PATH'] = join(bundlePath, 'review-manifest.json');
-  env['AGENT_BLACKBOARD_CONTEXT_DIR'] = bundlePath;
+  env['AGENT_BLACKBOARD_AGENT_VISIBLE_DIR'] = agentVisibleDir;
+  env['AGENT_BLACKBOARD_HANDOFF_PATH'] = handoffPath;
+  env['AGENT_BLACKBOARD_CONTEXT_DIR'] = contextDir;
   env['AGENT_BLACKBOARD_RESPONSE_PATH'] = responsePath;
-  env['AGENT_BLACKBOARD_REVIEW_ID'] = payload.reviewId;
-  env['AGENT_BLACKBOARD_RUN_ID'] = `RUN-${randomUUID()}`;
-
+  env['AGENT_BLACKBOARD_REVIEW_ID'] = reviewId;
+  env['AGENT_BLACKBOARD_RUN_ID'] = runId;
   return env;
 }
 
-/**
- * Load the agent registry from the config directory.
- */
-async function loadRegistry(): Promise<DispatchResult<{ registry: AgentRegistry; hash: string }>> {
-  const registryPath = join(getConfigDir(), REGISTRY_FILE);
-  let raw: string;
-  try {
-    raw = await readFile(registryPath, 'utf-8');
-  } catch {
-    return fail(
-      'REGISTRY_NOT_FOUND',
-      `Agent registry not found at ${registryPath}. Run init-config first.`,
-    );
+function buildCommand(
+  agent: AgentLauncherConfig,
+  mode: RunResult['mode'],
+  wrapperContent: string,
+  wrapperPath: string,
+  responsePath: string,
+  repoRoot: string,
+): { command: string; args: string[] } {
+  const replacements = {
+    repo_root: repoRoot,
+    wrapper_path: wrapperPath,
+    wrapper_content: wrapperContent,
+    response_path: responsePath,
+  };
+
+  const command = agent.base_argv[0]!;
+  const args = [
+    ...agent.base_argv.slice(1),
+    ...agent.noninteractive_argv,
+  ];
+
+  if (agent.instruction_transport.kind !== 'stdin' && agent.wrapper_arg) {
+    for (const value of agent.wrapper_arg) {
+      args.push(replacePlaceholders(value, replacements));
+    }
   }
 
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return fail('PARSE_ERROR', `Failed to parse agent registry at ${registryPath}.`);
+  if (agent.response_transport.kind === 'file' && agent.response_arg) {
+    for (const value of agent.response_arg) {
+      args.push(replacePlaceholders(value, replacements));
+    }
   }
 
-  const result = agentRegistrySchema.safeParse(parsed);
-  if (!result.success) {
-    return fail('PARSE_ERROR', `Invalid agent registry format.`, result.error);
+  if (mode === 'redteam' && agent.read_only?.argv_suffix) {
+    args.push(...agent.read_only.argv_suffix);
   }
 
-  return ok({ registry: result.data as AgentRegistry, hash: hashBuffer(raw) });
+  return { command, args };
 }
 
-/**
- * Re-verify the review bundle hash against the token's recorded hash.
- */
-async function verifyBundleHash(
-  bundlePath: string,
-  expectedHash: string,
-): Promise<DispatchResult<true>> {
-  // Read the review manifest to get file entries
-  const manifestPath = join(bundlePath, 'review-manifest.json');
+function spawnAgent(
+  agent: AgentLauncherConfig,
+  command: string,
+  args: string[],
+  env: Record<string, string>,
+  cwd: string,
+  stdinText?: string,
+): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+  return new Promise((resolvePromise, reject) => {
+    const needsShell = process.platform === 'win32' && /\.(cmd|bat)$/i.test(command);
+    const child = spawn(command, args, {
+      cwd,
+      env,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      shell: needsShell,
+    });
+
+    const stdoutChunks: Buffer[] = [];
+    const stderrChunks: Buffer[] = [];
+
+    const timeoutMs = (agent.timeout_seconds ?? 1800) * 1000;
+    const timeoutId = setTimeout(() => {
+      child.kill();
+    }, timeoutMs);
+
+    child.stdout.on('data', (chunk: Buffer) => stdoutChunks.push(chunk));
+    child.stderr.on('data', (chunk: Buffer) => stderrChunks.push(chunk));
+
+    child.on('error', (err) => {
+      clearTimeout(timeoutId);
+      reject(err);
+    });
+
+    child.on('close', (code) => {
+      clearTimeout(timeoutId);
+      resolvePromise({
+        exitCode: code ?? 1,
+        stdout: Buffer.concat(stdoutChunks).toString('utf-8'),
+        stderr: Buffer.concat(stderrChunks).toString('utf-8'),
+      });
+    });
+
+    if (stdinText !== undefined) {
+      child.stdin.write(stdinText);
+    }
+    child.stdin.end();
+  });
+}
+
+async function verifyReviewedBundle(reviewDir: string, expectedManifestHash: string): Promise<DispatchResult<{
+  manifest: {
+    handoff_id: string;
+    mode: RunResult['mode'];
+    wrapper: { path: string; sha256: string };
+    handoff_snapshot: { path: string; sha256: string };
+    context_files: Array<{ snapshot_path: string; sha256: string }>;
+  };
+}>> {
+  const manifestPath = join(reviewDir, 'metadata', 'input-manifest.json');
   let manifestRaw: string;
   try {
     manifestRaw = await readFile(manifestPath, 'utf-8');
@@ -166,269 +227,231 @@ async function verifyBundleHash(
     return fail('REVIEW_NOT_FOUND', `Review manifest not found at ${manifestPath}.`);
   }
 
-  let manifest: { files: { path: string; hash: string }[] };
-  try {
-    manifest = JSON.parse(manifestRaw);
-  } catch {
-    return fail('PARSE_ERROR', `Failed to parse review manifest.`);
+  if (sha256(manifestRaw) !== expectedManifestHash) {
+    return fail('HASH_MISMATCH', 'Review bundle hash mismatch.');
   }
 
-  // Recompute hashes of all files in the bundle
-  const recomputedEntries: { path: string; hash: string }[] = [];
-  for (const entry of manifest.files) {
-    const filePath = join(bundlePath, entry.path);
+  let manifest: {
+    handoff_id: string;
+    mode: RunResult['mode'];
+    wrapper: { path: string; sha256: string };
+    handoff_snapshot: { path: string; sha256: string };
+    context_files: Array<{ snapshot_path: string; sha256: string }>;
+  };
+
+  try {
+    manifest = JSON.parse(manifestRaw) as typeof manifest;
+  } catch {
+    return fail('PARSE_ERROR', 'Failed to parse review input manifest.');
+  }
+
+  const expectedFiles = [
+    { relativePath: manifest.wrapper.path, sha256: manifest.wrapper.sha256 },
+    { relativePath: manifest.handoff_snapshot.path, sha256: manifest.handoff_snapshot.sha256 },
+    ...manifest.context_files.map((entry) => ({
+      relativePath: entry.snapshot_path,
+      sha256: entry.sha256,
+    })),
+  ];
+
+  for (const entry of expectedFiles) {
+    const absolutePath = join(reviewDir, entry.relativePath);
     try {
-      const content = await readFile(filePath);
-      recomputedEntries.push({ path: entry.path, hash: hashBuffer(content) });
+      if ((await sha256File(absolutePath)) !== entry.sha256) {
+        return fail('HASH_MISMATCH', `Review bundle file hash mismatch: ${entry.relativePath}`);
+      }
     } catch {
-      return fail('HASH_MISMATCH', `Bundle file missing: ${entry.path}`);
+      return fail('HASH_MISMATCH', `Review bundle file missing: ${entry.relativePath}`);
     }
   }
 
-  const recomputedHash = computeManifestHash(recomputedEntries);
-  if (recomputedHash !== expectedHash) {
-    return fail(
-      'HASH_MISMATCH',
-      `Review bundle hash mismatch. Expected ${expectedHash}, got ${recomputedHash}. The bundle may have been tampered with.`,
-    );
-  }
-
-  return ok(true);
+  return ok({ manifest });
 }
 
-// ---------------------------------------------------------------------------
-// Spawn wrapper
-// ---------------------------------------------------------------------------
-
-/**
- * Spawn the agent process and wait for it to exit.
- */
-function spawnAgent(
-  config: AgentLauncherConfig,
-  env: Record<string, string>,
-  cwd: string,
-): Promise<{ exitCode: number; stdout: string; stderr: string }> {
-  return new Promise((resolvePromise, reject) => {
-    const child = spawn(config.command, config.args, {
-      cwd,
-      env,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      shell: true,
-    });
-
-    const stdoutChunks: Buffer[] = [];
-    const stderrChunks: Buffer[] = [];
-
-    child.stdout.on('data', (chunk: Buffer) => stdoutChunks.push(chunk));
-    child.stderr.on('data', (chunk: Buffer) => stderrChunks.push(chunk));
-
-    child.on('error', (err) => {
-      reject(err);
-    });
-
-    child.on('close', (code) => {
-      resolvePromise({
-        exitCode: code ?? 1,
-        stdout: Buffer.concat(stdoutChunks).toString('utf-8'),
-        stderr: Buffer.concat(stderrChunks).toString('utf-8'),
-      });
-    });
-  });
-}
-
-// ---------------------------------------------------------------------------
-// Launch implementation
-// ---------------------------------------------------------------------------
-
-/**
- * Launch a reviewed handoff against a configured agent.
- *
- * Follows the full launch sequence:
- * 1. Load and verify pending token
- * 2. Re-verify review bundle and registry hashes
- * 3. Move token to launching/
- * 4. Create run directory
- * 5. Spawn agent with cwd = repo_root
- * 6. Move token to consumed/ on success
- * 7. Capture and normalize response
- */
 export async function launch(opts: LaunchOpts): Promise<DispatchResult<RunResult>> {
-  const { reviewId } = opts;
   const startedAt = new Date().toISOString();
+  const repoRoot = resolve(opts.dir);
 
-  // -------------------------------------------------------------------------
-  // 1. Load pending token
-  // -------------------------------------------------------------------------
-  const tokenResult = await readTokenFile(reviewId, 'pending');
+  const tokenResult = await readTokenFile(opts.reviewId, 'pending');
   if (!tokenResult.ok) return tokenResult;
 
-  const token = tokenResult.data;
-
-  // -------------------------------------------------------------------------
-  // 2. Verify token signature and expiry
-  // -------------------------------------------------------------------------
-  const verifyResult = await verifyToken(token);
+  const verifyResult = await verifyToken(tokenResult.data);
   if (!verifyResult.ok) {
-    await moveToken(reviewId, 'pending', 'rejected');
+    await moveToken(opts.reviewId, 'pending', 'rejected');
     return verifyResult;
   }
 
   const payload = verifyResult.data;
-
-  // -------------------------------------------------------------------------
-  // 3. Verify repo root exists
-  // -------------------------------------------------------------------------
-  const repoRoot = resolve(opts.dir);
-  try {
-    await stat(repoRoot);
-  } catch {
-    await moveToken(reviewId, 'pending', 'rejected');
-    return fail('REPO_ROOT_MISMATCH', `Repo root does not exist: ${repoRoot}`);
+  if (payload.repoRoot !== repoRoot) {
+    await moveToken(opts.reviewId, 'pending', 'rejected');
+    return fail('REPO_ROOT_MISMATCH', 'Current repo root does not match the reviewed repo root.');
   }
 
-  // -------------------------------------------------------------------------
-  // 4. Re-verify review bundle hash
-  // -------------------------------------------------------------------------
-  const bundlePath = getReviewDir(payload.repoRoot, reviewId);
-  const bundleHashResult = await verifyBundleHash(bundlePath, payload.inputManifestHash);
-  if (!bundleHashResult.ok) {
-    await moveToken(reviewId, 'pending', 'rejected');
-    return bundleHashResult;
+  const reviewDir = getReviewDir(repoRoot, opts.reviewId);
+  const manifestResult = await verifyReviewedBundle(reviewDir, payload.inputManifestHash);
+  if (!manifestResult.ok) {
+    await moveToken(opts.reviewId, 'pending', 'rejected');
+    return manifestResult;
   }
 
-  // -------------------------------------------------------------------------
-  // 5. Re-verify registry hash
-  // -------------------------------------------------------------------------
   const registryResult = await loadRegistry();
   if (!registryResult.ok) {
-    await moveToken(reviewId, 'pending', 'rejected');
+    await moveToken(opts.reviewId, 'pending', 'rejected');
     return registryResult;
   }
 
   if (registryResult.data.hash !== payload.registryHash) {
-    await moveToken(reviewId, 'pending', 'rejected');
-    return fail(
-      'HASH_MISMATCH',
-      `Registry hash mismatch. The agent registry has changed since review.`,
-    );
+    await moveToken(opts.reviewId, 'pending', 'rejected');
+    return fail('HASH_MISMATCH', 'Registry hash mismatch. The agent registry has changed since review.');
   }
 
-  // -------------------------------------------------------------------------
-  // 6. Load agent config
-  // -------------------------------------------------------------------------
-  const agentConfig = registryResult.data.registry.agents[payload.agent];
-  if (!agentConfig) {
-    await moveToken(reviewId, 'pending', 'rejected');
-    return fail('INVALID_AGENT', `Agent "${payload.agent}" not found in registry.`);
+  const agentConfigResult = resolveAgentConfig(registryResult.data.data, payload.agent, payload.mode);
+  if (!agentConfigResult.ok) {
+    await moveToken(opts.reviewId, 'pending', 'rejected');
+    return agentConfigResult;
   }
 
-  // -------------------------------------------------------------------------
-  // 7. Move token to launching/
-  // -------------------------------------------------------------------------
-  const moveToLaunching = await moveToken(reviewId, 'pending', 'launching');
+  const moveToLaunching = await moveToken(opts.reviewId, 'pending', 'launching');
   if (!moveToLaunching.ok) return moveToLaunching;
 
-  // -------------------------------------------------------------------------
-  // 8. Create run directory
-  // -------------------------------------------------------------------------
   const runId = `RUN-${randomUUID()}`;
-  const runDir = getRunDir(payload.repoRoot, payload.handoffId, runId);
-  await mkdir(runDir, { recursive: true });
+  const runDir = getRunDir(repoRoot, payload.handoffId, runId);
+  const agentVisibleDir = join(runDir, 'agent-visible');
+  const metadataDir = join(runDir, 'metadata');
+  await mkdir(agentVisibleDir, { recursive: true });
+  await mkdir(metadataDir, { recursive: true });
 
-  // -------------------------------------------------------------------------
-  // 9. Build filtered environment and construct argv
-  // -------------------------------------------------------------------------
-  const env = buildFilteredEnv(payload, runDir, bundlePath, agentConfig.env);
+  await copyTree(join(reviewDir, 'agent-visible'), agentVisibleDir);
+  await writeFile(
+    join(metadataDir, 'input-manifest.json'),
+    await readFile(join(reviewDir, 'metadata', 'input-manifest.json'), 'utf-8'),
+    'utf-8',
+  );
+  await writeFile(
+    join(metadataDir, 'review.json'),
+    await readFile(join(reviewDir, 'metadata', 'review.json'), 'utf-8'),
+    'utf-8',
+  );
+  await writeFile(
+    join(metadataDir, 'launch.json'),
+    `${JSON.stringify({
+      schema_version: 1,
+      review_id: opts.reviewId,
+      run_id: runId,
+      token_state: 'launching',
+      started_at: startedAt,
+    }, null, 2)}\n`,
+    'utf-8',
+  );
 
-  // -------------------------------------------------------------------------
-  // 10. Write launch metadata
-  // -------------------------------------------------------------------------
-  const launchMeta = {
+  const responsePath = join(runDir, 'response.md');
+  const stdoutPath = join(metadataDir, 'stdout.log');
+  const stderrPath = join(metadataDir, 'stderr.log');
+  const wrapperPath = join(agentVisibleDir, 'wrapper.md');
+  const handoffPath = join(agentVisibleDir, 'handoff.snapshot.md');
+  const contextDir = join(agentVisibleDir, 'context');
+  const wrapperContent = await readFile(wrapperPath, 'utf-8');
+
+  const env = buildEnv(
+    repoRoot,
+    runDir,
+    agentVisibleDir,
+    handoffPath,
+    contextDir,
+    responsePath,
+    opts.reviewId,
     runId,
-    reviewId,
-    handoffId: payload.handoffId,
-    agent: payload.agent,
-    mode: payload.mode,
-    repoRoot: payload.repoRoot,
-    command: agentConfig.command,
-    args: agentConfig.args,
-    startedAt,
-    state: 'launching',
-  };
-  await writeFile(join(runDir, 'launch-meta.json'), JSON.stringify(launchMeta, null, 2));
+    agentConfigResult.data.env,
+  );
 
-  // -------------------------------------------------------------------------
-  // 11. Spawn child process with cwd = repo_root
-  // -------------------------------------------------------------------------
+  const { command, args } = buildCommand(
+    agentConfigResult.data,
+    payload.mode,
+    wrapperContent,
+    wrapperPath,
+    responsePath,
+    repoRoot,
+  );
+
   let spawnResult: { exitCode: number; stdout: string; stderr: string };
   try {
-    spawnResult = await spawnAgent(agentConfig, env, payload.repoRoot);
+    spawnResult = await spawnAgent(
+      agentConfigResult.data,
+      command,
+      args,
+      env,
+      agentVisibleDir,
+      agentConfigResult.data.instruction_transport.kind === 'stdin' ? wrapperContent : undefined,
+    );
   } catch (err) {
-    await moveToken(reviewId, 'launching', 'rejected');
-    return fail('LAUNCH_FAILED', `Agent process failed to spawn.`, err);
+    await moveToken(opts.reviewId, 'launching', 'rejected');
+    return fail('LAUNCH_FAILED', 'Agent process failed to spawn.', err);
   }
 
-  // -------------------------------------------------------------------------
-  // 12. Capture and normalize response
-  // -------------------------------------------------------------------------
-  const completedAt = new Date().toISOString();
-  const responsePath = env['AGENT_BLACKBOARD_RESPONSE_PATH']!;
+  if (spawnResult.stdout.trim()) {
+    await writeFile(stdoutPath, spawnResult.stdout, 'utf-8');
+  }
+  if (spawnResult.stderr.trim()) {
+    await writeFile(stderrPath, spawnResult.stderr, 'utf-8');
+  }
 
   let response: string | undefined;
   try {
     response = await readFile(responsePath, 'utf-8');
   } catch {
-    // Response file may not exist if agent didn't write one
+    // response file is optional for stdout transport
   }
 
-  // Fall back to stdout if no response file
-  if (!response && spawnResult.stdout.trim()) {
+  if ((!response || response.trim() === '') && spawnResult.stdout.trim()) {
     response = spawnResult.stdout.trim();
+    await writeFile(responsePath, `${response}\n`, 'utf-8');
   }
 
-  // Check for empty response (launch failure per implementation plan)
+  const completedAt = new Date().toISOString();
   if (!response || response.trim() === '') {
-    await moveToken(reviewId, 'launching', 'rejected');
-    // Write final state metadata before returning failure
-    const failMeta = {
-      ...launchMeta,
-      state: 'rejected',
-      exitCode: spawnResult.exitCode,
-      completedAt,
-      error: 'Empty agent response',
-    };
-    await writeFile(join(runDir, 'launch-meta.json'), JSON.stringify(failMeta, null, 2));
+    await moveToken(opts.reviewId, 'launching', 'rejected');
+    await writeFile(
+      join(metadataDir, 'meta.json'),
+      `${JSON.stringify({
+        schema_version: 1,
+        review_id: opts.reviewId,
+        run_id: runId,
+        handoff_id: payload.handoffId,
+        status: 'rejected',
+        exit_code: spawnResult.exitCode,
+        started_at: startedAt,
+        completed_at: completedAt,
+        error: 'Empty agent response',
+      }, null, 2)}\n`,
+      'utf-8',
+    );
     return fail('EMPTY_RESPONSE', 'Agent produced an empty response. Launch is considered failed.');
   }
 
-  // -------------------------------------------------------------------------
-  // 13. Move token to consumed/
-  // -------------------------------------------------------------------------
-  await moveToken(reviewId, 'launching', 'consumed');
+  await moveToken(opts.reviewId, 'launching', 'consumed');
+  await writeFile(
+    join(metadataDir, 'meta.json'),
+    `${JSON.stringify({
+      schema_version: 1,
+      review_id: opts.reviewId,
+      run_id: runId,
+      handoff_id: payload.handoffId,
+      agent: payload.agent,
+      mode: payload.mode,
+      status: 'completed',
+      exit_code: spawnResult.exitCode,
+      started_at: startedAt,
+      completed_at: completedAt,
+      response_path: responsePath,
+      stdout_path: spawnResult.stdout.trim() ? stdoutPath : null,
+      stderr_path: spawnResult.stderr.trim() ? stderrPath : null,
+    }, null, 2)}\n`,
+    'utf-8',
+  );
 
-  // -------------------------------------------------------------------------
-  // 14. Write final state metadata
-  // -------------------------------------------------------------------------
-  const finalMeta = {
-    ...launchMeta,
-    state: 'consumed',
-    exitCode: spawnResult.exitCode,
-    completedAt,
-    responsePath,
-  };
-  await writeFile(join(runDir, 'launch-meta.json'), JSON.stringify(finalMeta, null, 2));
-
-  // Write stderr log if present
-  if (spawnResult.stderr.trim()) {
-    await writeFile(join(runDir, 'stderr.log'), spawnResult.stderr);
-  }
-
-  // -------------------------------------------------------------------------
-  // 15. Return run result
-  // -------------------------------------------------------------------------
-  const result: RunResult = {
+  return ok({
     runId,
-    reviewId,
+    reviewId: opts.reviewId,
     handoffId: payload.handoffId,
     agent: payload.agent,
     mode: payload.mode,
@@ -437,7 +460,5 @@ export async function launch(opts: LaunchOpts): Promise<DispatchResult<RunResult
     response,
     startedAt,
     completedAt,
-  };
-
-  return ok(result);
+  });
 }

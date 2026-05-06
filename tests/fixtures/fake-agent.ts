@@ -7,7 +7,7 @@
  * Usage: tsx tests/fixtures/fake-agent.ts
  */
 
-import { writeFileSync } from 'node:fs';
+import { existsSync, writeFileSync } from 'node:fs';
 
 const repoRoot = process.env['AGENT_BLACKBOARD_REPO_ROOT'];
 const runDir = process.env['AGENT_BLACKBOARD_RUN_DIR'];
@@ -26,6 +26,7 @@ if (!responsePath) {
 const response = [
   '# Fake Agent Response',
   '',
+  `cwd: ${process.cwd()}`,
   `review_id: ${reviewId ?? 'unknown'}`,
   `run_id: ${runId ?? 'unknown'}`,
   `repo_root: ${repoRoot ?? 'unknown'}`,
@@ -33,6 +34,7 @@ const response = [
   `agent_visible_dir: ${agentVisibleDir ?? 'unknown'}`,
   `context_dir: ${contextDir ?? 'unknown'}`,
   `handoff_path: ${handoffPath ?? 'unknown'}`,
+  `handoff_exists: ${handoffPath ? String(existsSync(handoffPath)) : 'false'}`,
   '',
   'Status: completed',
   'Result: deterministic test response',

@@ -2,6 +2,8 @@
 
 This guide explains how to adopt `kb` in your own repository. `kb` uses a sister-repo model: it lives in its own repo and targets your repo via `--dir`.
 
+If you are upgrading an existing consuming repo rather than adopting `kb` for the first time, use [upgrade-consuming-repo.md](./upgrade-consuming-repo.md).
+
 ## Prerequisites
 
 - Node.js 20+
@@ -68,7 +70,7 @@ npm run wiki -- create --dir ../my-project --prefix AREA --title "Authentication
 
 Available prefixes: `WK` (work item), `IN` (initiative), `DEC` (decision), `SRC` (source), `AREA` (area).
 
-`HO` is not a valid create target. Handoff records are authored manually in `wiki/handoffs/`.
+`HO` is not a valid `wiki create` target. Handoffs are dispatch-owned and live in `wiki/handoffs/`.
 
 ### Allocate IDs
 
@@ -157,6 +159,14 @@ Set up the operator dispatch configuration (one-time):
 npm run dispatch -- init-config
 ```
 
+If you are upgrading from an older `kb` dispatch install, run:
+
+```
+npm run dispatch -- init-config --force
+```
+
+The registry file is operator-owned and is not overwritten by default. `--force` rewrites `launchers.v1.json` into the current adapter-based format.
+
 This creates the config directory with:
 
 - `token.key` -- HMAC signing key
@@ -171,22 +181,24 @@ Config location:
 
 ### Write a Handoff
 
-Copy the handoff template into your repo:
+Create a durable handoff in your repo:
 
 ```
-cp wiki/templates/handoff.md wiki/handoffs/HO-0001.md
+npm run dispatch -- create-handoff --dir ../my-project --title "Fix authentication bug" --subject "Authentication" --allowed-agents codex,claude --mode implement --work-item WK-0001 --write-scope src/auth.ts,tests/auth.test.ts --read-first AGENTS.md,wiki/issues/WK-0001.md
 ```
 
-Edit the handoff to fill in:
+This writes `wiki/handoffs/HO-XXXX.md`. You can also author handoffs manually if needed, but `dispatch create-handoff` is the default path.
 
-- `id`: e.g. `HO-0001`
-- `title`: what the agent should do
-- `subject`: topic area
-- `allowed_agents`: which agents can execute (e.g. `[fake-agent, claude]`)
+Fill in or refine:
+
+- `allowed_agents`
 - `mode`: `implement`, `code_review`, or `redteam`
-- `write_scope`: paths the agent should touch
-
-Fill in the body sections: Read First (repo-relative paths), Objective, Constraints, Expected Output, Context.
+- `write_scope`
+- `## Read First`
+- `## Objective`
+- `## Constraints`
+- `## Expected Output`
+- `## Context`
 
 ### Review and Launch
 
@@ -196,7 +208,20 @@ Review the handoff (operator must explicitly acknowledge):
 npm run dispatch -- review --dir ../my-project --handoff wiki/handoffs/HO-0001.md --agent fake-agent --reviewed-and-accept-risks
 ```
 
-Review validates the handoff, creates an immutable bundle, and issues a pending token. The output includes a review ID (`RV-<uuid>`).
+Review validates the handoff, creates an immutable reviewed bundle, and issues a pending token. The output includes a review ID (`RV-<uuid>`).
+
+Reviewed bundle layout:
+
+```
+.agent-runs/reviews/RV-<uuid>/
+  agent-visible/
+    wrapper.md
+    handoff.snapshot.md
+    context/
+  metadata/
+    input-manifest.json
+    review.json
+```
 
 Launch the reviewed handoff:
 
@@ -204,7 +229,13 @@ Launch the reviewed handoff:
 npm run dispatch -- launch --review-id RV-<uuid> --dir ../my-project
 ```
 
-Launch re-verifies hashes, spawns the agent with `cwd = repo_root`, and captures the response.
+Launch re-verifies hashes, copies the reviewed bundle into `.agent-runs/runs/<handoffId>/RUN-<uuid>/`, spawns the agent from `agent-visible/`, and captures the response in `response.md`.
+
+For a single-step operator flow, use:
+
+```
+npm run dispatch -- review-and-launch --dir ../my-project --handoff wiki/handoffs/HO-0001.md --agent codex --reviewed-and-accept-risks
+```
 
 ### Status and Cleanup
 
@@ -261,6 +292,24 @@ This starts an MCP server over stdio that exposes all wiki operations as tools:
 - `search`
 
 To configure an MCP client, point it at `npm run wiki:mcp` in the `kb` directory. Each tool accepts a `dir` parameter to target a consuming repo.
+
+Dispatch also has an MCP server:
+
+```
+npm run dispatch:mcp
+```
+
+Dispatch MCP exposes:
+
+- `init-config`
+- `create-handoff`
+- `review`
+- `launch`
+- `review-and-launch`
+- `status`
+- `cleanup`
+
+For existing installations upgraded from the older registry format, run `npm run dispatch -- init-config --force` once before using dispatch MCP or CLI launch commands.
 
 ## Recommended .gitignore Additions
 

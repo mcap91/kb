@@ -8,9 +8,10 @@ This repository is the **tooling repo**. The other repository is the **consuming
 
 Use this model:
 
-- Run the **wiki MCP server** from the `kb` repo.
+- Run the **wiki MCP server** and, when needed, the **dispatch MCP server** from the `kb` repo.
 - Use **MCP for wiki operations**: `bootstrap`, `sync-contract`, `allocate-id`, `create`, `lint`, `generate`, `build-search-index`, `search`.
-- Use the **CLI from the `kb` repo** for `dispatch` and `graph`.
+- Use **MCP or CLI for dispatch operations**: `init-config`, `create-handoff`, `review`, `launch`, `review-and-launch`, `status`, `cleanup`.
+- Use the **CLI from the `kb` repo** for `graph`.
 - Always target the consuming repo explicitly with `dir`.
 
 The wiki MCP tools and the wiki CLI both go through the same `wiki-core` implementation, so manifest rules, prefix validation, handoff exclusion, generated-view exclusion, ID allocation, linting, and search scope are enforced consistently.
@@ -122,7 +123,7 @@ One `kb` wiki MCP server can target different consuming repos because the target
 Current boundary:
 
 - `wiki` is on MCP
-- `dispatch` is CLI-only
+- `dispatch` is on MCP and CLI
 - `graph` is CLI-only
 
 ## MCP Lifecycle
@@ -281,14 +282,14 @@ And when needed:
 Run from the `kb` repo:
 
 ```bash
-# create a handoff from the template in the consuming repo
-cp ../my-project/wiki/templates/handoff.md ../my-project/wiki/handoffs/HO-0001.md
+# initialize operator config
+npm run dispatch -- init-config
 
-# review the handoff
-npm run dispatch -- review --dir ../my-project --handoff wiki/handoffs/HO-0001.md --agent fake-agent --reviewed-and-accept-risks
+# create a durable handoff in the consuming repo
+npm run dispatch -- create-handoff --dir ../my-project --title "Fix auth regression" --subject "Authentication" --allowed-agents codex,claude --mode implement --work-item WK-0001 --write-scope src/auth.ts,tests/auth.test.ts --read-first AGENTS.md,wiki/issues/WK-0001.md
 
-# launch the reviewed handoff
-npm run dispatch -- launch --review-id RV-<uuid> --dir ../my-project
+# review and launch in one step
+npm run dispatch -- review-and-launch --dir ../my-project --handoff wiki/handoffs/HO-0001.md --agent codex --reviewed-and-accept-risks
 
 # inspect dispatch state
 npm run dispatch -- status --dir ../my-project
@@ -301,7 +302,9 @@ Notes:
 
 - `HO-*` handoffs are dispatch-owned
 - do not try to create `HO-*` via `wiki create`
-- launch always runs with `cwd = repo_root`
+- `dispatch create-handoff` writes durable files under `wiki/handoffs/`
+- `review` snapshots inputs under `.agent-runs/reviews/RV-.../agent-visible/` and `.agent-runs/reviews/RV-.../metadata/`
+- `launch` runs the agent from the reviewed `agent-visible/` bundle, not the live repo root
 
 ### Graph
 
@@ -317,6 +320,8 @@ Outputs in the consuming repo:
 - `wiki/graph-summary.md`
 
 ## Update / Deploy kb Into an Existing Consuming Repo
+
+For the full upgrade runbook, including registry migration, consuming-repo instruction updates, and MCP wiring, see [docs/upgrade-consuming-repo.md](docs/upgrade-consuming-repo.md).
 
 When `kb` changes and you need to roll the update into an existing consuming repo, run from the `kb` repo:
 
@@ -335,8 +340,11 @@ npm run graph -- --dir ../my-project
 If the consuming repo uses dispatch:
 
 ```bash
+npm run dispatch -- init-config --force
 npm run dispatch -- status --dir ../my-project
 ```
+
+- `init-config --force` is important when upgrading from the older registry format, because `launchers.v1.json` is operator-owned and is not overwritten by default.
 
 If you changed agent launcher config intentionally:
 
@@ -380,7 +388,19 @@ Use MCP for:
 
 Always pass `dir` pointing at this repository.
 
-When you need dispatch or graph operations, use the `kb` CLI from `../kb`.
+When you need dispatch operations, prefer the `kb` dispatch MCP server or the `kb` CLI from `../kb`.
+
+Dispatch operations:
+
+- `init-config`
+- `create-handoff`
+- `review`
+- `launch`
+- `review-and-launch`
+- `status`
+- `cleanup`
+
+When you need graph operations, use the `kb` CLI from `../kb`.
 
 Do not run `kb` commands from this repo root unless explicitly instructed. Run them from `../kb` and point back to this repo with `--dir`.
 
@@ -418,6 +438,7 @@ Examples:
 ```bash
 cd ../kb
 npm run wiki -- sync-contract --dir ../<this-repo-name>
+npm run dispatch -- init-config --force
 npm run wiki -- lint --dir ../<this-repo-name>
 npm run wiki -- generate --dir ../<this-repo-name>
 npm run wiki -- build-search-index --dir ../<this-repo-name>
@@ -427,7 +448,8 @@ npm run graph -- --dir ../<this-repo-name>
 ## Rules
 
 - Prefer MCP over CLI for wiki operations.
-- Use CLI for `dispatch` and `graph`.
+- Prefer dispatch MCP or CLI for `dispatch`.
+- Use CLI for `graph`.
 - Do not create `HO-*` via `wiki create`.
 - `wiki/handoffs/` is dispatch-owned and excluded from wiki scanning operations.
 - Always keep `kb` validation green before relying on it:
@@ -456,8 +478,10 @@ This repo is managed with the `kb` toolkit from `../kb`.
 Use this operating model:
 
 - run the `kb` wiki MCP server from `../kb`
+- run the `kb` dispatch MCP server from `../kb` when you need handoff lifecycle tools
 - use MCP for wiki operations against this repo
-- use `../kb` CLI for dispatch and graph
+- use dispatch MCP or `../kb` CLI for dispatch
+- use `../kb` CLI for graph
 - target this repo explicitly with `dir`
 
 ## Commands
@@ -491,6 +515,7 @@ npm install
 npm run typecheck
 npm test
 npm run wiki -- sync-contract --dir ../<this-repo-name>
+npm run dispatch -- init-config --force
 npm run wiki -- lint --dir ../<this-repo-name>
 npm run wiki -- generate --dir ../<this-repo-name>
 npm run wiki -- build-search-index --dir ../<this-repo-name>
@@ -500,7 +525,8 @@ npm run graph -- --dir ../<this-repo-name>
 ## Rules
 
 - Prefer `kb` MCP for wiki operations.
-- Use `kb` CLI for `dispatch` and `graph`.
+- Prefer dispatch MCP or `kb` CLI for `dispatch`.
+- Use `kb` CLI for `graph`.
 - Do not create `HO-*` with `wiki create`.
 - Run `kb` from `../kb`, not from this repo root.
 ```
@@ -508,5 +534,6 @@ npm run graph -- --dir ../<this-repo-name>
 ## Notes for Agents
 
 - If MCP is unavailable, fall back to the `kb` CLI for wiki operations too.
-- The `fake-agent` launcher written by `npm run dispatch -- init-config` is concrete and sister-repo safe.
+- If dispatch MCP is unavailable, fall back to the `kb` CLI for dispatch too.
+- The `fake-agent` launcher written by `npm run dispatch -- init-config --force` is concrete and sister-repo safe.
 - The wiki MCP server serves the `kb` repo but operates on the consuming repo through `dir`.

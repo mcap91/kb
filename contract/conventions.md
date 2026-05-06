@@ -18,7 +18,7 @@ This document defines naming, ID format, file organization, and operational conv
 |--------|------|-----------|-------|
 | `HO` | Handoff | `wiki/handoffs/` | `dispatch-core` |
 
-> **Important:** `HO-*` records are **dispatch-owned**, not manifest-driven wiki record types. They are not valid targets for `wiki create` in MVP. The handoff template (`contract/templates/handoff.md`) is synced as a shared template surface, but handoff records are authored manually and validated by `dispatch-core`.
+> **Important:** `HO-*` records are **dispatch-owned**, not manifest-driven wiki record types. They are not valid targets for `wiki create`. The handoff template (`contract/templates/handoff.md`) is synced as a shared template surface. Handoff records are created by `dispatch create-handoff` or authored manually in `wiki/handoffs/`, then reviewed and launched by `dispatch-core`.
 
 ## ID Format
 

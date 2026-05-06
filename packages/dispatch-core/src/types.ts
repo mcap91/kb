@@ -36,10 +36,30 @@ export interface HandoffFrontmatter {
 // Agent registry
 // ---------------------------------------------------------------------------
 
+export interface AgentInstructionTransport {
+  kind: 'argv_path' | 'argv_content' | 'stdin';
+}
+
+export interface AgentResponseTransport {
+  kind: 'file' | 'stdout_capture';
+}
+
+export interface AgentReadOnlyConfig {
+  supported: boolean;
+  argv_suffix?: string[];
+  response_writable?: boolean;
+}
+
 /** Configuration for a single agent launcher. */
 export interface AgentLauncherConfig {
-  command: string;
-  args: string[];
+  base_argv: string[];
+  noninteractive_argv: string[];
+  instruction_transport: AgentInstructionTransport;
+  wrapper_arg?: string[];
+  response_transport: AgentResponseTransport;
+  response_arg?: string[];
+  timeout_seconds?: number;
+  read_only?: AgentReadOnlyConfig;
   description?: string;
   env?: Record<string, string>;
 }
@@ -51,6 +71,14 @@ export interface AgentLauncherConfig {
 export interface AgentRegistry {
   version: 1;
   agents: Record<string, AgentLauncherConfig>;
+}
+
+export interface InitConfigResult {
+  configDir: string;
+  keyPath: string;
+  registryPath: string;
+  keyCreated: boolean;
+  registryCreated: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -126,6 +154,36 @@ export interface RunResult {
 }
 
 // ---------------------------------------------------------------------------
+// Create handoff types
+// ---------------------------------------------------------------------------
+
+export interface CreateHandoffOpts {
+  dir: string;
+  title: string;
+  subject: string;
+  allowed_agents: string[];
+  mode: HandoffMode;
+  status?: HandoffStatus;
+  depends_on?: string[];
+  area?: string;
+  initiative?: string;
+  work_item?: string;
+  write_scope?: string[];
+  read_first?: string[];
+  objective?: string;
+  constraints?: string[];
+  expected_output?: string;
+  context?: string;
+  verbose?: boolean;
+}
+
+export interface CreateHandoffResult {
+  handoffId: string;
+  handoffPath: string;
+  handoffRelativePath: string;
+}
+
+// ---------------------------------------------------------------------------
 // Cleanup types
 // ---------------------------------------------------------------------------
 
@@ -143,4 +201,26 @@ export interface CleanupReport {
   staleTokens: string[];
   expiredTokens: string[];
   totalRemoved: number;
+}
+
+// ---------------------------------------------------------------------------
+// Status types
+// ---------------------------------------------------------------------------
+
+export interface TokenInfo {
+  reviewId: string;
+  handoffId: string;
+  agent: string;
+  mode: string;
+  expiry: string;
+}
+
+export interface StatusResult {
+  repoRoot: string;
+  pending: TokenInfo[];
+  launching: TokenInfo[];
+  consumed: TokenInfo[];
+  rejected: TokenInfo[];
+  runCount: number;
+  reviewCount: number;
 }
