@@ -305,6 +305,7 @@ Notes:
 - `dispatch create-handoff` writes durable files under `wiki/handoffs/`
 - `review` snapshots inputs under `.agent-runs/reviews/RV-.../agent-visible/` and `.agent-runs/reviews/RV-.../metadata/`
 - `launch` runs the agent from the reviewed `agent-visible/` bundle, not the live repo root
+- if Codex sandboxing is broken on a host, the supported path is Claude on that host or Codex on a different host, not weaker Codex permissions
 
 ### Graph
 
