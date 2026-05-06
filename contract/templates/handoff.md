@@ -18,7 +18,7 @@ write_scope: []
 
 # {{id}}: {{title}}
 
-> **Dispatch-owned template.** This template is synced as a shared template surface by `wiki bootstrap` and `wiki sync-contract`. `HO-*` handoff records are **dispatch-owned** and are **not** manifest-driven wiki record types. `HO-*` is **not** a valid target for `wiki create` in MVP. Handoff records are authored manually in `wiki/handoffs/` and validated by `dispatch-core`.
+> **Dispatch-owned template.** This template is synced as a shared template surface by `wiki bootstrap` and `wiki sync-contract`. `HO-*` handoff records are **dispatch-owned** and are **not** manifest-driven wiki record types. `HO-*` is **not** a valid target for `wiki create`. Create them with `dispatch create-handoff` or author them manually in `wiki/handoffs/`. Review and launch are handled by `dispatch-core`.
 
 ## Read First
 

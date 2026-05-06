@@ -1,8 +1,22 @@
-import type { ReviewOpts, ReviewResult, LaunchOpts, RunResult, CleanupOpts, CleanupReport } from './types.js';
+import type {
+  CleanupOpts,
+  CleanupReport,
+  CreateHandoffOpts,
+  CreateHandoffResult,
+  InitConfigResult,
+  LaunchOpts,
+  ReviewOpts,
+  ReviewResult,
+  RunResult,
+  StatusResult,
+} from './types.js';
 import type { DispatchResult } from './errors.js';
+import { createHandoff } from './create-handoff.js';
+import { initConfig } from './registry.js';
 import { review } from './review.js';
 import { launch } from './launch.js';
 import { cleanup } from './cleanup.js';
+import { status } from './status.js';
 
 // ---------------------------------------------------------------------------
 // Dispatch convenience wrapper
@@ -25,6 +39,22 @@ export async function reviewHandoff(opts: ReviewOpts): Promise<DispatchResult<Re
 }
 
 /**
+ * Create a repo-local HO handoff document.
+ */
+export async function createHandoffRecord(
+  opts: CreateHandoffOpts,
+): Promise<DispatchResult<CreateHandoffResult>> {
+  return createHandoff(opts);
+}
+
+/**
+ * Initialize operator-owned dispatch config and default registry.
+ */
+export async function initializeDispatchConfig(force = false): Promise<DispatchResult<InitConfigResult>> {
+  return initConfig(force);
+}
+
+/**
  * Launch a previously reviewed handoff.
  *
  * This is a direct passthrough to the launch module.
@@ -40,6 +70,13 @@ export async function launchReview(opts: LaunchOpts): Promise<DispatchResult<Run
  */
 export async function cleanupState(opts?: CleanupOpts): Promise<DispatchResult<CleanupReport>> {
   return cleanup(opts);
+}
+
+/**
+ * Read dispatch status across token state directories and repo-local run bundles.
+ */
+export async function readDispatchStatus(dir: string): Promise<DispatchResult<StatusResult>> {
+  return status(dir);
 }
 
 /**
