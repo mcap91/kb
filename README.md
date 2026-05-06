@@ -144,7 +144,7 @@ After a VM reboot, shell restart, or disconnected session, agents do **not** hav
 
 Recommended model:
 
-- configure the agent client to launch `npm run wiki:mcp` from the `kb` repo when the client session starts
+- configure the agent client to launch the MCP server directly from the `kb` repo when the client session starts
 
 Fallback model:
 
@@ -160,10 +160,16 @@ npm run wiki:mcp
 If your client supports MCP command configuration, point it at the `kb` repo and have it launch:
 
 ```bash
-npm run wiki:mcp
+node --import tsx packages/wiki-mcp/src/server.ts
 ```
 
 using the `kb` checkout as the working directory.
+
+Why the direct command matters:
+
+- `npm run wiki:mcp` is fine for manual terminal use
+- strict stdio MCP clients should avoid `npm run` because the npm script banner writes to stdout before the MCP handshake
+- `node --import tsx packages/wiki-mcp/src/server.ts` starts the same server without the npm wrapper output
 
 ## Start the Wiki MCP Server
 
@@ -173,7 +179,11 @@ From the `kb` repo:
 npm run wiki:mcp
 ```
 
-If your agent runtime supports MCP, the preferred setup is to configure it to run that command automatically from the `kb` repo at session start.
+If your agent runtime supports MCP, the preferred setup is to configure it to run this direct command automatically from the `kb` repo at session start:
+
+```bash
+node --import tsx packages/wiki-mcp/src/server.ts
+```
 
 ## Update a Private `kb` Checkout
 
