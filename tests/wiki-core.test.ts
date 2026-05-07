@@ -848,4 +848,28 @@ describe('search', () => {
       }
     }
   });
+
+  it('search refreshes a stale index before applying status filters', async () => {
+    tmp = await createBootstrappedRepo();
+
+    const created = await create({ dir: tmp.dir, prefix: 'WK', title: 'Fix parser bug' });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    const recordPath = path.join(tmp.dir, created.data.path);
+    const original = fs.readFileSync(recordPath, 'utf-8');
+    const inProgress = original.replace('status: inbox', 'status: in_progress');
+    fs.writeFileSync(recordPath, inProgress, 'utf-8');
+
+    await buildSearchIndex({ dir: tmp.dir });
+
+    const done = inProgress.replace('status: in_progress', 'status: done');
+    fs.writeFileSync(recordPath, done, 'utf-8');
+
+    const result = await search({ dir: tmp.dir, query: 'parser', status: 'in_progress' });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.data.hits).toHaveLength(0);
+    }
+  });
 });

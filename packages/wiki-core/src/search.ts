@@ -2,8 +2,8 @@
  * Wiki search module.
  *
  * Provides two main operations:
- *   1. buildSearchIndex — scans canonical content and writes wiki/.search-index.json
- *   2. search — queries the index with lexical matching and relevance ranking
+ *   1. buildSearchIndex - scans canonical content and writes wiki/.search-index.json
+ *   2. search - queries the index with lexical matching and relevance ranking
  *
  * Included content:
  *   - Manifest-driven wiki records (WK, IN, DEC, SRC, AREA files)
@@ -19,15 +19,17 @@
  *   - dist/
  */
 
+import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { ok, fail, type Result } from './errors.js';
 import type {
   BuildSearchIndexOpts,
   BuildSearchIndexResult,
+  SearchHit,
   SearchOpts,
   SearchResult,
-  SearchHit,
+  WikiManifest,
 } from './types.js';
 import { loadManifest } from './contract.js';
 import { debug, setVerbose } from './debug.js';
@@ -51,8 +53,18 @@ interface SearchIndexEntry {
 interface SearchIndex {
   version: string;
   builtAt: string;
+  sourceSignature: string;
   entries: SearchIndexEntry[];
 }
+
+interface SearchSourceFile {
+  absPath: string;
+  relPath: string;
+  kind: 'wiki' | 'doc' | 'root';
+  prefix?: string;
+}
+
+const SEARCH_INDEX_VERSION = '1.1.0';
 
 // ---------------------------------------------------------------------------
 // Frontmatter parsing (same lightweight approach as lint/generate)
@@ -61,7 +73,7 @@ interface SearchIndex {
 function parseFrontmatter(
   raw: string,
 ): { data: Record<string, unknown>; body: string } | null {
-  const trimmed = raw.replace(/^﻿/, '');
+  const trimmed = raw.replace(/^\uFEFF/, '');
   if (!trimmed.startsWith('---')) return null;
 
   const endIdx = trimmed.indexOf('\n---', 3);
@@ -218,6 +230,105 @@ function listMarkdownFilesRecursive(dirPath: string, excludeDirs: Set<string>): 
   return results;
 }
 
+function collectSearchSourceFiles(targetDir: string, manifest: WikiManifest): SearchSourceFile[] {
+  const generatedViewFiles = new Set(
+    manifest.generatedViews.standardFiles.map(f =>
+      path.resolve(targetDir, f.replace(/\//g, path.sep)),
+    ),
+  );
+
+  const files: SearchSourceFile[] = [];
+
+  for (const [typeKey, typeDef] of Object.entries(manifest.types)) {
+    const dir = path.join(targetDir, typeDef.directory.replace(/\//g, path.sep));
+    const recordFiles = listMarkdownFiles(dir);
+
+    for (const absPath of recordFiles) {
+      const basename = path.basename(absPath);
+
+      if (typeDef.reservedFilenames.includes(basename)) continue;
+      if (generatedViewFiles.has(path.resolve(absPath))) continue;
+
+      let raw: string;
+      try {
+        raw = fs.readFileSync(absPath, 'utf-8');
+      } catch {
+        continue;
+      }
+
+      const parsed = parseFrontmatter(raw);
+      if (parsed && (parsed.data['_generated'] === true || parsed.data['_generated'] === 'true')) {
+        continue;
+      }
+
+      files.push({
+        absPath,
+        relPath: path.relative(targetDir, absPath).replace(/\\/g, '/'),
+        kind: 'wiki',
+        prefix: typeDef.prefix || typeKey.toUpperCase(),
+      });
+    }
+  }
+
+  const docsDir = path.join(targetDir, 'docs');
+  const excludeDirs = new Set(['node_modules', 'dist', '.agent-runs', 'scratch_space']);
+  const docFiles = listMarkdownFilesRecursive(docsDir, excludeDirs);
+  for (const absPath of docFiles) {
+    files.push({
+      absPath,
+      relPath: path.relative(targetDir, absPath).replace(/\\/g, '/'),
+      kind: 'doc',
+    });
+  }
+
+  const rootFiles = ['README.md', 'AGENTS.md', 'CLAUDE.md'];
+  for (const filename of rootFiles) {
+    const absPath = path.join(targetDir, filename);
+    if (!fs.existsSync(absPath)) continue;
+    files.push({
+      absPath,
+      relPath: filename,
+      kind: 'root',
+    });
+  }
+
+  files.sort((a, b) => a.relPath.localeCompare(b.relPath));
+  return files;
+}
+
+function computeSearchSourceSignature(files: SearchSourceFile[]): string {
+  const hash = createHash('sha256');
+
+  for (const file of files) {
+    try {
+      const stats = fs.statSync(file.absPath);
+      hash.update(file.relPath);
+      hash.update(':');
+      hash.update(String(stats.mtimeMs));
+      hash.update(':');
+      hash.update(String(stats.size));
+      hash.update('\n');
+    } catch {
+      // Ignore files that disappear during signature computation.
+    }
+  }
+
+  return hash.digest('hex');
+}
+
+function readSearchIndex(indexPath: string): Result<SearchIndex> {
+  try {
+    const raw = fs.readFileSync(indexPath, 'utf-8');
+    return ok(JSON.parse(raw) as SearchIndex);
+  } catch (err) {
+    return fail(
+      'SEARCH_ERROR',
+      `Failed to parse search index: ${String(err)}`,
+      err,
+    );
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Build Search Index
 // ---------------------------------------------------------------------------
@@ -238,128 +349,70 @@ export async function buildSearchIndex(
 
   debug(`buildSearchIndex: target=${targetDir}`);
 
-  // Load manifest
   const manifestResult = loadManifest();
   if (!manifestResult.ok) {
     return fail('CONTRACT_NOT_FOUND', manifestResult.message);
   }
   const manifest = manifestResult.data;
 
-  // Build set of generated view paths
-  const generatedViewFiles = new Set(
-    manifest.generatedViews.standardFiles.map(f =>
-      path.resolve(targetDir, f.replace(/\//g, path.sep)),
-    ),
-  );
-
   const entries: SearchIndexEntry[] = [];
+  const sourceFiles = collectSearchSourceFiles(targetDir, manifest);
 
-  // 1. Collect manifest-driven wiki records
-  for (const [typeKey, typeDef] of Object.entries(manifest.types)) {
-    const dir = path.join(targetDir, typeDef.directory.replace(/\//g, path.sep));
-    const files = listMarkdownFiles(dir);
+  for (const source of sourceFiles) {
+    const raw = fs.readFileSync(source.absPath, 'utf-8');
 
-    for (const absPath of files) {
-      const basename = path.basename(absPath);
-
-      // Skip reserved filenames
-      if (typeDef.reservedFilenames.includes(basename)) continue;
-
-      // Skip generated views
-      if (generatedViewFiles.has(path.resolve(absPath))) continue;
-
-      const raw = fs.readFileSync(absPath, 'utf-8');
+    if (source.kind === 'wiki') {
       const parsed = parseFrontmatter(raw);
-
-      // Skip files with _generated marker
-      if (parsed && (parsed.data['_generated'] === true || parsed.data['_generated'] === 'true')) {
-        continue;
-      }
-
       const fm = parsed?.data || {};
       const body = parsed ? parsed.body : raw;
-      const id = typeof fm['id'] === 'string' ? fm['id'] : basename.replace('.md', '');
+      const id = typeof fm['id'] === 'string'
+        ? fm['id']
+        : path.basename(source.absPath, '.md');
       const title = typeof fm['title'] === 'string' ? fm['title'] : extractTitle(body, id);
       const status = typeof fm['status'] === 'string' ? fm['status'] : undefined;
-      const prefix = typeDef.prefix || typeKey.toUpperCase();
-      const relPath = path.relative(targetDir, absPath).replace(/\\/g, '/');
-
-      // Build term frequency from title + body
       const searchableText = `${title} ${body}`;
       const terms = buildTermFrequency(searchableText);
 
       entries.push({
         id,
-        path: relPath,
+        path: source.relPath,
         title,
-        content: body.slice(0, 500), // Truncate content for snippets
-        prefix,
+        content: body.slice(0, 500),
+        prefix: source.prefix,
         status,
         terms,
       });
 
-      debug(`indexed wiki record: ${relPath}`);
+      debug(`indexed wiki record: ${source.relPath}`);
+      continue;
     }
-  }
 
-  // 2. Collect docs/**/*.md
-  const docsDir = path.join(targetDir, 'docs');
-  const excludeDirs = new Set(['node_modules', 'dist', '.agent-runs', 'scratch_space']);
-  const docFiles = listMarkdownFilesRecursive(docsDir, excludeDirs);
-
-  for (const absPath of docFiles) {
-    const raw = fs.readFileSync(absPath, 'utf-8');
     const body = stripFrontmatter(raw);
-    const relPath = path.relative(targetDir, absPath).replace(/\\/g, '/');
-    const basename = path.basename(absPath, '.md');
-    const title = extractTitle(body, basename);
+    const fallback = path.basename(source.relPath, '.md');
+    const title = extractTitle(body, fallback);
     const searchableText = `${title} ${body}`;
     const terms = buildTermFrequency(searchableText);
 
     entries.push({
-      id: relPath,
-      path: relPath,
+      id: source.relPath,
+      path: source.relPath,
       title,
       content: body.slice(0, 500),
       terms,
     });
 
-    debug(`indexed doc: ${relPath}`);
+    debug(`indexed ${source.kind}: ${source.relPath}`);
   }
 
-  // 3. Collect root files (README.md, AGENTS.md, CLAUDE.md)
-  const rootFiles = ['README.md', 'AGENTS.md', 'CLAUDE.md'];
-  for (const filename of rootFiles) {
-    const absPath = path.join(targetDir, filename);
-    if (!fs.existsSync(absPath)) continue;
-
-    const raw = fs.readFileSync(absPath, 'utf-8');
-    const body = stripFrontmatter(raw);
-    const title = extractTitle(body, filename.replace('.md', ''));
-    const searchableText = `${title} ${body}`;
-    const terms = buildTermFrequency(searchableText);
-
-    entries.push({
-      id: filename,
-      path: filename,
-      title,
-      content: body.slice(0, 500),
-      terms,
-    });
-
-    debug(`indexed root file: ${filename}`);
-  }
-
-  // Write the index
   const index: SearchIndex = {
-    version: '1.0.0',
+    version: SEARCH_INDEX_VERSION,
     builtAt: new Date().toISOString(),
+    sourceSignature: computeSearchSourceSignature(sourceFiles),
     entries,
   };
 
   const indexPath = path.join(wikiDir, '.search-index.json');
 
-  // Ensure wiki dir exists
   if (!fs.existsSync(wikiDir)) {
     fs.mkdirSync(wikiDir, { recursive: true });
   }
@@ -380,6 +433,49 @@ export async function buildSearchIndex(
   return ok({ indexed: entries.length, path: relIndexPath });
 }
 
+async function ensureFreshSearchIndex(
+  targetDir: string,
+  verbose?: boolean,
+): Promise<Result<SearchIndex>> {
+  const manifestResult = loadManifest();
+  if (!manifestResult.ok) {
+    return fail('CONTRACT_NOT_FOUND', manifestResult.message);
+  }
+
+  const sourceFiles = collectSearchSourceFiles(targetDir, manifestResult.data);
+  const currentSignature = computeSearchSourceSignature(sourceFiles);
+  const indexPath = path.join(targetDir, 'wiki', '.search-index.json');
+
+  if (!fs.existsSync(indexPath)) {
+    return fail(
+      'SEARCH_ERROR',
+      `Search index not found at ${indexPath} — run buildSearchIndex first`,
+    );
+  }
+
+  const existingResult = readSearchIndex(indexPath);
+  if (!existingResult.ok) {
+    return existingResult;
+  }
+
+  const existing = existingResult.data;
+  const isStale =
+    existing.version !== SEARCH_INDEX_VERSION ||
+    existing.sourceSignature !== currentSignature;
+
+  if (!isStale) {
+    return ok(existing);
+  }
+
+  debug(`search index stale at ${indexPath}; rebuilding`);
+  const rebuildResult = await buildSearchIndex({ dir: targetDir, verbose });
+  if (!rebuildResult.ok) {
+    return fail(rebuildResult.error, rebuildResult.message, rebuildResult.detail);
+  }
+
+  return readSearchIndex(indexPath);
+}
+
 // ---------------------------------------------------------------------------
 // Search
 // ---------------------------------------------------------------------------
@@ -387,7 +483,7 @@ export async function buildSearchIndex(
 /**
  * Query the search index with lexical matching.
  *
- * - Loads wiki/.search-index.json
+ * - Refreshes the persisted index if canonical sources changed
  * - Tokenizes the query
  * - Scores each entry by term frequency overlap
  * - Returns ranked results with snippets
@@ -398,45 +494,26 @@ export async function search(
   if (opts.verbose) setVerbose(true);
 
   const targetDir = path.resolve(opts.dir);
-  const indexPath = path.join(targetDir, 'wiki', '.search-index.json');
 
   debug(`search: query="${opts.query}", dir=${targetDir}`);
 
-  // Load the index
-  if (!fs.existsSync(indexPath)) {
-    return fail(
-      'SEARCH_ERROR',
-      `Search index not found at ${indexPath} — run buildSearchIndex first`,
-    );
+  const indexResult = await ensureFreshSearchIndex(targetDir, opts.verbose);
+  if (!indexResult.ok) {
+    return indexResult;
   }
+  const index = indexResult.data;
 
-  let index: SearchIndex;
-  try {
-    const raw = fs.readFileSync(indexPath, 'utf-8');
-    index = JSON.parse(raw) as SearchIndex;
-  } catch (err) {
-    return fail(
-      'SEARCH_ERROR',
-      `Failed to parse search index: ${String(err)}`,
-      err,
-    );
-  }
-
-  // Tokenize query
   const queryTerms = tokenize(opts.query);
   if (queryTerms.length === 0) {
     return ok({ hits: [], total: 0, query: opts.query });
   }
 
-  // Score each entry
   const scored: Array<{ entry: SearchIndexEntry; score: number }> = [];
 
   for (const entry of index.entries) {
-    // Apply filters
     if (opts.prefix && entry.prefix !== opts.prefix) continue;
     if (opts.status && entry.status !== opts.status) continue;
 
-    // Calculate relevance score
     let score = 0;
     const titleLower = entry.title.toLowerCase();
 
@@ -446,12 +523,10 @@ export async function search(
         score += termFreq;
       }
 
-      // Boost for title matches
       if (titleLower.includes(term)) {
         score += 5;
       }
 
-      // Boost for ID matches
       if (entry.id.toLowerCase().includes(term)) {
         score += 3;
       }
@@ -462,16 +537,12 @@ export async function search(
     }
   }
 
-  // Sort by score descending
   scored.sort((a, b) => b.score - a.score);
 
-  // Apply limit
   const limit = opts.limit ?? 20;
   const top = scored.slice(0, limit);
 
-  // Build results
   const hits: SearchHit[] = top.map(({ entry, score }) => {
-    // Generate snippet from content
     let snippet: string | undefined;
     const contentLower = entry.content.toLowerCase();
     for (const term of queryTerms) {
