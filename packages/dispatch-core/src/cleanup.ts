@@ -4,27 +4,39 @@ import { join } from 'node:path';
 import type { CleanupOpts, CleanupReport, DispatchToken } from './types.js';
 import type { DispatchResult } from './errors.js';
 import { ok, fail } from './errors.js';
-import { getConfigDir, getTokenDir, type TokenState } from './paths.js';
+import { getTokenDir, type TokenState } from './paths.js';
 
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
-/** Default maximum age in days for stale tokens and orphan artifacts. */
 const DEFAULT_MAX_AGE_DAYS = 7;
-
-/** Token states in the lifecycle. */
+const TOKEN_RECOVERY_GRACE_MS = 5 * 60 * 1000;
 const ALL_TOKEN_STATES: TokenState[] = ['pending', 'launching', 'consumed', 'rejected'];
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
+function isAlive(target: number): boolean {
+  try {
+    process.kill(target, 0);
+    return true;
+  } catch (err) {
+    if (typeof err === 'object' && err !== null && 'code' in err && err.code === 'ESRCH') {
+      return false;
+    }
+    return true;
+  }
+}
 
-/**
- * List all token files in a given state directory.
- *
- * Returns an array of { reviewId, token, filePath } objects.
- */
+function isRecordedProcessAlive(pid: number, pgid: number): boolean {
+  if (process.platform !== 'win32' && pgid > 0) {
+    try {
+      process.kill(-pgid, 0);
+      return true;
+    } catch (err) {
+      if (!(typeof err === 'object' && err !== null && 'code' in err && err.code === 'ESRCH')) {
+        return true;
+      }
+    }
+  }
+
+  return pid > 0 ? isAlive(pid) : false;
+}
+
 async function listTokens(
   state: TokenState,
 ): Promise<{ reviewId: string; token: DispatchToken; filePath: string }[]> {
@@ -33,7 +45,7 @@ async function listTokens(
   try {
     entries = await readdir(dir);
   } catch {
-    return []; // directory doesn't exist yet
+    return [];
   }
 
   const tokens: { reviewId: string; token: DispatchToken; filePath: string }[] = [];
@@ -46,16 +58,13 @@ async function listTokens(
       const reviewId = entry.replace(/\.json$/, '');
       tokens.push({ reviewId, token, filePath });
     } catch {
-      // Skip malformed token files
+      // skip malformed token files
     }
   }
 
   return tokens;
 }
 
-/**
- * List all review IDs from a repo's .agent-runs/reviews/ directory.
- */
 async function listReviewDirs(repoRoot: string): Promise<string[]> {
   const reviewsDir = join(repoRoot, '.agent-runs', 'reviews');
   try {
@@ -65,9 +74,6 @@ async function listReviewDirs(repoRoot: string): Promise<string[]> {
   }
 }
 
-/**
- * List all run directories from a repo's .agent-runs/runs/ directory.
- */
 async function listRunDirs(repoRoot: string): Promise<{ handoffId: string; runId: string }[]> {
   const runsDir = join(repoRoot, '.agent-runs', 'runs');
   let handoffDirs: string[];
@@ -86,16 +92,13 @@ async function listRunDirs(repoRoot: string): Promise<{ handoffId: string; runId
         runs.push({ handoffId, runId });
       }
     } catch {
-      // Skip inaccessible directories
+      // skip inaccessible directories
     }
   }
 
   return runs;
 }
 
-/**
- * Get the set of all known review IDs across all token state directories.
- */
 async function getAllKnownReviewIds(): Promise<Set<string>> {
   const ids = new Set<string>();
   for (const state of ALL_TOKEN_STATES) {
@@ -107,8 +110,10 @@ async function getAllKnownReviewIds(): Promise<Set<string>> {
   return ids;
 }
 
-async function listTerminalRunStates(repoRoot: string): Promise<Map<string, 'completed' | 'rejected'>> {
-  const states = new Map<string, 'completed' | 'rejected'>();
+async function listTerminalRunStates(
+  repoRoot: string,
+): Promise<Map<string, 'consumed' | 'rejected'>> {
+  const states = new Map<string, 'consumed' | 'rejected'>();
   const runsDir = join(repoRoot, '.agent-runs', 'runs');
 
   let handoffDirs: string[];
@@ -132,8 +137,19 @@ async function listTerminalRunStates(repoRoot: string): Promise<Map<string, 'com
         const raw = await readFile(metaPath, 'utf-8');
         const meta = JSON.parse(raw) as { status?: string; review_id?: string; reviewId?: string };
         const reviewId = meta.review_id ?? meta.reviewId;
-        if (reviewId && (meta.status === 'completed' || meta.status === 'rejected')) {
-          states.set(reviewId, meta.status);
+        if (!reviewId || !meta.status) {
+          continue;
+        }
+
+        if (meta.status === 'rejected') {
+          states.set(reviewId, 'rejected');
+        } else if ([
+          'completed',
+          'failed',
+          'timed_out',
+          'cancelled',
+        ].includes(meta.status)) {
+          states.set(reviewId, 'consumed');
         }
       } catch {
         // ignore missing or malformed meta.json
@@ -142,6 +158,44 @@ async function listTerminalRunStates(repoRoot: string): Promise<Map<string, 'com
   }
 
   return states;
+}
+
+async function findRunForReviewId(
+  repoRoot: string,
+  reviewId: string,
+): Promise<string | null> {
+  const runsDir = join(repoRoot, '.agent-runs', 'runs');
+
+  let handoffDirs: string[];
+  try {
+    handoffDirs = await readdir(runsDir);
+  } catch {
+    return null;
+  }
+
+  for (const handoffId of handoffDirs) {
+    let runIds: string[];
+    try {
+      runIds = await readdir(join(runsDir, handoffId));
+    } catch {
+      continue;
+    }
+
+    for (const runId of runIds) {
+      const reviewPath = join(runsDir, handoffId, runId, 'metadata', 'review.json');
+      try {
+        const raw = await readFile(reviewPath, 'utf-8');
+        const review = JSON.parse(raw) as { review_id?: string; reviewId?: string };
+        if ((review.review_id ?? review.reviewId) === reviewId) {
+          return join(runsDir, handoffId, runId);
+        }
+      } catch {
+        // keep scanning
+      }
+    }
+  }
+
+  return null;
 }
 
 async function moveTokenToState(
@@ -159,9 +213,6 @@ async function moveTokenToState(
   }
 }
 
-/**
- * Check if a file/directory is older than the given age threshold.
- */
 async function isOlderThan(path: string, maxAgeMs: number): Promise<boolean> {
   if (maxAgeMs <= 0) return true;
   try {
@@ -172,19 +223,6 @@ async function isOlderThan(path: string, maxAgeMs: number): Promise<boolean> {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Cleanup implementation
-// ---------------------------------------------------------------------------
-
-/**
- * Clean up stale dispatch runtime state.
- *
- * Operations:
- * 1. Remove orphan reviews (review bundles with no corresponding token)
- * 2. Remove orphan runs (run directories with no corresponding review)
- * 3. Recover stale launching tokens (stuck in launching/ beyond threshold)
- * 4. Remove expired consumed/rejected tokens past retention period
- */
 export async function cleanup(opts: CleanupOpts = {}): Promise<DispatchResult<CleanupReport>> {
   const maxAgeDays = opts.maxAgeDays ?? DEFAULT_MAX_AGE_DAYS;
   const maxAgeMs = maxAgeDays * 24 * 60 * 60 * 1000;
@@ -198,9 +236,6 @@ export async function cleanup(opts: CleanupOpts = {}): Promise<DispatchResult<Cl
   };
 
   try {
-    // -------------------------------------------------------------------
-    // 1. Remove orphan reviews
-    // -------------------------------------------------------------------
     if (opts.dir) {
       const reviewIds = await listReviewDirs(opts.dir);
       const knownIds = await getAllKnownReviewIds();
@@ -218,15 +253,11 @@ export async function cleanup(opts: CleanupOpts = {}): Promise<DispatchResult<Cl
       }
     }
 
-    // -------------------------------------------------------------------
-    // 2. Remove orphan runs
-    // -------------------------------------------------------------------
     if (opts.dir) {
       const runs = await listRunDirs(opts.dir);
       const reviewIds = await listReviewDirs(opts.dir);
       const reviewIdSet = new Set(reviewIds);
 
-      // A run is orphan if we can't find a review that references its review ID.
       for (const { handoffId, runId } of runs) {
         const runDir = join(opts.dir, '.agent-runs', 'runs', handoffId, runId);
         const metaPath = join(runDir, 'metadata', 'review.json');
@@ -240,17 +271,8 @@ export async function cleanup(opts: CleanupOpts = {}): Promise<DispatchResult<Cl
             isOrphan = true;
           }
         } catch {
-          const legacyPath = join(runDir, 'launch-meta.json');
-          try {
-            const raw = await readFile(legacyPath, 'utf-8');
-            const meta = JSON.parse(raw) as { reviewId?: string };
-            if (meta.reviewId && !reviewIdSet.has(meta.reviewId)) {
-              isOrphan = true;
-            }
-          } catch {
-            const old = await isOlderThan(runDir, maxAgeMs);
-            if (old) isOrphan = true;
-          }
+          const old = await isOlderThan(runDir, maxAgeMs);
+          if (old) isOrphan = true;
         }
 
         if (isOrphan) {
@@ -261,12 +283,9 @@ export async function cleanup(opts: CleanupOpts = {}): Promise<DispatchResult<Cl
       }
     }
 
-    // -------------------------------------------------------------------
-    // 3. Recover stale launching tokens
-    // -------------------------------------------------------------------
     const terminalRunStates = opts.dir
       ? await listTerminalRunStates(opts.dir)
-      : new Map<string, 'completed' | 'rejected'>();
+      : new Map<string, 'consumed' | 'rejected'>();
 
     const launchingTokens = await listTokens('launching');
     for (const { reviewId, token, filePath } of launchingTokens) {
@@ -275,13 +294,39 @@ export async function cleanup(opts: CleanupOpts = {}): Promise<DispatchResult<Cl
       const isExpired = Number.isFinite(expiry.getTime()) && expiry.getTime() <= Date.now();
       const isStale = Number.isFinite(createdAt.getTime()) && Date.now() - createdAt.getTime() > maxAgeMs;
 
-      let targetState: 'consumed' | 'rejected' | null = null;
-      const terminalState = terminalRunStates.get(reviewId);
-      if (terminalState === 'completed') {
-        targetState = 'consumed';
-      } else if (terminalState === 'rejected') {
-        targetState = 'rejected';
-      } else if (isExpired || isStale) {
+      let targetState: 'consumed' | 'rejected' | null = terminalRunStates.get(reviewId) ?? null;
+
+      if (!targetState && opts.dir) {
+        const runDir = await findRunForReviewId(opts.dir, reviewId);
+        if (runDir) {
+          try {
+            const stateRaw = await readFile(join(runDir, 'metadata', 'state.json'), 'utf-8');
+            const state = JSON.parse(stateRaw) as {
+              status?: string;
+              pid?: number;
+              pgid?: number;
+              heartbeat_at?: string;
+            };
+            const heartbeatMs = Date.parse(state.heartbeat_at ?? '');
+            const heartbeatStale = !Number.isFinite(heartbeatMs) || (Date.now() - heartbeatMs) > TOKEN_RECOVERY_GRACE_MS;
+            const processAlive = typeof state.pid === 'number'
+              ? isRecordedProcessAlive(state.pid, state.pgid ?? state.pid)
+              : false;
+
+            if (state.status && state.status !== 'launching') {
+              targetState = state.status === 'rejected' ? 'rejected' : 'consumed';
+            } else if (heartbeatStale && !processAlive) {
+              targetState = 'rejected';
+            }
+          } catch {
+            if (isExpired || isStale) {
+              targetState = 'rejected';
+            }
+          }
+        } else if (isExpired || isStale) {
+          targetState = 'rejected';
+        }
+      } else if (!targetState && (isExpired || isStale)) {
         targetState = 'rejected';
       }
 
@@ -292,9 +337,6 @@ export async function cleanup(opts: CleanupOpts = {}): Promise<DispatchResult<Cl
       }
     }
 
-    // -------------------------------------------------------------------
-    // 4. Remove expired consumed/rejected tokens
-    // -------------------------------------------------------------------
     for (const state of ['consumed', 'rejected'] as TokenState[]) {
       const tokens = await listTokens(state);
       for (const { reviewId, filePath } of tokens) {

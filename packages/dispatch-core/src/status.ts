@@ -6,6 +6,35 @@ import type { DispatchResult } from './errors.js';
 import { ok, fail } from './errors.js';
 import { getTokenDir, type TokenState } from './paths.js';
 
+const ACTIVE_HEARTBEAT_GRACE_MS = 5 * 60 * 1000;
+
+function isAlive(target: number): boolean {
+  try {
+    process.kill(target, 0);
+    return true;
+  } catch (err) {
+    if (typeof err === 'object' && err !== null && 'code' in err && err.code === 'ESRCH') {
+      return false;
+    }
+    return true;
+  }
+}
+
+function isRecordedProcessAlive(pid: number, pgid: number): boolean {
+  if (process.platform !== 'win32' && pgid > 0) {
+    try {
+      process.kill(-pgid, 0);
+      return true;
+    } catch (err) {
+      if (!(typeof err === 'object' && err !== null && 'code' in err && err.code === 'ESRCH')) {
+        return true;
+      }
+    }
+  }
+
+  return pid > 0 ? isAlive(pid) : false;
+}
+
 async function listTerminalRunReviewIds(repoRoot: string): Promise<Set<string>> {
   const runsDir = join(repoRoot, '.agent-runs', 'runs');
   const reviewIds = new Set<string>();
@@ -31,7 +60,7 @@ async function listTerminalRunReviewIds(repoRoot: string): Promise<Set<string>> 
         const raw = await readFile(metaPath, 'utf-8');
         const meta = JSON.parse(raw) as { status?: string; review_id?: string; reviewId?: string };
         const reviewId = meta.review_id ?? meta.reviewId;
-        if (reviewId && (meta.status === 'completed' || meta.status === 'rejected')) {
+        if (reviewId && meta.status && meta.status !== 'launching') {
           reviewIds.add(reviewId);
         }
       } catch {
@@ -41,6 +70,79 @@ async function listTerminalRunReviewIds(repoRoot: string): Promise<Set<string>> 
   }
 
   return reviewIds;
+}
+
+async function listActiveRunTokens(repoRoot: string): Promise<TokenInfo[]> {
+  const runsDir = join(repoRoot, '.agent-runs', 'runs');
+  const activeRuns: TokenInfo[] = [];
+
+  let handoffDirs: string[];
+  try {
+    handoffDirs = await readdir(runsDir);
+  } catch {
+    return activeRuns;
+  }
+
+  for (const handoffId of handoffDirs) {
+    let runIds: string[];
+    try {
+      runIds = await readdir(join(runsDir, handoffId));
+    } catch {
+      continue;
+    }
+
+    for (const runId of runIds) {
+      const metadataDir = join(runsDir, handoffId, runId, 'metadata');
+      try {
+        const stateRaw = await readFile(join(metadataDir, 'state.json'), 'utf-8');
+        const state = JSON.parse(stateRaw) as {
+          status?: string;
+          pid?: number;
+          pgid?: number;
+          heartbeat_at?: string;
+        };
+
+        if (state.status !== 'launching' || typeof state.pid !== 'number') {
+          continue;
+        }
+
+        const heartbeatMs = Date.parse(state.heartbeat_at ?? '');
+        const heartbeatFresh = Number.isFinite(heartbeatMs) && (Date.now() - heartbeatMs) <= ACTIVE_HEARTBEAT_GRACE_MS;
+        const processAlive = isRecordedProcessAlive(state.pid, state.pgid ?? state.pid);
+        if (!heartbeatFresh && !processAlive) {
+          continue;
+        }
+
+        const reviewRaw = await readFile(join(metadataDir, 'review.json'), 'utf-8');
+        const review = JSON.parse(reviewRaw) as {
+          review_id?: string;
+          reviewId?: string;
+          handoff_id?: string;
+          handoffId?: string;
+          agent?: string;
+          mode?: string;
+          expires_at?: string;
+          expiry?: string;
+        };
+        const reviewId = review.review_id ?? review.reviewId;
+        if (!reviewId) {
+          continue;
+        }
+
+        activeRuns.push({
+          reviewId,
+          handoffId: review.handoff_id ?? review.handoffId ?? handoffId,
+          agent: review.agent ?? 'unknown',
+          mode: review.mode ?? 'implement',
+          expiry: review.expires_at ?? review.expiry ?? '',
+        });
+      } catch {
+        // ignore incomplete run bundles
+      }
+    }
+  }
+
+  return activeRuns;
 }
 
 async function listTokensInState(state: TokenState): Promise<TokenInfo[]> {
@@ -76,8 +178,9 @@ async function listTokensInState(state: TokenState): Promise<TokenInfo[]> {
 export async function status(dir: string): Promise<DispatchResult<StatusResult>> {
   const repoRoot = resolve(dir);
   try {
-    const [pending, launchingAll, consumed, rejected, terminalRunReviewIds] = await Promise.all([
+    const [pending, activeRuns, launchingTokens, consumed, rejected, terminalRunReviewIds] = await Promise.all([
       listTokensInState('pending'),
+      listActiveRunTokens(repoRoot),
       listTokensInState('launching'),
       listTokensInState('consumed'),
       listTokensInState('rejected'),
@@ -85,13 +188,11 @@ export async function status(dir: string): Promise<DispatchResult<StatusResult>>
     ]);
 
     const now = Date.now();
-    const staleLaunching = launchingAll.filter((token) => {
+    const staleLaunching = launchingTokens.filter((token) => {
       const expiryMs = Date.parse(token.expiry);
       const isExpired = Number.isFinite(expiryMs) && expiryMs <= now;
       return isExpired || terminalRunReviewIds.has(token.reviewId);
     });
-    const staleReviewIds = new Set(staleLaunching.map((token) => token.reviewId));
-    const launching = launchingAll.filter((token) => !staleReviewIds.has(token.reviewId));
 
     let runCount = 0;
     try {
@@ -115,7 +216,7 @@ export async function status(dir: string): Promise<DispatchResult<StatusResult>>
     return ok({
       repoRoot,
       pending,
-      launching,
+      launching: activeRuns,
       staleLaunching,
       consumed,
       rejected,

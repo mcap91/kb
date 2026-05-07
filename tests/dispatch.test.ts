@@ -38,6 +38,25 @@ async function pathExists(path: string): Promise<boolean> {
   }
 }
 
+async function sleep(ms: number): Promise<void> {
+  await new Promise((resolvePromise) => setTimeout(resolvePromise, ms));
+}
+
+async function waitUntil(
+  predicate: () => Promise<boolean>,
+  timeoutMs = 5000,
+  intervalMs = 50,
+): Promise<void> {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    if (await predicate()) {
+      return;
+    }
+    await sleep(intervalMs);
+  }
+  throw new Error(`Timed out after ${timeoutMs}ms waiting for condition`);
+}
+
 function makeManualHandoff(overrides?: Partial<{
   id: string;
   title: string;
@@ -155,6 +174,7 @@ describe('dispatch', () => {
   let originalUserProfile: string | undefined;
 
   const fakeAgentPath = resolve(TESTS_DIR, 'fixtures', 'fake-agent.ts');
+  const delayedStdoutAgentPath = resolve(TESTS_DIR, 'fixtures', 'delayed-stdout-agent.mjs');
 
   beforeEach(async () => {
     tempDir = await makeTempDir();
@@ -406,6 +426,7 @@ describe('dispatch', () => {
       expect(response).toContain(`handoff_path: ${runHandoffPath}`);
       expect(response).toContain('handoff_exists: true');
       expect(await pathExists(join(launchResult.data.runDir, 'response.md'))).toBe(true);
+      expect(await pathExists(join(launchResult.data.runDir, 'metadata', 'state.json'))).toBe(true);
 
       const launchMetadataRaw = await readFile(
         join(launchResult.data.runDir, 'metadata', 'launch.json'),
@@ -418,9 +439,114 @@ describe('dispatch', () => {
       expect(launchMetadata.token_state).toBe('consumed');
       expect(launchMetadata.response_path).toBe(join(launchResult.data.runDir, 'response.md'));
 
+      const stateMetadataRaw = await readFile(
+        join(launchResult.data.runDir, 'metadata', 'state.json'),
+        'utf-8',
+      );
+      const stateMetadata = JSON.parse(stateMetadataRaw) as {
+        status: string;
+        pid: number;
+        pgid: number;
+        heartbeat_at: string;
+      };
+      expect(stateMetadata.status).toBe('completed');
+      expect(stateMetadata.pid).toBeGreaterThan(0);
+      expect(stateMetadata.pgid).toBeGreaterThan(0);
+      expect(stateMetadata.heartbeat_at).toBeTruthy();
+
       expect(await pathExists(join(launchResult.data.runDir, 'metadata', 'meta.json'))).toBe(true);
       expect(await pathExists(join(launchResult.data.runDir, 'metadata', 'review.json'))).toBe(true);
       expect(await pathExists(join(launchResult.data.runDir, 'metadata', 'input-manifest.json'))).toBe(true);
+    }, 30000);
+
+    it('streams stdout capture into response.md and records active state before exit', async () => {
+      await setupBootstrappedRepo(repoRoot);
+      const cfgDir = await setupFullConfig({
+        version: 1,
+        agents: {
+          'stream-agent': {
+            base_argv: ['node', delayedStdoutAgentPath],
+            noninteractive_argv: [],
+            instruction_transport: { kind: 'argv_content' },
+            wrapper_arg: ['{wrapper_content}'],
+            response_transport: { kind: 'stdout_capture' },
+            timeout_seconds: 30,
+            env: {
+              FAKE_AGENT_DELAY_MS: '1500',
+            },
+            read_only: {
+              supported: true,
+              argv_suffix: ['--read-only'],
+              response_writable: true,
+            },
+          },
+        },
+      });
+
+      const { review, launch } = await import('@kb/dispatch-core');
+      await writeFile(
+        join(repoRoot, 'wiki', 'handoffs', 'HO-0001.md'),
+        makeManualHandoff({ allowed_agents: ['stream-agent'] }),
+      );
+
+      const reviewResult = await review({
+        dir: repoRoot,
+        handoff: 'wiki/handoffs/HO-0001.md',
+        agent: 'stream-agent',
+        reviewedAndAcceptRisks: true,
+      });
+
+      expect(reviewResult.ok).toBe(true);
+      if (!reviewResult.ok) return;
+
+      const launchPromise = launch({
+        reviewId: reviewResult.data.reviewId,
+        dir: repoRoot,
+      });
+
+      const handoffRunsDir = join(repoRoot, '.agent-runs', 'runs', 'HO-0001');
+      await waitUntil(async () => {
+        try {
+          return (await readdir(handoffRunsDir)).length > 0;
+        } catch {
+          return false;
+        }
+      }, 10000);
+
+      const [runId] = await readdir(handoffRunsDir);
+      const runDir = join(handoffRunsDir, runId!);
+      const responsePath = join(runDir, 'response.md');
+      const statePath = join(runDir, 'metadata', 'state.json');
+
+      await waitUntil(async () => {
+        if (!await pathExists(responsePath) || !await pathExists(statePath)) {
+          return false;
+        }
+        const liveResponse = await readFile(responsePath, 'utf-8');
+        return liveResponse.includes('stream-start');
+      }, 10000);
+
+      const stateRaw = await readFile(statePath, 'utf-8');
+      const state = JSON.parse(stateRaw) as {
+        status: string;
+        pid: number;
+        pgid: number;
+        heartbeat_at: string;
+      };
+      expect(state.status).toBe('launching');
+      expect(state.pid).toBeGreaterThan(0);
+      expect(state.pgid).toBeGreaterThan(0);
+      expect(state.heartbeat_at).toBeTruthy();
+
+      expect(await pathExists(join(cfgDir, 'consumed', `${reviewResult.data.reviewId}.json`))).toBe(true);
+      expect(await pathExists(join(cfgDir, 'launching', `${reviewResult.data.reviewId}.json`))).toBe(false);
+
+      const launchResult = await launchPromise;
+      expect(launchResult.ok).toBe(true);
+      if (!launchResult.ok) return;
+
+      const finalResponse = await readFile(responsePath, 'utf-8');
+      expect(finalResponse).toContain('stream-end');
     }, 30000);
 
     it('fails on empty agent response', async () => {
@@ -474,8 +600,8 @@ describe('dispatch', () => {
         expect(launchResult.error).toBe('EMPTY_RESPONSE');
       }
 
-      const rejectedFiles = await readdir(join(cfgDir, 'rejected'));
-      expect(rejectedFiles).toContain(`${reviewResult.data.reviewId}.json`);
+      const consumedFiles = await readdir(join(cfgDir, 'consumed'));
+      expect(consumedFiles).toContain(`${reviewResult.data.reviewId}.json`);
 
       const runIds = await readdir(join(repoRoot, '.agent-runs', 'runs', 'HO-0001'));
       expect(runIds).toHaveLength(1);
@@ -487,17 +613,24 @@ describe('dispatch', () => {
         completed_at: string;
         error: string;
       };
-      expect(launchMetadata.token_state).toBe('rejected');
-      expect(launchMetadata.error).toBe('Empty agent response');
-      expect(launchMetadata.completed_at).toBeTruthy();
+      expect(launchMetadata.token_state).toBe('consumed');
 
       const metaRaw = await readFile(join(runDir, 'metadata', 'meta.json'), 'utf-8');
       const meta = JSON.parse(metaRaw) as {
         status: string;
-        error: string;
+        response_path: string;
       };
-      expect(meta.status).toBe('rejected');
-      expect(meta.error).toBe('Empty agent response');
+      expect(meta.status).toBe('failed');
+
+      const stateRaw = await readFile(join(runDir, 'metadata', 'state.json'), 'utf-8');
+      const state = JSON.parse(stateRaw) as {
+        status: string;
+      };
+      expect(state.status).toBe('failed');
+
+      const response = await readFile(join(runDir, 'response.md'), 'utf-8');
+      expect(response).toContain('# Launcher diagnostic');
+      expect(response).toContain('adapter exited without producing a response body');
     }, 30000);
 
     it('fails when the reviewed bundle hash changes after review', async () => {
@@ -574,6 +707,65 @@ describe('dispatch', () => {
   });
 
   describe('status', () => {
+    it('counts an active run from state.json after the launch token has been consumed', async () => {
+      const cfgDir = await setupFullConfig();
+      await setupBootstrappedRepo(repoRoot);
+      const { review, status } = await import('@kb/dispatch-core');
+
+      await writeFile(
+        join(repoRoot, 'wiki', 'handoffs', 'HO-0001.md'),
+        makeManualHandoff(),
+      );
+
+      const reviewResult = await review({
+        dir: repoRoot,
+        handoff: 'wiki/handoffs/HO-0001.md',
+        agent: 'fake-agent',
+        reviewedAndAcceptRisks: true,
+      });
+
+      expect(reviewResult.ok).toBe(true);
+      if (!reviewResult.ok) return;
+
+      await rename(
+        join(cfgDir, 'pending', `${reviewResult.data.reviewId}.json`),
+        join(cfgDir, 'consumed', `${reviewResult.data.reviewId}.json`),
+      );
+
+      const runDir = join(repoRoot, '.agent-runs', 'runs', 'HO-0001', 'RUN-test');
+      await mkdir(join(runDir, 'metadata'), { recursive: true });
+      await writeFile(
+        join(runDir, 'metadata', 'review.json'),
+        `${JSON.stringify({
+          schema_version: 1,
+          review_id: reviewResult.data.reviewId,
+          handoff_id: 'HO-0001',
+          agent: 'fake-agent',
+          mode: 'implement',
+        }, null, 2)}\n`,
+      );
+      await writeFile(
+        join(runDir, 'metadata', 'state.json'),
+        `${JSON.stringify({
+          schema_version: 1,
+          run_id: 'RUN-test',
+          status: 'launching',
+          pid: process.pid,
+          pgid: process.pid,
+          started_at: new Date().toISOString(),
+          heartbeat_at: new Date().toISOString(),
+        }, null, 2)}\n`,
+      );
+
+      const result = await status(repoRoot);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      expect(result.data.launching).toHaveLength(1);
+      expect(result.data.launching[0]?.reviewId).toBe(reviewResult.data.reviewId);
+      expect(result.data.staleLaunching).toHaveLength(0);
+    });
+
     it('does not count terminal or expired launching tokens as active launches', async () => {
       const cfgDir = await setupFullConfig();
       await setupBootstrappedRepo(repoRoot);

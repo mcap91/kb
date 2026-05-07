@@ -45,9 +45,9 @@ Each state corresponds to a subdirectory under the operator config directory:
 | State | Directory | Meaning |
 |-------|-----------|---------|
 | pending | `<config>/pending/` | Review complete, awaiting launch |
-| launching | `<config>/launching/` | Launch in progress, agent spawned |
-| consumed | `<config>/consumed/` | Agent completed with non-empty response |
-| rejected | `<config>/rejected/` | Expired, failed spawn, empty response, or hash mismatch |
+| launching | `<config>/launching/` | Launch has claimed the review token but has not yet confirmed child process start |
+| consumed | `<config>/consumed/` | Child process start was confirmed; terminal run outcome lives in repo-local metadata |
+| rejected | `<config>/rejected/` | Expired review or launch failed before confirmed child start |
 
 Tokens are JSON files named `<reviewId>.json`. They are moved between state directories atomically.
 
@@ -67,9 +67,9 @@ kb-dispatch/
   token.key              HMAC-SHA256 signing key (hex-encoded, 64 bytes)
   launchers.v1.json      Agent registry
   pending/               Tokens awaiting launch
-  launching/             Tokens with active agent processes
-  consumed/              Tokens for completed launches
-  rejected/              Tokens for failed/expired launches
+  launching/             Tokens between claim and confirmed child start
+  consumed/              Tokens for confirmed started launches
+  rejected/              Tokens for failed pre-start launches or expired reviews
 ```
 
 `init-config` creates this structure, generates the key, and writes a default registry.
@@ -220,11 +220,12 @@ The launch operation (`dispatch-core/src/launch.ts`) executes a reviewed handoff
 9. **Create run directory** -- `.agent-runs/runs/<handoffId>/RUN-<uuid>/`
 10. **Copy reviewed bundle** -- copy `agent-visible/` and metadata into the run directory
 11. **Build filtered environment** -- only allowlisted env vars plus `AGENT_BLACKBOARD_*` variables
-12. **Write launch metadata** -- `metadata/launch.json`
-13. **Spawn agent** -- child process with `cwd = agent-visible`
-14. **Capture response** -- read `response.md` from the run dir, or fall back to stdout for stdout transports
-15. **Move token to consumed/** -- on non-empty response (or `rejected/` on failure)
-16. **Write final metadata** -- `metadata/meta.json` with exit code, timestamps, and response paths
+12. **Write initial launch metadata** -- `metadata/launch.json` with `token_state = launching`
+13. **Spawn agent** -- child process with `cwd = agent-visible`, no TTY, and redirected stdout/stderr
+14. **Record live runtime state** -- write `metadata/state.json` with `status = launching`, `pid`, `pgid`, and `heartbeat_at`
+15. **Confirm child start** -- move token to `consumed/` and update `metadata/launch.json.token_state = consumed`
+16. **Stream response/logs live** -- `stdout_capture` adapters stream stdout directly to `response.md`; file adapters stream stdout to `metadata/stdout.log`; stderr streams to `metadata/stderr.log`
+17. **Write final metadata** -- on terminal exit, write `metadata/meta.json`, update `metadata/state.json` to a terminal status, and keep `launch.json.token_state = consumed` for started runs
 
 ### Reviewed Bundle Invariant
 
@@ -249,7 +250,7 @@ Launch constructs a filtered environment for the agent process. Only these categ
 | `AGENT_BLACKBOARD_AGENT_VISIBLE_DIR` | `agent-visible/` directory inside the run bundle |
 | `AGENT_BLACKBOARD_HANDOFF_PATH` | Path to `agent-visible/handoff.snapshot.md` |
 | `AGENT_BLACKBOARD_CONTEXT_DIR` | Path to `agent-visible/context/` |
-| `AGENT_BLACKBOARD_RESPONSE_PATH` | Path where agent should write response |
+| `AGENT_BLACKBOARD_RESPONSE_PATH` | Launcher-owned response path |
 | `AGENT_BLACKBOARD_REVIEW_ID` | The review ID |
 | `AGENT_BLACKBOARD_RUN_ID` | The run ID (`RUN-<uuid>`) |
 
@@ -257,7 +258,7 @@ Launch constructs a filtered environment for the agent process. Only these categ
 
 ### Empty Response Failure
 
-If the agent produces no response (no `response.md` and no stdout), the launch is considered failed. The token is moved to `rejected/` and the error code is `EMPTY_RESPONSE`.
+If the agent starts successfully but produces no response body, the launch is considered failed closed. The launcher writes a diagnostic `response.md`, records terminal run status as `failed`, and returns `EMPTY_RESPONSE`. The token remains `consumed/` because child start was already confirmed.
 
 ## Cleanup
 
@@ -269,7 +270,7 @@ The cleanup operation (`dispatch-core/src/cleanup.ts`) removes stale dispatch ar
 
 2. **Remove orphan runs** -- run directories in `.agent-runs/runs/` whose review metadata references a review ID not present in `.agent-runs/reviews/`, older than the retention threshold.
 
-3. **Recover stale launching tokens** -- tokens stuck in `launching/` beyond the retention threshold or past their expiry are moved to `rejected/`. If repo-local run metadata already shows a terminal state, cleanup recovers the token into the matching final state (`consumed/` for completed runs, `rejected/` for rejected runs).
+3. **Recover stale launching tokens** -- tokens stuck in `launching/` are reconciled against repo-local run metadata. Cleanup does not recover a launching token while the associated run still has a fresh heartbeat or a live recorded process. Terminal run states recover the token into `consumed/` for started runs (`completed`, `failed`, `timed_out`, `cancelled`) or `rejected/` for pre-start rejection.
 
 4. **Remove expired consumed/rejected tokens** -- tokens in `consumed/` or `rejected/` older than the retention threshold. Deleted.
 

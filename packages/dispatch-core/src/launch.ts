@@ -1,10 +1,12 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
+import { createWriteStream } from 'node:fs';
 import {
   copyFile,
   mkdir,
   readFile,
   readdir,
+  stat,
   writeFile,
 } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
@@ -51,6 +53,20 @@ const ENV_ALLOWLIST_WINDOWS = [
   'PATHEXT',
 ];
 
+const HEARTBEAT_INTERVAL_MS = 1000;
+const CANCEL_GRACE_MS = 30_000;
+
+type LaunchTokenState = 'launching' | 'consumed' | 'rejected';
+type TerminalRunStatus = 'completed' | 'failed' | 'timed_out' | 'cancelled' | 'rejected';
+
+type ReviewManifest = {
+  handoff_id: string;
+  mode: RunResult['mode'];
+  wrapper: { path: string; sha256: string };
+  handoff_snapshot: { path: string; sha256: string };
+  context_files: Array<{ snapshot_path: string; sha256: string }>;
+};
+
 function sha256(data: string | Buffer): string {
   return createHash('sha256').update(data).digest('hex');
 }
@@ -71,6 +87,15 @@ async function copyTree(sourceDir: string, targetDir: string): Promise<void> {
     } else {
       await copyFile(sourcePath, targetPath);
     }
+  }
+}
+
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await stat(path);
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -166,7 +191,7 @@ async function writeLaunchMetadata(
   data: {
     reviewId: string;
     runId: string;
-    tokenState: 'launching' | 'consumed' | 'rejected';
+    tokenState: LaunchTokenState;
     startedAt: string;
     completedAt?: string;
     exitCode?: number;
@@ -197,64 +222,106 @@ async function writeLaunchMetadata(
   );
 }
 
-function spawnAgent(
-  agent: AgentLauncherConfig,
-  command: string,
-  args: string[],
-  env: Record<string, string>,
-  cwd: string,
-  stdinText?: string,
-): Promise<{ exitCode: number; stdout: string; stderr: string }> {
-  return new Promise((resolvePromise, reject) => {
-    const needsShell = process.platform === 'win32' && /\.(cmd|bat)$/i.test(command);
-    const child = spawn(command, args, {
-      cwd,
-      env,
-      stdio: ['pipe', 'pipe', 'pipe'],
-      shell: needsShell,
-    });
-
-    const stdoutChunks: Buffer[] = [];
-    const stderrChunks: Buffer[] = [];
-
-    const timeoutMs = (agent.timeout_seconds ?? 1800) * 1000;
-    const timeoutId = setTimeout(() => {
-      child.kill();
-    }, timeoutMs);
-
-    child.stdout.on('data', (chunk: Buffer) => stdoutChunks.push(chunk));
-    child.stderr.on('data', (chunk: Buffer) => stderrChunks.push(chunk));
-
-    child.on('error', (err) => {
-      clearTimeout(timeoutId);
-      reject(err);
-    });
-
-    child.on('close', (code) => {
-      clearTimeout(timeoutId);
-      resolvePromise({
-        exitCode: code ?? 1,
-        stdout: Buffer.concat(stdoutChunks).toString('utf-8'),
-        stderr: Buffer.concat(stderrChunks).toString('utf-8'),
-      });
-    });
-
-    if (stdinText !== undefined) {
-      child.stdin.write(stdinText);
-    }
-    child.stdin.end();
-  });
+async function writeStateMetadata(
+  metadataDir: string,
+  data: {
+    runId: string;
+    status: 'launching' | TerminalRunStatus;
+    pid: number;
+    pgid: number;
+    startedAt: string;
+    heartbeatAt: string;
+  },
+): Promise<void> {
+  await writeFile(
+    join(metadataDir, 'state.json'),
+    `${JSON.stringify({
+      schema_version: 1,
+      run_id: data.runId,
+      status: data.status,
+      pid: data.pid,
+      pgid: data.pgid,
+      started_at: data.startedAt,
+      heartbeat_at: data.heartbeatAt,
+    }, null, 2)}\n`,
+    'utf-8',
+  );
 }
 
-async function verifyReviewedBundle(reviewDir: string, expectedManifestHash: string): Promise<DispatchResult<{
-  manifest: {
-    handoff_id: string;
-    mode: RunResult['mode'];
-    wrapper: { path: string; sha256: string };
-    handoff_snapshot: { path: string; sha256: string };
-    context_files: Array<{ snapshot_path: string; sha256: string }>;
-  };
-}>> {
+function buildEmptyBodyDiagnostic(transportKind: AgentLauncherConfig['response_transport']['kind']): string {
+  const transportLabel = transportKind === 'stdout_capture'
+    ? 'captured nothing on child stdout'
+    : 'received no bytes in the launcher-owned response file';
+  return [
+    '# Launcher diagnostic',
+    '',
+    'The adapter exited without producing a response body.',
+    `The launcher ${transportLabel} and is failing closed rather than reporting a silent completed run.`,
+    '',
+    'Inspect metadata/stderr.log and metadata/stdout.log when present to diagnose the adapter.',
+    '',
+  ].join('\n');
+}
+
+function isAlive(target: number): boolean {
+  try {
+    process.kill(target, 0);
+    return true;
+  } catch (err) {
+    if (typeof err === 'object' && err !== null && 'code' in err && err.code === 'ESRCH') {
+      return false;
+    }
+    return true;
+  }
+}
+
+function isRecordedProcessAlive(pid: number, pgid: number): boolean {
+  if (process.platform !== 'win32' && pgid > 0) {
+    try {
+      process.kill(-pgid, 0);
+      return true;
+    } catch (err) {
+      if (!(typeof err === 'object' && err !== null && 'code' in err && err.code === 'ESRCH')) {
+        return true;
+      }
+    }
+  }
+
+  return pid > 0 ? isAlive(pid) : false;
+}
+
+function signalChildProcessGroup(child: ChildProcess, signal: NodeJS.Signals): void {
+  if (!child.pid) {
+    return;
+  }
+
+  if (process.platform !== 'win32') {
+    try {
+      process.kill(-child.pid, signal);
+      return;
+    } catch (err) {
+      if (!(typeof err === 'object' && err !== null && 'code' in err && err.code === 'ESRCH')) {
+        try {
+          process.kill(child.pid, signal);
+        } catch {
+          // best effort
+        }
+        return;
+      }
+    }
+  }
+
+  try {
+    process.kill(child.pid, signal);
+  } catch {
+    // best effort
+  }
+}
+
+async function verifyReviewedBundle(
+  reviewDir: string,
+  expectedManifestHash: string,
+): Promise<DispatchResult<{ manifest: ReviewManifest }>> {
   const manifestPath = join(reviewDir, 'metadata', 'input-manifest.json');
   let manifestRaw: string;
   try {
@@ -267,16 +334,9 @@ async function verifyReviewedBundle(reviewDir: string, expectedManifestHash: str
     return fail('HASH_MISMATCH', 'Review bundle hash mismatch.');
   }
 
-  let manifest: {
-    handoff_id: string;
-    mode: RunResult['mode'];
-    wrapper: { path: string; sha256: string };
-    handoff_snapshot: { path: string; sha256: string };
-    context_files: Array<{ snapshot_path: string; sha256: string }>;
-  };
-
+  let manifest: ReviewManifest;
   try {
-    manifest = JSON.parse(manifestRaw) as typeof manifest;
+    manifest = JSON.parse(manifestRaw) as ReviewManifest;
   } catch {
     return fail('PARSE_ERROR', 'Failed to parse review input manifest.');
   }
@@ -404,27 +464,79 @@ export async function launch(opts: LaunchOpts): Promise<DispatchResult<RunResult
     repoRoot,
   );
 
-  let spawnResult: { exitCode: number; stdout: string; stderr: string };
-  try {
-    spawnResult = await spawnAgent(
-      agentConfigResult.data,
-      command,
-      args,
-      env,
-      agentVisibleDir,
-      agentConfigResult.data.instruction_transport.kind === 'stdin' ? wrapperContent : undefined,
-    );
-  } catch (err) {
+  const stdoutTarget = agentConfigResult.data.response_transport.kind === 'stdout_capture'
+    ? responsePath
+    : stdoutPath;
+  const stdoutStream = createWriteStream(stdoutTarget, { flags: 'w' });
+  const stderrStream = createWriteStream(stderrPath, { flags: 'w' });
+
+  let child: ChildProcess | undefined;
+  let confirmedStart = false;
+  let requestedStatus: Exclude<TerminalRunStatus, 'rejected' | 'completed'> | null = null;
+  let heartbeatTimer: NodeJS.Timeout | undefined;
+  let timeoutTimer: NodeJS.Timeout | undefined;
+  let killTimer: NodeJS.Timeout | undefined;
+  let terminalStatus: TerminalRunStatus | null = null;
+
+  const finalize = async (
+    status: TerminalRunStatus,
+    exitCode: number,
+    errorMessage?: string,
+  ): Promise<{ response: string; emptyResponse: boolean; finalStatus: TerminalRunStatus }> => {
+    terminalStatus = status;
+
+    if (heartbeatTimer) clearInterval(heartbeatTimer);
+    if (timeoutTimer) clearTimeout(timeoutTimer);
+    if (killTimer) clearTimeout(killTimer);
+
+    await new Promise<void>((resolvePromise) => {
+      stdoutStream.end(() => resolvePromise());
+    });
+    await new Promise<void>((resolvePromise) => {
+      stderrStream.end(() => resolvePromise());
+    });
+
+    let response = '';
+    if (await pathExists(responsePath)) {
+      response = await readFile(responsePath, 'utf-8');
+    }
+
+    let finalStatus = status;
+    let emptyResponse = false;
+    if (response.trim() === '') {
+      emptyResponse = true;
+      response = buildEmptyBodyDiagnostic(agentConfigResult.data.response_transport.kind);
+      await writeFile(responsePath, response, 'utf-8');
+      if (finalStatus === 'completed') {
+        finalStatus = 'failed';
+      }
+    }
+
     const completedAt = new Date().toISOString();
-    await moveToken(opts.reviewId, 'launching', 'rejected');
     await writeLaunchMetadata(metadataDir, {
       reviewId: opts.reviewId,
       runId,
-      tokenState: 'rejected',
+      tokenState: confirmedStart ? 'consumed' : 'rejected',
       startedAt,
       completedAt,
-      error: 'Agent process failed to spawn.',
+      exitCode,
+      error: emptyResponse ? 'Empty agent response' : errorMessage,
+      responsePath,
+      stdoutPath: agentConfigResult.data.response_transport.kind === 'file' ? stdoutPath : null,
+      stderrPath,
     });
+
+    if (child?.pid) {
+      await writeStateMetadata(metadataDir, {
+        runId,
+        status: finalStatus,
+        pid: child.pid,
+        pgid: child.pid,
+        startedAt,
+        heartbeatAt: completedAt,
+      });
+    }
+
     await writeFile(
       join(metadataDir, 'meta.json'),
       `${JSON.stringify({
@@ -434,118 +546,220 @@ export async function launch(opts: LaunchOpts): Promise<DispatchResult<RunResult
         handoff_id: payload.handoffId,
         agent: payload.agent,
         mode: payload.mode,
-        status: 'rejected',
+        status: finalStatus,
+        exit_code: exitCode,
         started_at: startedAt,
         completed_at: completedAt,
-        error: 'Agent process failed to spawn.',
+        ...(emptyResponse || errorMessage ? { error: emptyResponse ? 'Empty agent response' : errorMessage } : {}),
+        response_path: responsePath,
+        stdout_path: agentConfigResult.data.response_transport.kind === 'file' ? stdoutPath : null,
+        stderr_path: stderrPath,
       }, null, 2)}\n`,
       'utf-8',
     );
-    return fail('LAUNCH_FAILED', 'Agent process failed to spawn.', err);
-  }
 
-  const stdoutLogPath = spawnResult.stdout.trim() ? stdoutPath : null;
-  const stderrLogPath = spawnResult.stderr.trim() ? stderrPath : null;
+    return { response, emptyResponse, finalStatus };
+  };
 
-  if (stdoutLogPath) {
-    await writeFile(stdoutPath, spawnResult.stdout, 'utf-8');
-  }
-  if (stderrLogPath) {
-    await writeFile(stderrPath, spawnResult.stderr, 'utf-8');
-  }
+  const requestTermination = (status: Exclude<TerminalRunStatus, 'rejected' | 'completed'>): void => {
+    if (!child?.pid || terminalStatus) {
+      return;
+    }
+    requestedStatus ??= status;
+    signalChildProcessGroup(child, 'SIGTERM');
 
-  let response: string | undefined;
+    if (!killTimer) {
+      killTimer = setTimeout(() => {
+        if (child) {
+          signalChildProcessGroup(child, 'SIGKILL');
+        }
+      }, CANCEL_GRACE_MS);
+      killTimer.unref?.();
+    }
+  };
+
+  const cancelRun = (): void => {
+    requestTermination('cancelled');
+  };
+
+  process.once('SIGINT', cancelRun);
+  process.once('SIGTERM', cancelRun);
+  process.once('SIGHUP', cancelRun);
+
   try {
-    response = await readFile(responsePath, 'utf-8');
-  } catch {
-    // response file is optional for stdout transport
-  }
+    const needsShell = process.platform === 'win32' && /\.(cmd|bat)$/i.test(command);
+    child = spawn(command, args, {
+      cwd: agentVisibleDir,
+      env,
+      detached: true,
+      stdio: [
+        agentConfigResult.data.instruction_transport.kind === 'stdin' ? 'pipe' : 'ignore',
+        'pipe',
+        'pipe',
+      ],
+      shell: needsShell,
+    });
 
-  if ((!response || response.trim() === '') && spawnResult.stdout.trim()) {
-    response = spawnResult.stdout.trim();
-    await writeFile(responsePath, `${response}\n`, 'utf-8');
-  }
+    if (child.stdout) {
+      child.stdout.pipe(stdoutStream);
+    }
+    if (child.stderr) {
+      child.stderr.pipe(stderrStream);
+    }
 
-  const completedAt = new Date().toISOString();
-  if (!response || response.trim() === '') {
-    await moveToken(opts.reviewId, 'launching', 'rejected');
+    const spawnPromise = new Promise<void>((resolvePromise, rejectPromise) => {
+      child?.once('spawn', () => resolvePromise());
+      child?.once('error', (err) => rejectPromise(err));
+    });
+
+    const closePromise = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolvePromise) => {
+      child?.once('close', (code, signal) => {
+        resolvePromise({
+          code,
+          signal: signal as NodeJS.Signals | null,
+        });
+      });
+    });
+
+    if (agentConfigResult.data.instruction_transport.kind === 'stdin' && child.stdin) {
+      child.stdin.end(wrapperContent);
+    }
+
+    await spawnPromise;
+    confirmedStart = true;
+
+    if (!child.pid) {
+      throw new Error('Spawned child did not report a pid.');
+    }
+
+    await writeStateMetadata(metadataDir, {
+      runId,
+      status: 'launching',
+      pid: child.pid,
+      pgid: child.pid,
+      startedAt,
+      heartbeatAt: startedAt,
+    });
+
+    const moveToConsumed = await moveToken(opts.reviewId, 'launching', 'consumed');
+    if (!moveToConsumed.ok) {
+      requestTermination('failed');
+      const close = await closePromise;
+      await finalize('failed', close.code ?? 1, 'Failed to move launch token to consumed after spawn.');
+      return fail('LAUNCH_FAILED', 'Failed to move launch token to consumed after spawn.', moveToConsumed);
+    }
+
     await writeLaunchMetadata(metadataDir, {
       reviewId: opts.reviewId,
       runId,
-      tokenState: 'rejected',
+      tokenState: 'consumed',
       startedAt,
-      completedAt,
-      exitCode: spawnResult.exitCode,
-      error: 'Empty agent response',
-      responsePath: null,
-      stdoutPath: stdoutLogPath,
-      stderrPath: stderrLogPath,
+      responsePath,
+      stdoutPath: agentConfigResult.data.response_transport.kind === 'file' ? stdoutPath : null,
+      stderrPath,
     });
-    await writeFile(
-      join(metadataDir, 'meta.json'),
-      `${JSON.stringify({
-        schema_version: 1,
-        review_id: opts.reviewId,
-        run_id: runId,
-        handoff_id: payload.handoffId,
-        agent: payload.agent,
-        mode: payload.mode,
-        status: 'rejected',
-        exit_code: spawnResult.exitCode,
-        started_at: startedAt,
-        completed_at: completedAt,
-        error: 'Empty agent response',
-        response_path: null,
-        stdout_path: stdoutLogPath,
-        stderr_path: stderrLogPath,
-      }, null, 2)}\n`,
-      'utf-8',
-    );
-    return fail('EMPTY_RESPONSE', 'Agent produced an empty response. Launch is considered failed.');
-  }
 
-  await moveToken(opts.reviewId, 'launching', 'consumed');
-  await writeLaunchMetadata(metadataDir, {
-    reviewId: opts.reviewId,
-    runId,
-    tokenState: 'consumed',
-    startedAt,
-    completedAt,
-    exitCode: spawnResult.exitCode,
-    responsePath,
-    stdoutPath: stdoutLogPath,
-    stderrPath: stderrLogPath,
-  });
-  await writeFile(
-    join(metadataDir, 'meta.json'),
-    `${JSON.stringify({
-      schema_version: 1,
-      review_id: opts.reviewId,
-      run_id: runId,
-      handoff_id: payload.handoffId,
+    heartbeatTimer = setInterval(async () => {
+      if (!child?.pid || terminalStatus) {
+        return;
+      }
+      if (isRecordedProcessAlive(child.pid, child.pid)) {
+        await writeStateMetadata(metadataDir, {
+          runId,
+          status: 'launching',
+          pid: child.pid,
+          pgid: child.pid,
+          startedAt,
+          heartbeatAt: new Date().toISOString(),
+        });
+      }
+    }, HEARTBEAT_INTERVAL_MS);
+    heartbeatTimer.unref?.();
+
+    timeoutTimer = setTimeout(() => {
+      requestTermination('timed_out');
+    }, (agentConfigResult.data.timeout_seconds ?? 1800) * 1000);
+    timeoutTimer.unref?.();
+
+    const close = await closePromise;
+    const exitCode = close.code ?? 1;
+    const defaultStatus = requestedStatus ?? (close.signal ? 'failed' : exitCode === 0 ? 'completed' : 'failed');
+    const errorMessage = defaultStatus === 'completed'
+      ? undefined
+      : close.signal
+        ? `Agent exited due to signal ${close.signal}.`
+        : exitCode !== 0
+          ? `Agent exited with code ${exitCode}.`
+          : undefined;
+    const result = await finalize(defaultStatus, exitCode, errorMessage);
+
+    if (result.finalStatus !== 'completed') {
+      const errorCode = result.emptyResponse ? 'EMPTY_RESPONSE' : 'LAUNCH_FAILED';
+      const message = result.emptyResponse
+        ? 'Agent produced an empty response body.'
+        : `Agent launch completed with terminal status "${result.finalStatus}".`;
+      return fail(errorCode, message, {
+        runId,
+        runDir,
+        status: result.finalStatus,
+      });
+    }
+
+    return ok({
+      runId,
+      reviewId: opts.reviewId,
+      handoffId: payload.handoffId,
       agent: payload.agent,
       mode: payload.mode,
-      status: 'completed',
-      exit_code: spawnResult.exitCode,
-      started_at: startedAt,
-      completed_at: completedAt,
-      response_path: responsePath,
-      stdout_path: stdoutLogPath,
-      stderr_path: stderrLogPath,
-    }, null, 2)}\n`,
-    'utf-8',
-  );
+      runDir,
+      exitCode,
+      response: result.response,
+      startedAt,
+      completedAt: new Date().toISOString(),
+    });
+  } catch (err) {
+    if (!confirmedStart) {
+      await moveToken(opts.reviewId, 'launching', 'rejected');
+      await writeLaunchMetadata(metadataDir, {
+        reviewId: opts.reviewId,
+        runId,
+        tokenState: 'rejected',
+        startedAt,
+        completedAt: new Date().toISOString(),
+        error: 'Agent process failed before confirmed start.',
+        responsePath: null,
+        stdoutPath: null,
+        stderrPath,
+      });
+      await writeFile(
+        join(metadataDir, 'meta.json'),
+        `${JSON.stringify({
+          schema_version: 1,
+          review_id: opts.reviewId,
+          run_id: runId,
+          handoff_id: payload.handoffId,
+          agent: payload.agent,
+          mode: payload.mode,
+          status: 'rejected',
+          started_at: startedAt,
+          completed_at: new Date().toISOString(),
+          error: 'Agent process failed before confirmed start.',
+          response_path: null,
+          stdout_path: null,
+          stderr_path: stderrPath,
+        }, null, 2)}\n`,
+        'utf-8',
+      );
+    }
 
-  return ok({
-    runId,
-    reviewId: opts.reviewId,
-    handoffId: payload.handoffId,
-    agent: payload.agent,
-    mode: payload.mode,
-    runDir,
-    exitCode: spawnResult.exitCode,
-    response,
-    startedAt,
-    completedAt,
-  });
+    return fail('LAUNCH_FAILED', 'Agent process failed to launch.', err);
+  } finally {
+    process.removeListener('SIGINT', cancelRun);
+    process.removeListener('SIGTERM', cancelRun);
+    process.removeListener('SIGHUP', cancelRun);
+    if (!terminalStatus) {
+      stdoutStream.end();
+      stderrStream.end();
+    }
+  }
 }
