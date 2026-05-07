@@ -161,6 +161,42 @@ function buildCommand(
   return { command, args };
 }
 
+async function writeLaunchMetadata(
+  metadataDir: string,
+  data: {
+    reviewId: string;
+    runId: string;
+    tokenState: 'launching' | 'consumed' | 'rejected';
+    startedAt: string;
+    completedAt?: string;
+    exitCode?: number;
+    error?: string;
+    responsePath?: string | null;
+    stdoutPath?: string | null;
+    stderrPath?: string | null;
+  },
+): Promise<void> {
+  const payload = {
+    schema_version: 1,
+    review_id: data.reviewId,
+    run_id: data.runId,
+    token_state: data.tokenState,
+    started_at: data.startedAt,
+    ...(data.completedAt !== undefined ? { completed_at: data.completedAt } : {}),
+    ...(data.exitCode !== undefined ? { exit_code: data.exitCode } : {}),
+    ...(data.error !== undefined ? { error: data.error } : {}),
+    ...(data.responsePath !== undefined ? { response_path: data.responsePath } : {}),
+    ...(data.stdoutPath !== undefined ? { stdout_path: data.stdoutPath } : {}),
+    ...(data.stderrPath !== undefined ? { stderr_path: data.stderrPath } : {}),
+  };
+
+  await writeFile(
+    join(metadataDir, 'launch.json'),
+    `${JSON.stringify(payload, null, 2)}\n`,
+    'utf-8',
+  );
+}
+
 function spawnAgent(
   agent: AgentLauncherConfig,
   command: string,
@@ -332,17 +368,12 @@ export async function launch(opts: LaunchOpts): Promise<DispatchResult<RunResult
     await readFile(join(reviewDir, 'metadata', 'review.json'), 'utf-8'),
     'utf-8',
   );
-  await writeFile(
-    join(metadataDir, 'launch.json'),
-    `${JSON.stringify({
-      schema_version: 1,
-      review_id: opts.reviewId,
-      run_id: runId,
-      token_state: 'launching',
-      started_at: startedAt,
-    }, null, 2)}\n`,
-    'utf-8',
-  );
+  await writeLaunchMetadata(metadataDir, {
+    reviewId: opts.reviewId,
+    runId,
+    tokenState: 'launching',
+    startedAt,
+  });
 
   const responsePath = join(runDir, 'response.md');
   const stdoutPath = join(metadataDir, 'stdout.log');
@@ -384,14 +415,42 @@ export async function launch(opts: LaunchOpts): Promise<DispatchResult<RunResult
       agentConfigResult.data.instruction_transport.kind === 'stdin' ? wrapperContent : undefined,
     );
   } catch (err) {
+    const completedAt = new Date().toISOString();
     await moveToken(opts.reviewId, 'launching', 'rejected');
+    await writeLaunchMetadata(metadataDir, {
+      reviewId: opts.reviewId,
+      runId,
+      tokenState: 'rejected',
+      startedAt,
+      completedAt,
+      error: 'Agent process failed to spawn.',
+    });
+    await writeFile(
+      join(metadataDir, 'meta.json'),
+      `${JSON.stringify({
+        schema_version: 1,
+        review_id: opts.reviewId,
+        run_id: runId,
+        handoff_id: payload.handoffId,
+        agent: payload.agent,
+        mode: payload.mode,
+        status: 'rejected',
+        started_at: startedAt,
+        completed_at: completedAt,
+        error: 'Agent process failed to spawn.',
+      }, null, 2)}\n`,
+      'utf-8',
+    );
     return fail('LAUNCH_FAILED', 'Agent process failed to spawn.', err);
   }
 
-  if (spawnResult.stdout.trim()) {
+  const stdoutLogPath = spawnResult.stdout.trim() ? stdoutPath : null;
+  const stderrLogPath = spawnResult.stderr.trim() ? stderrPath : null;
+
+  if (stdoutLogPath) {
     await writeFile(stdoutPath, spawnResult.stdout, 'utf-8');
   }
-  if (spawnResult.stderr.trim()) {
+  if (stderrLogPath) {
     await writeFile(stderrPath, spawnResult.stderr, 'utf-8');
   }
 
@@ -410,6 +469,18 @@ export async function launch(opts: LaunchOpts): Promise<DispatchResult<RunResult
   const completedAt = new Date().toISOString();
   if (!response || response.trim() === '') {
     await moveToken(opts.reviewId, 'launching', 'rejected');
+    await writeLaunchMetadata(metadataDir, {
+      reviewId: opts.reviewId,
+      runId,
+      tokenState: 'rejected',
+      startedAt,
+      completedAt,
+      exitCode: spawnResult.exitCode,
+      error: 'Empty agent response',
+      responsePath: null,
+      stdoutPath: stdoutLogPath,
+      stderrPath: stderrLogPath,
+    });
     await writeFile(
       join(metadataDir, 'meta.json'),
       `${JSON.stringify({
@@ -417,11 +488,16 @@ export async function launch(opts: LaunchOpts): Promise<DispatchResult<RunResult
         review_id: opts.reviewId,
         run_id: runId,
         handoff_id: payload.handoffId,
+        agent: payload.agent,
+        mode: payload.mode,
         status: 'rejected',
         exit_code: spawnResult.exitCode,
         started_at: startedAt,
         completed_at: completedAt,
         error: 'Empty agent response',
+        response_path: null,
+        stdout_path: stdoutLogPath,
+        stderr_path: stderrLogPath,
       }, null, 2)}\n`,
       'utf-8',
     );
@@ -429,6 +505,17 @@ export async function launch(opts: LaunchOpts): Promise<DispatchResult<RunResult
   }
 
   await moveToken(opts.reviewId, 'launching', 'consumed');
+  await writeLaunchMetadata(metadataDir, {
+    reviewId: opts.reviewId,
+    runId,
+    tokenState: 'consumed',
+    startedAt,
+    completedAt,
+    exitCode: spawnResult.exitCode,
+    responsePath,
+    stdoutPath: stdoutLogPath,
+    stderrPath: stderrLogPath,
+  });
   await writeFile(
     join(metadataDir, 'meta.json'),
     `${JSON.stringify({
@@ -443,8 +530,8 @@ export async function launch(opts: LaunchOpts): Promise<DispatchResult<RunResult
       started_at: startedAt,
       completed_at: completedAt,
       response_path: responsePath,
-      stdout_path: spawnResult.stdout.trim() ? stdoutPath : null,
-      stderr_path: spawnResult.stderr.trim() ? stderrPath : null,
+      stdout_path: stdoutLogPath,
+      stderr_path: stderrLogPath,
     }, null, 2)}\n`,
     'utf-8',
   );
