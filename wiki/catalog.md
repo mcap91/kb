@@ -1,7 +1,7 @@
 ---
 _generated: true
 title: "Catalog"
-updated: "2026-05-06T22:05:41.067Z"
+updated: "2026-05-07T23:52:05.424Z"
 ---
 
 # Catalog
@@ -24,6 +24,8 @@ Complete listing of all wiki records by type.
 | [WK-0010](wiki/issues/WK-0010.md) | Implement PLN creation and bundle normalization workflow | inbox | high | WK |
 | [WK-0011](wiki/issues/WK-0011.md) | Integrate PLN with wiki retrieval and reference rules | inbox | high | WK |
 | [WK-0012](wiki/issues/WK-0012.md) | Dogfood PLN on kb and document the operator workflow | inbox | high | WK |
+| [WK-0013](wiki/issues/WK-0013.md) | dispatch leaves launch.json stuck at launching after terminal runs, causing stale active-launch reporting | done | high | WK |
+| [WK-0014](wiki/issues/WK-0014.md) | Align dispatch runtime telemetry with portfolio blackboard protocol | done | high | WK |
 
 ## Initiatives
 
