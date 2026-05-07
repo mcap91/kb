@@ -80,6 +80,15 @@ wiki/
   handoffs/               # HO-* handoffs (dispatch-owned)
 ```
 
+## Retrieval Starting Point
+
+- start retrieval from `wiki/catalog.md`
+- treat `wiki/catalog.md`, `wiki/now.md`, `wiki/inbox.md`, `wiki/backlog.md`, and `wiki/archive.md` as non-canonical generated views
+- when generated views are missing or may be stale, prefer canonical pages directly
+- use durable `docs/` reference pages for operator and protocol behavior
+- use `wiki/issues/`, `wiki/initiatives/`, `wiki/decisions/`, `wiki/sources/`, and `wiki/areas/` as the canonical record surfaces
+- treat `docs/superpowers/specs/` and `docs/superpowers/plans/` as supporting planning material rather than the first source of current feature status
+
 ## Frontmatter Format
 
 All wiki records use YAML frontmatter delimited by `---`:

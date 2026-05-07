@@ -6,9 +6,20 @@ This document describes how retrieval and search work in `kb`.
 
 `kb` provides lexical search over canonical wiki content. The search system indexes manifest-driven wiki records and selected documentation files, then supports text queries with optional prefix and status filters.
 
+Repository-context retrieval is a wiki/docs retrieval problem first, not a broad filesystem search problem first.
+
 ## Retrieval Entrypoint
 
 The primary retrieval entrypoint is `wiki/catalog.md`, a generated view that lists all manifest-driven records organized by type and status. Agents and humans can use the catalog as a starting point for navigating the wiki.
+
+## Retrieval Order
+
+1. Start from `wiki/catalog.md`.
+2. Read the relevant durable `docs/` reference pages.
+3. Check related `wiki/decisions/`, `wiki/issues/`, `wiki/initiatives/`, `wiki/areas/`, and `wiki/sources/` pages.
+4. Only then drill into implementation files under `packages/` and `tests/`.
+
+If generated views are missing or may be stale, prefer canonical pages directly over derived views.
 
 ## Canonical Content
 
@@ -17,9 +28,10 @@ Canonical content is content that is directly authored and maintained. It is the
 ### Canonical Sources
 
 - **Wiki records:** `WK-*`, `IN-*`, `DEC-*`, `SRC-*`, `AREA` records
-- **Documentation:** files under `docs/`
+- **Documentation:** durable reference files under `docs/`
 - **Root docs:** `README.md`, `AGENTS.md`, `CLAUDE.md`
 - **Wiki reference:** `wiki/schema.md`, `wiki/conventions.md`, `wiki/index.md`
+- **Planning support:** `docs/superpowers/specs/` and `docs/superpowers/plans/` are useful supporting context, but they are not the first source of current feature status.
 
 ### Non-Canonical (Generated) Content
 
