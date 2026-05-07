@@ -289,6 +289,7 @@ async function cmdStatus(args: string[]): Promise<number> {
   console.log(`Dispatch status for: ${resolve(data.repoRoot)}\n`);
   console.log(`Pending reviews: ${data.pending.length}`);
   console.log(`Active launches: ${data.launching.length}`);
+  console.log(`Stale launching tokens: ${data.staleLaunching.length}`);
   console.log(`Consumed tokens: ${data.consumed.length}`);
   console.log(`Rejected tokens: ${data.rejected.length}`);
   console.log(`Runs in repo: ${data.runCount}`);

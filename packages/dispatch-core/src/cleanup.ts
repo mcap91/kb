@@ -1,4 +1,4 @@
-import { readFile, readdir, rm, stat } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rename, rm, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import type { CleanupOpts, CleanupReport, DispatchToken } from './types.js';
@@ -107,6 +107,58 @@ async function getAllKnownReviewIds(): Promise<Set<string>> {
   return ids;
 }
 
+async function listTerminalRunStates(repoRoot: string): Promise<Map<string, 'completed' | 'rejected'>> {
+  const states = new Map<string, 'completed' | 'rejected'>();
+  const runsDir = join(repoRoot, '.agent-runs', 'runs');
+
+  let handoffDirs: string[];
+  try {
+    handoffDirs = await readdir(runsDir);
+  } catch {
+    return states;
+  }
+
+  for (const handoffId of handoffDirs) {
+    let runIds: string[];
+    try {
+      runIds = await readdir(join(runsDir, handoffId));
+    } catch {
+      continue;
+    }
+
+    for (const runId of runIds) {
+      const metaPath = join(runsDir, handoffId, runId, 'metadata', 'meta.json');
+      try {
+        const raw = await readFile(metaPath, 'utf-8');
+        const meta = JSON.parse(raw) as { status?: string; review_id?: string; reviewId?: string };
+        const reviewId = meta.review_id ?? meta.reviewId;
+        if (reviewId && (meta.status === 'completed' || meta.status === 'rejected')) {
+          states.set(reviewId, meta.status);
+        }
+      } catch {
+        // ignore missing or malformed meta.json
+      }
+    }
+  }
+
+  return states;
+}
+
+async function moveTokenToState(
+  filePath: string,
+  reviewId: string,
+  targetState: 'consumed' | 'rejected',
+): Promise<void> {
+  const targetDir = getTokenDir(targetState);
+  await mkdir(targetDir, { recursive: true });
+  const destPath = join(targetDir, `${reviewId}.json`);
+  try {
+    await rename(filePath, destPath);
+  } catch {
+    await rm(filePath, { force: true });
+  }
+}
+
 /**
  * Check if a file/directory is older than the given age threshold.
  */
@@ -212,26 +264,29 @@ export async function cleanup(opts: CleanupOpts = {}): Promise<DispatchResult<Cl
     // -------------------------------------------------------------------
     // 3. Recover stale launching tokens
     // -------------------------------------------------------------------
+    const terminalRunStates = opts.dir
+      ? await listTerminalRunStates(opts.dir)
+      : new Map<string, 'completed' | 'rejected'>();
+
     const launchingTokens = await listTokens('launching');
     for (const { reviewId, token, filePath } of launchingTokens) {
       const expiry = new Date(token.payload.expiry);
       const createdAt = new Date(token.createdAt);
-      const isExpired = expiry.getTime() <= Date.now();
-      const isStale = Date.now() - createdAt.getTime() > maxAgeMs;
+      const isExpired = Number.isFinite(expiry.getTime()) && expiry.getTime() <= Date.now();
+      const isStale = Number.isFinite(createdAt.getTime()) && Date.now() - createdAt.getTime() > maxAgeMs;
 
-      if (isExpired || isStale) {
-        // Move to rejected
-        const rejectedDir = getTokenDir('rejected');
-        const { rename } = await import('node:fs/promises');
-        const { mkdir } = await import('node:fs/promises');
-        await mkdir(rejectedDir, { recursive: true });
-        const destPath = join(rejectedDir, `${reviewId}.json`);
-        try {
-          await rename(filePath, destPath);
-        } catch {
-          // If rename fails, try remove
-          await rm(filePath, { force: true });
-        }
+      let targetState: 'consumed' | 'rejected' | null = null;
+      const terminalState = terminalRunStates.get(reviewId);
+      if (terminalState === 'completed') {
+        targetState = 'consumed';
+      } else if (terminalState === 'rejected') {
+        targetState = 'rejected';
+      } else if (isExpired || isStale) {
+        targetState = 'rejected';
+      }
+
+      if (targetState) {
+        await moveTokenToState(filePath, reviewId, targetState);
         report.staleTokens.push(reviewId);
         report.totalRemoved++;
       }

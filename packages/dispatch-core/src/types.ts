@@ -219,6 +219,7 @@ export interface StatusResult {
   repoRoot: string;
   pending: TokenInfo[];
   launching: TokenInfo[];
+  staleLaunching: TokenInfo[];
   consumed: TokenInfo[];
   rejected: TokenInfo[];
   runCount: number;
