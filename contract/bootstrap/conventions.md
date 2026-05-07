@@ -4,6 +4,13 @@ This file describes the conventions for wiki records in this repository. It was 
 
 After bootstrap, this file is consumer-owned. You may customize it for your project. `wiki sync-contract` will report drift but will not overwrite this file.
 
+## Retrieval
+
+- start retrieval from `wiki/catalog.md`
+- treat `wiki/catalog.md`, `wiki/now.md`, `wiki/inbox.md`, `wiki/backlog.md`, and `wiki/archive.md` as non-canonical generated views
+- when generated views are missing or may be stale, prefer canonical pages directly
+- use related issue, initiative, decision, source, and area pages as the canonical record surfaces
+
 ## Creating Records
 
 Use the `wiki create` command to create new records:

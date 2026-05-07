@@ -813,6 +813,37 @@ describe('search', () => {
     }
   });
 
+  it('build index excludes docs/superpowers/specs/ and docs/superpowers/plans/', async () => {
+    tmp = await createBootstrappedRepo();
+
+    fs.mkdirSync(path.join(tmp.dir, 'docs', 'superpowers', 'specs'), { recursive: true });
+    fs.mkdirSync(path.join(tmp.dir, 'docs', 'superpowers', 'plans'), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmp.dir, 'docs', 'superpowers', 'specs', 'pln-design.md'),
+      '# PLN Design\n\nPlanning-only design material.\n',
+      'utf-8',
+    );
+    fs.writeFileSync(
+      path.join(tmp.dir, 'docs', 'superpowers', 'plans', 'pln-plan.md'),
+      '# PLN Plan\n\nPlanning-only implementation plan.\n',
+      'utf-8',
+    );
+    fs.writeFileSync(
+      path.join(tmp.dir, 'docs', 'reference.md'),
+      '# Reference\n\nDurable operator documentation.\n',
+      'utf-8',
+    );
+
+    await buildSearchIndex({ dir: tmp.dir });
+
+    const index = readJson<{ entries: Array<{ path: string }> }>(tmp.dir, 'wiki/.search-index.json');
+    const paths = index.entries.map(e => e.path);
+
+    expect(paths).toContain('docs/reference.md');
+    expect(paths).not.toContain('docs/superpowers/specs/pln-design.md');
+    expect(paths).not.toContain('docs/superpowers/plans/pln-plan.md');
+  });
+
   it('search returns relevant results for query', async () => {
     tmp = await createBootstrappedRepo();
 

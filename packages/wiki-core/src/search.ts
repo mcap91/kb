@@ -7,7 +7,7 @@
  *
  * Included content:
  *   - Manifest-driven wiki records (WK, IN, DEC, SRC, AREA files)
- *   - docs/**\/*.md
+ *   - docs/**\/*.md, excluding planning-only docs under docs/superpowers/specs/ and docs/superpowers/plans/
  *   - Root README.md, AGENTS.md, CLAUDE.md (when present)
  *
  * Excluded content:
@@ -274,9 +274,17 @@ function collectSearchSourceFiles(targetDir: string, manifest: WikiManifest): Se
   const excludeDirs = new Set(['node_modules', 'dist', '.agent-runs', 'scratch_space']);
   const docFiles = listMarkdownFilesRecursive(docsDir, excludeDirs);
   for (const absPath of docFiles) {
+    const relPath = path.relative(targetDir, absPath).replace(/\\/g, '/');
+    if (
+      relPath.startsWith('docs/superpowers/specs/')
+      || relPath.startsWith('docs/superpowers/plans/')
+    ) {
+      continue;
+    }
+
     files.push({
       absPath,
-      relPath: path.relative(targetDir, absPath).replace(/\\/g, '/'),
+      relPath,
       kind: 'doc',
     });
   }
@@ -336,7 +344,7 @@ function readSearchIndex(indexPath: string): Result<SearchIndex> {
 /**
  * Build a search index over canonical content in the target repo.
  *
- * Scans manifest-driven wiki records, docs/**\/*.md, and root README/AGENTS/CLAUDE.
+ * Scans manifest-driven wiki records, durable docs/**\/*.md, and root README/AGENTS/CLAUDE.
  * Writes the index to wiki/.search-index.json.
  */
 export async function buildSearchIndex(
