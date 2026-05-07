@@ -93,6 +93,46 @@ npm run typecheck                                      Typecheck entire monorepo
 
 ## Working Conventions
 
+### Core Rule
+
+Use the repo-local wiki and docs as the canonical work-and-knowledge model for this repository.
+
+Repository-context retrieval is a wiki/docs retrieval problem first, not a broad filesystem search problem first.
+
+Do not treat generated views, launcher runtime artifacts, or `scratch_space/` material as canonical state.
+
+### Retrieval Order
+
+Before substantive work:
+
+1. Start from `wiki/catalog.md`.
+2. Read the relevant durable `docs/` reference pages.
+3. Check related `wiki/decisions/`, `wiki/issues/`, `wiki/initiatives/`, `wiki/areas/`, and `wiki/sources/` pages when they exist.
+4. Only then drill into implementation files under `packages/` and `tests/`.
+
+Do not use raw `rg` as the first retrieval step for repo-context questions. Use `wiki/catalog.md` or `wiki search` first.
+
+Do not parallelize implementation search with the initial retrieval pass. Complete steps 1-3 before searching `packages/` or `tests/`.
+
+If generated views are missing or stale, fall back to:
+
+1. relevant durable `docs/` reference pages
+2. `wiki/decisions/`
+3. `wiki/issues/` and `wiki/initiatives/`
+4. `wiki/sources/` and `wiki/areas/`
+5. implementation files
+
+### Canonical Layers
+
+- `docs/` reference pages are the canonical durable knowledge layer for operator and protocol behavior.
+- `wiki/issues/WK-*` and `wiki/initiatives/IN-*` are the canonical work-tracking layers.
+- `wiki/decisions/DEC-*` records durable repo decisions.
+- `wiki/sources/SRC-*` records provenance and evidence when needed.
+- `wiki/areas/*.md` records durable repo boundaries and ownership.
+- `docs/superpowers/specs/` and `docs/superpowers/plans/` are planning/supporting material. Use them after the relevant wiki records, not as the first source of current feature status.
+- `wiki/catalog.md`, `wiki/now.md`, `wiki/backlog.md`, `wiki/archive.md`, and `wiki/inbox.md` are generated views, not canonical state.
+- `.agent-runs/` is runtime state only and must never be treated as committed or canonical content.
+
 ### TypeScript Patterns
 
 - TypeScript, Node.js 20+, npm workspaces

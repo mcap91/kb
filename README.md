@@ -14,6 +14,23 @@ Use this model:
 - Use the **CLI from the `kb` repo** for `graph`.
 - Always target the consuming repo explicitly with `dir`.
 
+Repository-context retrieval is a wiki/docs retrieval problem first, not a broad filesystem search problem first.
+
+Before substantive work:
+
+1. Start from `wiki/catalog.md`.
+2. Read the relevant durable `docs/` reference pages.
+3. Check related `wiki/decisions/`, `wiki/issues/`, `wiki/initiatives/`, `wiki/areas/`, and `wiki/sources/`.
+4. Only then inspect `packages/` and `tests/`.
+
+Do not use raw `rg` as the first retrieval step for repo-context questions. Use `wiki/catalog.md` or `wiki search` first.
+
+Do not parallelize implementation search with the initial retrieval pass. Complete steps 1-3 before searching `packages/` or `tests/`.
+
+If generated views are missing or stale, prefer canonical pages directly over derived views.
+
+`docs/superpowers/specs/` and `docs/superpowers/plans/` are supporting planning material, not the first source of current feature status.
+
 The wiki MCP tools and the wiki CLI both go through the same `wiki-core` implementation, so manifest rules, prefix validation, handoff exclusion, generated-view exclusion, ID allocation, linting, and search scope are enforced consistently.
 
 ## Repo Layout
@@ -411,6 +428,19 @@ When you need graph operations, use the `kb` CLI from `../kb`.
 
 Do not run `kb` commands from this repo root unless explicitly instructed. Run them from `../kb` and point back to this repo with `--dir`.
 
+Repository-context retrieval is a wiki/docs retrieval problem first, not a broad filesystem search problem first.
+
+Before substantive work:
+
+1. Start from `wiki/catalog.md`.
+2. Read the relevant durable `docs/` reference pages.
+3. Check related `wiki/decisions/`, `wiki/issues/`, `wiki/initiatives/`, `wiki/areas/`, and `wiki/sources/`.
+4. Only then inspect implementation files.
+
+Do not use raw `rg` as the first retrieval step for repo-context questions. Use `wiki/catalog.md` or `wiki search` first.
+
+Do not parallelize implementation search with the initial retrieval pass. Complete steps 1-3 before searching code.
+
 ## First-Time Setup
 
 If `../kb` dependencies are not installed:
@@ -500,6 +530,19 @@ Use this operating model:
 - use `../kb` CLI for graph
 - target this repo explicitly with `dir`
 
+Repository-context retrieval is a wiki/docs retrieval problem first, not a broad filesystem search problem first.
+
+Before substantive work:
+
+1. Start from `wiki/catalog.md`.
+2. Read the relevant durable `docs/` reference pages.
+3. Check related `wiki/decisions/`, `wiki/issues/`, `wiki/initiatives/`, `wiki/areas/`, and `wiki/sources/`.
+4. Only then inspect implementation files.
+
+Do not use raw `rg` as the first retrieval step for repo-context questions. Use `wiki/catalog.md` or `wiki search` first.
+
+Do not parallelize implementation search with the initial retrieval pass. Complete steps 1-3 before searching code.
+
 ## Commands
 
 Install or update `kb`:
@@ -562,3 +605,5 @@ It also does not overwrite `wiki/schema.md`, `wiki/conventions.md`, or `wiki/ind
 - If dispatch MCP is unavailable, fall back to the `kb` CLI for dispatch too.
 - The `fake-agent` launcher written by `npm run dispatch -- init-config --force` is concrete and sister-repo safe.
 - The wiki MCP server serves the `kb` repo but operates on the consuming repo through `dir`.
+- If wiki records and code/tests disagree, report the mismatch explicitly instead of silently trusting grep-first conclusions.
+- Treat `docs/superpowers/specs/` and `docs/superpowers/plans/` as supporting context, not the first source for current feature status.

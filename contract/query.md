@@ -1,6 +1,42 @@
-# Query and Filter Reference
+# Shared Wiki Query Model
 
-This document describes how to query and filter wiki records managed by `kb`.
+This document defines the shared retrieval model for `kb`.
+
+## Retrieval Principle
+
+Default to knowledge-first retrieval, not broad filesystem search first.
+
+## Shared Query Order
+
+1. Start from `wiki/catalog.md`.
+2. Follow into relevant durable `docs/` reference pages.
+3. Check decision pages for durable architectural conclusions.
+4. Check area pages for durable repo boundaries and entrypoints.
+5. Drill into issue and initiative pages for execution state.
+6. Check source pages when provenance or evidence matters.
+7. Only then drill into implementation files under `packages/` and `tests/`.
+
+## Bootstrap Query Path
+
+Before generated views exist or when they may be stale:
+
+1. inspect relevant durable `docs/` reference pages
+2. inspect `wiki/decisions/`
+3. inspect `wiki/areas/`
+4. inspect `wiki/issues/` and `wiki/initiatives/`
+5. inspect `wiki/sources/`
+6. inspect implementation files
+
+## Generated View Trust Rule
+
+Generated views are useful retrieval aids, but they are not canonical state.
+
+If generated views are missing or may be stale, prefer canonical pages directly over derived views.
+
+## Current Status Rule
+
+- Current feature status lives in canonical wiki records such as `WK-*`, `IN-*`, and `DEC-*`.
+- `docs/superpowers/specs/` and `docs/superpowers/plans/` are planning/supporting context, not the first source of current feature status.
 
 ## Search Command
 

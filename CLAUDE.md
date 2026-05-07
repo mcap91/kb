@@ -26,7 +26,7 @@ npm run typecheck                          Type checking
 - `wiki/handoffs/` is excluded from lint, generate, search, and graph.
 - Graph is deterministic and file/module level only. No semantic inference.
 - All public functions return Result types. Do not throw.
-- Agent processes spawn with `cwd = repo_root`. The agent never controls its working directory.
+- Agent processes spawn with `cwd = agent-visible` inside the reviewed run bundle. The agent never controls its working directory.
 - Import `@kb/wiki-core` from wiki-cli and wiki-mcp. Import `@kb/dispatch-core` from dispatch-cli. No cross-subsystem imports.
 
 ### Monorepo Structure
