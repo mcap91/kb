@@ -322,9 +322,9 @@ Outputs in the consuming repo:
 
 ## Update / Deploy kb Into an Existing Consuming Repo
 
-For the full upgrade runbook, including registry migration, consuming-repo instruction updates, and MCP wiring, see [docs/upgrade-consuming-repo.md](docs/upgrade-consuming-repo.md).
+For the exact upgrade runbook, including registry migration, consuming-repo instruction updates, MCP wiring, dispatch status checks, and smoke-test steps, see [docs/upgrade-consuming-repo.md](docs/upgrade-consuming-repo.md).
 
-When `kb` changes and you need to roll the update into an existing consuming repo, run from the `kb` repo:
+If you are upgrading an existing consuming repo, the minimum safe sequence from the `kb` repo is:
 
 ```bash
 git pull
@@ -332,24 +332,30 @@ npm install
 npm run typecheck
 npm test
 npm run wiki -- sync-contract --dir ../my-project
+```
+
+If the consuming repo uses dispatch and is upgrading from the older dispatch registry format, also run:
+
+```bash
+npm run dispatch -- init-config --force
+```
+
+After syncing the contract, regenerate the consuming repo artifacts:
+
+```bash
 npm run wiki -- lint --dir ../my-project
 npm run wiki -- generate --dir ../my-project
 npm run wiki -- build-search-index --dir ../my-project
 npm run graph -- --dir ../my-project
 ```
 
-If the consuming repo uses dispatch:
+Important caveats:
 
-```bash
-npm run dispatch -- init-config --force
-npm run dispatch -- status --dir ../my-project
-```
-
-- `init-config --force` is important when upgrading from the older registry format, because `launchers.v1.json` is operator-owned and is not overwritten by default.
-
-If you changed agent launcher config intentionally:
-
-- re-review pending handoffs before launching them, because registry hash changes invalidate prior review tokens
+- Pulling `kb` is not enough. Update the consuming repo's `AGENTS.md` and `CLAUDE.md` separately using the paste-ready snippets below. `sync-contract` does not touch agent instruction files.
+- `sync-contract` updates record templates and shared surfaces, but does not overwrite `wiki/schema.md`, `wiki/conventions.md`, or `wiki/index.md`.
+- `init-config --force` is specifically for upgrades from the older dispatch registry format, because `launchers.v1.json` is operator-owned and is not overwritten by default.
+- If you changed agent launcher config intentionally, re-review pending handoffs before launching them, because registry hash changes invalidate prior review tokens.
+- If this is a first-time adoption rather than an upgrade, use `wiki bootstrap` instead.
 
 ## Paste-Ready `AGENTS.md` Snippet for a Consuming Repo
 
@@ -360,7 +366,7 @@ Replace these two placeholders once after pasting:
 - `<owner/name>`
 - `../<this-repo-name>`
 
-```md
+````md
 # kb Integration
 
 This repository uses the `kb` toolkit from `../kb`.
@@ -434,17 +440,26 @@ If you already know the absolute path to this repo, you may use that instead of 
 
 ## Day-2 Operations
 
-Examples:
+After updating `kb`:
 
 ```bash
 cd ../kb
 npm run wiki -- sync-contract --dir ../<this-repo-name>
-npm run dispatch -- init-config --force
 npm run wiki -- lint --dir ../<this-repo-name>
 npm run wiki -- generate --dir ../<this-repo-name>
 npm run wiki -- build-search-index --dir ../<this-repo-name>
 npm run graph -- --dir ../<this-repo-name>
 ```
+
+If this repo uses dispatch and is upgrading from the older dispatch registry format:
+
+```bash
+cd ../kb
+npm run dispatch -- init-config --force
+```
+
+`sync-contract` does not update this repo's `AGENTS.md` or `CLAUDE.md`.
+It also does not overwrite `wiki/schema.md`, `wiki/conventions.md`, or `wiki/index.md`.
 
 ## Rules
 
@@ -460,7 +475,7 @@ cd ../kb
 npm run typecheck
 npm test
 ```
-```
+````
 
 ## Paste-Ready `CLAUDE.md` Snippet for a Consuming Repo
 
@@ -471,7 +486,7 @@ Replace these two placeholders once after pasting:
 - `<owner/name>`
 - `../<this-repo-name>`
 
-```md
+````md
 # kb Integration
 
 This repo is managed with the `kb` toolkit from `../kb`.
@@ -516,12 +531,21 @@ npm install
 npm run typecheck
 npm test
 npm run wiki -- sync-contract --dir ../<this-repo-name>
-npm run dispatch -- init-config --force
 npm run wiki -- lint --dir ../<this-repo-name>
 npm run wiki -- generate --dir ../<this-repo-name>
 npm run wiki -- build-search-index --dir ../<this-repo-name>
 npm run graph -- --dir ../<this-repo-name>
 ```
+
+If this repo uses dispatch and is upgrading from the older dispatch registry format:
+
+```bash
+cd ../kb
+npm run dispatch -- init-config --force
+```
+
+`sync-contract` does not update this repo's `AGENTS.md` or `CLAUDE.md`.
+It also does not overwrite `wiki/schema.md`, `wiki/conventions.md`, or `wiki/index.md`.
 
 ## Rules
 
@@ -530,7 +554,7 @@ npm run graph -- --dir ../<this-repo-name>
 - Use `kb` CLI for `graph`.
 - Do not create `HO-*` with `wiki create`.
 - Run `kb` from `../kb`, not from this repo root.
-```
+````
 
 ## Notes for Agents
 
