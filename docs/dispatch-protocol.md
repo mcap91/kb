@@ -269,7 +269,7 @@ The cleanup operation (`dispatch-core/src/cleanup.ts`) removes stale dispatch ar
 
 2. **Remove orphan runs** -- run directories in `.agent-runs/runs/` whose review metadata references a review ID not present in `.agent-runs/reviews/`, older than the retention threshold.
 
-3. **Recover stale launching tokens** -- tokens stuck in `launching/` beyond the retention threshold or past their expiry. Moved to `rejected/`.
+3. **Recover stale launching tokens** -- tokens stuck in `launching/` beyond the retention threshold or past their expiry are moved to `rejected/`. If repo-local run metadata already shows a terminal state, cleanup recovers the token into the matching final state (`consumed/` for completed runs, `rejected/` for rejected runs).
 
 4. **Remove expired consumed/rejected tokens** -- tokens in `consumed/` or `rejected/` older than the retention threshold. Deleted.
 

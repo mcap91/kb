@@ -6,6 +6,43 @@ import type { DispatchResult } from './errors.js';
 import { ok, fail } from './errors.js';
 import { getTokenDir, type TokenState } from './paths.js';
 
+async function listTerminalRunReviewIds(repoRoot: string): Promise<Set<string>> {
+  const runsDir = join(repoRoot, '.agent-runs', 'runs');
+  const reviewIds = new Set<string>();
+
+  let handoffDirs: string[];
+  try {
+    handoffDirs = await readdir(runsDir);
+  } catch {
+    return reviewIds;
+  }
+
+  for (const handoffId of handoffDirs) {
+    let runIds: string[];
+    try {
+      runIds = await readdir(join(runsDir, handoffId));
+    } catch {
+      continue;
+    }
+
+    for (const runId of runIds) {
+      const metaPath = join(runsDir, handoffId, runId, 'metadata', 'meta.json');
+      try {
+        const raw = await readFile(metaPath, 'utf-8');
+        const meta = JSON.parse(raw) as { status?: string; review_id?: string; reviewId?: string };
+        const reviewId = meta.review_id ?? meta.reviewId;
+        if (reviewId && (meta.status === 'completed' || meta.status === 'rejected')) {
+          reviewIds.add(reviewId);
+        }
+      } catch {
+        // ignore missing or malformed meta.json
+      }
+    }
+  }
+
+  return reviewIds;
+}
+
 async function listTokensInState(state: TokenState): Promise<TokenInfo[]> {
   const dir = getTokenDir(state);
   let entries: string[];
@@ -39,12 +76,22 @@ async function listTokensInState(state: TokenState): Promise<TokenInfo[]> {
 export async function status(dir: string): Promise<DispatchResult<StatusResult>> {
   const repoRoot = resolve(dir);
   try {
-    const [pending, launching, consumed, rejected] = await Promise.all([
+    const [pending, launchingAll, consumed, rejected, terminalRunReviewIds] = await Promise.all([
       listTokensInState('pending'),
       listTokensInState('launching'),
       listTokensInState('consumed'),
       listTokensInState('rejected'),
+      listTerminalRunReviewIds(repoRoot),
     ]);
+
+    const now = Date.now();
+    const staleLaunching = launchingAll.filter((token) => {
+      const expiryMs = Date.parse(token.expiry);
+      const isExpired = Number.isFinite(expiryMs) && expiryMs <= now;
+      return isExpired || terminalRunReviewIds.has(token.reviewId);
+    });
+    const staleReviewIds = new Set(staleLaunching.map((token) => token.reviewId));
+    const launching = launchingAll.filter((token) => !staleReviewIds.has(token.reviewId));
 
     let runCount = 0;
     try {
@@ -69,6 +116,7 @@ export async function status(dir: string): Promise<DispatchResult<StatusResult>>
       repoRoot,
       pending,
       launching,
+      staleLaunching,
       consumed,
       rejected,
       runCount,

@@ -18,6 +18,23 @@ function hashText(text: string): string {
   return createHash('sha256').update(text).digest('hex');
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function looksLikeLegacyRegistry(value: unknown): boolean {
+  if (!isRecord(value) || !isRecord(value['agents'])) {
+    return false;
+  }
+
+  return Object.values(value['agents']).some((agent) => {
+    if (!isRecord(agent)) {
+      return false;
+    }
+    return typeof agent['command'] === 'string' || Array.isArray(agent['args']);
+  });
+}
+
 function getTsxBinaryPath(): string {
   return join(
     KB_ROOT,
@@ -150,7 +167,14 @@ export async function loadRegistry(): Promise<DispatchResult<{ path: string; has
 
   const result = agentRegistrySchema.safeParse(parsed);
   if (!result.success) {
-    return fail('PARSE_ERROR', 'Invalid agent registry format.', result.error);
+    const upgradeHint = looksLikeLegacyRegistry(parsed)
+      ? ' Detected a legacy launcher schema. Run `npm run dispatch -- init-config --force` to rewrite launchers.v1.json with the current adapter format.'
+      : ' If this file came from an older kb dispatch version, run `npm run dispatch -- init-config --force` to rewrite it with the current adapter format.';
+    return fail(
+      'PARSE_ERROR',
+      `Invalid agent registry format at ${registryPath}.${upgradeHint}`,
+      result.error,
+    );
   }
 
   return ok({

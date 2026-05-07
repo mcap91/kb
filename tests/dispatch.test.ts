@@ -3,11 +3,12 @@ import { execSync } from 'node:child_process';
 import {
   mkdtemp,
   mkdir,
-  writeFile,
   readFile,
   readdir,
+  rename,
   rm,
   stat,
+  writeFile,
 } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -312,6 +313,11 @@ describe('dispatch', () => {
       expect(await pathExists(join(bundlePath, 'metadata', 'review.json'))).toBe(true);
       expect(await pathExists(join(bundlePath, 'review-manifest.json'))).toBe(false);
 
+      const wrapper = await readFile(join(bundlePath, 'agent-visible', 'wrapper.md'), 'utf-8');
+      expect(wrapper).toContain('AGENT_BLACKBOARD_REPO_ROOT');
+      expect(wrapper).toContain('AGENT_BLACKBOARD_HANDOFF_PATH');
+      expect(wrapper).toContain('AGENT_BLACKBOARD_RESPONSE_PATH');
+
       const manifestRaw = await readFile(join(bundlePath, 'metadata', 'input-manifest.json'), 'utf-8');
       const manifest = JSON.parse(manifestRaw) as {
         handoff_snapshot: { path: string };
@@ -400,6 +406,18 @@ describe('dispatch', () => {
       expect(response).toContain(`handoff_path: ${runHandoffPath}`);
       expect(response).toContain('handoff_exists: true');
       expect(await pathExists(join(launchResult.data.runDir, 'response.md'))).toBe(true);
+
+      const launchMetadataRaw = await readFile(
+        join(launchResult.data.runDir, 'metadata', 'launch.json'),
+        'utf-8',
+      );
+      const launchMetadata = JSON.parse(launchMetadataRaw) as {
+        token_state: string;
+        response_path: string;
+      };
+      expect(launchMetadata.token_state).toBe('consumed');
+      expect(launchMetadata.response_path).toBe(join(launchResult.data.runDir, 'response.md'));
+
       expect(await pathExists(join(launchResult.data.runDir, 'metadata', 'meta.json'))).toBe(true);
       expect(await pathExists(join(launchResult.data.runDir, 'metadata', 'review.json'))).toBe(true);
       expect(await pathExists(join(launchResult.data.runDir, 'metadata', 'input-manifest.json'))).toBe(true);
@@ -410,7 +428,7 @@ describe('dispatch', () => {
       const emptyAgentPath = join(tempDir, 'empty-agent.ts');
       await writeFile(emptyAgentPath, 'process.exit(0);\n');
 
-      await setupFullConfig({
+      const cfgDir = await setupFullConfig({
         version: 1,
         agents: {
           'fake-agent': {
@@ -455,6 +473,31 @@ describe('dispatch', () => {
       if (!launchResult.ok) {
         expect(launchResult.error).toBe('EMPTY_RESPONSE');
       }
+
+      const rejectedFiles = await readdir(join(cfgDir, 'rejected'));
+      expect(rejectedFiles).toContain(`${reviewResult.data.reviewId}.json`);
+
+      const runIds = await readdir(join(repoRoot, '.agent-runs', 'runs', 'HO-0001'));
+      expect(runIds).toHaveLength(1);
+      const runDir = join(repoRoot, '.agent-runs', 'runs', 'HO-0001', runIds[0]!);
+
+      const launchMetadataRaw = await readFile(join(runDir, 'metadata', 'launch.json'), 'utf-8');
+      const launchMetadata = JSON.parse(launchMetadataRaw) as {
+        token_state: string;
+        completed_at: string;
+        error: string;
+      };
+      expect(launchMetadata.token_state).toBe('rejected');
+      expect(launchMetadata.error).toBe('Empty agent response');
+      expect(launchMetadata.completed_at).toBeTruthy();
+
+      const metaRaw = await readFile(join(runDir, 'metadata', 'meta.json'), 'utf-8');
+      const meta = JSON.parse(metaRaw) as {
+        status: string;
+        error: string;
+      };
+      expect(meta.status).toBe('rejected');
+      expect(meta.error).toBe('Empty agent response');
     }, 30000);
 
     it('fails when the reviewed bundle hash changes after review', async () => {
@@ -530,7 +573,108 @@ describe('dispatch', () => {
     }, 30000);
   });
 
+  describe('status', () => {
+    it('does not count terminal or expired launching tokens as active launches', async () => {
+      const cfgDir = await setupFullConfig();
+      await setupBootstrappedRepo(repoRoot);
+      const { review, status } = await import('@kb/dispatch-core');
+
+      await writeFile(
+        join(repoRoot, 'wiki', 'handoffs', 'HO-0001.md'),
+        makeManualHandoff(),
+      );
+
+      const reviewResult = await review({
+        dir: repoRoot,
+        handoff: 'wiki/handoffs/HO-0001.md',
+        agent: 'fake-agent',
+        reviewedAndAcceptRisks: true,
+      });
+
+      expect(reviewResult.ok).toBe(true);
+      if (!reviewResult.ok) return;
+
+      await rename(
+        join(cfgDir, 'pending', `${reviewResult.data.reviewId}.json`),
+        join(cfgDir, 'launching', `${reviewResult.data.reviewId}.json`),
+      );
+
+      const runDir = join(repoRoot, '.agent-runs', 'runs', 'HO-0001', 'RUN-test');
+      await mkdir(join(runDir, 'metadata'), { recursive: true });
+      await writeFile(
+        join(runDir, 'metadata', 'meta.json'),
+        `${JSON.stringify({
+          schema_version: 1,
+          review_id: reviewResult.data.reviewId,
+          run_id: 'RUN-test',
+          handoff_id: 'HO-0001',
+          status: 'completed',
+        }, null, 2)}\n`,
+      );
+
+      const result = await status(repoRoot);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      expect(result.data.launching).toHaveLength(0);
+      expect(result.data.staleLaunching).toHaveLength(1);
+      expect(result.data.staleLaunching[0]?.reviewId).toBe(reviewResult.data.reviewId);
+    });
+  });
+
   describe('cleanup', () => {
+    it('recovers terminal launching tokens into the correct final token state', async () => {
+      const cfgDir = await setupFullConfig();
+      await setupBootstrappedRepo(repoRoot);
+      const { review, cleanup } = await import('@kb/dispatch-core');
+
+      await writeFile(
+        join(repoRoot, 'wiki', 'handoffs', 'HO-0001.md'),
+        makeManualHandoff(),
+      );
+
+      const reviewResult = await review({
+        dir: repoRoot,
+        handoff: 'wiki/handoffs/HO-0001.md',
+        agent: 'fake-agent',
+        reviewedAndAcceptRisks: true,
+      });
+
+      expect(reviewResult.ok).toBe(true);
+      if (!reviewResult.ok) return;
+
+      await rename(
+        join(cfgDir, 'pending', `${reviewResult.data.reviewId}.json`),
+        join(cfgDir, 'launching', `${reviewResult.data.reviewId}.json`),
+      );
+
+      const runDir = join(repoRoot, '.agent-runs', 'runs', 'HO-0001', 'RUN-test');
+      await mkdir(join(runDir, 'metadata'), { recursive: true });
+      await writeFile(
+        join(runDir, 'metadata', 'meta.json'),
+        `${JSON.stringify({
+          schema_version: 1,
+          review_id: reviewResult.data.reviewId,
+          run_id: 'RUN-test',
+          handoff_id: 'HO-0001',
+          status: 'completed',
+        }, null, 2)}\n`,
+      );
+
+      const result = await cleanup({
+        dir: repoRoot,
+        maxAgeDays: 7,
+      });
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      expect(result.data.staleTokens).toContain(reviewResult.data.reviewId);
+      expect(await pathExists(join(cfgDir, 'launching', `${reviewResult.data.reviewId}.json`))).toBe(false);
+      expect(await pathExists(join(cfgDir, 'consumed', `${reviewResult.data.reviewId}.json`))).toBe(true);
+      expect(await pathExists(join(cfgDir, 'rejected', `${reviewResult.data.reviewId}.json`))).toBe(false);
+    });
+
     it('removes orphan review directories from .agent-runs', async () => {
       await setupFullConfig();
       await setupBootstrappedRepo(repoRoot);
@@ -550,6 +694,34 @@ describe('dispatch', () => {
       if (result.ok) {
         expect(result.data.orphanReviews).toContain(orphanId);
       }
+    });
+  });
+
+  describe('registry loading', () => {
+    it('returns migration guidance for legacy launcher registry files', async () => {
+      const configDir = await setupConfigWithKey();
+      await writeFile(
+        join(configDir, 'launchers.v1.json'),
+        `${JSON.stringify({
+          version: 1,
+          agents: {
+            codex: {
+              command: 'codex',
+              args: ['exec'],
+            },
+          },
+        }, null, 2)}\n`,
+      );
+
+      const { loadRegistry } = await import('@kb/dispatch-core');
+      const result = await loadRegistry();
+
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+
+      expect(result.error).toBe('PARSE_ERROR');
+      expect(result.message).toContain('launchers.v1.json');
+      expect(result.message).toContain('init-config --force');
     });
   });
 
