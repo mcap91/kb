@@ -1,7 +1,7 @@
 ---
 _generated: true
 title: "Inbox"
-updated: "2026-05-07T23:52:05.425Z"
+updated: "2026-05-08T00:03:20.970Z"
 ---
 
 # Inbox
@@ -20,4 +20,5 @@ New and untriaged items.
 | [WK-0010](wiki/issues/WK-0010.md) | Implement PLN creation and bundle normalization workflow | inbox | high | WK |
 | [WK-0011](wiki/issues/WK-0011.md) | Integrate PLN with wiki retrieval and reference rules | inbox | high | WK |
 | [WK-0012](wiki/issues/WK-0012.md) | Dogfood PLN on kb and document the operator workflow | inbox | high | WK |
+| [WK-0015](wiki/issues/WK-0015.md) | Add a tracked version so consuming repos know when a full upgrade is needed | inbox | medium | WK |
 

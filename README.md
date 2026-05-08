@@ -126,16 +126,16 @@ npm test
 
 ## How MCP Works
 
-The MCP server runs in the **`kb` repo**, not in the consuming repo.
+The MCP servers run in the **`kb` repo**, not in the consuming repo.
 
 That means:
 
-- start `npm run wiki:mcp` from `kb`
-- connect your agent/client to that MCP server
-- every wiki tool call must include `dir` pointing at the consuming repo
-- you do **not** run a separate `kb` MCP server inside each consuming repo
+- start the wiki and dispatch servers from `kb`
+- connect your agent/client to those servers
+- every wiki or dispatch tool call must include `dir` pointing at the consuming repo
+- you do **not** run separate `kb` MCP servers inside each consuming repo
 
-One `kb` wiki MCP server can target different consuming repos because the target repo is provided per tool call through `dir`.
+The `kb` MCP servers can target different consuming repos because the target repo is provided per tool call through `dir`.
 
 Current boundary:
 
@@ -145,7 +145,7 @@ Current boundary:
 
 ## MCP Lifecycle
 
-`npm run wiki:mcp` starts a **live stdio MCP server process**. It is not a persistent background daemon.
+`npm run wiki:mcp` and `npm run dispatch:mcp` start **live stdio MCP server processes**. They are not persistent background daemons.
 
 What persists:
 
@@ -156,13 +156,14 @@ What persists:
 
 What does not persist automatically:
 
-- the running MCP server process
+- the running wiki MCP server process
+- the running dispatch MCP server process
 
-After a VM reboot, shell restart, or disconnected session, agents do **not** have wiki MCP access until the MCP server is started again.
+After a VM reboot, shell restart, or disconnected session, agents do **not** have wiki or dispatch MCP access until the server is started again.
 
 Recommended model:
 
-- configure the agent client to launch the MCP server directly from the `kb` repo when the client session starts
+- configure the agent client to launch the MCP server commands directly when the client session starts
 
 Fallback model:
 
@@ -171,23 +172,78 @@ Fallback model:
 Example manual start:
 
 ```bash
-cd /root/kb
-npm run wiki:mcp
-```
-
-If your client supports MCP command configuration, point it at the `kb` repo and have it launch:
-
-```bash
+cd /absolute/path/to/kb
 node --import tsx packages/wiki-mcp/src/server.ts
+node --import tsx packages/dispatch-mcp/src/server.ts
 ```
 
-using the `kb` checkout as the working directory.
+## Agent-Native MCP Setup
+
+For native MCP clients, register the direct `node` commands rather than `npm run ...:mcp`.
 
 Why the direct command matters:
 
-- `npm run wiki:mcp` is fine for manual terminal use
-- strict stdio MCP clients should avoid `npm run` because the npm script banner writes to stdout before the MCP handshake
-- `node --import tsx packages/wiki-mcp/src/server.ts` starts the same server without the npm wrapper output
+- `npm run wiki:mcp` and `npm run dispatch:mcp` are fine for manual terminal use
+- strict stdio MCP clients should avoid `npm run ...:mcp` because the npm script banner writes to stdout before the MCP handshake
+- `node --import tsx ...` starts the same server without the npm wrapper output
+
+### Claude Project `.mcp.json`
+
+Claude supports a project-scoped `.mcp.json`. Put this file in the repo where Claude will run and replace `<ABSOLUTE-PATH-TO-KB>` with the absolute path to your `kb` checkout:
+
+```json
+{
+  "mcpServers": {
+    "kb-wiki": {
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "--import",
+        "<ABSOLUTE-PATH-TO-KB>/node_modules/tsx/dist/loader.mjs",
+        "<ABSOLUTE-PATH-TO-KB>/packages/wiki-mcp/src/server.ts"
+      ],
+      "env": {}
+    },
+    "kb-dispatch": {
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "--import",
+        "<ABSOLUTE-PATH-TO-KB>/node_modules/tsx/dist/loader.mjs",
+        "<ABSOLUTE-PATH-TO-KB>/packages/dispatch-mcp/src/server.ts"
+      ],
+      "env": {}
+    }
+  }
+}
+```
+
+Verify from that project directory:
+
+```bash
+claude mcp list
+```
+
+### Codex Native Registration
+
+Codex uses native MCP registration rather than Claude's project `.mcp.json`. Replace `<ABSOLUTE-PATH-TO-KB>` with the absolute path to your `kb` checkout:
+
+```bash
+codex mcp add kb-wiki -- node --import <ABSOLUTE-PATH-TO-KB>/node_modules/tsx/dist/loader.mjs <ABSOLUTE-PATH-TO-KB>/packages/wiki-mcp/src/server.ts
+codex mcp add kb-dispatch -- node --import <ABSOLUTE-PATH-TO-KB>/node_modules/tsx/dist/loader.mjs <ABSOLUTE-PATH-TO-KB>/packages/dispatch-mcp/src/server.ts
+codex mcp list
+```
+
+### Windows Note
+
+The shorter commands below only work when the client preserves `cwd = <ABSOLUTE-PATH-TO-KB>` and Node can resolve `tsx` from that directory:
+
+```bash
+node --import tsx packages/wiki-mcp/src/server.ts
+node --import tsx packages/dispatch-mcp/src/server.ts
+```
+
+If a native client does not preserve `cwd`, use the absolute loader and absolute script paths shown in the Claude and Codex examples above. On Windows, prefer forward slashes such as `C:/Users/you/projects/kb` inside `<ABSOLUTE-PATH-TO-KB>` so you do not need to escape backslashes in JSON.
 
 ## Start the Wiki MCP Server
 
@@ -197,10 +253,24 @@ From the `kb` repo:
 npm run wiki:mcp
 ```
 
-If your agent runtime supports MCP, the preferred setup is to configure it to run this direct command automatically from the `kb` repo at session start:
+If you want the same server without the npm wrapper output:
 
 ```bash
 node --import tsx packages/wiki-mcp/src/server.ts
+```
+
+## Start the Dispatch MCP Server
+
+From the `kb` repo:
+
+```bash
+npm run dispatch:mcp
+```
+
+If you want the same server without the npm wrapper output:
+
+```bash
+node --import tsx packages/dispatch-mcp/src/server.ts
 ```
 
 ## Update a Private `kb` Checkout

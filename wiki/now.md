@@ -1,7 +1,7 @@
 ---
 _generated: true
 title: "Now"
-updated: "2026-05-07T23:52:05.424Z"
+updated: "2026-05-08T00:03:20.970Z"
 ---
 
 # Now
