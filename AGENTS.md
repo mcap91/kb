@@ -19,6 +19,55 @@ npm run wiki -- bootstrap --dir ../my-project --repo org/name
 npm run graph -- --dir ../my-project
 ```
 
+### Agent-Native MCP Setup
+
+If you are wiring `kb` into a native MCP client, use direct `node` launch commands rather than `npm run ...:mcp`.
+
+- Claude: a project-scoped `.mcp.json` works.
+- Codex: use `codex mcp add ...` native registration.
+- Verify with `claude mcp list` and `codex mcp list`.
+- For strict stdio clients, avoid `npm run wiki:mcp` and `npm run dispatch:mcp` because the npm wrapper writes to stdout before the MCP handshake.
+- If the client does not preserve `cwd`, especially on Windows, use absolute `tsx` loader and server script paths.
+
+Claude `.mcp.json` example. Replace `<ABSOLUTE-PATH-TO-KB>` with the absolute path to this `kb` checkout:
+
+```json
+{
+  "mcpServers": {
+    "kb-wiki": {
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "--import",
+        "<ABSOLUTE-PATH-TO-KB>/node_modules/tsx/dist/loader.mjs",
+        "<ABSOLUTE-PATH-TO-KB>/packages/wiki-mcp/src/server.ts"
+      ],
+      "env": {}
+    },
+    "kb-dispatch": {
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "--import",
+        "<ABSOLUTE-PATH-TO-KB>/node_modules/tsx/dist/loader.mjs",
+        "<ABSOLUTE-PATH-TO-KB>/packages/dispatch-mcp/src/server.ts"
+      ],
+      "env": {}
+    }
+  }
+}
+```
+
+Codex registration example. Replace `<ABSOLUTE-PATH-TO-KB>` with the absolute path to this `kb` checkout:
+
+```bash
+codex mcp add kb-wiki -- node --import <ABSOLUTE-PATH-TO-KB>/node_modules/tsx/dist/loader.mjs <ABSOLUTE-PATH-TO-KB>/packages/wiki-mcp/src/server.ts
+codex mcp add kb-dispatch -- node --import <ABSOLUTE-PATH-TO-KB>/node_modules/tsx/dist/loader.mjs <ABSOLUTE-PATH-TO-KB>/packages/dispatch-mcp/src/server.ts
+codex mcp list
+```
+
+Windows note: if the client does not preserve `cwd`, prefer forward-slash absolute paths such as `C:/Users/you/projects/kb/...` so JSON and CLI arguments do not need escaped backslashes.
+
 ## Core Architecture
 
 ### Monorepo Layout

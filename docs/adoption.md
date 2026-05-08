@@ -276,13 +276,18 @@ Node kinds: `code_file`, `doc_file`, `wiki_record`. Only repo-local references a
 
 ## MCP Server
 
-Connect the wiki MCP server to agent tools:
+Manual terminal start from the `kb` repo:
 
-```
+```bash
 npm run wiki:mcp
+npm run dispatch:mcp
 ```
 
-This starts an MCP server over stdio that exposes all wiki operations as tools:
+These start stdio MCP server processes that expose the wiki and dispatch tools.
+
+For native client registration, use the copy-paste Claude `.mcp.json` and Codex `mcp add` examples in [README.md](../README.md#agent-native-mcp-setup) rather than pointing strict stdio clients at `npm run ...:mcp`.
+
+Wiki MCP exposes:
 
 - `bootstrap`
 - `sync-contract`
@@ -293,14 +298,6 @@ This starts an MCP server over stdio that exposes all wiki operations as tools:
 - `build-search-index`
 - `search`
 
-To configure an MCP client, point it at `npm run wiki:mcp` in the `kb` directory. Each tool accepts a `dir` parameter to target a consuming repo.
-
-Dispatch also has an MCP server:
-
-```
-npm run dispatch:mcp
-```
-
 Dispatch MCP exposes:
 
 - `init-config`
@@ -310,6 +307,8 @@ Dispatch MCP exposes:
 - `review-and-launch`
 - `status`
 - `cleanup`
+
+Each wiki or dispatch tool call accepts a `dir` parameter to target a consuming repo.
 
 For existing installations upgraded from the older registry format, run `npm run dispatch -- init-config --force` once before using dispatch MCP or CLI launch commands.
 

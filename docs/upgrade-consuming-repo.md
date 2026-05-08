@@ -76,12 +76,14 @@ This step is manual. `sync-contract` does not touch agent instruction files.
 
 ### 5. Wire MCP in the Agent Client
 
-If you want interactive agent workflows like "create an HO and send it to Codex," configure the client to launch:
+If you want interactive agent workflows like "create an HO and send it to Codex," follow the agent-native setup in [README.md](../README.md#agent-native-mcp-setup).
 
 ```bash
-npm run wiki:mcp
-npm run dispatch:mcp
+claude mcp list
+codex mcp list
 ```
+
+Do not point strict stdio clients at `npm run wiki:mcp` or `npm run dispatch:mcp`; use the direct `node` commands or native client registration shown in the README.
 
 If dispatch MCP is not configured, the workflow can still run through the `dispatch` CLI, but the agent will need shell access rather than MCP tools.
 
