@@ -24,7 +24,7 @@ import { fail, ok } from './errors.js';
 import { readTokenFile, verifyToken, moveToken } from './token.js';
 import { getReviewDir, getRunDir } from './paths.js';
 import { loadRegistry, resolveAgentConfig } from './registry.js';
-import { buildSpawnInvocation } from './spawn.js';
+import { buildSpawnInvocation, resolveExecutableCommand } from './spawn.js';
 
 const ENV_ALLOWLIST_POSIX = [
   'HOME',
@@ -159,17 +159,7 @@ function replacePlaceholders(value: string, replacements: Record<string, string>
     .replaceAll('{response_path}', replacements.response_path);
 }
 
-function buildEnv(
-  repoRoot: string,
-  runDir: string,
-  agentVisibleDir: string,
-  handoffPath: string,
-  contextDir: string,
-  responsePath: string,
-  reviewId: string,
-  runId: string,
-  launcherEnv?: Record<string, string>,
-): Record<string, string> {
+function buildBaseEnv(launcherEnv?: Record<string, string>): Record<string, string> {
   const env: Record<string, string> = {};
   const allowlist = [...ENV_ALLOWLIST_POSIX];
   if (process.platform === 'win32') {
@@ -186,6 +176,22 @@ function buildEnv(
   if (launcherEnv) {
     Object.assign(env, launcherEnv);
   }
+
+  return env;
+}
+
+function buildEnv(
+  repoRoot: string,
+  runDir: string,
+  agentVisibleDir: string,
+  handoffPath: string,
+  contextDir: string,
+  responsePath: string,
+  reviewId: string,
+  runId: string,
+  launcherEnv?: Record<string, string>,
+): Record<string, string> {
+  const env = buildBaseEnv(launcherEnv);
 
   env['AGENT_BLACKBOARD_REPO_ROOT'] = repoRoot;
   env['AGENT_BLACKBOARD_RUN_DIR'] = runDir;
@@ -516,6 +522,19 @@ export async function launch(opts: LaunchOpts): Promise<DispatchResult<RunResult
   const agentConfigResult = resolveAgentConfig(registryResult.data.data, payload.agent, payload.mode);
   if (!agentConfigResult.ok) return agentConfigResult;
 
+  const commandResolution = await resolveExecutableCommand(agentConfigResult.data.base_argv[0]!, {
+    env: buildBaseEnv(agentConfigResult.data.env),
+  });
+  if (!commandResolution.ok) return commandResolution;
+
+  const agentConfig: AgentLauncherConfig = {
+    ...agentConfigResult.data,
+    base_argv: [
+      commandResolution.data.command,
+      ...agentConfigResult.data.base_argv.slice(1),
+    ],
+  };
+
   const moveToLaunching = await moveToken(opts.reviewId, 'pending', 'launching');
   if (!moveToLaunching.ok) return moveToLaunching;
 
@@ -553,11 +572,11 @@ export async function launch(opts: LaunchOpts): Promise<DispatchResult<RunResult
     responsePath,
     opts.reviewId,
     runId,
-    agentConfigResult.data.env,
+    agentConfig.env,
   );
 
   const { command, args } = buildCommand(
-    agentConfigResult.data,
+    agentConfig,
     payload.mode,
     wrapperContent,
     wrapperPath,
@@ -573,7 +592,7 @@ export async function launch(opts: LaunchOpts): Promise<DispatchResult<RunResult
   ];
   const argvRedacted = argv.map((value) => sanitizeAbsoluteArg(value, redactionPlaceholders));
 
-  const stdoutTarget = agentConfigResult.data.response_transport.kind === 'stdout_capture'
+  const stdoutTarget = agentConfig.response_transport.kind === 'stdout_capture'
     ? responsePath
     : stdoutPath;
   const stdoutStream = createWriteStream(stdoutTarget, { flags: 'w' });
@@ -601,7 +620,7 @@ export async function launch(opts: LaunchOpts): Promise<DispatchResult<RunResult
     stderrBytes: number;
   }> => ({
     responseBytes: await fileSize(responsePath),
-    stdoutBytes: agentConfigResult.data.response_transport.kind === 'file' ? await fileSize(stdoutPath) : null,
+    stdoutBytes: agentConfig.response_transport.kind === 'file' ? await fileSize(stdoutPath) : null,
     stderrBytes: await fileSize(stderrPath),
   });
 
@@ -612,7 +631,7 @@ export async function launch(opts: LaunchOpts): Promise<DispatchResult<RunResult
     handoffId: payload.handoffId,
     runDir,
     responsePath,
-    stdoutPath: agentConfigResult.data.response_transport.kind === 'file' ? stdoutPath : null,
+    stdoutPath: agentConfig.response_transport.kind === 'file' ? stdoutPath : null,
     stderrPath,
     startedAt,
   });
@@ -643,7 +662,7 @@ export async function launch(opts: LaunchOpts): Promise<DispatchResult<RunResult
     let emptyResponse = false;
     if (finalStatus === 'completed' && bodyWithoutFrontmatter === '') {
       emptyResponse = true;
-      response = buildEmptyBodyDiagnostic(agentConfigResult.data.response_transport.kind);
+      response = buildEmptyBodyDiagnostic(agentConfig.response_transport.kind);
       finalStatus = 'failed';
     }
 
@@ -670,7 +689,7 @@ export async function launch(opts: LaunchOpts): Promise<DispatchResult<RunResult
       exitCode,
       error: emptyResponse ? 'Empty agent response' : errorMessage,
       responsePath,
-      stdoutPath: agentConfigResult.data.response_transport.kind === 'file' ? stdoutPath : null,
+      stdoutPath: agentConfig.response_transport.kind === 'file' ? stdoutPath : null,
       stderrPath,
     });
 
@@ -701,11 +720,11 @@ export async function launch(opts: LaunchOpts): Promise<DispatchResult<RunResult
       status: finalStatus,
       launcher_version: '1.0.0',
       argv_redacted: argvRedacted,
-      timeout_seconds: agentConfigResult.data.timeout_seconds ?? 1800,
+      timeout_seconds: agentConfig.timeout_seconds ?? 1800,
       exit_code: exitCode,
       ...(emptyResponse || errorMessage ? { error: emptyResponse ? 'Empty agent response' : errorMessage } : {}),
       response_path: responsePath,
-      stdout_path: agentConfigResult.data.response_transport.kind === 'file' ? stdoutPath : null,
+      stdout_path: agentConfig.response_transport.kind === 'file' ? stdoutPath : null,
       stderr_path: stderrPath,
     });
 
@@ -760,7 +779,7 @@ export async function launch(opts: LaunchOpts): Promise<DispatchResult<RunResult
       env,
       detached: true,
       stdio: [
-        agentConfigResult.data.instruction_transport.kind === 'stdin' ? 'pipe' : 'ignore',
+        agentConfig.instruction_transport.kind === 'stdin' ? 'pipe' : 'ignore',
         'pipe',
         'pipe',
       ],
@@ -788,7 +807,7 @@ export async function launch(opts: LaunchOpts): Promise<DispatchResult<RunResult
       });
     });
 
-    if (agentConfigResult.data.instruction_transport.kind === 'stdin' && child.stdin) {
+    if (agentConfig.instruction_transport.kind === 'stdin' && child.stdin) {
       child.stdin.end(wrapperContent);
     }
 
@@ -832,7 +851,7 @@ export async function launch(opts: LaunchOpts): Promise<DispatchResult<RunResult
       tokenState: 'consumed',
       startedAt,
       responsePath,
-      stdoutPath: agentConfigResult.data.response_transport.kind === 'file' ? stdoutPath : null,
+      stdoutPath: agentConfig.response_transport.kind === 'file' ? stdoutPath : null,
       stderrPath,
     });
     emit({
@@ -878,7 +897,7 @@ export async function launch(opts: LaunchOpts): Promise<DispatchResult<RunResult
 
     timeoutTimer = setTimeout(() => {
       requestTermination('timed_out');
-    }, (agentConfigResult.data.timeout_seconds ?? 1800) * 1000);
+    }, (agentConfig.timeout_seconds ?? 1800) * 1000);
     timeoutTimer.unref?.();
 
     const close = await closePromise;
@@ -930,7 +949,7 @@ export async function launch(opts: LaunchOpts): Promise<DispatchResult<RunResult
         completedAt: new Date().toISOString(),
         error: 'Agent process failed before confirmed start.',
         responsePath,
-        stdoutPath: agentConfigResult.data.response_transport.kind === 'file' ? stdoutPath : null,
+        stdoutPath: agentConfig.response_transport.kind === 'file' ? stdoutPath : null,
         stderrPath,
       });
     }

@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { execSync } from 'node:child_process';
 import {
+  chmod,
   mkdtemp,
   mkdir,
   readFile,
@@ -27,6 +28,37 @@ function getTsxPath(): string {
     return join(repoRoot, 'node_modules', '.bin', 'tsx.cmd');
   }
   return join(repoRoot, 'node_modules', '.bin', 'tsx');
+}
+
+function quotePosixArg(value: string): string {
+  return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+async function writeBareAgentLauncher(binDir: string, commandName: string): Promise<string> {
+  await mkdir(binDir, { recursive: true });
+  const agentScriptPath = join(binDir, 'bare-agent.cjs');
+  await writeFile(
+    agentScriptPath,
+    [
+      "const { writeFileSync } = require('node:fs');",
+      "const responsePath = process.env.AGENT_BLACKBOARD_RESPONSE_PATH;",
+      "if (!responsePath) process.exit(2);",
+      "writeFileSync(responsePath, '# Bare Agent Response\\n\\nresolved bare command\\n', 'utf-8');",
+      '',
+    ].join('\n'),
+    'utf-8',
+  );
+
+  const commandPath = join(binDir, process.platform === 'win32' ? `${commandName}.CMD` : commandName);
+  const commandBody = process.platform === 'win32'
+    ? `@echo off\r\n"${process.execPath}" "${agentScriptPath}" %*\r\n`
+    : `#!/bin/sh\nexec ${quotePosixArg(process.execPath)} ${quotePosixArg(agentScriptPath)} "$@"\n`;
+  await writeFile(commandPath, commandBody, 'utf-8');
+  if (process.platform !== 'win32') {
+    await chmod(commandPath, 0o755);
+  }
+
+  return commandPath;
 }
 
 async function pathExists(path: string): Promise<boolean> {
@@ -473,6 +505,62 @@ describe('dispatch', () => {
       expect(meta.argv_redacted).toContain('<wrapper_content>');
       expect(meta.operator_id).toBeTruthy();
       expect(meta.launcher_version).toBe('1.0.0');
+    }, 30000);
+
+    it('resolves a bare launcher command at launch time before spawning', async () => {
+      await setupBootstrappedRepo(repoRoot);
+      const commandName = 'kb-bare-agent';
+      const binDir = join(tempDir, 'bare-bin');
+      await writeBareAgentLauncher(binDir, commandName);
+      await setupFullConfig({
+        version: 1,
+        agents: {
+          'bare-agent': {
+            base_argv: [commandName],
+            noninteractive_argv: [],
+            instruction_transport: { kind: 'argv_content' },
+            wrapper_arg: ['{wrapper_content}'],
+            response_transport: { kind: 'file' },
+            response_arg: [],
+            timeout_seconds: 30,
+            env: {
+              PATH: binDir,
+              PATHEXT: '.CMD;.EXE',
+            },
+            read_only: {
+              supported: true,
+              argv_suffix: ['--read-only'],
+              response_writable: true,
+            },
+          },
+        },
+      });
+      const { review, launch } = await import('@kb/dispatch-core');
+
+      await writeFile(
+        join(repoRoot, 'wiki', 'handoffs', 'HO-0001.md'),
+        makeManualHandoff({ allowed_agents: ['bare-agent'] }),
+      );
+
+      const reviewResult = await review({
+        dir: repoRoot,
+        handoff: 'wiki/handoffs/HO-0001.md',
+        agent: 'bare-agent',
+        reviewedAndAcceptRisks: true,
+      });
+
+      expect(reviewResult.ok).toBe(true);
+      if (!reviewResult.ok) return;
+
+      const launchResult = await launch({
+        reviewId: reviewResult.data.reviewId,
+        dir: repoRoot,
+      });
+
+      expect(launchResult.ok).toBe(true);
+      if (!launchResult.ok) return;
+      expect(launchResult.data.response).toContain('Bare Agent Response');
+      expect(launchResult.data.response).toContain('resolved bare command');
     }, 30000);
 
     it('streams stdout capture into response.md and records active state before exit', async () => {
