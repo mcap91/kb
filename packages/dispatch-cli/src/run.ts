@@ -1,4 +1,4 @@
-import { resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 
 import {
   VERSION,
@@ -35,6 +35,16 @@ function parseCsv(value?: string): string[] {
     .split(',')
     .map((part) => part.trim())
     .filter(Boolean);
+}
+
+function isLaunchFailureDetail(value: unknown): value is {
+  runId?: string;
+  runDir?: string;
+  status?: string;
+  responsePath?: string;
+  metaPath?: string;
+} {
+  return typeof value === 'object' && value !== null;
 }
 
 const HELP_TEXT = `
@@ -84,6 +94,7 @@ Command Options:
   launch
     --review-id <RV-uuid>    Review ID from review step (required)
     --dir <path>             Repository root directory (required)
+    --json                   Print machine-readable artifact paths
 
   review-and-launch
     --dir <path>             Repository root directory (required)
@@ -194,6 +205,7 @@ async function cmdReview(args: string[]): Promise<number> {
 async function cmdLaunch(args: string[]): Promise<number> {
   const reviewId = getFlagValue(args, '--review-id');
   const dir = getFlagValue(args, '--dir');
+  const json = getFlag(args, '--json');
   const verbose = getFlag(args, '--verbose');
 
   if (!reviewId || !dir) {
@@ -203,11 +215,39 @@ async function cmdLaunch(args: string[]): Promise<number> {
 
   const result = await launch({ reviewId, dir, verbose });
   if (!result.ok) {
+    if (json && isLaunchFailureDetail(result.detail)) {
+      console.log(JSON.stringify({
+        runId: result.detail.runId,
+        status: result.detail.status ?? 'failed',
+        runDir: result.detail.runDir,
+        responsePath: result.detail.responsePath,
+        metaPath: result.detail.metaPath,
+        error: result.error,
+        message: result.message,
+      }, null, 2));
+      return 1;
+    }
     console.error(`Launch failed: [${result.error}] ${result.message}`);
+    if (isLaunchFailureDetail(result.detail)) {
+      if (result.detail.runDir) console.error(`  Run dir:   ${result.detail.runDir}`);
+      if (result.detail.responsePath) console.error(`  Response:  ${result.detail.responsePath}`);
+      if (result.detail.metaPath) console.error(`  Meta:      ${result.detail.metaPath}`);
+    }
     return 1;
   }
 
   const data: RunResult = result.data;
+  if (json) {
+    console.log(JSON.stringify({
+      runId: data.runId,
+      status: 'completed',
+      runDir: data.runDir,
+      responsePath: join(data.runDir, 'response.md'),
+      metaPath: join(data.runDir, 'metadata', 'meta.json'),
+    }, null, 2));
+    return 0;
+  }
+
   console.log('Launch succeeded.');
   console.log(`  Run ID:    ${data.runId}`);
   console.log(`  Review ID: ${data.reviewId}`);

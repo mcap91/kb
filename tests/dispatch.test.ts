@@ -335,8 +335,8 @@ describe('dispatch', () => {
 
       const wrapper = await readFile(join(bundlePath, 'agent-visible', 'wrapper.md'), 'utf-8');
       expect(wrapper).toContain('AGENT_BLACKBOARD_REPO_ROOT');
-      expect(wrapper).toContain('AGENT_BLACKBOARD_HANDOFF_PATH');
       expect(wrapper).toContain('AGENT_BLACKBOARD_RESPONSE_PATH');
+      expect(wrapper).toContain('The launcher starts you inside the reviewed bundle directory.');
 
       const manifestRaw = await readFile(join(bundlePath, 'metadata', 'input-manifest.json'), 'utf-8');
       const manifest = JSON.parse(manifestRaw) as {
@@ -421,6 +421,8 @@ describe('dispatch', () => {
       const response = launchResult.data.response ?? '';
       const runAgentVisibleDir = join(launchResult.data.runDir, 'agent-visible');
       const runHandoffPath = join(runAgentVisibleDir, 'handoff.snapshot.md');
+      expect(response).toMatch(/^---\nschema_version: 1\n/);
+      expect(response).toContain(`status: completed`);
       expect(response).toContain('Fake Agent Response');
       expect(response).toContain(`cwd: ${runAgentVisibleDir}`);
       expect(response).toContain(`handoff_path: ${runHandoffPath}`);
@@ -457,6 +459,20 @@ describe('dispatch', () => {
       expect(await pathExists(join(launchResult.data.runDir, 'metadata', 'meta.json'))).toBe(true);
       expect(await pathExists(join(launchResult.data.runDir, 'metadata', 'review.json'))).toBe(true);
       expect(await pathExists(join(launchResult.data.runDir, 'metadata', 'input-manifest.json'))).toBe(true);
+
+      const metaRaw = await readFile(join(launchResult.data.runDir, 'metadata', 'meta.json'), 'utf-8');
+      const meta = JSON.parse(metaRaw) as {
+        status: string;
+        response_sha256: string;
+        argv_redacted: string[];
+        operator_id: string;
+        launcher_version: string;
+      };
+      expect(meta.status).toBe('completed');
+      expect(meta.response_sha256).toMatch(/^sha256:[a-f0-9]{64}$/);
+      expect(meta.argv_redacted).toContain('<wrapper_content>');
+      expect(meta.operator_id).toBeTruthy();
+      expect(meta.launcher_version).toBe('1.0.0');
     }, 30000);
 
     it('streams stdout capture into response.md and records active state before exit', async () => {
@@ -918,6 +934,52 @@ describe('dispatch', () => {
   });
 
   describe('dispatch-cli', () => {
+    it('launch --json prints authoritative run artifact paths', async () => {
+      await setupBootstrappedRepo(repoRoot);
+      await setupFullConfig();
+      const { review } = await import('@kb/dispatch-core');
+
+      await writeFile(
+        join(repoRoot, 'wiki', 'handoffs', 'HO-0001.md'),
+        makeManualHandoff(),
+      );
+
+      const reviewResult = await review({
+        dir: repoRoot,
+        handoff: 'wiki/handoffs/HO-0001.md',
+        agent: 'fake-agent',
+        reviewedAndAcceptRisks: true,
+      });
+
+      expect(reviewResult.ok).toBe(true);
+      if (!reviewResult.ok) return;
+
+      const output = execSync(
+        `"${getTsxPath()}" "${DISPATCH_CLI}" launch --review-id "${reviewResult.data.reviewId}" --dir "${repoRoot}" --json`,
+        {
+          cwd: resolve(TESTS_DIR, '..'),
+          env: process.env,
+          encoding: 'utf-8',
+        },
+      );
+
+      const parsed = JSON.parse(output) as {
+        runId: string;
+        status: string;
+        runDir: string;
+        responsePath: string;
+        metaPath: string;
+      };
+
+      expect(parsed.runId).toMatch(/^RUN-/);
+      expect(parsed.status).toBe('completed');
+      expect(parsed.runDir).toContain(join('.agent-runs', 'runs', 'HO-0001'));
+      expect(parsed.responsePath).toBe(join(parsed.runDir, 'response.md'));
+      expect(parsed.metaPath).toBe(join(parsed.runDir, 'metadata', 'meta.json'));
+      expect(await pathExists(parsed.responsePath)).toBe(true);
+      expect(await pathExists(parsed.metaPath)).toBe(true);
+    }, 30000);
+
     it('init-config writes adapter-aware default agent profiles', async () => {
       let configDir: string;
       if (process.platform === 'win32') {
