@@ -194,6 +194,28 @@ export function resolveAgentConfig(
     return fail('INVALID_AGENT', `Unknown agent in registry: ${agentName}`);
   }
 
+  if (agentName === 'claude') {
+    const argv = [
+      ...agent.base_argv,
+      ...agent.noninteractive_argv,
+      ...(agent.wrapper_arg ?? []),
+      ...(agent.response_arg ?? []),
+      ...(agent.read_only?.argv_suffix ?? []),
+    ];
+    if (argv.includes('--bare')) {
+      return fail(
+        'INVALID_AGENT',
+        'Claude launcher config uses stale --bare mode. Run `npm run dispatch -- init-config --force` to rewrite launchers.v1.json.',
+      );
+    }
+    if (mode === 'redteam' && agent.read_only?.argv_suffix?.includes('plan')) {
+      return fail(
+        'INVALID_AGENT',
+        'Claude redteam launcher config uses stale plan mode, which can suppress noninteractive stdout. Run `npm run dispatch -- init-config --force` to rewrite launchers.v1.json.',
+      );
+    }
+  }
+
   if (agent.instruction_transport.kind !== 'stdin' && !Array.isArray(agent.wrapper_arg)) {
     return fail('INVALID_AGENT', `Agent ${agentName} must declare wrapper_arg for ${agent.instruction_transport.kind}.`);
   }

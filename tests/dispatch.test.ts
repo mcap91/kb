@@ -931,6 +931,47 @@ describe('dispatch', () => {
       expect(result.message).toContain('launchers.v1.json');
       expect(result.message).toContain('init-config --force');
     });
+
+    it('rejects known-bad stale Claude launcher profiles with force-init guidance', async () => {
+      await setupBootstrappedRepo(repoRoot);
+      await setupFullConfig({
+        version: 1,
+        agents: {
+          claude: {
+            base_argv: ['claude'],
+            noninteractive_argv: ['--print', '--output-format', 'text', '--no-session-persistence'],
+            instruction_transport: { kind: 'argv_content' },
+            wrapper_arg: ['{wrapper_content}'],
+            response_transport: { kind: 'stdout_capture' },
+            timeout_seconds: 1800,
+            read_only: {
+              supported: true,
+              argv_suffix: ['--permission-mode', 'plan'],
+              response_writable: true,
+            },
+          },
+        },
+      });
+
+      await writeFile(
+        join(repoRoot, 'wiki', 'handoffs', 'HO-0001.md'),
+        makeManualHandoff({ allowed_agents: ['claude'], mode: 'redteam' }),
+      );
+
+      const { review } = await import('@kb/dispatch-core');
+      const result = await review({
+        dir: repoRoot,
+        handoff: 'wiki/handoffs/HO-0001.md',
+        agent: 'claude',
+        reviewedAndAcceptRisks: true,
+      });
+
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.error).toBe('INVALID_AGENT');
+        expect(result.message).toContain('init-config --force');
+      }
+    });
   });
 
   describe('dispatch-cli', () => {
