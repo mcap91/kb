@@ -21,6 +21,7 @@ import { fail, ok } from './errors.js';
 import { readTokenFile, verifyToken, moveToken } from './token.js';
 import { getReviewDir, getRunDir } from './paths.js';
 import { loadRegistry, resolveAgentConfig } from './registry.js';
+import { buildSpawnInvocation } from './spawn.js';
 
 const ENV_ALLOWLIST_POSIX = [
   'HOME',
@@ -587,8 +588,8 @@ export async function launch(opts: LaunchOpts): Promise<DispatchResult<RunResult
   process.once('SIGHUP', cancelRun);
 
   try {
-    const needsShell = process.platform === 'win32' && /\.(cmd|bat)$/i.test(command);
-    child = spawn(command, args, {
+    const spawnInvocation = buildSpawnInvocation(command, args);
+    child = spawn(spawnInvocation.command, spawnInvocation.args, {
       cwd: agentVisibleDir,
       env,
       detached: true,
@@ -597,7 +598,7 @@ export async function launch(opts: LaunchOpts): Promise<DispatchResult<RunResult
         'pipe',
         'pipe',
       ],
-      shell: needsShell,
+      shell: spawnInvocation.shell,
     });
 
     if (child.stdout) {

@@ -85,6 +85,12 @@ codex mcp list
 
 Do not point strict stdio clients at `npm run wiki:mcp` or `npm run dispatch:mcp`; use the direct `node` commands or native client registration shown in the README.
 
+Keep the self-hosted and consuming-repo setups separate:
+
+- do not copy `kb/.mcp.json` from the `kb` repo into the consuming repo unchanged
+- if Claude runs in the consuming repo, create that consuming repo's own `.mcp.json` pointing back to the chosen `kb` checkout
+- if Codex runs on the same machine, register the chosen `kb` checkout once and reuse it from the consuming repo
+
 If dispatch MCP is not configured, the workflow can still run through the `dispatch` CLI, but the agent will need shell access rather than MCP tools.
 
 ### 6. Check Current Dispatch State

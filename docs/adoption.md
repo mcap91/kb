@@ -4,6 +4,10 @@ This guide explains how to adopt `kb` in your own repository. `kb` uses a sister
 
 If you are upgrading an existing consuming repo rather than adopting `kb` for the first time, use [upgrade-consuming-repo.md](./upgrade-consuming-repo.md).
 
+If you are working in `kb` itself rather than a separate consuming repo, use the committed repo-root `.mcp.json` for Claude, run `npm run codex:mcp:register` for Codex, and target the `kb` checkout itself via `--dir`.
+
+Do not copy that self-hosted `kb/.mcp.json` into a consuming repo verbatim. A consuming repo needs its own Claude `.mcp.json` that points back to the chosen `kb` checkout, while Codex uses a machine-level registration of the chosen `kb` checkout.
+
 ## Prerequisites
 
 - Node.js 20+
@@ -286,6 +290,13 @@ npm run dispatch:mcp
 These start stdio MCP server processes that expose the wiki and dispatch tools.
 
 For native client registration, use the copy-paste Claude `.mcp.json` and Codex `mcp add` examples in [README.md](../README.md#agent-native-mcp-setup) rather than pointing strict stdio clients at `npm run ...:mcp`.
+
+For consuming repos, keep the boundary explicit:
+
+- Claude `.mcp.json` lives in the consuming repo
+- that Claude config points back to the `kb` checkout
+- Codex registration is user-level and can be reused across consuming repos on the same machine
+- the committed `kb/.mcp.json` is only for the self-hosted `kb` repo case
 
 Wiki MCP exposes:
 

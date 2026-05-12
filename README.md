@@ -4,6 +4,8 @@
 
 This repository is the **tooling repo**. The other repository is the **consuming repo**. `kb` runs from its own checkout and targets the consuming repo via `--dir`.
 
+When you are working on `kb` itself, this same checkout can also act as the consuming repo. In that self-hosted case, the MCP servers still run from `kb`, and tool calls use `dir` pointing back at this `kb` checkout.
+
 ## What Agents Should Do
 
 Use this model:
@@ -143,6 +145,24 @@ Current boundary:
 - `dispatch` is on MCP and CLI
 - `graph` is CLI-only
 
+## Self-Hosting kb
+
+When the current repository is `kb` itself:
+
+- `kb` is both the MCP provider and the target repo
+- use `dir` pointing at this `kb` checkout
+- Claude can use the committed repo-root `.mcp.json`
+- Codex can register this checkout with `npm run codex:mcp:register`
+
+This does not change the sister-repo model for other projects. Consuming repos still point back to the `kb` checkout via `--dir`.
+
+Important boundary:
+
+- the committed `kb/.mcp.json` is only for self-hosting this `kb` repo
+- do not copy `kb/.mcp.json` verbatim into a consuming repo
+- a consuming repo needs its own Claude `.mcp.json` that points back to the chosen `kb` checkout
+- Codex MCP registration is user-level on the machine and should point at one chosen `kb` checkout
+
 ## MCP Lifecycle
 
 `npm run wiki:mcp` and `npm run dispatch:mcp` start **live stdio MCP server processes**. They are not persistent background daemons.
@@ -187,9 +207,39 @@ Why the direct command matters:
 - strict stdio MCP clients should avoid `npm run ...:mcp` because the npm script banner writes to stdout before the MCP handshake
 - `node --import tsx ...` starts the same server without the npm wrapper output
 
+### Self-Hosted `kb` Repo
+
+If Claude is opened in this `kb` repo, it can use the committed repo-root `.mcp.json` directly.
+
+If Codex is opened in this `kb` repo, run this once from the `kb` checkout:
+
+```bash
+npm run codex:mcp:register
+```
+
+That registers user-level `kb-wiki` and `kb-dispatch` entries pointing at the current `kb` checkout.
+
+### Consuming Repo Setup
+
+When Claude or Codex is opened in a consuming repo:
+
+- do not reuse the committed `kb/.mcp.json` file as-is
+- for Claude, create a `.mcp.json` in the consuming repo that points back to the chosen `kb` checkout
+- for Codex, register the chosen `kb` checkout once on that machine and reuse those MCP servers from the consuming repo
+
+The server still runs from `kb`. Only the `dir` argument changes per consuming repo.
+
 ### Claude Project `.mcp.json`
 
-Claude supports a project-scoped `.mcp.json`. Put this file in the repo where Claude will run and replace `<ABSOLUTE-PATH-TO-KB>` with the absolute path to your `kb` checkout:
+Claude supports a project-scoped `.mcp.json`. Put this file in the repo where Claude will run and replace:
+
+- `<TSX-LOADER-FILE-URL>` with a file URL to `node_modules/tsx/dist/loader.mjs`
+- `<ABSOLUTE-PATH-TO-KB>` with the absolute path to your `kb` checkout, using forward slashes
+
+Examples for `<TSX-LOADER-FILE-URL>`:
+
+- Windows: `file:///C:/Users/you/projects/kb/node_modules/tsx/dist/loader.mjs`
+- Linux/macOS: `file:///home/you/projects/kb/node_modules/tsx/dist/loader.mjs`
 
 ```json
 {
@@ -199,7 +249,7 @@ Claude supports a project-scoped `.mcp.json`. Put this file in the repo where Cl
       "command": "node",
       "args": [
         "--import",
-        "<ABSOLUTE-PATH-TO-KB>/node_modules/tsx/dist/loader.mjs",
+        "<TSX-LOADER-FILE-URL>",
         "<ABSOLUTE-PATH-TO-KB>/packages/wiki-mcp/src/server.ts"
       ],
       "env": {}
@@ -209,7 +259,7 @@ Claude supports a project-scoped `.mcp.json`. Put this file in the repo where Cl
       "command": "node",
       "args": [
         "--import",
-        "<ABSOLUTE-PATH-TO-KB>/node_modules/tsx/dist/loader.mjs",
+        "<TSX-LOADER-FILE-URL>",
         "<ABSOLUTE-PATH-TO-KB>/packages/dispatch-mcp/src/server.ts"
       ],
       "env": {}
@@ -224,15 +274,30 @@ Verify from that project directory:
 claude mcp list
 ```
 
+For a consuming repo, this `.mcp.json` belongs in the consuming repo root and points back to the `kb` checkout. Do not copy `kb/.mcp.json` into the consuming repo without rewriting the paths around that consuming repo's layout.
+
 ### Codex Native Registration
 
-Codex uses native MCP registration rather than Claude's project `.mcp.json`. Replace `<ABSOLUTE-PATH-TO-KB>` with the absolute path to your `kb` checkout:
+Codex uses native MCP registration rather than Claude's project `.mcp.json`.
+
+For this `kb` repo itself, prefer:
 
 ```bash
-codex mcp add kb-wiki -- node --import <ABSOLUTE-PATH-TO-KB>/node_modules/tsx/dist/loader.mjs <ABSOLUTE-PATH-TO-KB>/packages/wiki-mcp/src/server.ts
-codex mcp add kb-dispatch -- node --import <ABSOLUTE-PATH-TO-KB>/node_modules/tsx/dist/loader.mjs <ABSOLUTE-PATH-TO-KB>/packages/dispatch-mcp/src/server.ts
+npm run codex:mcp:register
+```
+
+For a manual or sister-repo registration, replace:
+
+- `<TSX-LOADER-FILE-URL>` with a file URL to `node_modules/tsx/dist/loader.mjs`
+- `<ABSOLUTE-PATH-TO-KB>` with the absolute path to your `kb` checkout, using forward slashes
+
+```bash
+codex mcp add kb-wiki -- node --import <TSX-LOADER-FILE-URL> <ABSOLUTE-PATH-TO-KB>/packages/wiki-mcp/src/server.ts
+codex mcp add kb-dispatch -- node --import <TSX-LOADER-FILE-URL> <ABSOLUTE-PATH-TO-KB>/packages/dispatch-mcp/src/server.ts
 codex mcp list
 ```
+
+Codex registration is user-level, not repo-local. Register one chosen `kb` checkout per machine, then reuse those MCP servers from `kb` itself and from any consuming repo on that machine.
 
 ### Windows Note
 
@@ -244,6 +309,8 @@ node --import tsx packages/dispatch-mcp/src/server.ts
 ```
 
 If a native client does not preserve `cwd`, use the absolute loader and absolute script paths shown in the Claude and Codex examples above. On Windows, prefer forward slashes such as `C:/Users/you/projects/kb` inside `<ABSOLUTE-PATH-TO-KB>` so you do not need to escape backslashes in JSON.
+
+On Windows PowerShell, execution policy can block the `.ps1` shims for `npm`, `claude`, and `codex`. In that case use `npm.cmd`, `claude.cmd`, and `codex.cmd`. On Linux and macOS, use the normal `npm`, `claude`, and `codex` commands.
 
 ## Start the Wiki MCP Server
 
@@ -464,6 +531,7 @@ Assumptions:
 - the `kb` repo lives at `../kb`
 - all `kb` commands are run from `../kb`
 - this repo is targeted via `dir`
+- this repo does not reuse `../kb/.mcp.json` verbatim
 
 ## Required Behavior
 
@@ -521,6 +589,17 @@ npm install
 npm run typecheck
 npm test
 ```
+
+If Claude will run in this consuming repo, create this repo's own `.mcp.json` that points back to `../kb` or to the absolute `kb` path.
+
+If Codex will run on this machine, register the `kb` checkout once and reuse it:
+
+```bash
+cd ../kb
+npm run codex:mcp:register
+```
+
+Do not copy `../kb/.mcp.json` into this repo verbatim. That file is only for self-hosting the `kb` repo itself.
 
 If this repo has not been bootstrapped yet:
 
@@ -599,6 +678,7 @@ Use this operating model:
 - use dispatch MCP or `../kb` CLI for dispatch
 - use `../kb` CLI for graph
 - target this repo explicitly with `dir`
+- keep Claude project MCP config in this repo, not copied verbatim from `../kb/.mcp.json`
 
 Repository-context retrieval is a wiki/docs retrieval problem first, not a broad filesystem search problem first.
 
@@ -623,6 +703,17 @@ npm install
 npm run typecheck
 npm test
 ```
+
+If Claude runs in this consuming repo, put a repo-local `.mcp.json` here that points back to `../kb`.
+
+If Codex runs on this machine, register the `kb` checkout once from `../kb`:
+
+```bash
+cd ../kb
+npm run codex:mcp:register
+```
+
+Do not copy `../kb/.mcp.json` into this repo unchanged. That file is only for the self-hosted `kb` repo case.
 
 Bootstrap this repo:
 
