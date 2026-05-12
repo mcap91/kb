@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
-import { extname, join, resolve } from 'node:path';
+import { mkdir, open, readFile, rename, stat, writeFile } from 'node:fs/promises';
+import { basename, dirname, extname, join, resolve } from 'node:path';
 
 import { DEFAULT_LIMITS, assertPathInside, canonicalizePath, loadHandoff } from './handoff.js';
 import { getWrapperForMode, WRAPPER_VERSION } from './prompts.js';
@@ -25,6 +25,23 @@ async function sha256File(path: string): Promise<string> {
 
 function hashRelativePath(path: string): string {
   return sha256(path).slice(0, 12);
+}
+
+async function writeAtomic(targetPath: string, content: string): Promise<void> {
+  const dirPath = dirname(targetPath);
+  await mkdir(dirPath, { recursive: true });
+  const tempPath = join(
+    dirPath,
+    `.tmp-${basename(targetPath)}-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+  );
+  const handle = await open(tempPath, 'w');
+  try {
+    await handle.writeFile(content, 'utf-8');
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+  await rename(tempPath, targetPath);
 }
 
 export async function review(opts: ReviewOpts): Promise<DispatchResult<ReviewResult>> {
@@ -147,7 +164,7 @@ export async function review(opts: ReviewOpts): Promise<DispatchResult<ReviewRes
 
   const manifestJson = `${JSON.stringify(inputManifest, null, 2)}\n`;
   const inputManifestPath = join(metadataDir, 'input-manifest.json');
-  await writeFile(inputManifestPath, manifestJson, 'utf-8');
+  await writeAtomic(inputManifestPath, manifestJson);
   const inputManifestHash = sha256(manifestJson);
 
   const expiresAt = new Date(Date.now() + (30 * 60 * 1000)).toISOString();
@@ -169,7 +186,7 @@ export async function review(opts: ReviewOpts): Promise<DispatchResult<ReviewRes
       max_linked_files: DEFAULT_LIMITS.maxLinkedFiles,
     },
   };
-  await writeFile(join(metadataDir, 'review.json'), `${JSON.stringify(reviewJson, null, 2)}\n`, 'utf-8');
+  await writeAtomic(join(metadataDir, 'review.json'), `${JSON.stringify(reviewJson, null, 2)}\n`);
 
   const payload: TokenPayload = {
     reviewId,

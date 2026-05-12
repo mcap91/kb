@@ -4,12 +4,14 @@ import { createWriteStream } from 'node:fs';
 import {
   copyFile,
   mkdir,
+  open,
   readFile,
   readdir,
+  rename,
   stat,
   writeFile,
 } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 
 import type {
   AgentLauncherConfig,
@@ -68,12 +70,52 @@ type ReviewManifest = {
   context_files: Array<{ snapshot_path: string; sha256: string }>;
 };
 
+type ReviewMetadata = {
+  review_id: string;
+  handoff_id: string;
+  agent: string;
+  mode: RunResult['mode'];
+  repo_root: string;
+  input_manifest_hash: string;
+  registry_hash: string;
+  expires_at: string;
+};
+
 function sha256(data: string | Buffer): string {
   return createHash('sha256').update(data).digest('hex');
 }
 
+function sha256Tagged(data: string | Buffer): string {
+  return `sha256:${sha256(data)}`;
+}
+
 async function sha256File(path: string): Promise<string> {
   return sha256(await readFile(path));
+}
+
+async function sha256TaggedFile(path: string): Promise<string> {
+  return sha256Tagged(await readFile(path));
+}
+
+async function writeAtomic(targetPath: string, content: string): Promise<void> {
+  const dirPath = dirname(targetPath);
+  await mkdir(dirPath, { recursive: true });
+  const tempPath = join(
+    dirPath,
+    `.tmp-${basename(targetPath)}-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+  );
+  const handle = await open(tempPath, 'w');
+  try {
+    await handle.writeFile(content, 'utf-8');
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+  await rename(tempPath, targetPath);
+}
+
+async function writeJsonAtomic(targetPath: string, value: unknown): Promise<void> {
+  await writeAtomic(targetPath, `${JSON.stringify(value, null, 2)}\n`);
 }
 
 async function copyTree(sourceDir: string, targetDir: string): Promise<void> {
@@ -216,11 +258,7 @@ async function writeLaunchMetadata(
     ...(data.stderrPath !== undefined ? { stderr_path: data.stderrPath } : {}),
   };
 
-  await writeFile(
-    join(metadataDir, 'launch.json'),
-    `${JSON.stringify(payload, null, 2)}\n`,
-    'utf-8',
-  );
+  await writeJsonAtomic(join(metadataDir, 'launch.json'), payload);
 }
 
 async function writeStateMetadata(
@@ -234,9 +272,9 @@ async function writeStateMetadata(
     heartbeatAt: string;
   },
 ): Promise<void> {
-  await writeFile(
+  await writeJsonAtomic(
     join(metadataDir, 'state.json'),
-    `${JSON.stringify({
+    {
       schema_version: 1,
       run_id: data.runId,
       status: data.status,
@@ -244,8 +282,7 @@ async function writeStateMetadata(
       pgid: data.pgid,
       started_at: data.startedAt,
       heartbeat_at: data.heartbeatAt,
-    }, null, 2)}\n`,
-    'utf-8',
+    },
   );
 }
 
@@ -259,9 +296,73 @@ function buildEmptyBodyDiagnostic(transportKind: AgentLauncherConfig['response_t
     'The adapter exited without producing a response body.',
     `The launcher ${transportLabel} and is failing closed rather than reporting a silent completed run.`,
     '',
-    'Inspect metadata/stderr.log and metadata/stdout.log when present to diagnose the adapter.',
+    'Likely causes:',
+    '- the adapter\'s non-interactive mode suppresses the final answer (for example, Claude Code with `--permission-mode plan` submits its plan through a tool call that is not streamed to stdout in `--output-format text`)',
+    '- the adapter crashed after opening the response target without writing to it',
+    '- the selected wrapper/mode combination caused the model to terminate with only tool-call output',
+    '',
+    'Inspect `metadata/stderr.log` and `metadata/stdout.log` (when present) to diagnose.',
     '',
   ].join('\n');
+}
+
+function stripLeadingFrontmatter(content: string): string {
+  return content.replace(/^---\n[\s\S]*?\n---\n?/, '');
+}
+
+function normalizeResponseContent(content: string, frontmatter: Record<string, string | number>): string {
+  const stripped = stripLeadingFrontmatter(content);
+  const header = ['---'];
+  for (const [key, value] of Object.entries(frontmatter)) {
+    header.push(`${key}: ${value}`);
+  }
+  header.push('---', '', stripped.trimStart());
+  return `${header.join('\n').trimEnd()}\n`;
+}
+
+function sanitizeAbsoluteArg(value: string, placeholders: Array<[string, string]>): string {
+  for (const [actual, token] of placeholders) {
+    if (value === actual) {
+      return token;
+    }
+  }
+  if (isAbsolute(value)) {
+    return '<abs_path>';
+  }
+  return value;
+}
+
+function compareTokenToReview(
+  payload: {
+    reviewId: string;
+    handoffId: string;
+    agent: string;
+    mode: RunResult['mode'];
+    repoRoot: string;
+    inputManifestHash: string;
+    registryHash: string;
+    expiry: string;
+  },
+  review: ReviewMetadata,
+): DispatchResult<void> {
+  const comparisons: Array<[string, string, string]> = [
+    ['review_id', payload.reviewId, review.review_id],
+    ['handoff_id', payload.handoffId, review.handoff_id],
+    ['agent', payload.agent, review.agent],
+    ['mode', payload.mode, review.mode],
+    ['repo_root', payload.repoRoot, review.repo_root],
+    ['input_manifest_hash', payload.inputManifestHash, review.input_manifest_hash],
+    ['registry_hash', payload.registryHash, review.registry_hash],
+    ['expires_at', payload.expiry, review.expires_at],
+  ];
+
+  for (const [field, tokenValue, reviewValue] of comparisons) {
+    if (String(tokenValue) !== String(reviewValue)) {
+      return fail('HASH_MISMATCH', `Token/review mismatch for ${field}.`);
+    }
+  }
+
+  return ok(undefined);
 }
 
 function isAlive(target: number): boolean {
@@ -373,40 +474,38 @@ export async function launch(opts: LaunchOpts): Promise<DispatchResult<RunResult
   if (!tokenResult.ok) return tokenResult;
 
   const verifyResult = await verifyToken(tokenResult.data);
-  if (!verifyResult.ok) {
-    await moveToken(opts.reviewId, 'pending', 'rejected');
-    return verifyResult;
-  }
+  if (!verifyResult.ok) return verifyResult;
 
   const payload = verifyResult.data;
   if (payload.repoRoot !== repoRoot) {
-    await moveToken(opts.reviewId, 'pending', 'rejected');
     return fail('REPO_ROOT_MISMATCH', 'Current repo root does not match the reviewed repo root.');
   }
 
   const reviewDir = getReviewDir(repoRoot, opts.reviewId);
-  const manifestResult = await verifyReviewedBundle(reviewDir, payload.inputManifestHash);
-  if (!manifestResult.ok) {
-    await moveToken(opts.reviewId, 'pending', 'rejected');
-    return manifestResult;
+  let reviewMetadata: ReviewMetadata;
+  try {
+    reviewMetadata = JSON.parse(
+      await readFile(join(reviewDir, 'metadata', 'review.json'), 'utf-8'),
+    ) as ReviewMetadata;
+  } catch (err) {
+    return fail('REVIEW_NOT_FOUND', `Review metadata not found at ${join(reviewDir, 'metadata', 'review.json')}.`, err);
   }
+
+  const reviewComparison = compareTokenToReview(payload, reviewMetadata);
+  if (!reviewComparison.ok) return reviewComparison;
+
+  const manifestResult = await verifyReviewedBundle(reviewDir, payload.inputManifestHash);
+  if (!manifestResult.ok) return manifestResult;
 
   const registryResult = await loadRegistry();
-  if (!registryResult.ok) {
-    await moveToken(opts.reviewId, 'pending', 'rejected');
-    return registryResult;
-  }
+  if (!registryResult.ok) return registryResult;
 
   if (registryResult.data.hash !== payload.registryHash) {
-    await moveToken(opts.reviewId, 'pending', 'rejected');
     return fail('HASH_MISMATCH', 'Registry hash mismatch. The agent registry has changed since review.');
   }
 
   const agentConfigResult = resolveAgentConfig(registryResult.data.data, payload.agent, payload.mode);
-  if (!agentConfigResult.ok) {
-    await moveToken(opts.reviewId, 'pending', 'rejected');
-    return agentConfigResult;
-  }
+  if (!agentConfigResult.ok) return agentConfigResult;
 
   const moveToLaunching = await moveToken(opts.reviewId, 'pending', 'launching');
   if (!moveToLaunching.ok) return moveToLaunching;
@@ -419,16 +518,8 @@ export async function launch(opts: LaunchOpts): Promise<DispatchResult<RunResult
   await mkdir(metadataDir, { recursive: true });
 
   await copyTree(join(reviewDir, 'agent-visible'), agentVisibleDir);
-  await writeFile(
-    join(metadataDir, 'input-manifest.json'),
-    await readFile(join(reviewDir, 'metadata', 'input-manifest.json'), 'utf-8'),
-    'utf-8',
-  );
-  await writeFile(
-    join(metadataDir, 'review.json'),
-    await readFile(join(reviewDir, 'metadata', 'review.json'), 'utf-8'),
-    'utf-8',
-  );
+  await writeJsonAtomic(join(metadataDir, 'input-manifest.json'), manifestResult.data.manifest);
+  await writeJsonAtomic(join(metadataDir, 'review.json'), reviewMetadata);
   await writeLaunchMetadata(metadataDir, {
     reviewId: opts.reviewId,
     runId,
@@ -464,6 +555,14 @@ export async function launch(opts: LaunchOpts): Promise<DispatchResult<RunResult
     responsePath,
     repoRoot,
   );
+  const argv = [command, ...args];
+  const redactionPlaceholders: Array<[string, string]> = [
+    [repoRoot, '<repo_root>'],
+    [wrapperPath, '<wrapper_path>'],
+    [responsePath, '<response_path>'],
+    [wrapperContent, '<wrapper_content>'],
+  ];
+  const argvRedacted = argv.map((value) => sanitizeAbsoluteArg(value, redactionPlaceholders));
 
   const stdoutTarget = agentConfigResult.data.response_transport.kind === 'stdout_capture'
     ? responsePath
@@ -484,8 +583,6 @@ export async function launch(opts: LaunchOpts): Promise<DispatchResult<RunResult
     exitCode: number,
     errorMessage?: string,
   ): Promise<{ response: string; emptyResponse: boolean; finalStatus: TerminalRunStatus }> => {
-    terminalStatus = status;
-
     if (heartbeatTimer) clearInterval(heartbeatTimer);
     if (timeoutTimer) clearTimeout(timeoutTimer);
     if (killTimer) clearTimeout(killTimer);
@@ -502,18 +599,29 @@ export async function launch(opts: LaunchOpts): Promise<DispatchResult<RunResult
       response = await readFile(responsePath, 'utf-8');
     }
 
+    const bodyWithoutFrontmatter = stripLeadingFrontmatter(response).trim();
     let finalStatus = status;
     let emptyResponse = false;
-    if (response.trim() === '') {
+    if (finalStatus === 'completed' && bodyWithoutFrontmatter === '') {
       emptyResponse = true;
       response = buildEmptyBodyDiagnostic(agentConfigResult.data.response_transport.kind);
-      await writeFile(responsePath, response, 'utf-8');
-      if (finalStatus === 'completed') {
-        finalStatus = 'failed';
-      }
+      finalStatus = 'failed';
     }
 
     const completedAt = new Date().toISOString();
+    terminalStatus = finalStatus;
+    const normalizedResponse = normalizeResponseContent(response, {
+      schema_version: 1,
+      run_id: runId,
+      handoff_id: payload.handoffId,
+      agent: payload.agent,
+      input_manifest_hash: payload.inputManifestHash,
+      status: finalStatus,
+      created_at: completedAt,
+    });
+    await writeFile(responsePath, normalizedResponse, 'utf-8');
+    const responseSha256 = await sha256TaggedFile(responsePath);
+
     await writeLaunchMetadata(metadataDir, {
       reviewId: opts.reviewId,
       runId,
@@ -538,28 +646,31 @@ export async function launch(opts: LaunchOpts): Promise<DispatchResult<RunResult
       });
     }
 
-    await writeFile(
-      join(metadataDir, 'meta.json'),
-      `${JSON.stringify({
-        schema_version: 1,
-        review_id: opts.reviewId,
-        run_id: runId,
-        handoff_id: payload.handoffId,
-        agent: payload.agent,
-        mode: payload.mode,
-        status: finalStatus,
-        exit_code: exitCode,
-        started_at: startedAt,
-        completed_at: completedAt,
-        ...(emptyResponse || errorMessage ? { error: emptyResponse ? 'Empty agent response' : errorMessage } : {}),
-        response_path: responsePath,
-        stdout_path: agentConfigResult.data.response_transport.kind === 'file' ? stdoutPath : null,
-        stderr_path: stderrPath,
-      }, null, 2)}\n`,
-      'utf-8',
-    );
+    await writeJsonAtomic(join(metadataDir, 'meta.json'), {
+      schema_version: 1,
+      run_id: runId,
+      handoff_id: payload.handoffId,
+      agent: payload.agent,
+      mode: payload.mode,
+      operator_id: process.env['USER'] || process.env['USERNAME'] || 'unknown',
+      review_id: opts.reviewId,
+      input_manifest_hash: payload.inputManifestHash,
+      registry_hash: payload.registryHash,
+      response_sha256: responseSha256,
+      started_at: startedAt,
+      completed_at: completedAt,
+      status: finalStatus,
+      launcher_version: '1.0.0',
+      argv_redacted: argvRedacted,
+      timeout_seconds: agentConfigResult.data.timeout_seconds ?? 1800,
+      exit_code: exitCode,
+      ...(emptyResponse || errorMessage ? { error: emptyResponse ? 'Empty agent response' : errorMessage } : {}),
+      response_path: responsePath,
+      stdout_path: agentConfigResult.data.response_transport.kind === 'file' ? stdoutPath : null,
+      stderr_path: stderrPath,
+    });
 
-    return { response, emptyResponse, finalStatus };
+    return { response: normalizedResponse, emptyResponse, finalStatus };
   };
 
   const requestTermination = (status: Exclude<TerminalRunStatus, 'rejected' | 'completed'>): void => {
@@ -703,6 +814,8 @@ export async function launch(opts: LaunchOpts): Promise<DispatchResult<RunResult
         runId,
         runDir,
         status: result.finalStatus,
+        responsePath,
+        metaPath: join(metadataDir, 'meta.json'),
       });
     }
 
@@ -728,32 +841,28 @@ export async function launch(opts: LaunchOpts): Promise<DispatchResult<RunResult
         startedAt,
         completedAt: new Date().toISOString(),
         error: 'Agent process failed before confirmed start.',
-        responsePath: null,
-        stdoutPath: null,
+        responsePath,
+        stdoutPath: agentConfigResult.data.response_transport.kind === 'file' ? stdoutPath : null,
         stderrPath,
       });
-      await writeFile(
-        join(metadataDir, 'meta.json'),
-        `${JSON.stringify({
-          schema_version: 1,
-          review_id: opts.reviewId,
-          run_id: runId,
-          handoff_id: payload.handoffId,
-          agent: payload.agent,
-          mode: payload.mode,
-          status: 'rejected',
-          started_at: startedAt,
-          completed_at: new Date().toISOString(),
-          error: 'Agent process failed before confirmed start.',
-          response_path: null,
-          stdout_path: null,
-          stderr_path: stderrPath,
-        }, null, 2)}\n`,
-        'utf-8',
+    }
+
+    if (!terminalStatus) {
+      await finalize(
+        confirmedStart ? 'failed' : 'rejected',
+        1,
+        confirmedStart ? 'Agent process failed after confirmed start.' : 'Agent process failed before confirmed start.',
       );
     }
 
-    return fail('LAUNCH_FAILED', 'Agent process failed to launch.', err);
+    return fail('LAUNCH_FAILED', 'Agent process failed to launch.', {
+      error: err,
+      runId,
+      runDir,
+      status: confirmedStart ? 'failed' : 'rejected',
+      responsePath,
+      metaPath: join(metadataDir, 'meta.json'),
+    });
   } finally {
     process.removeListener('SIGINT', cancelRun);
     process.removeListener('SIGTERM', cancelRun);
