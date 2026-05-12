@@ -216,16 +216,17 @@ The launch operation (`dispatch-core/src/launch.ts`) executes a reviewed handoff
 5. **Re-verify bundle hash** -- recompute hashes of all files in the review bundle and compare against the token's `inputManifestHash`
 6. **Re-verify registry hash** -- recompute hash of `launchers.v1.json` and compare against the token's `registryHash`
 7. **Load agent config** -- look up the agent in the registry
-8. **Move token to launching/** -- atomic state transition
-9. **Create run directory** -- `.agent-runs/runs/<handoffId>/RUN-<uuid>/`
-10. **Copy reviewed bundle** -- copy `agent-visible/` and metadata into the run directory
-11. **Build filtered environment** -- only allowlisted env vars plus `AGENT_BLACKBOARD_*` variables
-12. **Write initial launch metadata** -- `metadata/launch.json` with `token_state = launching`
-13. **Spawn agent** -- child process with `cwd = agent-visible`, no TTY, and redirected stdout/stderr
-14. **Record live runtime state** -- write `metadata/state.json` with `status = launching`, `pid`, `pgid`, and `heartbeat_at`
-15. **Confirm child start** -- move token to `consumed/` and update `metadata/launch.json.token_state = consumed`
-16. **Stream response/logs live** -- `stdout_capture` adapters stream stdout directly to `response.md`; file adapters stream stdout to `metadata/stdout.log`; stderr streams to `metadata/stderr.log`
-17. **Write final metadata** -- on terminal exit, write `metadata/meta.json`, update `metadata/state.json` to a terminal status, and keep `launch.json.token_state = consumed` for started runs
+8. **Resolve executable** -- bare `base_argv[0]` commands are resolved to executable paths using PATH plus platform fallback directories; path-bearing commands are left unchanged
+9. **Move token to launching/** -- atomic state transition
+10. **Create run directory** -- `.agent-runs/runs/<handoffId>/RUN-<uuid>/`
+11. **Copy reviewed bundle** -- copy `agent-visible/` and metadata into the run directory
+12. **Build filtered environment** -- only allowlisted env vars plus `AGENT_BLACKBOARD_*` variables
+13. **Write initial launch metadata** -- `metadata/launch.json` with `token_state = launching`
+14. **Spawn agent** -- child process with `cwd = agent-visible`, no TTY, and redirected stdout/stderr
+15. **Record live runtime state** -- write `metadata/state.json` with `status = launching`, `pid`, `pgid`, and `heartbeat_at`
+16. **Confirm child start** -- move token to `consumed/` and update `metadata/launch.json.token_state = consumed`
+17. **Stream response/logs live** -- `stdout_capture` adapters stream stdout directly to `response.md`; file adapters stream stdout to `metadata/stdout.log`; stderr streams to `metadata/stderr.log`
+18. **Write final metadata** -- on terminal exit, write `metadata/meta.json`, update `metadata/state.json` to a terminal status, and keep `launch.json.token_state = consumed` for started runs
 
 ### Reviewed Bundle Invariant
 
@@ -327,6 +328,11 @@ The agent registry (`launchers.v1.json`) maps agent names to launcher configurat
 | `read_only` | no | Required for `redteam` compatibility |
 | `description` | no | Human-readable description |
 | `env` | no | Additional environment variables to set |
+
+`base_argv[0]` may remain a portable bare command such as `claude` or `codex`. At launch time,
+dispatch resolves bare commands using PATH and safe platform fallback directories, including common
+POSIX command directories, before calling `spawn` without `shell: true`. Absolute and relative
+path commands, such as the generated `fake-agent` entry, are used as written.
 
 ### Default Agents
 
