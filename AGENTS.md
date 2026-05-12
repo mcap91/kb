@@ -29,7 +29,27 @@ If you are wiring `kb` into a native MCP client, use direct `node` launch comman
 - For strict stdio clients, avoid `npm run wiki:mcp` and `npm run dispatch:mcp` because the npm wrapper writes to stdout before the MCP handshake.
 - If the client does not preserve `cwd`, especially on Windows, use absolute `tsx` loader and server script paths.
 
-Claude `.mcp.json` example. Replace `<ABSOLUTE-PATH-TO-KB>` with the absolute path to this `kb` checkout:
+When you are working in `kb` itself, this checkout can self-host its own MCP tools:
+
+- Claude can use the committed repo-root `.mcp.json`
+- Codex can be pointed at this checkout with `npm run codex:mcp:register`
+- in that mode, `dir` should point back at this `kb` repo
+
+This self-hosted setup does not replace the sister-repo model:
+
+- `kb/.mcp.json` is only for the self-hosted `kb` repo case
+- a consuming repo needs its own Claude `.mcp.json` that points back to the chosen `kb` checkout
+- Codex MCP registration is user-level and should point at one chosen `kb` checkout per machine
+
+Claude `.mcp.json` example. Replace:
+
+- `<TSX-LOADER-FILE-URL>` with a file URL to `node_modules/tsx/dist/loader.mjs`
+- `<ABSOLUTE-PATH-TO-KB>` with the absolute path to this `kb` checkout, using forward slashes
+
+Examples for `<TSX-LOADER-FILE-URL>`:
+
+- Windows: `file:///C:/Users/you/projects/kb/node_modules/tsx/dist/loader.mjs`
+- Linux/macOS: `file:///home/you/projects/kb/node_modules/tsx/dist/loader.mjs`
 
 ```json
 {
@@ -39,7 +59,7 @@ Claude `.mcp.json` example. Replace `<ABSOLUTE-PATH-TO-KB>` with the absolute pa
       "command": "node",
       "args": [
         "--import",
-        "<ABSOLUTE-PATH-TO-KB>/node_modules/tsx/dist/loader.mjs",
+        "<TSX-LOADER-FILE-URL>",
         "<ABSOLUTE-PATH-TO-KB>/packages/wiki-mcp/src/server.ts"
       ],
       "env": {}
@@ -49,7 +69,7 @@ Claude `.mcp.json` example. Replace `<ABSOLUTE-PATH-TO-KB>` with the absolute pa
       "command": "node",
       "args": [
         "--import",
-        "<ABSOLUTE-PATH-TO-KB>/node_modules/tsx/dist/loader.mjs",
+        "<TSX-LOADER-FILE-URL>",
         "<ABSOLUTE-PATH-TO-KB>/packages/dispatch-mcp/src/server.ts"
       ],
       "env": {}
@@ -58,15 +78,20 @@ Claude `.mcp.json` example. Replace `<ABSOLUTE-PATH-TO-KB>` with the absolute pa
 }
 ```
 
-Codex registration example. Replace `<ABSOLUTE-PATH-TO-KB>` with the absolute path to this `kb` checkout:
+Codex registration example. For this repo itself, prefer `npm run codex:mcp:register`.
+
+Manual Codex registration example. Replace:
+
+- `<TSX-LOADER-FILE-URL>` with a file URL to `node_modules/tsx/dist/loader.mjs`
+- `<ABSOLUTE-PATH-TO-KB>` with the absolute path to this `kb` checkout, using forward slashes
 
 ```bash
-codex mcp add kb-wiki -- node --import <ABSOLUTE-PATH-TO-KB>/node_modules/tsx/dist/loader.mjs <ABSOLUTE-PATH-TO-KB>/packages/wiki-mcp/src/server.ts
-codex mcp add kb-dispatch -- node --import <ABSOLUTE-PATH-TO-KB>/node_modules/tsx/dist/loader.mjs <ABSOLUTE-PATH-TO-KB>/packages/dispatch-mcp/src/server.ts
+codex mcp add kb-wiki -- node --import <TSX-LOADER-FILE-URL> <ABSOLUTE-PATH-TO-KB>/packages/wiki-mcp/src/server.ts
+codex mcp add kb-dispatch -- node --import <TSX-LOADER-FILE-URL> <ABSOLUTE-PATH-TO-KB>/packages/dispatch-mcp/src/server.ts
 codex mcp list
 ```
 
-Windows note: if the client does not preserve `cwd`, prefer forward-slash absolute paths such as `C:/Users/you/projects/kb/...` so JSON and CLI arguments do not need escaped backslashes.
+Windows note: if the client does not preserve `cwd`, prefer forward-slash absolute paths such as `C:/Users/you/projects/kb/...` so JSON and CLI arguments do not need escaped backslashes. In PowerShell, execution policy can block the `.ps1` shims for `npm`, `claude`, and `codex`; use `npm.cmd`, `claude.cmd`, and `codex.cmd` in that case. On Linux and macOS, use the normal command names.
 
 ## Core Architecture
 
@@ -377,3 +402,33 @@ Both must pass.
 - **Do not import across subsystem boundaries.** wiki-cli uses wiki-core. dispatch-cli uses dispatch-core. graph-explore is standalone.
 - **Do not describe features that do not exist.** No semantic search, no embeddings, no function-level graphs.
 - **Do not modify files under `scratch_space/`.** That directory is for planning and reference only.
+
+
+## Interaction Contract
+
+- Do not stop at findings. If you identify a problem, propose a concrete fix in the same response.
+- For non-trivial work, be approval-seeking before acting. State the recommendation, the exact change, and ask `Approve?` before editing.
+- Treat non-trivial work as any multi-file edit, behavior change, architectural change, expensive run, or irreversible action.
+- After approval, execute the agreed change with minimal narration.
+- Use progress updates only when blocked, waiting on a command, or when new information changes the recommendation.
+- If multiple approaches are possible, recommend one approach first. Mention alternatives only when they materially affect the decision.
+
+## Communication Style
+
+- Keep responses short and direct.
+- Start with the conclusion or recommendation.
+- Default response shape for non-trivial tasks:
+  1. conclusion
+  2. proposed solution
+  3. exact change needed
+  4. `Approve?`
+- Avoid repeating the same point.
+- Use bullets only for real lists.
+- For code semantics, use:
+  1. current behavior
+  2. intended behavior
+  3. exact change needed
+- Do not reason out loud unless asked.
+- Do not narrate exploration or list findings without a recommendation unless the user explicitly asked for investigation only.
+- Minimize filler, hedging, and progress chatter.
+- Keep default answers compact. Expand only when asked or when precision requires it.

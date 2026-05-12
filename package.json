@@ -7,6 +7,7 @@
   "scripts": {
     "wiki": "tsx packages/wiki-cli/src/index.ts",
     "wiki:mcp": "tsx packages/wiki-mcp/src/server.ts",
+    "codex:mcp:register": "tsx scripts/register-codex-mcp.ts",
     "dispatch": "tsx packages/dispatch-cli/src/index.ts",
     "dispatch:mcp": "tsx packages/dispatch-mcp/src/server.ts",
     "graph": "tsx packages/graph-explore/src/extract.ts",
