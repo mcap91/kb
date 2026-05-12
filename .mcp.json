@@ -1,0 +1,24 @@
+{
+  "mcpServers": {
+    "kb-wiki": {
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "--import",
+        "./node_modules/tsx/dist/loader.mjs",
+        "./packages/wiki-mcp/src/server.ts"
+      ],
+      "env": {}
+    },
+    "kb-dispatch": {
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "--import",
+        "./node_modules/tsx/dist/loader.mjs",
+        "./packages/dispatch-mcp/src/server.ts"
+      ],
+      "env": {}
+    }
+  }
+}

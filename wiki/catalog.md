@@ -1,7 +1,7 @@
 ---
 _generated: true
 title: "Catalog"
-updated: "2026-05-08T00:03:20.969Z"
+updated: "2026-05-12T03:38:12.240Z"
 ---
 
 # Catalog
@@ -27,6 +27,7 @@ Complete listing of all wiki records by type.
 | [WK-0013](wiki/issues/WK-0013.md) | dispatch leaves launch.json stuck at launching after terminal runs, causing stale active-launch reporting | done | high | WK |
 | [WK-0014](wiki/issues/WK-0014.md) | Align dispatch runtime telemetry with portfolio blackboard protocol | done | high | WK |
 | [WK-0015](wiki/issues/WK-0015.md) | Add a tracked version so consuming repos know when a full upgrade is needed | inbox | medium | WK |
+| [WK-0016](wiki/issues/WK-0016.md) | Skills & agent tooling research for computational biology workflow | done | high | WK |
 
 ## Initiatives
 
