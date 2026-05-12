@@ -15,6 +15,7 @@ import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 
 import type {
   AgentLauncherConfig,
+  LaunchEvent,
   LaunchOpts,
   RunResult,
 } from './types.js';
@@ -139,6 +140,14 @@ async function pathExists(path: string): Promise<boolean> {
     return true;
   } catch {
     return false;
+  }
+}
+
+async function fileSize(path: string): Promise<number> {
+  try {
+    return (await stat(path)).size;
+  } catch {
+    return 0;
   }
 }
 
@@ -578,6 +587,36 @@ export async function launch(opts: LaunchOpts): Promise<DispatchResult<RunResult
   let killTimer: NodeJS.Timeout | undefined;
   let terminalStatus: TerminalRunStatus | null = null;
 
+  const emit = (event: LaunchEvent): void => {
+    try {
+      opts.onEvent?.(event);
+    } catch {
+      // Progress observers must not affect launch correctness.
+    }
+  };
+
+  const readArtifactSizes = async (): Promise<{
+    responseBytes: number;
+    stdoutBytes: number | null;
+    stderrBytes: number;
+  }> => ({
+    responseBytes: await fileSize(responsePath),
+    stdoutBytes: agentConfigResult.data.response_transport.kind === 'file' ? await fileSize(stdoutPath) : null,
+    stderrBytes: await fileSize(stderrPath),
+  });
+
+  emit({
+    type: 'run_created',
+    reviewId: opts.reviewId,
+    runId,
+    handoffId: payload.handoffId,
+    runDir,
+    responsePath,
+    stdoutPath: agentConfigResult.data.response_transport.kind === 'file' ? stdoutPath : null,
+    stderrPath,
+    startedAt,
+  });
+
   const finalize = async (
     status: TerminalRunStatus,
     exitCode: number,
@@ -670,6 +709,22 @@ export async function launch(opts: LaunchOpts): Promise<DispatchResult<RunResult
       stderr_path: stderrPath,
     });
 
+    const sizes = await readArtifactSizes();
+    emit({
+      type: 'finalized',
+      reviewId: opts.reviewId,
+      runId,
+      handoffId: payload.handoffId,
+      status: finalStatus,
+      exitCode,
+      responsePath,
+      metaPath: join(metadataDir, 'meta.json'),
+      responseBytes: sizes.responseBytes,
+      stdoutBytes: sizes.stdoutBytes,
+      stderrBytes: sizes.stderrBytes,
+      completedAt,
+    });
+
     return { response: normalizedResponse, emptyResponse, finalStatus };
   };
 
@@ -752,6 +807,16 @@ export async function launch(opts: LaunchOpts): Promise<DispatchResult<RunResult
       startedAt,
       heartbeatAt: startedAt,
     });
+    emit({
+      type: 'spawned',
+      reviewId: opts.reviewId,
+      runId,
+      handoffId: payload.handoffId,
+      pid: child.pid,
+      pgid: child.pid,
+      cwd: agentVisibleDir,
+      startedAt,
+    });
 
     const moveToConsumed = await moveToken(opts.reviewId, 'launching', 'consumed');
     if (!moveToConsumed.ok) {
@@ -770,19 +835,42 @@ export async function launch(opts: LaunchOpts): Promise<DispatchResult<RunResult
       stdoutPath: agentConfigResult.data.response_transport.kind === 'file' ? stdoutPath : null,
       stderrPath,
     });
+    emit({
+      type: 'token_consumed',
+      reviewId: opts.reviewId,
+      runId,
+      handoffId: payload.handoffId,
+      tokenState: 'consumed',
+      responsePath,
+      stderrPath,
+    });
 
     heartbeatTimer = setInterval(async () => {
       if (!child?.pid || terminalStatus) {
         return;
       }
       if (isRecordedProcessAlive(child.pid, child.pid)) {
+        const heartbeatAt = new Date().toISOString();
         await writeStateMetadata(metadataDir, {
           runId,
           status: 'launching',
           pid: child.pid,
           pgid: child.pid,
           startedAt,
-          heartbeatAt: new Date().toISOString(),
+          heartbeatAt,
+        });
+        const sizes = await readArtifactSizes();
+        emit({
+          type: 'heartbeat',
+          reviewId: opts.reviewId,
+          runId,
+          handoffId: payload.handoffId,
+          pid: child.pid,
+          pgid: child.pid,
+          heartbeatAt,
+          responseBytes: sizes.responseBytes,
+          stdoutBytes: sizes.stdoutBytes,
+          stderrBytes: sizes.stderrBytes,
         });
       }
     }, HEARTBEAT_INTERVAL_MS);

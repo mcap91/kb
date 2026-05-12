@@ -975,6 +975,47 @@ describe('dispatch', () => {
   });
 
   describe('dispatch-cli', () => {
+    it('launch prints launcher progress to stderr for human runs', async () => {
+      await setupBootstrappedRepo(repoRoot);
+      await setupFullConfig();
+      const { review } = await import('@kb/dispatch-core');
+
+      await writeFile(
+        join(repoRoot, 'wiki', 'handoffs', 'HO-0001.md'),
+        makeManualHandoff(),
+      );
+
+      const reviewResult = await review({
+        dir: repoRoot,
+        handoff: 'wiki/handoffs/HO-0001.md',
+        agent: 'fake-agent',
+        reviewedAndAcceptRisks: true,
+      });
+
+      expect(reviewResult.ok).toBe(true);
+      if (!reviewResult.ok) return;
+
+      const stderrPath = join(tempDir, 'launch-progress.stderr');
+      const output = execSync(
+        `"${getTsxPath()}" "${DISPATCH_CLI}" launch --review-id "${reviewResult.data.reviewId}" --dir "${repoRoot}" 2> "${stderrPath}"`,
+        {
+          cwd: resolve(TESTS_DIR, '..'),
+          env: process.env,
+          encoding: 'utf-8',
+        },
+      );
+      const stderr = await readFile(stderrPath, 'utf-8');
+
+      expect(output).toContain('Launch succeeded.');
+      expect(stderr).toContain('[dispatch] run created RUN-');
+      expect(stderr).toContain('[dispatch] run dir:');
+      expect(stderr).toContain('[dispatch] response:');
+      expect(stderr).toContain('[dispatch] spawned pid=');
+      expect(stderr).toContain('[dispatch] token consumed; streaming output to response.md');
+      expect(stderr).toContain('[dispatch] finalized status=completed exit=0');
+      expect(stderr).toContain('[dispatch] meta:');
+    }, 30000);
+
     it('launch --json prints authoritative run artifact paths', async () => {
       await setupBootstrappedRepo(repoRoot);
       await setupFullConfig();
@@ -995,8 +1036,9 @@ describe('dispatch', () => {
       expect(reviewResult.ok).toBe(true);
       if (!reviewResult.ok) return;
 
+      const stderrPath = join(tempDir, 'launch-json.stderr');
       const output = execSync(
-        `"${getTsxPath()}" "${DISPATCH_CLI}" launch --review-id "${reviewResult.data.reviewId}" --dir "${repoRoot}" --json`,
+        `"${getTsxPath()}" "${DISPATCH_CLI}" launch --review-id "${reviewResult.data.reviewId}" --dir "${repoRoot}" --json 2> "${stderrPath}"`,
         {
           cwd: resolve(TESTS_DIR, '..'),
           env: process.env,
@@ -1019,6 +1061,7 @@ describe('dispatch', () => {
       expect(parsed.metaPath).toBe(join(parsed.runDir, 'metadata', 'meta.json'));
       expect(await pathExists(parsed.responsePath)).toBe(true);
       expect(await pathExists(parsed.metaPath)).toBe(true);
+      expect(await readFile(stderrPath, 'utf-8')).toBe('');
     }, 30000);
 
     it('init-config writes adapter-aware default agent profiles', async () => {

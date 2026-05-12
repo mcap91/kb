@@ -21,6 +21,7 @@ export type {
   CreateHandoffResult,
   ReviewOpts,
   ReviewResult,
+  LaunchEvent,
   LaunchOpts,
   RunResult,
   CleanupOpts,

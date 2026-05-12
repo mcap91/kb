@@ -14,6 +14,7 @@ import {
 import type {
   CleanupReport,
   CreateHandoffResult,
+  LaunchEvent,
   ReviewResult,
   RunResult,
   StatusResult,
@@ -45,6 +46,49 @@ function isLaunchFailureDetail(value: unknown): value is {
   metaPath?: string;
 } {
   return typeof value === 'object' && value !== null;
+}
+
+function formatBytes(bytes: number | null): string {
+  if (bytes === null) return 'n/a';
+  return `${bytes}B`;
+}
+
+function createLaunchProgressReporter(): (event: LaunchEvent) => void {
+  let lastHeartbeatPrint = Date.now();
+  return (event: LaunchEvent): void => {
+    switch (event.type) {
+      case 'run_created':
+        process.stderr.write(`[dispatch] run created ${event.runId}\n`);
+        process.stderr.write(`[dispatch] run dir: ${event.runDir}\n`);
+        process.stderr.write(`[dispatch] response: ${event.responsePath}\n`);
+        process.stderr.write(`[dispatch] stderr: ${event.stderrPath}\n`);
+        break;
+      case 'spawned':
+        process.stderr.write(`[dispatch] spawned pid=${event.pid} cwd=${event.cwd}\n`);
+        break;
+      case 'token_consumed':
+        process.stderr.write(`[dispatch] token consumed; streaming output to response.md\n`);
+        break;
+      case 'heartbeat': {
+        const now = Date.now();
+        if (now - lastHeartbeatPrint < 30_000) {
+          break;
+        }
+        lastHeartbeatPrint = now;
+        const heartbeatMs = Date.parse(event.heartbeatAt);
+        const heartbeatAgeMs = Number.isFinite(heartbeatMs) ? Math.max(0, now - heartbeatMs) : -1;
+        process.stderr.write(
+          `[dispatch] heartbeat age=${heartbeatAgeMs}ms response=${formatBytes(event.responseBytes)} stderr=${formatBytes(event.stderrBytes)} stdout=${formatBytes(event.stdoutBytes)}\n`,
+        );
+        break;
+      }
+      case 'finalized':
+        process.stderr.write(`[dispatch] finalized status=${event.status} exit=${event.exitCode}\n`);
+        process.stderr.write(`[dispatch] response: ${event.responsePath}\n`);
+        process.stderr.write(`[dispatch] meta: ${event.metaPath}\n`);
+        break;
+    }
+  };
 }
 
 const HELP_TEXT = `
@@ -213,7 +257,12 @@ async function cmdLaunch(args: string[]): Promise<number> {
     return 1;
   }
 
-  const result = await launch({ reviewId, dir, verbose });
+  const result = await launch({
+    reviewId,
+    dir,
+    verbose,
+    onEvent: json ? undefined : createLaunchProgressReporter(),
+  });
   if (!result.ok) {
     if (json && isLaunchFailureDetail(result.detail)) {
       console.log(JSON.stringify({
