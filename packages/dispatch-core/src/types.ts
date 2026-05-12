@@ -132,11 +132,70 @@ export interface ReviewResult {
 // Launch types
 // ---------------------------------------------------------------------------
 
+export type LaunchEvent =
+  | {
+    type: 'run_created';
+    reviewId: string;
+    runId: string;
+    handoffId: string;
+    runDir: string;
+    responsePath: string;
+    stdoutPath: string | null;
+    stderrPath: string;
+    startedAt: string;
+  }
+  | {
+    type: 'spawned';
+    reviewId: string;
+    runId: string;
+    handoffId: string;
+    pid: number;
+    pgid: number;
+    cwd: string;
+    startedAt: string;
+  }
+  | {
+    type: 'token_consumed';
+    reviewId: string;
+    runId: string;
+    handoffId: string;
+    tokenState: 'consumed';
+    responsePath: string;
+    stderrPath: string;
+  }
+  | {
+    type: 'heartbeat';
+    reviewId: string;
+    runId: string;
+    handoffId: string;
+    pid: number;
+    pgid: number;
+    heartbeatAt: string;
+    responseBytes: number;
+    stdoutBytes: number | null;
+    stderrBytes: number;
+  }
+  | {
+    type: 'finalized';
+    reviewId: string;
+    runId: string;
+    handoffId: string;
+    status: 'completed' | 'failed' | 'timed_out' | 'cancelled' | 'rejected';
+    exitCode: number;
+    responsePath: string;
+    metaPath: string;
+    responseBytes: number;
+    stdoutBytes: number | null;
+    stderrBytes: number;
+    completedAt: string;
+  };
+
 /** Options for the launch operation. */
 export interface LaunchOpts {
   reviewId: string;
   dir: string;
   verbose?: boolean;
+  onEvent?: (event: LaunchEvent) => void;
 }
 
 /** Result of a successful agent run. */
