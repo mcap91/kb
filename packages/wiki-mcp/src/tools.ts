@@ -8,6 +8,9 @@ import {
   generate,
   buildSearchIndex,
   search,
+  importPlan,
+  validatePlan,
+  archivePlan,
 } from '@kb/wiki-core';
 import type { WikiPrefix } from '@kb/wiki-core';
 
@@ -45,7 +48,7 @@ export const tools: ToolDef[] = [
     name: 'allocate-id',
     description: 'Allocate the next sequential ID for a given prefix',
     inputSchema: dirSchema.extend({
-      prefix: z.string().describe('Record prefix (WK, IN, DEC, SRC)'),
+      prefix: z.string().describe('Record prefix (WK, IN, DEC, SRC, AREA, PLN)'),
     }),
     handler: async (input) =>
       allocate({ dir: input.dir as string, prefix: input.prefix as WikiPrefix, verbose: input.verbose as boolean | undefined }),
@@ -54,7 +57,7 @@ export const tools: ToolDef[] = [
     name: 'create',
     description: 'Create a new wiki record from a template',
     inputSchema: dirSchema.extend({
-      prefix: z.string().describe('Record prefix (WK, IN, DEC, SRC, AREA)'),
+      prefix: z.string().describe('Record prefix (WK, IN, DEC, SRC, AREA, PLN)'),
       title: z.string().describe('Record title'),
     }),
     handler: async (input) =>
@@ -89,5 +92,36 @@ export const tools: ToolDef[] = [
     }),
     handler: async (input) =>
       search(input as unknown as Parameters<typeof search>[0]),
+  },
+  {
+    name: 'import-plan',
+    description: 'Import design and execution artifacts into a PLN bundle',
+    inputSchema: dirSchema.extend({
+      plan: z.string().describe('PLN record id'),
+      design: z.string().describe('Design source path, relative to target repo unless absolute'),
+      execution: z.string().optional().describe('Execution source file or directory'),
+      sourceTool: z.string().optional().describe('Planning source tool name'),
+      overwrite: z.boolean().optional(),
+    }),
+    handler: async (input) =>
+      importPlan(input as unknown as Parameters<typeof importPlan>[0]),
+  },
+  {
+    name: 'validate-plan',
+    description: 'Validate a PLN record and companion bundle',
+    inputSchema: dirSchema.extend({
+      plan: z.string().describe('PLN record id'),
+    }),
+    handler: async (input) =>
+      validatePlan(input as unknown as Parameters<typeof validatePlan>[0]),
+  },
+  {
+    name: 'archive-plan',
+    description: 'Archive a PLN record without moving its bundle',
+    inputSchema: dirSchema.extend({
+      plan: z.string().describe('PLN record id'),
+    }),
+    handler: async (input) =>
+      archivePlan(input as unknown as Parameters<typeof archivePlan>[0]),
   },
 ];

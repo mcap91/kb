@@ -12,8 +12,9 @@
  * lint and other tools can identify and skip generated views.
  *
  * Scope:
- *   - Reads only manifest-driven record directories (WK, IN, DEC, SRC, AREA)
+ *   - Reads only manifest-driven record directories (WK, IN, DEC, SRC, AREA, PLN)
  *   - Excludes wiki/handoffs/
+ *   - Includes PLN in catalog only; work-tracking views exclude plans
  */
 
 import * as fs from 'node:fs';
@@ -356,11 +357,16 @@ export async function generate(
 
   // 2. Collect all manifest-driven records
   const records = collectRecords(targetDir, manifest);
+  const workTrackingRecords = records.filter(r => r.prefix !== 'PLN');
   debug(`generate: collected ${records.length} records`);
 
   // 3. Build and write each view
-  const views: Array<{ filename: string; builder: (recs: RecordEntry[]) => string }> = [
-    { filename: 'catalog.md', builder: buildCatalog },
+  const views: Array<{
+    filename: string;
+    builder: (recs: RecordEntry[]) => string;
+    includePlans?: boolean;
+  }> = [
+    { filename: 'catalog.md', builder: buildCatalog, includePlans: true },
     { filename: 'now.md', builder: buildNow },
     { filename: 'inbox.md', builder: buildInbox },
     { filename: 'backlog.md', builder: buildBacklog },
@@ -375,7 +381,7 @@ export async function generate(
   }
 
   for (const view of views) {
-    const content = view.builder(records);
+    const content = view.builder(view.includePlans ? records : workTrackingRecords);
     const filePath = path.join(wikiDir, view.filename);
 
     try {

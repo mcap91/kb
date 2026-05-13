@@ -1,152 +1,118 @@
 # Upgrading an Existing Consuming Repo
 
-Use this runbook when:
+Use this runbook when a repo already adopted `kb` and you pull a newer `kb` checkout.
 
-- `kb` has already been adopted in a consuming repo
-- you are pulling a newer `kb` checkout
-- the consuming repo needs the new HO lifecycle and reviewed-bundle launcher flow
+This is not the first-time bootstrap path. For existing repos, `sync-contract` is the safe upgrade
+command: it syncs templates, ensures required wiki directories exist, and merges missing allocator
+entries into `wiki/.id-state.json` without resetting existing IDs.
 
-This guide is for upgrades, not first-time bootstrap.
+On Windows PowerShell, prefer `npm.cmd` if execution policy blocks `npm.ps1`.
 
-## What Changes in This Upgrade
+## Short Version
 
-This upgrade adds the HO workflow as a first-class dispatch surface:
+Run from the `kb` checkout:
 
-- `dispatch create-handoff` writes durable `wiki/handoffs/HO-XXXX.md` files
-- `dispatch review` snapshots reviewed inputs into `.agent-runs/reviews/RV-.../agent-visible/` and `.agent-runs/reviews/RV-.../metadata/`
-- `dispatch launch` runs the agent from the reviewed `agent-visible/` bundle
-- `dispatch review-and-launch` provides a single-step operator path
-- `dispatch:mcp` exposes the dispatch lifecycle to interactive agents
-
-It also changes the operator registry format in `launchers.v1.json`.
-
-## Upgrade Checklist
-
-Run all commands from the `kb` repo.
-
-### 1. Update the `kb` Checkout
-
-```bash
+```powershell
 git pull
-npm install
-npm run typecheck
-npm test
+npm.cmd install
+npm.cmd run typecheck
+npm.cmd test
+npm.cmd run wiki -- sync-contract --dir C:\path\to\consuming-repo
+npm.cmd run wiki -- lint --dir C:\path\to\consuming-repo
+npm.cmd run wiki -- generate --dir C:\path\to\consuming-repo
 ```
 
-### 2. Sync the Consuming Repo Surface
+After that, the consuming repo can use newly added wiki surfaces such as `PLN-*`.
 
-```bash
-npm run wiki -- sync-contract --dir ../my-project
-npm run wiki -- lint --dir ../my-project
-npm run wiki -- generate --dir ../my-project
-npm run wiki -- build-search-index --dir ../my-project
-npm run graph -- --dir ../my-project
+## What `sync-contract` Upgrades
+
+`sync-contract` now handles repo-local contract drift that is safe to update automatically:
+
+- creates missing required wiki directories such as `wiki/plans/`
+- syncs record templates such as `wiki/templates/plan.md`
+- preserves existing `wiki/.id-state.json` counters and allocations
+- adds missing allocator entries such as `PLN`
+- updates `wiki/.wiki-contract.json` with the current contract version and `lastSyncedAt`
+- reports drift in consumer-owned bootstrap docs without overwriting them
+
+It does not update:
+
+- `AGENTS.md`
+- `CLAUDE.md`
+- project-specific docs
+- operator dispatch registry files
+
+## Bootstrap Versus Upgrade
+
+Use `bootstrap` for first-time adoption:
+
+```powershell
+npm.cmd run wiki -- bootstrap --dir C:\path\to\new-repo --repo org/name
 ```
 
-This updates shared wiki templates and regenerated artifacts. It does not update the consuming repo's `AGENTS.md` or `CLAUDE.md`.
+For an existing consuming repo, use `sync-contract` instead:
 
-### 3. Rewrite the Operator Dispatch Registry
-
-```bash
-npm run dispatch -- init-config --force
+```powershell
+npm.cmd run wiki -- sync-contract --dir C:\path\to\consuming-repo
 ```
 
-This step is required for upgrades from the older dispatch registry shape.
+`bootstrap` is idempotent and no longer resets existing `.id-state.json`, but `sync-contract` is the
+intended upgrade command because it updates templates and records `lastSyncedAt`.
 
-Why it matters:
+## Using PLN After Upgrade
 
-- `launchers.v1.json` is operator-owned
-- `init-config` does not overwrite it by default
-- the new launcher flow expects the adapter-based registry written by `init-config --force`
+After `sync-contract`, a consuming repo can create and import a plan:
 
-After rewriting the registry, any previously reviewed pending handoffs should be re-reviewed before launch because the registry hash has changed.
+```powershell
+npm.cmd run wiki -- create --dir C:\path\to\consuming-repo --prefix PLN --title "My implementation plan"
 
-### 4. Update the Consuming Repo Agent Instructions
+npm.cmd run wiki -- import-plan --dir C:\path\to\consuming-repo --plan PLN-0001 `
+  --design docs\design.md `
+  --execution docs\implementation-plan.md `
+  --source-tool manual `
+  --overwrite
 
-Update the consuming repo's `AGENTS.md` and `CLAUDE.md` using the paste-ready snippets in [README.md](../README.md).
-
-The important changes are:
-
-- wiki operations can still use `wiki:mcp`
-- dispatch can now use `dispatch:mcp` or CLI
-- agents should use `create-handoff`, `review`, `launch`, and `review-and-launch`
-- `HO-*` remains dispatch-owned and is still excluded from wiki scanning
-
-This step is manual. `sync-contract` does not touch agent instruction files.
-
-### 5. Wire MCP in the Agent Client
-
-If you want interactive agent workflows like "create an HO and send it to Codex," follow the agent-native setup in [README.md](../README.md#agent-native-mcp-setup).
-
-```bash
-claude mcp list
-codex mcp list
-```
-
-Do not point strict stdio clients at `npm run wiki:mcp` or `npm run dispatch:mcp`; use the direct `node` commands or native client registration shown in the README.
-
-Keep the self-hosted and consuming-repo setups separate:
-
-- do not copy `kb/.mcp.json` from the `kb` repo into the consuming repo unchanged
-- if Claude runs in the consuming repo, create that consuming repo's own `.mcp.json` pointing back to the chosen `kb` checkout
-- if Codex runs on the same machine, register the chosen `kb` checkout once and reuse it from the consuming repo
-
-If dispatch MCP is not configured, the workflow can still run through the `dispatch` CLI, but the agent will need shell access rather than MCP tools.
-
-### 6. Check Current Dispatch State
-
-```bash
-npm run dispatch -- status --dir ../my-project
-```
-
-If the repo already has in-flight handoffs:
-
-- re-review any pending handoffs after `init-config --force`
-- expect old review tokens to be invalid if the registry changed
-
-If Codex on that host fails before reading the handoff with a `bwrap` / bubblewrap sandbox error, treat that as a host/runtime problem. The supported path is to use Claude on that host or run Codex on a different host. `kb` does not ship a weaker-permission fallback profile by default.
-
-### 7. Smoke Test the New Flow
-
-Create a small handoff:
-
-```bash
-npm run dispatch -- create-handoff --dir ../my-project --title "Dispatch smoke test" --subject "Dispatch validation" --allowed-agents fake-agent --mode implement --read-first AGENTS.md --objective "Verify that reviewed-bundle launch works end to end." --expected-output "A short response confirming the handoff was read."
-```
-
-Then launch it with the path printed by `create-handoff`:
-
-```bash
-npm run dispatch -- review-and-launch --dir ../my-project --handoff wiki/handoffs/HO-XXXX.md --agent fake-agent --reviewed-and-accept-risks
+npm.cmd run wiki -- validate-plan --dir C:\path\to\consuming-repo --plan PLN-0001
+npm.cmd run wiki -- generate --dir C:\path\to\consuming-repo
 ```
 
 Expected results:
 
-- a durable handoff exists at `wiki/handoffs/HO-XXXX.md`
-- a reviewed bundle exists under `.agent-runs/reviews/RV-.../`
-- a run exists under `.agent-runs/runs/HO-XXXX/RUN-.../`
-- the run contains `response.md`
+- `wiki/plans/PLN-0001.md`
+- `wiki/plans/PLN-0001/bundle.json`
+- `wiki/plans/PLN-0001/design/spec.md`
+- `wiki/plans/PLN-0001/execution/tracker.md`
+- preserved raw source artifacts under `wiki/plans/PLN-0001/source/raw/`
+
+## Dispatch Registry Upgrades
+
+Some dispatch upgrades require rewriting the operator-owned launcher registry:
+
+```powershell
+npm.cmd run dispatch -- init-config --force
+```
+
+Only do this when the release notes or work item calls for a registry shape change. Rewriting the
+registry can invalidate previously reviewed launch tokens because the registry hash changes.
+
+## MCP Client Setup
+
+If the consuming repo uses native MCP clients, verify the client registration still points to the
+chosen `kb` checkout:
+
+```powershell
+claude.cmd mcp list
+codex.cmd mcp list
+```
+
+For strict stdio clients, use direct `node --import ... server.ts` registrations instead of
+`npm run wiki:mcp` or `npm run dispatch:mcp`.
 
 ## Common Gotchas
 
-- Pulling `kb` is not enough. The consuming repo's `AGENTS.md` and `CLAUDE.md` still need to be updated separately.
-- `sync-contract` updates wiki templates and shared surfaces, not agent instruction files.
-- `init-config` without `--force` will usually leave an older registry file in place.
-- Changing the registry invalidates previously reviewed launch tokens.
-- `wiki create` still does not create `HO-*`; that remains dispatch-owned by design.
-
-## Minimum Upgrade Command Set
-
-If you only want the shortest safe sequence:
-
-```bash
-cd ../kb
-git pull
-npm install
-npm run typecheck
-npm test
-npm run wiki -- sync-contract --dir ../my-project
-npm run dispatch -- init-config --force
-```
-
-Then update the consuming repo's `AGENTS.md` / `CLAUDE.md` and configure `dispatch:mcp` if you want the interactive MCP workflow.
+- Pulling `kb` is not enough; run `sync-contract` for each consuming repo.
+- Do not run `bootstrap` as the normal upgrade step.
+- `sync-contract` does not edit `AGENTS.md` or `CLAUDE.md`.
+- `wiki create` does not create `HO-*`; handoffs remain dispatch-owned.
+- If `sync-contract --check` reports `wiki/.id-state.json`, it means a new prefix will be merged in
+  normal mode without resetting existing allocations.

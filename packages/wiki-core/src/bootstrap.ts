@@ -13,6 +13,7 @@ import type {
   BootstrapResult,
   WikiContractMetadata,
   IdState,
+  WikiManifest,
 } from './types.js';
 import {
   loadManifest,
@@ -24,16 +25,6 @@ import { debug, setVerbose } from './debug.js';
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
-
-/** Wiki directories to create (manifest-driven + handoffs). */
-const WIKI_DIRS = [
-  'wiki/issues',
-  'wiki/initiatives',
-  'wiki/decisions',
-  'wiki/sources',
-  'wiki/areas',
-  'wiki/handoffs',
-];
 
 /**
  * Bootstrap surface files — these are only written if absent.
@@ -82,19 +73,86 @@ function writeIfAbsent(
   return true;
 }
 
-/** Write a file unconditionally (metadata files). */
-function writeFile(
+function initialIdState(manifest: WikiManifest): IdState {
+  const idState: IdState = {};
+  for (const [, typeDef] of Object.entries(manifest.types)) {
+    if (typeDef.prefix && typeDef.stateKey) {
+      idState[typeDef.prefix] = { next: 1, allocated: [] };
+    }
+  }
+  return idState;
+}
+
+function mergeMissingIdStateEntries(current: IdState, manifestState: IdState): boolean {
+  let changed = false;
+  for (const [prefix, initial] of Object.entries(manifestState)) {
+    if (!current[prefix]) {
+      current[prefix] = initial;
+      changed = true;
+    }
+  }
+  return changed;
+}
+
+function ensureContractMetadata(
   filePath: string,
-  content: string,
+  metadata: WikiContractMetadata,
   dryRun: boolean,
   created: string[],
-): void {
+  skipped: string[],
+): Result<void> {
+  if (fs.existsSync(filePath)) {
+    skipped.push(filePath);
+    debug(`skipped metadata (exists): ${filePath}`);
+    return ok(undefined);
+  }
+
   if (!dryRun) {
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
-    fs.writeFileSync(filePath, content, 'utf-8');
+    fs.writeFileSync(filePath, JSON.stringify(metadata, null, 2) + '\n', 'utf-8');
   }
   created.push(filePath);
-  debug(`wrote: ${filePath}`);
+  debug(`wrote metadata: ${filePath}`);
+  return ok(undefined);
+}
+
+function ensureIdState(
+  filePath: string,
+  manifestState: IdState,
+  dryRun: boolean,
+  created: string[],
+  skipped: string[],
+): Result<void> {
+  if (!fs.existsSync(filePath)) {
+    if (!dryRun) {
+      fs.mkdirSync(path.dirname(filePath), { recursive: true });
+      fs.writeFileSync(filePath, JSON.stringify(manifestState, null, 2) + '\n', 'utf-8');
+    }
+    created.push(filePath);
+    debug(`wrote id state: ${filePath}`);
+    return ok(undefined);
+  }
+
+  let current: IdState;
+  try {
+    current = JSON.parse(fs.readFileSync(filePath, 'utf-8')) as IdState;
+  } catch (err) {
+    return fail('PARSE_ERROR', `Failed to read existing ID state: ${String(err)}`, err);
+  }
+
+  const changed = mergeMissingIdStateEntries(current, manifestState);
+  if (!changed) {
+    skipped.push(filePath);
+    debug(`skipped id state (current): ${filePath}`);
+    return ok(undefined);
+  }
+
+  if (!dryRun) {
+    fs.writeFileSync(filePath, JSON.stringify(current, null, 2) + '\n', 'utf-8');
+  }
+  created.push(filePath);
+  debug(`merged missing id state entries: ${filePath}`);
+  return ok(undefined);
 }
 
 // ---------------------------------------------------------------------------
@@ -134,37 +192,34 @@ export async function bootstrap(
   const skipped: string[] = [];
 
   // 1. Create wiki directories
-  for (const rel of WIKI_DIRS) {
+  for (const rel of manifest.requiredSurfaces) {
     const abs = path.join(targetDir, rel);
     ensureDir(abs, dryRun, created);
   }
 
-  // 2. Write metadata files (always overwrite)
+  // 2. Create metadata files or safely merge missing ID state entries.
   const contractMeta: WikiContractMetadata = {
     contractVersion: manifest.contractVersion,
     repo: opts.repo,
     bootstrappedAt: new Date().toISOString(),
   };
-  writeFile(
+  const metadataResult = ensureContractMetadata(
     path.join(wikiDir, '.wiki-contract.json'),
-    JSON.stringify(contractMeta, null, 2) + '\n',
+    contractMeta,
     dryRun,
     created,
+    skipped,
   );
+  if (!metadataResult.ok) return metadataResult;
 
-  // Build initial IdState from manifest: one entry per prefix-based type
-  const idState: IdState = {};
-  for (const [, typeDef] of Object.entries(manifest.types)) {
-    if (typeDef.prefix && typeDef.stateKey) {
-      idState[typeDef.prefix] = { next: 1, allocated: [] };
-    }
-  }
-  writeFile(
+  const idStateResult = ensureIdState(
     path.join(wikiDir, '.id-state.json'),
-    JSON.stringify(idState, null, 2) + '\n',
+    initialIdState(manifest),
     dryRun,
     created,
+    skipped,
   );
+  if (!idStateResult.ok) return idStateResult;
 
   // 3. Copy bootstrap surfaces (only if absent)
   const bootstrapResult = getBootstrapTemplates();

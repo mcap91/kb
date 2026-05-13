@@ -20,6 +20,8 @@ export type ErrorCode =
   | 'LINT_ERROR'
   | 'SEARCH_ERROR'
   | 'GENERATE_ERROR'
+  | 'IMPORT_ERROR'
+  | 'ARCHIVE_ERROR'
   | 'SYNC_ERROR';
 
 /**

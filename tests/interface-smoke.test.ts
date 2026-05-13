@@ -31,6 +31,9 @@ describe('CLI smoke tests', () => {
     expect(exitCode).toBe(0);
     expect(stdout).toContain('wiki');
     expect(stdout).toContain('bootstrap');
+    expect(stdout).toContain('import-plan');
+    expect(stdout).toContain('validate-plan');
+    expect(stdout).toContain('archive-plan');
   });
 
   it('--version exits 0 and prints version', () => {
@@ -56,6 +59,9 @@ describe('MCP smoke tests', () => {
     expect(names).toContain('lint');
     expect(names).toContain('search');
     expect(names).toContain('create');
+    expect(names).toContain('import-plan');
+    expect(names).toContain('validate-plan');
+    expect(names).toContain('archive-plan');
   });
 
   it('all tools have name, description, and handler', async () => {
@@ -69,7 +75,7 @@ describe('MCP smoke tests', () => {
 
   it('tool count matches expected operations', async () => {
     const { tools } = await import('@kb/wiki-mcp');
-    expect(tools.length).toBe(8);
+    expect(tools.length).toBe(11);
   });
 
   it('registers real tool schemas and passes tool arguments through MCP', async () => {

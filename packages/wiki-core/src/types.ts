@@ -49,11 +49,23 @@ export type DecisionStatus =
   | 'superseded'
   | 'deprecated';
 
+/** Plan status. */
+export type PlanStatus =
+  | 'draft'
+  | 'approved'
+  | 'packaged'
+  | 'active'
+  | 'paused'
+  | 'done'
+  | 'archived'
+  | 'cancelled'
+  | 'superseded';
+
 /** Priority level. */
 export type Priority = 'critical' | 'high' | 'medium' | 'low';
 
 /** Manifest-driven wiki record prefixes. */
-export type WikiPrefix = 'WK' | 'IN' | 'DEC' | 'SRC' | 'AREA';
+export type WikiPrefix = 'WK' | 'IN' | 'DEC' | 'SRC' | 'AREA' | 'PLN';
 
 // ---------------------------------------------------------------------------
 // Frontmatter interfaces for manifest-driven record types
@@ -149,6 +161,29 @@ export interface SourceFrontmatter {
   anchors?: string[];
 }
 
+/** PLN-* plan frontmatter. */
+export interface PlanFrontmatter {
+  id: string;
+  title: string;
+  status: PlanStatus;
+  owner: string;
+  created: string;
+  updated: string;
+  summary?: string;
+  area?: string;
+  tags?: string[];
+  source_tool?: string;
+  bundle_path?: string;
+  design_entry?: string;
+  execution_entry?: string;
+  related?: string[];
+  work_items?: string[];
+  started?: string;
+  completed?: string;
+  archived?: string;
+  superseded_by?: string;
+}
+
 /** AREA record frontmatter (slug-based, no numeric prefix). */
 export interface AreaFrontmatter {
   id: string;
@@ -168,7 +203,80 @@ export type WikiFrontmatter =
   | InitiativeFrontmatter
   | DecisionFrontmatter
   | SourceFrontmatter
+  | PlanFrontmatter
   | AreaFrontmatter;
+
+/** Machine-readable manifest for a PLN-* companion bundle. */
+export interface PlanBundleManifest {
+  plan_id: string;
+  normalization_version: number;
+  created_at: string;
+  updated_at: string;
+  producer: {
+    tool: string;
+    mode?: string;
+  };
+  entrypoints: {
+    design: string;
+    execution: string;
+  };
+  source_artifacts: string[];
+}
+
+/** Options for importing upstream artifacts into a PLN-* bundle. */
+export interface ImportPlanOpts {
+  dir: string;
+  plan: string;
+  design: string;
+  execution?: string;
+  sourceTool?: string;
+  overwrite?: boolean;
+  verbose?: boolean;
+}
+
+/** Result of importing upstream artifacts into a PLN-* bundle. */
+export interface ImportPlanResult {
+  plan: string;
+  bundlePath: string;
+  designEntry: string;
+  executionEntry: string;
+  sourceArtifacts: string[];
+}
+
+/** Options for explicit PLN-* validation. */
+export interface ValidatePlanOpts {
+  dir: string;
+  plan: string;
+  verbose?: boolean;
+}
+
+/** A single explicit PLN-* validation issue. */
+export interface ValidatePlanIssue {
+  code: string;
+  path?: string;
+  message: string;
+}
+
+/** Result of explicit PLN-* validation. */
+export interface ValidatePlanResult {
+  plan: string;
+  valid: boolean;
+  issues: ValidatePlanIssue[];
+}
+
+/** Options for archiving a PLN-* record. */
+export interface ArchivePlanOpts {
+  dir: string;
+  plan: string;
+  verbose?: boolean;
+}
+
+/** Result of archiving a PLN-* record. */
+export interface ArchivePlanResult {
+  plan: string;
+  path: string;
+  archived: string;
+}
 
 // ---------------------------------------------------------------------------
 // Contract metadata types
@@ -371,6 +479,9 @@ export interface WikiCore {
   sync(opts: SyncOpts): Promise<Result<SyncResult>>;
   allocateId(opts: AllocateOpts): Promise<Result<AllocateResult>>;
   create(opts: CreateOpts): Promise<Result<CreateResult>>;
+  importPlan(opts: ImportPlanOpts): Promise<Result<ImportPlanResult>>;
+  validatePlan(opts: ValidatePlanOpts): Promise<Result<ValidatePlanResult>>;
+  archivePlan(opts: ArchivePlanOpts): Promise<Result<ArchivePlanResult>>;
   lint(opts: LintOpts): Promise<Result<LintResult>>;
   generate(opts: GenerateOpts): Promise<Result<GenerateResult>>;
   buildSearchIndex(opts: BuildSearchIndexOpts): Promise<Result<BuildSearchIndexResult>>;
