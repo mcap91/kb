@@ -772,6 +772,974 @@ describe('dispatch', () => {
         expect(launchResult.error).toBe('HASH_MISMATCH');
       }
     });
+
+    it('launch.json includes response_transport and path fields', async () => {
+      await setupBootstrappedRepo(repoRoot);
+      await setupFullConfig();
+      const { review, launch } = await import('@kb/dispatch-core');
+
+      await writeFile(
+        join(repoRoot, 'wiki', 'handoffs', 'HO-0001.md'),
+        makeManualHandoff(),
+      );
+
+      const reviewResult = await review({
+        dir: repoRoot,
+        handoff: 'wiki/handoffs/HO-0001.md',
+        agent: 'fake-agent',
+        reviewedAndAcceptRisks: true,
+      });
+      expect(reviewResult.ok).toBe(true);
+      if (!reviewResult.ok) return;
+
+      const launchResult = await launch({
+        reviewId: reviewResult.data.reviewId,
+        dir: repoRoot,
+      });
+      expect(launchResult.ok).toBe(true);
+      if (!launchResult.ok) return;
+
+      const launchJsonPath = join(launchResult.data.runDir, 'metadata', 'launch.json');
+      const launchJson = JSON.parse(await readFile(launchJsonPath, 'utf-8'));
+
+      expect(launchJson.response_transport).toBe('file');
+      expect(launchJson.stderr_path).toEqual(expect.any(String));
+      expect(launchJson.stdout_path).toEqual(expect.any(String));
+      expect(launchJson.token_state).toBe('consumed');
+    }, 30000);
+
+    it('launch.json includes response_transport for stdout_capture agent', async () => {
+      await setupBootstrappedRepo(repoRoot);
+      await setupFullConfig({
+        version: 1,
+        agents: {
+          'stream-agent': {
+            base_argv: ['node', delayedStdoutAgentPath],
+            noninteractive_argv: [],
+            instruction_transport: { kind: 'argv_content' },
+            wrapper_arg: ['{wrapper_content}'],
+            response_transport: { kind: 'stdout_capture' },
+            timeout_seconds: 30,
+            env: { FAKE_AGENT_DELAY_MS: '100' },
+            read_only: {
+              supported: true,
+              argv_suffix: [],
+              response_writable: true,
+            },
+          },
+        },
+      });
+
+      const { review, launch } = await import('@kb/dispatch-core');
+      await writeFile(
+        join(repoRoot, 'wiki', 'handoffs', 'HO-0001.md'),
+        makeManualHandoff({ allowed_agents: ['stream-agent'] }),
+      );
+
+      const reviewResult = await review({
+        dir: repoRoot,
+        handoff: 'wiki/handoffs/HO-0001.md',
+        agent: 'stream-agent',
+        reviewedAndAcceptRisks: true,
+      });
+      expect(reviewResult.ok).toBe(true);
+      if (!reviewResult.ok) return;
+
+      const launchResult = await launch({
+        reviewId: reviewResult.data.reviewId,
+        dir: repoRoot,
+      });
+      expect(launchResult.ok).toBe(true);
+      if (!launchResult.ok) return;
+
+      const launchJsonPath = join(launchResult.data.runDir, 'metadata', 'launch.json');
+      const launchJson = JSON.parse(await readFile(launchJsonPath, 'utf-8'));
+
+      expect(launchJson.response_transport).toBe('stdout_capture');
+      expect(launchJson.stdout_path).toBeNull();
+      expect(launchJson.stderr_path).toEqual(expect.any(String));
+    }, 30000);
+
+    it('creates response.md before agent spawn', async () => {
+      await setupBootstrappedRepo(repoRoot);
+      await setupFullConfig();
+      const { review, launch } = await import('@kb/dispatch-core');
+
+      await writeFile(
+        join(repoRoot, 'wiki', 'handoffs', 'HO-0001.md'),
+        makeManualHandoff(),
+      );
+
+      const reviewResult = await review({
+        dir: repoRoot,
+        handoff: 'wiki/handoffs/HO-0001.md',
+        agent: 'fake-agent',
+        reviewedAndAcceptRisks: true,
+      });
+      expect(reviewResult.ok).toBe(true);
+      if (!reviewResult.ok) return;
+
+      let responseExistedAtSpawn = false;
+      const launchResult = await launch({
+        reviewId: reviewResult.data.reviewId,
+        dir: repoRoot,
+        onEvent: async (event) => {
+          if (event.type === 'run_created') {
+            responseExistedAtSpawn = await pathExists(event.responsePath);
+          }
+        },
+      });
+      expect(launchResult.ok).toBe(true);
+      expect(responseExistedAtSpawn).toBe(true);
+    }, 30000);
+  });
+
+  describe('lookup', () => {
+    it('resolves a run by runId', async () => {
+      await setupBootstrappedRepo(repoRoot);
+      await setupFullConfig();
+      const { review, launch, resolveRun } = await import('@kb/dispatch-core');
+
+      await writeFile(
+        join(repoRoot, 'wiki', 'handoffs', 'HO-0001.md'),
+        makeManualHandoff(),
+      );
+
+      const rev = await review({
+        dir: repoRoot,
+        handoff: 'wiki/handoffs/HO-0001.md',
+        agent: 'fake-agent',
+        reviewedAndAcceptRisks: true,
+      });
+      expect(rev.ok).toBe(true);
+      if (!rev.ok) return;
+
+      const run = await launch({ reviewId: rev.data.reviewId, dir: repoRoot });
+      expect(run.ok).toBe(true);
+      if (!run.ok) return;
+
+      const resolved = await resolveRun({ dir: repoRoot, runId: run.data.runId });
+      expect(resolved.ok).toBe(true);
+      if (!resolved.ok) return;
+      expect(resolved.data.runId).toBe(run.data.runId);
+      expect(resolved.data.reviewId).toBe(rev.data.reviewId);
+      expect(resolved.data.handoffId).toBe('HO-0001');
+      expect(resolved.data.runDir).toBe(run.data.runDir);
+    }, 30000);
+
+    it('resolves a run by reviewId', async () => {
+      await setupBootstrappedRepo(repoRoot);
+      await setupFullConfig();
+      const { review, launch, resolveRun } = await import('@kb/dispatch-core');
+
+      await writeFile(
+        join(repoRoot, 'wiki', 'handoffs', 'HO-0001.md'),
+        makeManualHandoff(),
+      );
+
+      const rev = await review({
+        dir: repoRoot,
+        handoff: 'wiki/handoffs/HO-0001.md',
+        agent: 'fake-agent',
+        reviewedAndAcceptRisks: true,
+      });
+      expect(rev.ok).toBe(true);
+      if (!rev.ok) return;
+
+      const run = await launch({ reviewId: rev.data.reviewId, dir: repoRoot });
+      expect(run.ok).toBe(true);
+      if (!run.ok) return;
+
+      const resolved = await resolveRun({ dir: repoRoot, reviewId: rev.data.reviewId });
+      expect(resolved.ok).toBe(true);
+      if (!resolved.ok) return;
+      expect(resolved.data.runId).toBe(run.data.runId);
+      expect(resolved.data.reviewId).toBe(rev.data.reviewId);
+    }, 30000);
+
+    it('rejects mismatched reviewId and runId', async () => {
+      await setupBootstrappedRepo(repoRoot);
+      await setupFullConfig();
+      const { review, launch, resolveRun } = await import('@kb/dispatch-core');
+
+      await writeFile(
+        join(repoRoot, 'wiki', 'handoffs', 'HO-0001.md'),
+        makeManualHandoff(),
+      );
+
+      const rev = await review({
+        dir: repoRoot,
+        handoff: 'wiki/handoffs/HO-0001.md',
+        agent: 'fake-agent',
+        reviewedAndAcceptRisks: true,
+      });
+      expect(rev.ok).toBe(true);
+      if (!rev.ok) return;
+
+      const run = await launch({ reviewId: rev.data.reviewId, dir: repoRoot });
+      expect(run.ok).toBe(true);
+      if (!run.ok) return;
+
+      const resolved = await resolveRun({
+        dir: repoRoot,
+        reviewId: rev.data.reviewId,
+        runId: 'RUN-00000000-0000-0000-0000-000000000000',
+      });
+      expect(resolved.ok).toBe(false);
+    }, 30000);
+
+    it('reads run artifacts with metadata and response', async () => {
+      await setupBootstrappedRepo(repoRoot);
+      await setupFullConfig();
+      const { review, launch, readRunArtifacts } = await import('@kb/dispatch-core');
+
+      await writeFile(
+        join(repoRoot, 'wiki', 'handoffs', 'HO-0001.md'),
+        makeManualHandoff(),
+      );
+
+      const rev = await review({
+        dir: repoRoot,
+        handoff: 'wiki/handoffs/HO-0001.md',
+        agent: 'fake-agent',
+        reviewedAndAcceptRisks: true,
+      });
+      expect(rev.ok).toBe(true);
+      if (!rev.ok) return;
+
+      const run = await launch({ reviewId: rev.data.reviewId, dir: repoRoot });
+      expect(run.ok).toBe(true);
+      if (!run.ok) return;
+
+      const artifacts = await readRunArtifacts(run.data.runDir, { includeMeta: true });
+      expect(artifacts.ok).toBe(true);
+      if (!artifacts.ok) return;
+      expect(artifacts.data.response).toEqual(expect.any(String));
+      expect(artifacts.data.status).toBe('completed');
+      expect(artifacts.data.launch).not.toBeNull();
+      expect(artifacts.data.meta).not.toBeNull();
+    }, 30000);
+
+    it('reads run artifacts with logs', async () => {
+      await setupBootstrappedRepo(repoRoot);
+      await setupFullConfig();
+      const { review, launch, readRunArtifacts } = await import('@kb/dispatch-core');
+
+      await writeFile(
+        join(repoRoot, 'wiki', 'handoffs', 'HO-0001.md'),
+        makeManualHandoff(),
+      );
+
+      const rev = await review({
+        dir: repoRoot,
+        handoff: 'wiki/handoffs/HO-0001.md',
+        agent: 'fake-agent',
+        reviewedAndAcceptRisks: true,
+      });
+      expect(rev.ok).toBe(true);
+      if (!rev.ok) return;
+
+      const run = await launch({ reviewId: rev.data.reviewId, dir: repoRoot });
+      expect(run.ok).toBe(true);
+      if (!run.ok) return;
+
+      const artifacts = await readRunArtifacts(run.data.runDir, { includeMeta: true, includeLogs: true });
+      expect(artifacts.ok).toBe(true);
+      if (!artifacts.ok) return;
+      expect(artifacts.data.logs).toBeDefined();
+      expect(artifacts.data.logs!.stderr).toEqual(expect.any(String));
+    }, 30000);
+
+    it('returns RUN_NOT_FOUND for nonexistent runId', async () => {
+      await setupBootstrappedRepo(repoRoot);
+      const { resolveRun } = await import('@kb/dispatch-core');
+
+      const resolved = await resolveRun({
+        dir: repoRoot,
+        runId: 'RUN-00000000-0000-0000-0000-999999999999',
+      });
+      expect(resolved.ok).toBe(false);
+      if (!resolved.ok) {
+        expect(resolved.error).toBe('RUN_NOT_FOUND');
+      }
+    });
+
+    it('rejects cross-run mismatch with LOOKUP_FAILED', async () => {
+      await setupBootstrappedRepo(repoRoot);
+      await setupFullConfig();
+      const { review, launch, resolveRun } = await import('@kb/dispatch-core');
+
+      await writeFile(
+        join(repoRoot, 'wiki', 'handoffs', 'HO-0001.md'),
+        makeManualHandoff({ id: 'HO-0001' }),
+      );
+      await writeFile(
+        join(repoRoot, 'wiki', 'handoffs', 'HO-0002.md'),
+        makeManualHandoff({ id: 'HO-0002', title: 'Second handoff' }),
+      );
+
+      const revA = await review({
+        dir: repoRoot,
+        handoff: 'wiki/handoffs/HO-0001.md',
+        agent: 'fake-agent',
+        reviewedAndAcceptRisks: true,
+      });
+      expect(revA.ok).toBe(true);
+      if (!revA.ok) return;
+
+      const runA = await launch({ reviewId: revA.data.reviewId, dir: repoRoot });
+      expect(runA.ok).toBe(true);
+      if (!runA.ok) return;
+
+      const revB = await review({
+        dir: repoRoot,
+        handoff: 'wiki/handoffs/HO-0002.md',
+        agent: 'fake-agent',
+        reviewedAndAcceptRisks: true,
+      });
+      expect(revB.ok).toBe(true);
+      if (!revB.ok) return;
+
+      const runB = await launch({ reviewId: revB.data.reviewId, dir: repoRoot });
+      expect(runB.ok).toBe(true);
+      if (!runB.ok) return;
+
+      const resolved = await resolveRun({
+        dir: repoRoot,
+        reviewId: revA.data.reviewId,
+        runId: runB.data.runId,
+      });
+      expect(resolved.ok).toBe(false);
+      if (!resolved.ok) {
+        expect(resolved.error).toBe('LOOKUP_FAILED');
+      }
+    }, 30000);
+
+    it('readRunArtifacts falls back to meta.json for paths and runId', async () => {
+      await setupBootstrappedRepo(repoRoot);
+      await setupFullConfig();
+      const { review, launch, readRunArtifacts } = await import('@kb/dispatch-core');
+
+      await writeFile(
+        join(repoRoot, 'wiki', 'handoffs', 'HO-0001.md'),
+        makeManualHandoff(),
+      );
+
+      const rev = await review({
+        dir: repoRoot,
+        handoff: 'wiki/handoffs/HO-0001.md',
+        agent: 'fake-agent',
+        reviewedAndAcceptRisks: true,
+      });
+      expect(rev.ok).toBe(true);
+      if (!rev.ok) return;
+
+      const run = await launch({ reviewId: rev.data.reviewId, dir: repoRoot });
+      expect(run.ok).toBe(true);
+      if (!run.ok) return;
+
+      // Delete launch.json to force fallback to meta.json
+      const launchJsonPath = join(run.data.runDir, 'metadata', 'launch.json');
+      await rm(launchJsonPath);
+
+      const artifacts = await readRunArtifacts(run.data.runDir, { includeMeta: true, includeLogs: true });
+      expect(artifacts.ok).toBe(true);
+      if (!artifacts.ok) return;
+      expect(artifacts.data.runId).toMatch(/^RUN-/);
+      expect(artifacts.data.stderrPath).toEqual(expect.any(String));
+      expect(artifacts.data.status).toBe('completed');
+    }, 30000);
+  });
+
+  describe('waitForRun', () => {
+    it('returns terminal status for a completed run', async () => {
+      await setupBootstrappedRepo(repoRoot);
+      await setupFullConfig();
+      const { review, launch, waitForRun } = await import('@kb/dispatch-core');
+
+      await writeFile(
+        join(repoRoot, 'wiki', 'handoffs', 'HO-0001.md'),
+        makeManualHandoff(),
+      );
+
+      const rev = await review({
+        dir: repoRoot,
+        handoff: 'wiki/handoffs/HO-0001.md',
+        agent: 'fake-agent',
+        reviewedAndAcceptRisks: true,
+      });
+      expect(rev.ok).toBe(true);
+      if (!rev.ok) return;
+
+      const run = await launch({ reviewId: rev.data.reviewId, dir: repoRoot });
+      expect(run.ok).toBe(true);
+      if (!run.ok) return;
+
+      const waitResult = await waitForRun({
+        dir: repoRoot,
+        runId: run.data.runId,
+        timeoutSeconds: 5,
+      });
+      expect(waitResult.ok).toBe(true);
+      if (!waitResult.ok) return;
+      expect(waitResult.data.status).toBe('completed');
+      expect(waitResult.data.completedAt).toEqual(expect.any(String));
+      expect(waitResult.data.pid).toBeGreaterThan(0);
+    }, 30000);
+
+    it('returns launching on timeout for an active run', async () => {
+      await setupBootstrappedRepo(repoRoot);
+      await setupFullConfig({
+        version: 1,
+        agents: {
+          'stream-agent': {
+            base_argv: ['node', delayedStdoutAgentPath],
+            noninteractive_argv: [],
+            instruction_transport: { kind: 'argv_content' },
+            wrapper_arg: ['{wrapper_content}'],
+            response_transport: { kind: 'stdout_capture' },
+            timeout_seconds: 30,
+            env: { FAKE_AGENT_DELAY_MS: '8000' },
+            read_only: { supported: true, argv_suffix: [], response_writable: true },
+          },
+        },
+      });
+
+      const { review, launch, waitForRun } = await import('@kb/dispatch-core');
+      await writeFile(
+        join(repoRoot, 'wiki', 'handoffs', 'HO-0001.md'),
+        makeManualHandoff({ allowed_agents: ['stream-agent'] }),
+      );
+
+      const rev = await review({
+        dir: repoRoot,
+        handoff: 'wiki/handoffs/HO-0001.md',
+        agent: 'stream-agent',
+        reviewedAndAcceptRisks: true,
+      });
+      expect(rev.ok).toBe(true);
+      if (!rev.ok) return;
+
+      const launchPromise = launch({ reviewId: rev.data.reviewId, dir: repoRoot });
+
+      const handoffRunsDir = join(repoRoot, '.agent-runs', 'runs', 'HO-0001');
+      await waitUntil(async () => {
+        try {
+          return (await readdir(handoffRunsDir)).length > 0;
+        } catch {
+          return false;
+        }
+      }, 10000);
+      const [runId] = await readdir(handoffRunsDir);
+
+      const waitResult = await waitForRun({
+        dir: repoRoot,
+        runId: runId!,
+        timeoutSeconds: 1,
+        pollIntervalMs: 200,
+      });
+      expect(waitResult.ok).toBe(true);
+      if (!waitResult.ok) return;
+      expect(waitResult.data.status).toBe('launching');
+
+      await launchPromise;
+    }, 30000);
+
+    it('timeout returns terminal status when run completed during final read', async () => {
+      await setupBootstrappedRepo(repoRoot);
+      await setupFullConfig();
+      const { review, launch, waitForRun } = await import('@kb/dispatch-core');
+
+      await writeFile(
+        join(repoRoot, 'wiki', 'handoffs', 'HO-0001.md'),
+        makeManualHandoff(),
+      );
+
+      const rev = await review({
+        dir: repoRoot,
+        handoff: 'wiki/handoffs/HO-0001.md',
+        agent: 'fake-agent',
+        reviewedAndAcceptRisks: true,
+      });
+      expect(rev.ok).toBe(true);
+      if (!rev.ok) return;
+
+      const run = await launch({ reviewId: rev.data.reviewId, dir: repoRoot });
+      expect(run.ok).toBe(true);
+      if (!run.ok) return;
+
+      // Run is already completed; a very short timeout still picks up terminal status
+      const waitResult = await waitForRun({
+        dir: repoRoot,
+        runId: run.data.runId,
+        timeoutSeconds: 0,
+        pollIntervalMs: 50,
+      });
+      expect(waitResult.ok).toBe(true);
+      if (!waitResult.ok) return;
+      expect(waitResult.data.status).toBe('completed');
+      expect(waitResult.data.completedAt).toEqual(expect.any(String));
+    }, 30000);
+  });
+
+  describe('getResponse', () => {
+    it('returns response content after completion', async () => {
+      await setupBootstrappedRepo(repoRoot);
+      await setupFullConfig();
+      const { review, launch, getResponse } = await import('@kb/dispatch-core');
+
+      await writeFile(
+        join(repoRoot, 'wiki', 'handoffs', 'HO-0001.md'),
+        makeManualHandoff(),
+      );
+
+      const rev = await review({
+        dir: repoRoot,
+        handoff: 'wiki/handoffs/HO-0001.md',
+        agent: 'fake-agent',
+        reviewedAndAcceptRisks: true,
+      });
+      expect(rev.ok).toBe(true);
+      if (!rev.ok) return;
+
+      const run = await launch({ reviewId: rev.data.reviewId, dir: repoRoot });
+      expect(run.ok).toBe(true);
+      if (!run.ok) return;
+
+      const resp = await getResponse({
+        dir: repoRoot,
+        runId: run.data.runId,
+        includeMeta: true,
+      });
+      expect(resp.ok).toBe(true);
+      if (!resp.ok) return;
+      expect(resp.data.response).toEqual(expect.any(String));
+      expect(resp.data.response!.length).toBeGreaterThan(0);
+      expect(resp.data.meta).not.toBeNull();
+      expect(resp.data.launch).not.toBeNull();
+      expect(resp.data.status).toBe('completed');
+    }, 30000);
+
+    it('returns response by reviewId', async () => {
+      await setupBootstrappedRepo(repoRoot);
+      await setupFullConfig();
+      const { review, launch, getResponse } = await import('@kb/dispatch-core');
+
+      await writeFile(
+        join(repoRoot, 'wiki', 'handoffs', 'HO-0001.md'),
+        makeManualHandoff(),
+      );
+
+      const rev = await review({
+        dir: repoRoot,
+        handoff: 'wiki/handoffs/HO-0001.md',
+        agent: 'fake-agent',
+        reviewedAndAcceptRisks: true,
+      });
+      expect(rev.ok).toBe(true);
+      if (!rev.ok) return;
+
+      const run = await launch({ reviewId: rev.data.reviewId, dir: repoRoot });
+      expect(run.ok).toBe(true);
+      if (!run.ok) return;
+
+      const resp = await getResponse({
+        dir: repoRoot,
+        reviewId: rev.data.reviewId,
+        includeMeta: true,
+      });
+      expect(resp.ok).toBe(true);
+      if (!resp.ok) return;
+      expect(resp.data.reviewId).toBe(rev.data.reviewId);
+      expect(resp.data.status).toBe('completed');
+    }, 30000);
+
+    it('returns active state for in-progress run', async () => {
+      await setupBootstrappedRepo(repoRoot);
+      await setupFullConfig({
+        version: 1,
+        agents: {
+          'stream-agent': {
+            base_argv: ['node', delayedStdoutAgentPath],
+            noninteractive_argv: [],
+            instruction_transport: { kind: 'argv_content' },
+            wrapper_arg: ['{wrapper_content}'],
+            response_transport: { kind: 'stdout_capture' },
+            timeout_seconds: 30,
+            env: { FAKE_AGENT_DELAY_MS: '8000' },
+            read_only: { supported: true, argv_suffix: [], response_writable: true },
+          },
+        },
+      });
+
+      const { review, launch, getResponse } = await import('@kb/dispatch-core');
+      await writeFile(
+        join(repoRoot, 'wiki', 'handoffs', 'HO-0001.md'),
+        makeManualHandoff({ allowed_agents: ['stream-agent'] }),
+      );
+
+      const rev = await review({
+        dir: repoRoot,
+        handoff: 'wiki/handoffs/HO-0001.md',
+        agent: 'stream-agent',
+        reviewedAndAcceptRisks: true,
+      });
+      expect(rev.ok).toBe(true);
+      if (!rev.ok) return;
+
+      const launchPromise = launch({ reviewId: rev.data.reviewId, dir: repoRoot });
+
+      const handoffRunsDir = join(repoRoot, '.agent-runs', 'runs', 'HO-0001');
+      await waitUntil(async () => {
+        try {
+          return (await readdir(handoffRunsDir)).length > 0;
+        } catch {
+          return false;
+        }
+      }, 10000);
+      const [runId] = await readdir(handoffRunsDir);
+
+      await waitUntil(async () => {
+        const statePath = join(handoffRunsDir, runId!, 'metadata', 'state.json');
+        return pathExists(statePath);
+      }, 5000);
+
+      const resp = await getResponse({
+        dir: repoRoot,
+        runId: runId!,
+        includeMeta: true,
+      });
+      expect(resp.ok).toBe(true);
+      if (!resp.ok) return;
+      expect(resp.data.status).toBe('launching');
+      expect(resp.data.state).not.toBeNull();
+
+      await launchPromise;
+    }, 30000);
+  });
+
+  describe('controller-entry', () => {
+    it('writes controller.json after launch completes', async () => {
+      await setupBootstrappedRepo(repoRoot);
+      await setupFullConfig();
+      const { review } = await import('@kb/dispatch-core');
+
+      await writeFile(
+        join(repoRoot, 'wiki', 'handoffs', 'HO-0001.md'),
+        makeManualHandoff(),
+      );
+
+      const rev = await review({
+        dir: repoRoot,
+        handoff: 'wiki/handoffs/HO-0001.md',
+        agent: 'fake-agent',
+        reviewedAndAcceptRisks: true,
+      });
+      if (!rev.ok) throw new Error(rev.message);
+
+      const controllerEntryPath = resolve(
+        process.cwd(),
+        'packages',
+        'dispatch-core',
+        'src',
+        'controller-entry.ts',
+      );
+
+      execSync(
+        `"${getTsxPath()}" "${controllerEntryPath}" --review-id "${rev.data.reviewId}" --dir "${repoRoot}"`,
+        { timeout: 30_000, env: process.env, encoding: 'utf-8' },
+      );
+
+      const runsDir = join(repoRoot, '.agent-runs', 'runs');
+      const handoffDirs = await readdir(runsDir);
+      expect(handoffDirs.length).toBeGreaterThan(0);
+
+      const runDirs = await readdir(join(runsDir, handoffDirs[0]!));
+      expect(runDirs.length).toBeGreaterThan(0);
+
+      const controllerPath = join(runsDir, handoffDirs[0]!, runDirs[0]!, 'metadata', 'controller.json');
+      const controllerJson = JSON.parse(await readFile(controllerPath, 'utf-8'));
+
+      expect(controllerJson.schema_version).toBe(1);
+      expect(controllerJson.review_id).toBe(rev.data.reviewId);
+      expect(controllerJson.run_id).toEqual(expect.any(String));
+      expect(controllerJson.controller_pid).toEqual(expect.any(Number));
+      expect(controllerJson.status).toBe('completed');
+      expect(controllerJson.confirmed_child_start_at).toEqual(expect.any(String));
+      expect(controllerJson.completed_at).toEqual(expect.any(String));
+      expect(controllerJson.error).toBeNull();
+    }, 30_000);
+  });
+
+  describe('background launch', () => {
+    const delayedFakeAgentPath = resolve(TESTS_DIR, 'fixtures', 'delayed-fake-agent.ts');
+
+    it('returns before agent completion', async () => {
+      await setupBootstrappedRepo(repoRoot);
+      const tsxPath = getTsxPath();
+      await setupFullConfig({
+        version: 1,
+        agents: {
+          'fake-agent': {
+            base_argv: [tsxPath, delayedFakeAgentPath],
+            noninteractive_argv: [],
+            instruction_transport: { kind: 'argv_content' },
+            wrapper_arg: ['{wrapper_content}'],
+            response_transport: { kind: 'file' },
+            response_arg: [],
+            timeout_seconds: 30,
+            read_only: { supported: true, argv_suffix: [], response_writable: true },
+            env: { FAKE_AGENT_DELAY_MS: '5000' },
+          },
+        },
+      });
+      const { createHandoff, review, launchBackground } = await import('@kb/dispatch-core');
+
+      const ho = await createHandoff({
+        dir: repoRoot,
+        title: 'Background launch test',
+        subject: 'kb:test',
+        allowed_agents: ['fake-agent'],
+        mode: 'implement',
+      });
+      if (!ho.ok) throw new Error(ho.message);
+
+      const rev = await review({
+        dir: repoRoot,
+        handoff: ho.data.handoffRelativePath,
+        agent: 'fake-agent',
+        reviewedAndAcceptRisks: true,
+      });
+      if (!rev.ok) throw new Error(rev.message);
+
+      const startTime = Date.now();
+      const result = await launchBackground({
+        reviewId: rev.data.reviewId,
+        dir: repoRoot,
+      });
+
+      const elapsed = Date.now() - startTime;
+      expect(result.ok).toBe(true);
+      if (!result.ok) throw new Error(result.message);
+
+      expect(result.data.status).toBe('launching');
+      expect(result.data.reviewId).toBe(rev.data.reviewId);
+      expect(result.data.runId).toEqual(expect.any(String));
+      expect(result.data.pid).toEqual(expect.any(Number));
+      expect(result.data.responsePath).toEqual(expect.any(String));
+      expect(result.data.stderrPath).toEqual(expect.any(String));
+
+      expect(elapsed).toBeLessThan(4000);
+
+      expect(await pathExists(result.data.responsePath)).toBe(true);
+      expect(await pathExists(result.data.stderrPath)).toBe(true);
+      expect(await pathExists(result.data.launchPath)).toBe(true);
+      expect(await pathExists(result.data.statePath)).toBe(true);
+    }, 15_000);
+
+    it('controller writes controller.json during background launch', async () => {
+      await setupBootstrappedRepo(repoRoot);
+      const tsxPath = getTsxPath();
+      await setupFullConfig({
+        version: 1,
+        agents: {
+          'fake-agent': {
+            base_argv: [tsxPath, delayedFakeAgentPath],
+            noninteractive_argv: [],
+            instruction_transport: { kind: 'argv_content' },
+            wrapper_arg: ['{wrapper_content}'],
+            response_transport: { kind: 'file' },
+            response_arg: [],
+            timeout_seconds: 30,
+            read_only: { supported: true, argv_suffix: [], response_writable: true },
+            env: { FAKE_AGENT_DELAY_MS: '2000' },
+          },
+        },
+      });
+      const { createHandoff, review, launchBackground, waitForRun } = await import('@kb/dispatch-core');
+
+      const ho = await createHandoff({
+        dir: repoRoot,
+        title: 'Controller json test',
+        subject: 'kb:test',
+        allowed_agents: ['fake-agent'],
+        mode: 'implement',
+      });
+      if (!ho.ok) throw new Error(ho.message);
+
+      const rev = await review({
+        dir: repoRoot,
+        handoff: ho.data.handoffRelativePath,
+        agent: 'fake-agent',
+        reviewedAndAcceptRisks: true,
+      });
+      if (!rev.ok) throw new Error(rev.message);
+
+      const bg = await launchBackground({ reviewId: rev.data.reviewId, dir: repoRoot });
+      expect(bg.ok).toBe(true);
+      if (!bg.ok) throw new Error(bg.message);
+
+      expect(await pathExists(bg.data.controllerPath)).toBe(true);
+      const controllerJson = JSON.parse(await readFile(bg.data.controllerPath, 'utf-8'));
+      expect(controllerJson.schema_version).toBe(1);
+      expect(controllerJson.review_id).toBe(rev.data.reviewId);
+      expect(controllerJson.status).toBe('launching');
+      expect(controllerJson.confirmed_child_start_at).toEqual(expect.any(String));
+
+      await waitForRun({ dir: repoRoot, runId: bg.data.runId, timeoutSeconds: 30 });
+
+      const finalController = JSON.parse(await readFile(bg.data.controllerPath, 'utf-8'));
+      expect(finalController.status).toBe('completed');
+      expect(finalController.completed_at).toEqual(expect.any(String));
+    }, 45_000);
+
+    it('succeeds for a fast agent that completes before poll', async () => {
+      await setupBootstrappedRepo(repoRoot);
+      await setupFullConfig();
+      const { review, launchBackground } = await import('@kb/dispatch-core');
+
+      await writeFile(
+        join(repoRoot, 'wiki', 'handoffs', 'HO-0001.md'),
+        makeManualHandoff(),
+      );
+
+      const rev = await review({
+        dir: repoRoot,
+        handoff: 'wiki/handoffs/HO-0001.md',
+        agent: 'fake-agent',
+        reviewedAndAcceptRisks: true,
+      });
+      expect(rev.ok).toBe(true);
+      if (!rev.ok) return;
+
+      const result = await launchBackground({
+        reviewId: rev.data.reviewId,
+        dir: repoRoot,
+      });
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) throw new Error(result.message);
+
+      expect(result.data.status).toBe('launching');
+      expect(result.data.reviewId).toBe(rev.data.reviewId);
+      expect(result.data.runId).toEqual(expect.any(String));
+      expect(result.data.pid).toEqual(expect.any(Number));
+    }, 30_000);
+
+    it('pre-start failure returns clear failure', async () => {
+      await setupBootstrappedRepo(repoRoot);
+      await setupFullConfig();
+      const { review, launchBackground } = await import('@kb/dispatch-core');
+
+      await writeFile(
+        join(repoRoot, 'wiki', 'handoffs', 'HO-0001.md'),
+        makeManualHandoff(),
+      );
+
+      const rev = await review({
+        dir: repoRoot,
+        handoff: 'wiki/handoffs/HO-0001.md',
+        agent: 'fake-agent',
+        reviewedAndAcceptRisks: true,
+      });
+      expect(rev.ok).toBe(true);
+      if (!rev.ok) return;
+
+      await writeFile(
+        join(rev.data.bundlePath, 'agent-visible', 'handoff.snapshot.md'),
+        'tampered\n',
+      );
+
+      const result = await launchBackground({
+        reviewId: rev.data.reviewId,
+        dir: repoRoot,
+        startupTimeoutMs: 15_000,
+      });
+
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.error).toBe('BACKGROUND_LAUNCH_FAILED');
+      }
+    }, 20_000);
+
+    it('concurrent background runs for independent HOs', async () => {
+      await setupBootstrappedRepo(repoRoot);
+      const tsxPath = getTsxPath();
+      await setupFullConfig({
+        version: 1,
+        agents: {
+          'fake-agent': {
+            base_argv: [tsxPath, delayedFakeAgentPath],
+            noninteractive_argv: [],
+            instruction_transport: { kind: 'argv_content' },
+            wrapper_arg: ['{wrapper_content}'],
+            response_transport: { kind: 'file' },
+            response_arg: [],
+            timeout_seconds: 30,
+            read_only: { supported: true, argv_suffix: [], response_writable: true },
+            env: { FAKE_AGENT_DELAY_MS: '2000' },
+          },
+        },
+      });
+      const { createHandoff, review, launchBackground, waitForRun } = await import('@kb/dispatch-core');
+
+      const ho1 = await createHandoff({
+        dir: repoRoot,
+        title: 'Concurrent test 1',
+        subject: 'kb:test',
+        allowed_agents: ['fake-agent'],
+        mode: 'implement',
+      });
+      if (!ho1.ok) throw new Error(ho1.message);
+
+      const ho2 = await createHandoff({
+        dir: repoRoot,
+        title: 'Concurrent test 2',
+        subject: 'kb:test',
+        allowed_agents: ['fake-agent'],
+        mode: 'implement',
+      });
+      if (!ho2.ok) throw new Error(ho2.message);
+
+      const rev1 = await review({
+        dir: repoRoot,
+        handoff: ho1.data.handoffRelativePath,
+        agent: 'fake-agent',
+        reviewedAndAcceptRisks: true,
+      });
+      if (!rev1.ok) throw new Error(rev1.message);
+
+      const rev2 = await review({
+        dir: repoRoot,
+        handoff: ho2.data.handoffRelativePath,
+        agent: 'fake-agent',
+        reviewedAndAcceptRisks: true,
+      });
+      if (!rev2.ok) throw new Error(rev2.message);
+
+      const [bg1, bg2] = await Promise.all([
+        launchBackground({ reviewId: rev1.data.reviewId, dir: repoRoot }),
+        launchBackground({ reviewId: rev2.data.reviewId, dir: repoRoot }),
+      ]);
+
+      expect(bg1.ok).toBe(true);
+      expect(bg2.ok).toBe(true);
+      if (!bg1.ok || !bg2.ok) return;
+
+      expect(bg1.data.handoffId).not.toBe(bg2.data.handoffId);
+      expect(bg1.data.runId).not.toBe(bg2.data.runId);
+
+      const [wait1, wait2] = await Promise.all([
+        waitForRun({ dir: repoRoot, runId: bg1.data.runId, timeoutSeconds: 30 }),
+        waitForRun({ dir: repoRoot, runId: bg2.data.runId, timeoutSeconds: 30 }),
+      ]);
+
+      expect(wait1.ok).toBe(true);
+      expect(wait2.ok).toBe(true);
+      if (!wait1.ok || !wait2.ok) return;
+      expect(['completed', 'failed']).toContain(wait1.data.status);
+      expect(['completed', 'failed']).toContain(wait2.data.status);
+    }, 45_000);
   });
 
   describe('token state transitions', () => {
