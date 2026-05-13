@@ -16,6 +16,9 @@ import {
   cmdGenerate,
   cmdBuildSearchIndex,
   cmdSearch,
+  cmdImportPlan,
+  cmdValidatePlan,
+  cmdArchivePlan,
 } from './commands.js';
 
 // ---------------------------------------------------------------------------
@@ -50,6 +53,9 @@ Commands:
   generate             Generate standard wiki views
   build-search-index   Build the search index
   search               Search wiki records and docs
+  import-plan          Import artifacts into a PLN bundle
+  validate-plan        Validate a PLN record and bundle
+  archive-plan         Archive a PLN record
 
 Global options:
   --help               Show this help text
@@ -70,6 +76,9 @@ const COMMANDS: Record<string, (args: string[]) => Promise<void>> = {
   generate: cmdGenerate,
   'build-search-index': cmdBuildSearchIndex,
   search: cmdSearch,
+  'import-plan': cmdImportPlan,
+  'validate-plan': cmdValidatePlan,
+  'archive-plan': cmdArchivePlan,
 };
 
 // ---------------------------------------------------------------------------

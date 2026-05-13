@@ -18,6 +18,12 @@ import type {
 import { loadManifest } from './contract.js';
 import { allocate } from './allocate.js';
 import { debug, setVerbose } from './debug.js';
+import {
+  ensurePlanBundleSkeleton,
+  getPlanBundleRelPath,
+  getPlanDesignRelPath,
+  getPlanExecutionRelPath,
+} from './plan-bundle.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -85,7 +91,7 @@ function readTemplate(targetDir: string, templateName: string): Result<string> {
 
 /**
  * Fill template placeholders with actual values.
- * Replaces {{id}}, {{title}}, {{date}}, {{owner}}, {{slug}}.
+ * Replaces placeholders such as {{id}}, {{title}}, {{date}}, {{owner}}, {{slug}}.
  */
 function fillTemplate(
   template: string,
@@ -198,6 +204,9 @@ export async function create(
     date: now,
     owner: 'unassigned',
     slug: typeDef.idStrategy === 'slug' ? id : '',
+    bundle_path: typeDef.prefix === 'PLN' ? getPlanBundleRelPath(id) : '',
+    design_entry: typeDef.prefix === 'PLN' ? getPlanDesignRelPath(id) : '',
+    execution_entry: typeDef.prefix === 'PLN' ? getPlanExecutionRelPath(id) : '',
   };
 
   const content = fillTemplate(templateResult.data, values);
@@ -219,6 +228,13 @@ export async function create(
       `Failed to write record file: ${String(err)}`,
       err,
     );
+  }
+
+  if (typeDef.prefix === 'PLN') {
+    const bundleResult = ensurePlanBundleSkeleton(targetDir, id, now);
+    if (!bundleResult.ok) {
+      return fail(bundleResult.error, bundleResult.message, bundleResult.detail);
+    }
   }
 
   const relativePath = path.relative(targetDir, recordPath).replace(/\\/g, '/');

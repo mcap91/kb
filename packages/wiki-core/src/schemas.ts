@@ -49,6 +49,18 @@ export const decisionStatusSchema = z.enum([
   'deprecated',
 ]);
 
+export const planStatusSchema = z.enum([
+  'draft',
+  'approved',
+  'packaged',
+  'active',
+  'paused',
+  'done',
+  'archived',
+  'cancelled',
+  'superseded',
+]);
+
 export const prioritySchema = z.enum(['critical', 'high', 'medium', 'low']);
 
 // ---------------------------------------------------------------------------
@@ -145,6 +157,46 @@ export const sourceFrontmatterSchema = z.object({
   anchors: z.array(z.string()).optional(),
 });
 
+/** PLN-* plan frontmatter schema. */
+export const planFrontmatterSchema = z.object({
+  id: z.string(),
+  title: z.string(),
+  status: planStatusSchema,
+  owner: z.string(),
+  created: z.string(),
+  updated: z.string(),
+  summary: z.string().optional(),
+  area: z.string().optional(),
+  tags: z.array(z.string()).optional(),
+  source_tool: z.string().optional(),
+  bundle_path: z.string().optional(),
+  design_entry: z.string().optional(),
+  execution_entry: z.string().optional(),
+  related: z.array(z.string()).optional(),
+  work_items: z.array(z.string()).optional(),
+  started: z.string().optional(),
+  completed: z.string().optional(),
+  archived: z.string().optional(),
+  superseded_by: z.string().optional(),
+});
+
+/** PLN-* companion bundle manifest schema. */
+export const planBundleManifestSchema = z.object({
+  plan_id: z.string(),
+  normalization_version: z.number().int().positive(),
+  created_at: z.string(),
+  updated_at: z.string(),
+  producer: z.object({
+    tool: z.string(),
+    mode: z.string().optional(),
+  }),
+  entrypoints: z.object({
+    design: z.string(),
+    execution: z.string(),
+  }),
+  source_artifacts: z.array(z.string()),
+});
+
 /** AREA record frontmatter schema (slug-based). */
 export const areaFrontmatterSchema = z.object({
   id: z.string(),
@@ -166,5 +218,6 @@ export const frontmatterSchemas = {
   IN: initiativeFrontmatterSchema,
   DEC: decisionFrontmatterSchema,
   SRC: sourceFrontmatterSchema,
+  PLN: planFrontmatterSchema,
   AREA: areaFrontmatterSchema,
 } as const;

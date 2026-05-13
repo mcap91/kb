@@ -18,6 +18,7 @@
     "wiki/decisions",
     "wiki/sources",
     "wiki/areas",
+    "wiki/plans",
     "wiki/handoffs"
   ],
   "types": {
@@ -231,6 +232,57 @@
         "related_work",
         "anchors"
       ]
+    },
+    "plan": {
+      "aliases": ["plan", "pln"],
+      "prefix": "PLN",
+      "stateKey": "plan",
+      "directory": "wiki/plans",
+      "template": "plan.md",
+      "idStrategy": "allocated",
+      "filenameStrategy": "id_only",
+      "reservedFilenames": ["README.md"],
+      "requiredFrontMatter": [
+        "id",
+        "title",
+        "status",
+        "owner",
+        "created",
+        "updated"
+      ],
+      "optionalFrontMatter": [
+        "summary",
+        "area",
+        "tags",
+        "source_tool",
+        "bundle_path",
+        "design_entry",
+        "execution_entry",
+        "related",
+        "work_items",
+        "started",
+        "completed",
+        "archived",
+        "superseded_by"
+      ],
+      "arrayFrontMatter": [
+        "tags",
+        "related",
+        "work_items"
+      ],
+      "enumFrontMatter": {
+        "status": [
+          "draft",
+          "approved",
+          "packaged",
+          "active",
+          "paused",
+          "done",
+          "archived",
+          "cancelled",
+          "superseded"
+        ]
+      }
     },
     "area": {
       "aliases": ["area"],

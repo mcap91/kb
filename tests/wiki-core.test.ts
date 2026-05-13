@@ -14,6 +14,9 @@ import {
   sync,
   allocate,
   create,
+  importPlan,
+  validatePlan,
+  archivePlan,
   lint,
   generate,
   buildSearchIndex,
@@ -24,6 +27,7 @@ import type {
   WikiContractMetadata,
   IdState,
   WikiPrefix,
+  PlanBundleManifest,
 } from '../packages/wiki-core/src/index.js';
 
 import {
@@ -58,6 +62,7 @@ describe('bootstrap', () => {
       'wiki/decisions',
       'wiki/sources',
       'wiki/areas',
+      'wiki/plans',
       'wiki/handoffs',
     ];
     for (const dir of expectedDirs) {
@@ -83,11 +88,46 @@ describe('bootstrap', () => {
     await bootstrap({ dir: tmp.dir, repo: 'test/repo' });
 
     const state = readJson<IdState>(tmp.dir, 'wiki/.id-state.json');
-    // Should have entries for prefix-based types (WK, IN, DEC, SRC)
+    // Should have entries for prefix-based allocated types
     expect(state['WK']).toEqual({ next: 1, allocated: [] });
     expect(state['IN']).toEqual({ next: 1, allocated: [] });
     expect(state['DEC']).toEqual({ next: 1, allocated: [] });
     expect(state['SRC']).toEqual({ next: 1, allocated: [] });
+    expect(state['PLN']).toEqual({ next: 1, allocated: [] });
+  });
+
+  it('preserves existing metadata and merges missing ID state entries', async () => {
+    tmp = createTmpDir();
+    fs.mkdirSync(path.join(tmp.dir, 'wiki'), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmp.dir, 'wiki/.wiki-contract.json'),
+      JSON.stringify({
+        contractVersion: '0.0.1',
+        repo: 'test/existing',
+        bootstrappedAt: '2026-01-01T00:00:00.000Z',
+      }, null, 2) + '\n',
+      'utf-8',
+    );
+    fs.writeFileSync(
+      path.join(tmp.dir, 'wiki/.id-state.json'),
+      JSON.stringify({
+        WK: { next: 18, allocated: [1, 2, 17] },
+        IN: { next: 3, allocated: [1, 2] },
+      }, null, 2) + '\n',
+      'utf-8',
+    );
+
+    const result = await bootstrap({ dir: tmp.dir, repo: 'test/repo' });
+    expect(result.ok).toBe(true);
+
+    const meta = readJson<WikiContractMetadata>(tmp.dir, 'wiki/.wiki-contract.json');
+    expect(meta.repo).toBe('test/existing');
+    expect(meta.bootstrappedAt).toBe('2026-01-01T00:00:00.000Z');
+
+    const state = readJson<IdState>(tmp.dir, 'wiki/.id-state.json');
+    expect(state['WK']).toEqual({ next: 18, allocated: [1, 2, 17] });
+    expect(state['IN']).toEqual({ next: 3, allocated: [1, 2] });
+    expect(state['PLN']).toEqual({ next: 1, allocated: [] });
   });
 
   it('copies record templates', async () => {
@@ -99,6 +139,7 @@ describe('bootstrap', () => {
     expect(fileExists(tmp.dir, 'wiki/templates/decision.md')).toBe(true);
     expect(fileExists(tmp.dir, 'wiki/templates/source.md')).toBe(true);
     expect(fileExists(tmp.dir, 'wiki/templates/area.md')).toBe(true);
+    expect(fileExists(tmp.dir, 'wiki/templates/plan.md')).toBe(true);
   });
 
   it('copies handoff template', async () => {
@@ -246,6 +287,60 @@ describe('sync-contract', () => {
     const afterMeta = readJson<WikiContractMetadata>(tmp.dir, 'wiki/.wiki-contract.json');
     expect(afterMeta.lastSyncedAt).toBeTruthy();
   });
+
+  it('upgrades required surfaces and missing ID state entries', async () => {
+    tmp = await createBootstrappedRepo();
+
+    fs.rmSync(path.join(tmp.dir, 'wiki/plans'), { recursive: true, force: true });
+    fs.rmSync(path.join(tmp.dir, 'wiki/templates/plan.md'), { force: true });
+    const state = readJson<IdState>(tmp.dir, 'wiki/.id-state.json');
+    state['WK'] = { next: 7, allocated: [1, 2, 3, 4, 5, 6] };
+    delete state['PLN'];
+    fs.writeFileSync(
+      path.join(tmp.dir, 'wiki/.id-state.json'),
+      JSON.stringify(state, null, 2) + '\n',
+      'utf-8',
+    );
+
+    const result = await sync({ dir: tmp.dir });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.data.synced).toContain('wiki/plans');
+      expect(result.data.synced).toContain('wiki/.id-state.json');
+      expect(result.data.synced).toContain('wiki/templates/plan.md');
+    }
+
+    expect(fs.existsSync(path.join(tmp.dir, 'wiki/plans'))).toBe(true);
+    expect(fileExists(tmp.dir, 'wiki/templates/plan.md')).toBe(true);
+
+    const upgradedState = readJson<IdState>(tmp.dir, 'wiki/.id-state.json');
+    expect(upgradedState['WK']).toEqual({ next: 7, allocated: [1, 2, 3, 4, 5, 6] });
+    expect(upgradedState['PLN']).toEqual({ next: 1, allocated: [] });
+  });
+
+  it('--check mode reports upgrade changes without writing them', async () => {
+    tmp = await createBootstrappedRepo();
+
+    fs.rmSync(path.join(tmp.dir, 'wiki/plans'), { recursive: true, force: true });
+    const state = readJson<IdState>(tmp.dir, 'wiki/.id-state.json');
+    delete state['PLN'];
+    fs.writeFileSync(
+      path.join(tmp.dir, 'wiki/.id-state.json'),
+      JSON.stringify(state, null, 2) + '\n',
+      'utf-8',
+    );
+
+    const result = await sync({ dir: tmp.dir, check: true });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.data.synced).toContain('wiki/plans');
+      expect(result.data.synced).toContain('wiki/.id-state.json');
+    }
+
+    expect(fs.existsSync(path.join(tmp.dir, 'wiki/plans'))).toBe(false);
+    const unchangedState = readJson<IdState>(tmp.dir, 'wiki/.id-state.json');
+    expect(unchangedState['PLN']).toBeUndefined();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -376,6 +471,54 @@ describe('create', () => {
     }
   });
 
+  it('creates PLN record successfully', async () => {
+    tmp = await createBootstrappedRepo();
+    const result = await create({ dir: tmp.dir, prefix: 'PLN', title: 'Test plan' });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.data.id).toBe('PLN-0001');
+      expect(fileExists(tmp.dir, 'wiki/plans/PLN-0001.md')).toBe(true);
+    }
+
+    const content = readText(tmp.dir, 'wiki/plans/PLN-0001.md');
+    expect(content).toContain('id: "PLN-0001"');
+    expect(content).toContain('title: "Test plan"');
+    expect(content).toContain('status: draft');
+    expect(content).toContain('bundle_path: "wiki/plans/PLN-0001/"');
+    expect(content).toContain('design_entry: "wiki/plans/PLN-0001/design/spec.md"');
+    expect(content).toContain('execution_entry: "wiki/plans/PLN-0001/execution/tracker.md"');
+  });
+
+  it('creates PLN bundle skeleton successfully', async () => {
+    tmp = await createBootstrappedRepo();
+    const result = await create({ dir: tmp.dir, prefix: 'PLN', title: 'Test plan' });
+
+    expect(result.ok).toBe(true);
+    expect(fileExists(tmp.dir, 'wiki/plans/PLN-0001/bundle.json')).toBe(true);
+    expect(fileExists(tmp.dir, 'wiki/plans/PLN-0001/design/spec.md')).toBe(true);
+    expect(fileExists(tmp.dir, 'wiki/plans/PLN-0001/execution/tracker.md')).toBe(true);
+    expect(fs.existsSync(path.join(tmp.dir, 'wiki/plans/PLN-0001/source/raw'))).toBe(true);
+
+    const manifest = readJson<PlanBundleManifest>(
+      tmp.dir,
+      'wiki/plans/PLN-0001/bundle.json',
+    );
+    expect(manifest.plan_id).toBe('PLN-0001');
+    expect(manifest.normalization_version).toBe(1);
+    expect(manifest.producer.tool).toBe('manual');
+    expect(manifest.entrypoints.design).toBe('design/spec.md');
+    expect(manifest.entrypoints.execution).toBe('execution/tracker.md');
+    expect(manifest.source_artifacts).toEqual([]);
+
+    expect(readText(tmp.dir, 'wiki/plans/PLN-0001/design/spec.md')).toContain(
+      '# PLN-0001 Design',
+    );
+    expect(readText(tmp.dir, 'wiki/plans/PLN-0001/execution/tracker.md')).toContain(
+      '# PLN-0001 Execution',
+    );
+  });
+
   it('rejects HO with INVALID_PREFIX error', async () => {
     tmp = await createBootstrappedRepo();
     const result = await create({ dir: tmp.dir, prefix: 'HO', title: 'Test handoff' });
@@ -411,6 +554,344 @@ describe('create', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Validate Plan Tests
+// ---------------------------------------------------------------------------
+
+describe('validatePlan', () => {
+  let tmp: TmpRepo;
+
+  afterEach(() => {
+    tmp?.cleanup();
+  });
+
+  it('passes on a freshly created PLN bundle', async () => {
+    tmp = await createBootstrappedRepo();
+    await create({ dir: tmp.dir, prefix: 'PLN', title: 'Valid plan' });
+
+    const result = await validatePlan({ dir: tmp.dir, plan: 'PLN-0001' });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.data.plan).toBe('PLN-0001');
+      expect(result.data.valid).toBe(true);
+      expect(result.data.issues).toEqual([]);
+    }
+  });
+
+  it('reports a missing PLN record as invalid', async () => {
+    tmp = await createBootstrappedRepo();
+
+    const result = await validatePlan({ dir: tmp.dir, plan: 'PLN-9999' });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.data.valid).toBe(false);
+      expect(result.data.issues.map(i => i.code)).toContain('FILE_NOT_FOUND');
+    }
+  });
+
+  it('rejects entrypoints outside the owning bundle', async () => {
+    tmp = await createBootstrappedRepo();
+    await create({ dir: tmp.dir, prefix: 'PLN', title: 'Invalid plan' });
+
+    const recordPath = path.join(tmp.dir, 'wiki/plans/PLN-0001.md');
+    const original = fs.readFileSync(recordPath, 'utf-8');
+    fs.writeFileSync(
+      recordPath,
+      original.replace(
+        'design_entry: "wiki/plans/PLN-0001/design/spec.md"',
+        'design_entry: "wiki/plans/PLN-0002/design/spec.md"',
+      ),
+      'utf-8',
+    );
+
+    const result = await validatePlan({ dir: tmp.dir, plan: 'PLN-0001' });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.data.valid).toBe(false);
+      expect(result.data.issues.map(i => i.code)).toContain('PATH_OUTSIDE_BUNDLE');
+    }
+  });
+
+  it('rejects a bundle manifest for a different plan id', async () => {
+    tmp = await createBootstrappedRepo();
+    await create({ dir: tmp.dir, prefix: 'PLN', title: 'Invalid plan' });
+
+    const manifest = readJson<PlanBundleManifest>(
+      tmp.dir,
+      'wiki/plans/PLN-0001/bundle.json',
+    );
+    manifest.plan_id = 'PLN-0002';
+    fs.writeFileSync(
+      path.join(tmp.dir, 'wiki/plans/PLN-0001/bundle.json'),
+      JSON.stringify(manifest, null, 2) + '\n',
+      'utf-8',
+    );
+
+    const result = await validatePlan({ dir: tmp.dir, plan: 'PLN-0001' });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.data.valid).toBe(false);
+      expect(result.data.issues.map(i => i.code)).toContain('PLAN_ID_MISMATCH');
+    }
+  });
+
+  it('rejects source artifacts outside source/raw', async () => {
+    tmp = await createBootstrappedRepo();
+    await create({ dir: tmp.dir, prefix: 'PLN', title: 'Invalid plan' });
+
+    const manifest = readJson<PlanBundleManifest>(
+      tmp.dir,
+      'wiki/plans/PLN-0001/bundle.json',
+    );
+    manifest.source_artifacts = ['design/spec.md'];
+    fs.writeFileSync(
+      path.join(tmp.dir, 'wiki/plans/PLN-0001/bundle.json'),
+      JSON.stringify(manifest, null, 2) + '\n',
+      'utf-8',
+    );
+
+    const result = await validatePlan({ dir: tmp.dir, plan: 'PLN-0001' });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.data.valid).toBe(false);
+      expect(result.data.issues.map(i => i.code)).toContain('PATH_OUTSIDE_SOURCE_RAW');
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Import Plan Tests
+// ---------------------------------------------------------------------------
+
+describe('importPlan', () => {
+  let tmp: TmpRepo;
+
+  afterEach(() => {
+    tmp?.cleanup();
+  });
+
+  it('imports design and execution files into the canonical PLN bundle', async () => {
+    tmp = await createBootstrappedRepo();
+    await create({ dir: tmp.dir, prefix: 'PLN', title: 'Import plan' });
+
+    fs.mkdirSync(path.join(tmp.dir, 'planning'), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmp.dir, 'planning/design.md'),
+      '# Imported Design\n\nDesign body.\n',
+      'utf-8',
+    );
+    fs.writeFileSync(
+      path.join(tmp.dir, 'planning/execution.md'),
+      '# Imported Execution\n\nExecution body.\n',
+      'utf-8',
+    );
+
+    const result = await importPlan({
+      dir: tmp.dir,
+      plan: 'PLN-0001',
+      design: 'planning/design.md',
+      execution: 'planning/execution.md',
+      sourceTool: 'superpowers',
+      overwrite: true,
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.data.plan).toBe('PLN-0001');
+      expect(result.data.designEntry).toBe('wiki/plans/PLN-0001/design/spec.md');
+      expect(result.data.executionEntry).toBe('wiki/plans/PLN-0001/execution/tracker.md');
+      expect(result.data.sourceArtifacts).toEqual([
+        'source/raw/design-design.md',
+        'source/raw/execution-execution.md',
+      ]);
+    }
+
+    expect(readText(tmp.dir, 'wiki/plans/PLN-0001/design/spec.md')).toContain(
+      '# Imported Design',
+    );
+    expect(readText(tmp.dir, 'wiki/plans/PLN-0001/execution/tracker.md')).toContain(
+      '# Imported Execution',
+    );
+    expect(fileExists(tmp.dir, 'wiki/plans/PLN-0001/source/raw/design-design.md')).toBe(true);
+    expect(fileExists(tmp.dir, 'wiki/plans/PLN-0001/source/raw/execution-execution.md')).toBe(true);
+
+    const record = readText(tmp.dir, 'wiki/plans/PLN-0001.md');
+    expect(record).toContain('status: "packaged"');
+    expect(record).toContain('source_tool: "superpowers"');
+
+    const manifest = readJson<PlanBundleManifest>(
+      tmp.dir,
+      'wiki/plans/PLN-0001/bundle.json',
+    );
+    expect(manifest.producer.tool).toBe('superpowers');
+    expect(manifest.entrypoints.design).toBe('design/spec.md');
+    expect(manifest.entrypoints.execution).toBe('execution/tracker.md');
+    expect(manifest.source_artifacts).toEqual([
+      'source/raw/design-design.md',
+      'source/raw/execution-execution.md',
+    ]);
+
+    const validation = await validatePlan({ dir: tmp.dir, plan: 'PLN-0001' });
+    expect(validation.ok).toBe(true);
+    if (validation.ok) {
+      expect(validation.data.valid).toBe(true);
+    }
+  });
+
+  it('refuses to replace canonical bundle files without overwrite', async () => {
+    tmp = await createBootstrappedRepo();
+    await create({ dir: tmp.dir, prefix: 'PLN', title: 'Import plan' });
+
+    fs.mkdirSync(path.join(tmp.dir, 'planning'), { recursive: true });
+    fs.writeFileSync(path.join(tmp.dir, 'planning/design.md'), '# Imported Design\n', 'utf-8');
+
+    const result = await importPlan({
+      dir: tmp.dir,
+      plan: 'PLN-0001',
+      design: 'planning/design.md',
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toBe('IMPORT_ERROR');
+    }
+  });
+
+  it('imports an execution directory when it provides tracker.md', async () => {
+    tmp = await createBootstrappedRepo();
+    await create({ dir: tmp.dir, prefix: 'PLN', title: 'Import plan' });
+
+    fs.mkdirSync(path.join(tmp.dir, 'planning/exec/sub'), { recursive: true });
+    fs.writeFileSync(path.join(tmp.dir, 'planning/design.md'), '# Imported Design\n', 'utf-8');
+    fs.writeFileSync(path.join(tmp.dir, 'planning/exec/tracker.md'), '# Directory Tracker\n', 'utf-8');
+    fs.writeFileSync(path.join(tmp.dir, 'planning/exec/sub/task.md'), '# Sub Task\n', 'utf-8');
+
+    const result = await importPlan({
+      dir: tmp.dir,
+      plan: 'PLN-0001',
+      design: 'planning/design.md',
+      execution: 'planning/exec',
+      overwrite: true,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(readText(tmp.dir, 'wiki/plans/PLN-0001/execution/tracker.md')).toContain(
+      '# Directory Tracker',
+    );
+    expect(fileExists(tmp.dir, 'wiki/plans/PLN-0001/execution/sub/task.md')).toBe(true);
+
+    const manifest = readJson<PlanBundleManifest>(
+      tmp.dir,
+      'wiki/plans/PLN-0001/bundle.json',
+    );
+    expect(manifest.source_artifacts).toContain('source/raw/execution/exec/tracker.md');
+    expect(manifest.source_artifacts).toContain('source/raw/execution/exec/sub/task.md');
+  });
+
+  it('preserves active plan status during import', async () => {
+    tmp = await createBootstrappedRepo();
+    await create({ dir: tmp.dir, prefix: 'PLN', title: 'Import plan' });
+
+    const recordPath = path.join(tmp.dir, 'wiki/plans/PLN-0001.md');
+    const original = fs.readFileSync(recordPath, 'utf-8');
+    fs.writeFileSync(recordPath, original.replace('status: draft', 'status: active'), 'utf-8');
+
+    fs.mkdirSync(path.join(tmp.dir, 'planning'), { recursive: true });
+    fs.writeFileSync(path.join(tmp.dir, 'planning/design.md'), '# Imported Design\n', 'utf-8');
+
+    const result = await importPlan({
+      dir: tmp.dir,
+      plan: 'PLN-0001',
+      design: 'planning/design.md',
+      overwrite: true,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(readText(tmp.dir, 'wiki/plans/PLN-0001.md')).toContain('status: "active"');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Archive Plan Tests
+// ---------------------------------------------------------------------------
+
+describe('archivePlan', () => {
+  let tmp: TmpRepo;
+
+  afterEach(() => {
+    tmp?.cleanup();
+  });
+
+  it('marks a PLN record archived without moving the bundle', async () => {
+    tmp = await createBootstrappedRepo();
+    await create({ dir: tmp.dir, prefix: 'PLN', title: 'Archive plan' });
+
+    const result = await archivePlan({ dir: tmp.dir, plan: 'PLN-0001' });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.data.plan).toBe('PLN-0001');
+      expect(result.data.path).toBe('wiki/plans/PLN-0001.md');
+      expect(result.data.archived).toBeTruthy();
+    }
+
+    const record = readText(tmp.dir, 'wiki/plans/PLN-0001.md');
+    expect(record).toContain('status: "archived"');
+    expect(record).toContain('archived: "');
+    expect(record).toContain('updated: "');
+    expect(fileExists(tmp.dir, 'wiki/plans/PLN-0001/bundle.json')).toBe(true);
+    expect(fileExists(tmp.dir, 'wiki/plans/PLN-0001/design/spec.md')).toBe(true);
+    expect(fileExists(tmp.dir, 'wiki/plans/PLN-0001/execution/tracker.md')).toBe(true);
+  });
+
+  it('preserves completed and work_items fields', async () => {
+    tmp = await createBootstrappedRepo();
+    await create({ dir: tmp.dir, prefix: 'PLN', title: 'Archive plan' });
+
+    const recordPath = path.join(tmp.dir, 'wiki/plans/PLN-0001.md');
+    const original = fs.readFileSync(recordPath, 'utf-8');
+    const withCompletion = original
+      .replace('work_items: []', 'work_items:\n  - "WK-0001"')
+      .replace('---\n\n# PLN-0001', 'completed: "2026-05-01T00:00:00.000Z"\n---\n\n# PLN-0001');
+    fs.writeFileSync(recordPath, withCompletion, 'utf-8');
+
+    const result = await archivePlan({ dir: tmp.dir, plan: 'PLN-0001' });
+
+    expect(result.ok).toBe(true);
+    const record = readText(tmp.dir, 'wiki/plans/PLN-0001.md');
+    expect(record).toContain('completed: "2026-05-01T00:00:00.000Z"');
+    expect(record).toContain('work_items:');
+    expect(record).toContain('  - "WK-0001"');
+  });
+
+  it('rejects non-PLN ids', async () => {
+    tmp = await createBootstrappedRepo();
+
+    const result = await archivePlan({ dir: tmp.dir, plan: 'WK-0001' });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toBe('INVALID_PREFIX');
+    }
+  });
+
+  it('rejects missing PLN records', async () => {
+    tmp = await createBootstrappedRepo();
+
+    const result = await archivePlan({ dir: tmp.dir, plan: 'PLN-9999' });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toBe('FILE_NOT_FOUND');
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Lint Tests
 // ---------------------------------------------------------------------------
 
@@ -424,6 +905,7 @@ describe('lint', () => {
   it('passes on valid records', async () => {
     tmp = await createBootstrappedRepo();
     await create({ dir: tmp.dir, prefix: 'WK', title: 'Valid item' });
+    await create({ dir: tmp.dir, prefix: 'PLN', title: 'Valid plan' });
 
     const result = await lint({ dir: tmp.dir });
     expect(result.ok).toBe(true);
@@ -679,6 +1161,39 @@ describe('generate', () => {
     const now = readText(tmp.dir, 'wiki/now.md');
     expect(now).toContain('WK-0002');
   });
+
+  it('includes PLN records in catalog but excludes them from work-tracking views', async () => {
+    tmp = await createBootstrappedRepo();
+
+    writeRecord(tmp.dir, 'wiki/plans/PLN-0001.md', {
+      id: 'PLN-0001',
+      title: 'Active plan',
+      status: 'active',
+      owner: 'test',
+      created: '2025-01-01',
+      updated: '2025-01-01',
+    });
+    writeRecord(tmp.dir, 'wiki/plans/PLN-0002.md', {
+      id: 'PLN-0002',
+      title: 'Done plan',
+      status: 'done',
+      owner: 'test',
+      created: '2025-01-01',
+      updated: '2025-01-01',
+    });
+
+    await generate({ dir: tmp.dir });
+
+    const catalog = readText(tmp.dir, 'wiki/catalog.md');
+    expect(catalog).toContain('PLN-0001');
+    expect(catalog).toContain('PLN-0002');
+
+    for (const view of ['now.md', 'inbox.md', 'backlog.md', 'archive.md']) {
+      const content = readText(tmp.dir, `wiki/${view}`);
+      expect(content).not.toContain('PLN-0001');
+      expect(content).not.toContain('PLN-0002');
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -696,6 +1211,7 @@ describe('search', () => {
     tmp = await createBootstrappedRepo();
     await create({ dir: tmp.dir, prefix: 'WK', title: 'Searchable issue' });
     await create({ dir: tmp.dir, prefix: 'IN', title: 'Searchable initiative' });
+    await create({ dir: tmp.dir, prefix: 'PLN', title: 'Searchable plan' });
 
     const result = await buildSearchIndex({ dir: tmp.dir });
     expect(result.ok).toBe(true);
@@ -708,6 +1224,30 @@ describe('search', () => {
     const ids = index.entries.map(e => e.id);
     expect(ids).toContain('WK-0001');
     expect(ids).toContain('IN-0001');
+    expect(ids).toContain('PLN-0001');
+  });
+
+  it('build index includes PLN records but excludes PLN bundle internals', async () => {
+    tmp = await createBootstrappedRepo();
+    await create({ dir: tmp.dir, prefix: 'PLN', title: 'Plan with bundle' });
+
+    const bundleDir = path.join(tmp.dir, 'wiki/plans/PLN-0001/design');
+    fs.mkdirSync(bundleDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(bundleDir, 'spec.md'),
+      '# Bundle Spec\n\nThis internal bundle file should not be indexed.\n',
+      'utf-8',
+    );
+
+    await buildSearchIndex({ dir: tmp.dir });
+
+    const index = readJson<{ entries: Array<{ id: string; path: string }> }>(
+      tmp.dir,
+      'wiki/.search-index.json',
+    );
+    const paths = index.entries.map(e => e.path);
+    expect(paths).toContain('wiki/plans/PLN-0001.md');
+    expect(paths).not.toContain('wiki/plans/PLN-0001/design/spec.md');
   });
 
   it('build index includes docs/**/*.md', async () => {

@@ -14,6 +14,9 @@ import {
   generate,
   buildSearchIndex,
   search,
+  importPlan,
+  validatePlan,
+  archivePlan,
   type WikiPrefix,
 } from '@kb/wiki-core';
 import { parseFlag, parseValue } from './run.js';
@@ -30,6 +33,16 @@ function requireDir(args: string[]): string {
     throw new Error('missing --dir');
   }
   return dir;
+}
+
+function requireValue(args: string[], flag: string, label: string): string | undefined {
+  const value = parseValue(args, flag);
+  if (!value) {
+    console.error(`Error: ${flag} <${label}> is required`);
+    process.exitCode = 1;
+    return undefined;
+  }
+  return value;
 }
 
 // ---------------------------------------------------------------------------
@@ -270,4 +283,93 @@ export async function cmdSearch(args: string[]): Promise<void> {
       console.log(`    ${hit.snippet}`);
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// import-plan
+// ---------------------------------------------------------------------------
+
+export async function cmdImportPlan(args: string[]): Promise<void> {
+  let dir: string;
+  try { dir = requireDir(args); } catch { return; }
+
+  const plan = requireValue(args, '--plan', 'PLN-id');
+  if (!plan) return;
+
+  const design = requireValue(args, '--design', 'path');
+  if (!design) return;
+
+  const execution = parseValue(args, '--execution');
+  const sourceTool = parseValue(args, '--source-tool');
+  const overwrite = parseFlag(args, '--overwrite');
+
+  const result = await importPlan({ dir, plan, design, execution, sourceTool, overwrite });
+
+  if (!result.ok) {
+    console.error(`Error [${result.error}]: ${result.message}`);
+    process.exitCode = 1;
+    return;
+  }
+
+  console.log(`Imported plan: ${result.data.plan}`);
+  console.log(`Bundle:        ${result.data.bundlePath}`);
+  console.log(`Design:        ${result.data.designEntry}`);
+  console.log(`Execution:     ${result.data.executionEntry}`);
+  console.log(`Sources:       ${result.data.sourceArtifacts.length}`);
+}
+
+// ---------------------------------------------------------------------------
+// validate-plan
+// ---------------------------------------------------------------------------
+
+export async function cmdValidatePlan(args: string[]): Promise<void> {
+  let dir: string;
+  try { dir = requireDir(args); } catch { return; }
+
+  const plan = requireValue(args, '--plan', 'PLN-id');
+  if (!plan) return;
+
+  const result = await validatePlan({ dir, plan });
+
+  if (!result.ok) {
+    console.error(`Error [${result.error}]: ${result.message}`);
+    process.exitCode = 1;
+    return;
+  }
+
+  console.log(`Plan:  ${result.data.plan}`);
+  console.log(`Valid: ${result.data.valid}`);
+
+  for (const issue of result.data.issues) {
+    const issuePath = issue.path ? ` [${issue.path}]` : '';
+    console.log(`  ${issue.code}${issuePath}: ${issue.message}`);
+  }
+
+  if (!result.data.valid) {
+    process.exitCode = 1;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// archive-plan
+// ---------------------------------------------------------------------------
+
+export async function cmdArchivePlan(args: string[]): Promise<void> {
+  let dir: string;
+  try { dir = requireDir(args); } catch { return; }
+
+  const plan = requireValue(args, '--plan', 'PLN-id');
+  if (!plan) return;
+
+  const result = await archivePlan({ dir, plan });
+
+  if (!result.ok) {
+    console.error(`Error [${result.error}]: ${result.message}`);
+    process.exitCode = 1;
+    return;
+  }
+
+  console.log(`Archived plan: ${result.data.plan}`);
+  console.log(`Path:          ${result.data.path}`);
+  console.log(`Archived:      ${result.data.archived}`);
 }
