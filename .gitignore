@@ -6,4 +6,3 @@ dist-tests/
 .agent-runs/
 .worktrees/
 *.tsbuildinfo
-docs/superpowers/
