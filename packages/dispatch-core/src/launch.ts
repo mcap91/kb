@@ -257,6 +257,7 @@ async function writeLaunchMetadata(
     responsePath?: string | null;
     stdoutPath?: string | null;
     stderrPath?: string | null;
+    responseTransport?: 'file' | 'stdout_capture';
   },
 ): Promise<void> {
   const payload = {
@@ -271,6 +272,7 @@ async function writeLaunchMetadata(
     ...(data.responsePath !== undefined ? { response_path: data.responsePath } : {}),
     ...(data.stdoutPath !== undefined ? { stdout_path: data.stdoutPath } : {}),
     ...(data.stderrPath !== undefined ? { stderr_path: data.stderrPath } : {}),
+    ...(data.responseTransport !== undefined ? { response_transport: data.responseTransport } : {}),
   };
 
   await writeJsonAtomic(join(metadataDir, 'launch.json'), payload);
@@ -563,6 +565,8 @@ export async function launch(opts: LaunchOpts): Promise<DispatchResult<RunResult
   const contextDir = join(agentVisibleDir, 'context');
   const wrapperContent = await readFile(wrapperPath, 'utf-8');
 
+  await writeFile(responsePath, '', 'utf-8');
+
   const env = buildEnv(
     repoRoot,
     runDir,
@@ -691,6 +695,7 @@ export async function launch(opts: LaunchOpts): Promise<DispatchResult<RunResult
       responsePath,
       stdoutPath: agentConfig.response_transport.kind === 'file' ? stdoutPath : null,
       stderrPath,
+      responseTransport: agentConfig.response_transport.kind,
     });
 
     if (child?.pid) {
@@ -853,6 +858,7 @@ export async function launch(opts: LaunchOpts): Promise<DispatchResult<RunResult
       responsePath,
       stdoutPath: agentConfig.response_transport.kind === 'file' ? stdoutPath : null,
       stderrPath,
+      responseTransport: agentConfig.response_transport.kind,
     });
     emit({
       type: 'token_consumed',
@@ -951,6 +957,7 @@ export async function launch(opts: LaunchOpts): Promise<DispatchResult<RunResult
         responsePath,
         stdoutPath: agentConfig.response_transport.kind === 'file' ? stdoutPath : null,
         stderrPath,
+        responseTransport: agentConfig.response_transport.kind,
       });
     }
 

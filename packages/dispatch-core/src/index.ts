@@ -30,6 +30,21 @@ export type {
   TokenInfo,
 } from './types.js';
 
+// Background launch types
+export type {
+  BackgroundLaunchResult,
+  TerminalRunStatus,
+  RunStatus,
+  InternalRunStatus,
+  WaitForRunResult,
+  RunArtifactResult,
+  ControllerMetadata,
+  ResolvedRun,
+  BackgroundLaunchOpts,
+  WaitForRunOpts,
+  GetResponseOpts,
+} from './types-background.js';
+
 // Zod schemas
 export {
   handoffModeSchema,
@@ -89,6 +104,18 @@ export { loadHandoff, DEFAULT_LIMITS } from './handoff.js';
 // Status
 export { status } from './status.js';
 
+// Lookup
+export { resolveRun, readRunArtifacts } from './lookup.js';
+
+// Wait
+export { waitForRun } from './wait.js';
+
+// Response
+export { getResponse } from './response.js';
+
+// Background launch
+export { launchBackground, reviewAndLaunchBackground } from './launch-background.js';
+
 // Wrapper (convenience functions)
 export {
   createHandoffRecord,
@@ -98,4 +125,6 @@ export {
   cleanupState,
   readDispatchStatus,
   reviewAndLaunch,
+  launchReviewBackground,
+  reviewAndLaunchInBackground,
 } from './wrapper.js';

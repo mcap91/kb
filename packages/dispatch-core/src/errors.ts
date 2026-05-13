@@ -23,7 +23,11 @@ export type DispatchErrorCode =
   | 'STATUS_ERROR'
   | 'PARSE_ERROR'
   | 'FILE_NOT_FOUND'
-  | 'FILE_WRITE_ERROR';
+  | 'FILE_WRITE_ERROR'
+  | 'RUN_NOT_FOUND'
+  | 'LOOKUP_FAILED'
+  | 'BACKGROUND_LAUNCH_FAILED'
+  | 'WAIT_TIMEOUT';
 
 /**
  * Discriminated union result type for dispatch-core operations.

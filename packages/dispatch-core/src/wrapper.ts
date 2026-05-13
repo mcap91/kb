@@ -10,6 +10,7 @@ import type {
   RunResult,
   StatusResult,
 } from './types.js';
+import type { BackgroundLaunchResult, BackgroundLaunchOpts } from './types-background.js';
 import type { DispatchResult } from './errors.js';
 import { createHandoff } from './create-handoff.js';
 import { initConfig } from './registry.js';
@@ -17,6 +18,10 @@ import { review } from './review.js';
 import { launch } from './launch.js';
 import { cleanup } from './cleanup.js';
 import { status } from './status.js';
+import {
+  launchBackground as launchBg,
+  reviewAndLaunchBackground as reviewAndLaunchBg,
+} from './launch-background.js';
 
 // ---------------------------------------------------------------------------
 // Dispatch convenience wrapper
@@ -99,4 +104,17 @@ export async function reviewAndLaunch(
   };
 
   return launch(launchOpts);
+}
+
+export async function launchReviewBackground(
+  opts: BackgroundLaunchOpts,
+): Promise<DispatchResult<BackgroundLaunchResult>> {
+  return launchBg(opts);
+}
+
+export async function reviewAndLaunchInBackground(
+  reviewOpts: ReviewOpts,
+  backgroundOpts?: { startupTimeoutMs?: number },
+): Promise<DispatchResult<BackgroundLaunchResult>> {
+  return reviewAndLaunchBg(reviewOpts, backgroundOpts);
 }
