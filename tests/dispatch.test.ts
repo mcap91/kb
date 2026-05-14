@@ -150,15 +150,27 @@ async function writeRegistry(configDir: string, fakeAgentPath: string, registry?
     agents: {
       claude: {
         base_argv: ['claude'],
-        noninteractive_argv: ['--print', '--output-format', 'text', '--no-session-persistence'],
-        instruction_transport: { kind: 'argv_content' },
-        wrapper_arg: ['{wrapper_content}'],
+        noninteractive_argv: [
+          '--print',
+          '--output-format',
+          'text',
+          '--no-session-persistence',
+          '--settings',
+          '{"disableAllHooks":true}',
+        ],
+        instruction_transport: { kind: 'stdin' },
         response_transport: { kind: 'stdout_capture' },
         timeout_seconds: 1800,
         read_only: {
           supported: true,
           argv_suffix: ['--permission-mode', 'default', '--disallowedTools', 'Edit Write NotebookEdit Bash'],
           response_writable: true,
+        },
+        env: {
+          CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1',
+          CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: '1',
+          CLAUDE_CODE_DISABLE_CRON: '1',
+          CLAUDE_CODE_SKIP_PROMPT_HISTORY: '1',
         },
       },
       codex: {
@@ -1537,6 +1549,65 @@ describe('dispatch', () => {
       expect(await pathExists(result.data.statePath)).toBe(true);
     }, 15_000);
 
+    it('MCP launch defaults to background when background is omitted', async () => {
+      await setupBootstrappedRepo(repoRoot);
+      const tsxPath = getTsxPath();
+      await setupFullConfig({
+        version: 1,
+        agents: {
+          'fake-agent': {
+            base_argv: [tsxPath, delayedFakeAgentPath],
+            noninteractive_argv: [],
+            instruction_transport: { kind: 'argv_content' },
+            wrapper_arg: ['{wrapper_content}'],
+            response_transport: { kind: 'file' },
+            response_arg: [],
+            timeout_seconds: 30,
+            read_only: { supported: true, argv_suffix: [], response_writable: true },
+            env: { FAKE_AGENT_DELAY_MS: '3000' },
+          },
+        },
+      });
+      const { createHandoff, review, waitForRun } = await import('@kb/dispatch-core');
+      const { tools } = await import('@kb/dispatch-mcp');
+
+      const ho = await createHandoff({
+        dir: repoRoot,
+        title: 'MCP default background test',
+        subject: 'kb:test',
+        allowed_agents: ['fake-agent'],
+        mode: 'implement',
+      });
+      if (!ho.ok) throw new Error(ho.message);
+
+      const rev = await review({
+        dir: repoRoot,
+        handoff: ho.data.handoffRelativePath,
+        agent: 'fake-agent',
+        reviewedAndAcceptRisks: true,
+      });
+      if (!rev.ok) throw new Error(rev.message);
+
+      const launchTool = tools.find((tool: { name: string }) => tool.name === 'launch');
+      expect(launchTool).toBeDefined();
+      if (!launchTool) return;
+
+      const startTime = Date.now();
+      const result = await launchTool.handler({
+        dir: repoRoot,
+        reviewId: rev.data.reviewId,
+      }) as { ok: boolean; data?: { runId: string; status: string } };
+      const elapsed = Date.now() - startTime;
+
+      expect(result.ok).toBe(true);
+      expect(result.data?.status).toBe('launching');
+      expect(elapsed).toBeLessThan(2500);
+
+      if (result.data?.runId) {
+        await waitForRun({ dir: repoRoot, runId: result.data.runId, timeoutSeconds: 30 });
+      }
+    }, 30_000);
+
     it('controller writes controller.json during background launch', async () => {
       await setupBootstrappedRepo(repoRoot);
       const tsxPath = getTsxPath();
@@ -1835,6 +1906,21 @@ describe('dispatch', () => {
 
       expect(result.data.launching).toHaveLength(1);
       expect(result.data.launching[0]?.reviewId).toBe(reviewResult.data.reviewId);
+      expect(result.data.launching[0]?.runId).toBe('RUN-test');
+      expect(result.data.launching[0]?.handoffId).toBe('HO-0001');
+      expect(result.data.launching[0]?.agent).toBe('fake-agent');
+      expect(result.data.launching[0]?.mode).toBe('implement');
+      expect(result.data.launching[0]?.status).toBe('launching');
+      expect(result.data.launching[0]?.runDir).toBe(runDir);
+      expect(result.data.launching[0]?.responsePath).toBe(join(runDir, 'response.md'));
+      expect(result.data.launching[0]?.metaPath).toBe(join(runDir, 'metadata', 'meta.json'));
+      expect(result.data.launching[0]?.statePath).toBe(join(runDir, 'metadata', 'state.json'));
+      expect(result.data.launching[0]?.launchPath).toBe(join(runDir, 'metadata', 'launch.json'));
+      expect(result.data.launching[0]?.controllerPath).toBeNull();
+      expect(result.data.launching[0]?.startedAt).toEqual(expect.any(String));
+      expect(result.data.launching[0]?.heartbeatAt).toEqual(expect.any(String));
+      expect(result.data.launching[0]?.pid).toBe(process.pid);
+      expect(result.data.launching[0]?.pgid).toBe(process.pid);
       expect(result.data.staleLaunching).toHaveLength(0);
     });
 
@@ -2028,6 +2114,41 @@ describe('dispatch', () => {
         expect(result.message).toContain('init-config --force');
       }
     });
+
+    it('normalizes legacy Claude argv_content profiles to stdin transport', async () => {
+      const { resolveAgentConfig } = await import('@kb/dispatch-core');
+
+      const result = resolveAgentConfig({
+        version: 1,
+        agents: {
+          claude: {
+            base_argv: ['claude'],
+            noninteractive_argv: ['--print', '--output-format', 'text', '--no-session-persistence'],
+            instruction_transport: { kind: 'argv_content' },
+            wrapper_arg: ['{wrapper_content}'],
+            response_transport: { kind: 'stdout_capture' },
+            timeout_seconds: 1800,
+            read_only: {
+              supported: true,
+              argv_suffix: ['--permission-mode', 'default'],
+              response_writable: true,
+            },
+          },
+        },
+      }, 'claude', 'code_review');
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.data.instruction_transport).toEqual({ kind: 'stdin' });
+      expect(result.data.wrapper_arg).toBeUndefined();
+      expect(result.data.noninteractive_argv).toContain('--settings');
+      expect(result.data.env).toMatchObject({
+        CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1',
+        CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: '1',
+        CLAUDE_CODE_DISABLE_CRON: '1',
+        CLAUDE_CODE_SKIP_PROMPT_HISTORY: '1',
+      });
+    });
   });
 
   describe('dispatch-cli', () => {
@@ -2144,6 +2265,9 @@ describe('dispatch', () => {
           claude: {
             base_argv: string[];
             noninteractive_argv: string[];
+            instruction_transport: { kind: string };
+            wrapper_arg?: string[];
+            env?: Record<string, string>;
           };
           codex: {
             base_argv: string[];
@@ -2162,7 +2286,17 @@ describe('dispatch', () => {
         '--output-format',
         'text',
         '--no-session-persistence',
+        '--settings',
+        '{"disableAllHooks":true}',
       ]);
+      expect(registry.agents.claude.instruction_transport.kind).toBe('stdin');
+      expect(registry.agents.claude.wrapper_arg).toBeUndefined();
+      expect(registry.agents.claude.env).toEqual({
+        CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1',
+        CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: '1',
+        CLAUDE_CODE_DISABLE_CRON: '1',
+        CLAUDE_CODE_SKIP_PROMPT_HISTORY: '1',
+      });
       expect(registry.agents.codex.base_argv).toEqual(['codex', 'exec']);
       expect(registry.agents.codex.response_transport.kind).toBe('file');
       expect(registry.agents.codex.response_arg).toEqual(['-o', '{response_path}']);

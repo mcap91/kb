@@ -1,10 +1,11 @@
 import { readFile, readdir } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 
-import type { StatusResult, TokenInfo, DispatchToken } from './types.js';
+import type { ActiveLaunchInfo, StatusResult, TokenInfo, DispatchToken } from './types.js';
 import type { DispatchResult } from './errors.js';
 import { ok, fail } from './errors.js';
 import { getTokenDir, type TokenState } from './paths.js';
+import { readRunArtifacts } from './lookup.js';
 
 const ACTIVE_HEARTBEAT_GRACE_MS = 5 * 60 * 1000;
 
@@ -72,9 +73,24 @@ async function listTerminalRunReviewIds(repoRoot: string): Promise<Set<string>> 
   return reviewIds;
 }
 
-async function listActiveRunTokens(repoRoot: string): Promise<TokenInfo[]> {
+function extractActiveState(state: unknown): {
+  startedAt: string | null;
+  heartbeatAt: string | null;
+  pid: number | null;
+  pgid: number | null;
+} {
+  const s = state as Record<string, unknown> | null;
+  return {
+    startedAt: (s?.started_at as string) ?? null,
+    heartbeatAt: (s?.heartbeat_at as string) ?? null,
+    pid: typeof s?.pid === 'number' ? s.pid : null,
+    pgid: typeof s?.pgid === 'number' ? s.pgid : null,
+  };
+}
+
+async function listActiveRunTokens(repoRoot: string): Promise<ActiveLaunchInfo[]> {
   const runsDir = join(repoRoot, '.agent-runs', 'runs');
-  const activeRuns: TokenInfo[] = [];
+  const activeRuns: ActiveLaunchInfo[] = [];
 
   let handoffDirs: string[];
   try {
@@ -92,7 +108,8 @@ async function listActiveRunTokens(repoRoot: string): Promise<TokenInfo[]> {
     }
 
     for (const runId of runIds) {
-      const metadataDir = join(runsDir, handoffId, runId, 'metadata');
+      const runDir = join(runsDir, handoffId, runId);
+      const metadataDir = join(runDir, 'metadata');
       try {
         const stateRaw = await readFile(join(metadataDir, 'state.json'), 'utf-8');
         const state = JSON.parse(stateRaw) as {
@@ -129,11 +146,31 @@ async function listActiveRunTokens(repoRoot: string): Promise<TokenInfo[]> {
           continue;
         }
 
+        const artifacts = await readRunArtifacts(runDir, { includeMeta: true });
+        if (!artifacts.ok || artifacts.data.status !== 'launching') {
+          continue;
+        }
+
+        const stateInfo = extractActiveState(artifacts.data.state);
         activeRuns.push({
           reviewId,
-          handoffId: review.handoff_id ?? review.handoffId ?? handoffId,
-          agent: review.agent ?? 'unknown',
-          mode: review.mode ?? 'implement',
+          runId: artifacts.data.runId,
+          handoffId: artifacts.data.handoffId || review.handoff_id || review.handoffId || handoffId,
+          agent: artifacts.data.agent,
+          mode: artifacts.data.mode,
+          status: artifacts.data.status,
+          runDir: artifacts.data.runDir,
+          responsePath: artifacts.data.responsePath,
+          metaPath: artifacts.data.metaPath,
+          statePath: artifacts.data.statePath,
+          launchPath: artifacts.data.launchPath,
+          controllerPath: artifacts.data.controllerPath,
+          stdoutPath: artifacts.data.stdoutPath,
+          stderrPath: artifacts.data.stderrPath,
+          startedAt: stateInfo.startedAt,
+          heartbeatAt: stateInfo.heartbeatAt,
+          pid: stateInfo.pid,
+          pgid: stateInfo.pgid,
           expiry: review.expires_at ?? review.expiry ?? '',
         });
       } catch {

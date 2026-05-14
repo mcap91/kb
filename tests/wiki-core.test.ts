@@ -826,9 +826,9 @@ describe('archivePlan', () => {
     tmp?.cleanup();
   });
 
-  it('marks a PLN record archived without moving the bundle', async () => {
+  it('marks a PLN record done without moving the bundle', async () => {
     tmp = await createBootstrappedRepo();
-    await create({ dir: tmp.dir, prefix: 'PLN', title: 'Archive plan' });
+    await create({ dir: tmp.dir, prefix: 'PLN', title: 'Complete plan' });
 
     const result = await archivePlan({ dir: tmp.dir, plan: 'PLN-0001' });
 
@@ -836,12 +836,12 @@ describe('archivePlan', () => {
     if (result.ok) {
       expect(result.data.plan).toBe('PLN-0001');
       expect(result.data.path).toBe('wiki/plans/PLN-0001.md');
-      expect(result.data.archived).toBeTruthy();
+      expect(result.data.completed).toBeTruthy();
     }
 
     const record = readText(tmp.dir, 'wiki/plans/PLN-0001.md');
-    expect(record).toContain('status: "archived"');
-    expect(record).toContain('archived: "');
+    expect(record).toContain('status: "done"');
+    expect(record).toContain('completed: "');
     expect(record).toContain('updated: "');
     expect(fileExists(tmp.dir, 'wiki/plans/PLN-0001/bundle.json')).toBe(true);
     expect(fileExists(tmp.dir, 'wiki/plans/PLN-0001/design/spec.md')).toBe(true);
@@ -850,7 +850,7 @@ describe('archivePlan', () => {
 
   it('preserves completed and work_items fields', async () => {
     tmp = await createBootstrappedRepo();
-    await create({ dir: tmp.dir, prefix: 'PLN', title: 'Archive plan' });
+    await create({ dir: tmp.dir, prefix: 'PLN', title: 'Complete plan' });
 
     const recordPath = path.join(tmp.dir, 'wiki/plans/PLN-0001.md');
     const original = fs.readFileSync(recordPath, 'utf-8');

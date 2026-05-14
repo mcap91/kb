@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import {
   buildSpawnInvocation,
   resolveExecutableCommand,
+  shouldSpawnDetached,
 } from '../packages/dispatch-core/src/spawn.js';
 
 async function writeExecutableCommand(binDir: string, name: string): Promise<string> {
@@ -62,6 +63,11 @@ describe('dispatch spawn invocation', () => {
     });
   });
 
+  it('does not detach child processes on Windows', () => {
+    expect(shouldSpawnDetached('win32')).toBe(false);
+    expect(shouldSpawnDetached('linux')).toBe(true);
+  });
+
   it('resolves bare commands from PATH before spawning', async () => {
     const tempDir = await mkdtemp(join(tmpdir(), 'kb-spawn-resolution-'));
     try {
@@ -82,6 +88,27 @@ describe('dispatch spawn invocation', () => {
     } finally {
       await rm(tempDir, { recursive: true, force: true });
     }
+  });
+
+  it('prefers the direct Claude executable over Windows npm shims', async () => {
+    const result = await resolveExecutableCommand('claude', {
+      platform: 'win32',
+      env: {
+        PATH: 'C:\\.npm-global',
+        PATHEXT: '.COM;.EXE;.BAT;.CMD',
+      },
+      fallbackDirs: [],
+      isExecutable: async (candidate) => (
+        candidate.toLowerCase() === 'c:\\.npm-global\\claude' ||
+        candidate.toLowerCase() === 'c:\\.npm-global\\claude.cmd' ||
+        candidate.toLowerCase() === 'c:\\.npm-global\\node_modules\\@anthropic-ai\\claude-code\\bin\\claude.exe'
+      ),
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.command).toBe('C:\\.npm-global\\node_modules\\@anthropic-ai\\claude-code\\bin\\claude.exe');
+    expect(result.data.source).toBe('path');
   });
 
   it('resolves bare commands from fallback dirs when PATH is deficient', async () => {

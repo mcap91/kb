@@ -262,7 +262,6 @@
         "work_items",
         "started",
         "completed",
-        "archived",
         "superseded_by"
       ],
       "arrayFrontMatter": [
@@ -278,7 +277,6 @@
           "active",
           "paused",
           "done",
-          "archived",
           "cancelled",
           "superseded"
         ]

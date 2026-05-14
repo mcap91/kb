@@ -117,7 +117,7 @@ export const tools: ToolDef[] = [
   },
   {
     name: 'archive-plan',
-    description: 'Archive a PLN record without moving its bundle',
+    description: 'Mark a PLN record done without moving its bundle',
     inputSchema: dirSchema.extend({
       plan: z.string().describe('PLN record id'),
     }),

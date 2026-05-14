@@ -57,7 +57,6 @@ export type PlanStatus =
   | 'active'
   | 'paused'
   | 'done'
-  | 'archived'
   | 'cancelled'
   | 'superseded';
 
@@ -180,7 +179,6 @@ export interface PlanFrontmatter {
   work_items?: string[];
   started?: string;
   completed?: string;
-  archived?: string;
   superseded_by?: string;
 }
 
@@ -275,7 +273,7 @@ export interface ArchivePlanOpts {
 export interface ArchivePlanResult {
   plan: string;
   path: string;
-  archived: string;
+  completed: string;
 }
 
 // ---------------------------------------------------------------------------

@@ -1,5 +1,5 @@
 /**
- * Archive a PLN-* record without moving or deleting its companion bundle.
+ * Mark a PLN-* record done without moving or deleting its companion bundle.
  */
 
 import * as fs from 'node:fs';
@@ -135,7 +135,7 @@ function writeMarkdownRecord(recordPath: string, record: MarkdownRecord): Result
     );
     return ok(undefined);
   } catch (err) {
-    return fail('ARCHIVE_ERROR', `Failed to write archived plan: ${String(err)}`, err);
+    return fail('ARCHIVE_ERROR', `Failed to write completed plan: ${String(err)}`, err);
   }
 }
 
@@ -162,12 +162,15 @@ export async function archivePlan(
   if (record.frontmatter['id'] !== planId) {
     return fail(
       'INVALID_FIELD',
-      `Plan record id must be "${planId}" before archive`,
+      `Plan record id must be "${planId}" before completion`,
     );
   }
 
-  record.frontmatter['status'] = 'archived';
-  record.frontmatter['archived'] = timestamp;
+  record.frontmatter['status'] = 'done';
+  if (!record.frontmatter['completed']) {
+    record.frontmatter['completed'] = timestamp;
+  }
+  delete record.frontmatter['archived'];
   record.frontmatter['updated'] = timestamp;
 
   const writeResult = writeMarkdownRecord(recordPath, record);
@@ -176,6 +179,6 @@ export async function archivePlan(
   return ok({
     plan: planId,
     path: path.relative(targetDir, recordPath).replace(/\\/g, '/'),
-    archived: timestamp,
+    completed: String(record.frontmatter['completed']),
   });
 }
