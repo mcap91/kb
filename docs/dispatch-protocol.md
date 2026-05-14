@@ -261,6 +261,18 @@ Launch constructs a filtered environment for the agent process. Only these categ
 
 If the agent starts successfully but produces no response body, the launch is considered failed closed. The launcher writes a diagnostic `response.md`, records terminal run status as `failed`, and returns `EMPTY_RESPONSE`. The token remains `consumed/` because child start was already confirmed.
 
+## Status
+
+The status operation (`dispatch-core/src/status.ts`) reports operator token counts and repo-local
+run counts. Active launches are derived from `.agent-runs/runs/**/metadata/state.json`, not from
+token directories alone, so a consumed token with a live child process still appears as active.
+
+Each active launch entry includes the review ID, run ID, handoff ID, agent, mode, `status`, run
+directory, response path, metadata paths, controller path when present, stdout/stderr paths,
+heartbeat timestamps, and recorded process IDs. This lets MCP callers poll `status` and decide
+whether to wait, retrieve partial artifacts, or launch follow-up work without scanning run
+directories themselves.
+
 ## Cleanup
 
 The cleanup operation (`dispatch-core/src/cleanup.ts`) removes stale dispatch artifacts.
@@ -334,6 +346,10 @@ dispatch resolves bare commands using PATH and safe platform fallback directorie
 POSIX command directories, before calling `spawn` without `shell: true`. Absolute and relative
 path commands, such as the generated `fake-agent` entry, are used as written.
 
+The registry is the model boundary. Handoffs cannot choose a model, command, working directory, or
+permission profile; those remain operator-owned registry decisions. This keeps HOs portable across
+Claude, Codex, local model wrappers, and fake agents.
+
 ### Default Agents
 
 `init-config` writes a default registry with three agents:
@@ -343,6 +359,30 @@ path commands, such as the generated `fake-agent` entry, are used as written.
 | `claude` | `claude` with wrapper-content argv transport and stdout capture | Claude Code CLI adapter |
 | `codex` | `codex exec` with wrapper-content argv transport and `-o {response_path}` | Codex CLI adapter |
 | `fake-agent` | Absolute `tsx` binary plus absolute `tests/fixtures/fake-agent.ts` path in the `kb` checkout | Deterministic test agent for dogfooding and sister-repo validation |
+
+### Claude Billing Constraint
+
+The default `claude` profile uses Claude Code print mode: `claude --print --output-format text
+--no-session-persistence`. Anthropic has announced that, starting June 15, 2026, Claude Code
+`--print` / `-p` and Agent SDK usage on Max plans draws from separate Agent SDK credits instead of
+normal interactive Claude usage.
+
+`kb` does not require that separate billing path. If an operator does not want Agent SDK/API billing,
+use Claude interactively as the parent/operator with kb MCP tools, or have Claude read and answer HOs
+manually. Dispatch-launched Claude remains an optional operator-owned registry profile, not a required
+route.
+
+### Local Model Agents
+
+Local models fit the same registry contract when they are wrapped as agent processes. A raw model CLI
+such as Ollama/Qwen is not enough by itself unless it can read the reviewed bundle and write the
+launcher-owned response. A local wrapper should:
+
+- read `AGENT_BLACKBOARD_HANDOFF_PATH`
+- read files from `AGENT_BLACKBOARD_CONTEXT_DIR` when needed
+- call the local model runtime
+- write the final answer to `AGENT_BLACKBOARD_RESPONSE_PATH`
+- exit non-zero on runtime failure
 
 ### Adding an Agent
 

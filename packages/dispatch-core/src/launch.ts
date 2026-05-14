@@ -24,7 +24,7 @@ import { fail, ok } from './errors.js';
 import { readTokenFile, verifyToken, moveToken } from './token.js';
 import { getReviewDir, getRunDir } from './paths.js';
 import { loadRegistry, resolveAgentConfig } from './registry.js';
-import { buildSpawnInvocation, resolveExecutableCommand } from './spawn.js';
+import { buildSpawnInvocation, resolveExecutableCommand, shouldSpawnDetached } from './spawn.js';
 
 const ENV_ALLOWLIST_POSIX = [
   'HOME',
@@ -782,7 +782,7 @@ export async function launch(opts: LaunchOpts): Promise<DispatchResult<RunResult
     child = spawn(spawnInvocation.command, spawnInvocation.args, {
       cwd: agentVisibleDir,
       env,
-      detached: true,
+      detached: shouldSpawnDetached(),
       stdio: [
         agentConfig.instruction_transport.kind === 'stdin' ? 'pipe' : 'ignore',
         'pipe',

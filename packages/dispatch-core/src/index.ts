@@ -28,6 +28,7 @@ export type {
   CleanupReport,
   StatusResult,
   TokenInfo,
+  ActiveLaunchInfo,
 } from './types.js';
 
 // Background launch types

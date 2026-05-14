@@ -369,7 +369,7 @@ export async function cmdArchivePlan(args: string[]): Promise<void> {
     return;
   }
 
-  console.log(`Archived plan: ${result.data.plan}`);
+  console.log(`Completed plan: ${result.data.plan}`);
   console.log(`Path:          ${result.data.path}`);
-  console.log(`Archived:      ${result.data.archived}`);
+  console.log(`Completed:     ${result.data.completed}`);
 }

@@ -274,10 +274,32 @@ export interface TokenInfo {
   expiry: string;
 }
 
+export interface ActiveLaunchInfo {
+  reviewId: string;
+  runId: string;
+  handoffId: string;
+  agent: string;
+  mode: string;
+  status: string;
+  runDir: string;
+  responsePath: string;
+  metaPath: string;
+  statePath: string;
+  launchPath: string;
+  controllerPath: string | null;
+  stdoutPath: string | null;
+  stderrPath: string | null;
+  startedAt: string | null;
+  heartbeatAt: string | null;
+  pid: number | null;
+  pgid: number | null;
+  expiry: string;
+}
+
 export interface StatusResult {
   repoRoot: string;
   pending: TokenInfo[];
-  launching: TokenInfo[];
+  launching: ActiveLaunchInfo[];
   staleLaunching: TokenInfo[];
   consumed: TokenInfo[];
   rejected: TokenInfo[];

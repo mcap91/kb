@@ -243,6 +243,34 @@ npm run dispatch -- review-and-launch --dir ../my-project --handoff wiki/handoff
 
 If Codex is running on a Linux VM where sandbox startup fails with a `bwrap` / bubblewrap namespace error, treat that as a host problem. The supported path is to use Claude on that host or run Codex on a different host. `kb` does not ship a weaker-permission fallback profile by default.
 
+### Consultation Handoffs
+
+Use the existing handoff schema for advice or design review:
+
+- `mode: code_review`
+- `write_scope: []`
+- put questions and decision context in `## Objective` and `## Context`
+- ask for short answers, rationale, risks, and recommended plan adjustments in `## Expected Output`
+
+Do not add a separate `consult` mode. HOs are route-neutral packets: they can be read manually,
+reviewed into immutable bundles, or launched through dispatch when the selected agent supports that
+route.
+
+### Claude After June 15, 2026
+
+The default dispatch `claude` profile uses Claude Code print mode. Anthropic has announced that,
+starting June 15, 2026, Claude Code `--print` / `-p` and Agent SDK usage on Max plans draws from
+separate Agent SDK credits instead of normal interactive Claude usage.
+
+If you do not want a separate Anthropic API or Agent SDK billing path, do not rely on dispatch-launched
+Claude automation. Use Claude interactively as the parent/operator with kb MCP tools, or have Claude
+read and answer HOs manually. For dispatch-launched automation, use Codex, fake-agent, or a local-agent
+registry profile.
+
+Local models such as Qwen/Ollama should be exposed through a thin local agent wrapper, not by putting a
+model name in the HO. The wrapper should read `AGENT_BLACKBOARD_HANDOFF_PATH`, read context from
+`AGENT_BLACKBOARD_CONTEXT_DIR`, call the local model, and write `AGENT_BLACKBOARD_RESPONSE_PATH`.
+
 ### Status and Cleanup
 
 Check dispatch state:
@@ -250,6 +278,10 @@ Check dispatch state:
 ```
 npm run dispatch -- status --dir ../my-project
 ```
+
+For MCP callers, `status` returns active launches with `reviewId`, `runId`, run directory, response
+path, metadata paths, heartbeat timestamps, and process IDs. Use that output to decide whether to
+call `wait-for-run`, retrieve partial artifacts with `get-response`, or continue other work.
 
 Clean up stale state (orphan reviews, expired tokens):
 
@@ -318,6 +350,22 @@ Dispatch MCP exposes:
 - `review-and-launch`
 - `status`
 - `cleanup`
+- `wait-for-run`
+- `get-response`
+
+For MCP callers, `launch` and `review-and-launch` default to background mode: the tool returns after
+the child agent has started and run artifacts exist. Use `wait-for-run` to short-poll or wait for
+terminal status, then `get-response` to retrieve `response.md`, metadata, state, and logs. Pass
+`background: false` only when a blocking launch is desired.
+
+Typical MCP dispatch workflow:
+
+1. Create or reuse a `wiki/handoffs/HO-*.md`.
+2. Review it with the selected registry agent.
+3. Launch it through MCP; background mode returns `reviewId`, `runId`, and artifact paths.
+4. Call `wait-for-run` with a short timeout while the parent agent keeps working.
+5. Call `get-response` by `reviewId` or `runId`.
+6. Inspect the answer, incorporate it, or create a follow-up HO.
 
 Each wiki or dispatch tool call accepts a `dir` parameter to target a consuming repo.
 

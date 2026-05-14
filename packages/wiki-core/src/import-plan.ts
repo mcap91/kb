@@ -285,7 +285,7 @@ function updatePlanRecord(
   }
 
   const currentStatus = record.frontmatter['status'];
-  const preserveStatuses = new Set(['active', 'done', 'archived']);
+  const preserveStatuses = new Set(['active', 'done']);
   if (typeof currentStatus !== 'string' || !preserveStatuses.has(currentStatus)) {
     record.frontmatter['status'] = 'packaged';
   }

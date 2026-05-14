@@ -56,7 +56,6 @@ export const planStatusSchema = z.enum([
   'active',
   'paused',
   'done',
-  'archived',
   'cancelled',
   'superseded',
 ]);
@@ -176,7 +175,6 @@ export const planFrontmatterSchema = z.object({
   work_items: z.array(z.string()).optional(),
   started: z.string().optional(),
   completed: z.string().optional(),
-  archived: z.string().optional(),
   superseded_by: z.string().optional(),
 });
 

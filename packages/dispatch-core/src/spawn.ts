@@ -11,6 +11,10 @@ export type SpawnInvocation = {
   shell: boolean;
 };
 
+export function shouldSpawnDetached(platform: NodeJS.Platform = process.platform): boolean {
+  return platform !== 'win32';
+}
+
 export type ResolvedExecutableCommand = {
   originalCommand: string;
   command: string;
@@ -154,8 +158,10 @@ function getCandidateNames(
   }
 
   return unique([
-    command,
     ...getPathExtensions(env, platform).map((ext) => `${command}${ext}`),
+    // Windows npm installs can leave extensionless POSIX shims next to .cmd shims.
+    // Prefer PATHEXT candidates because those are what can be spawned safely here.
+    command,
   ], platform);
 }
 
@@ -166,6 +172,27 @@ async function defaultIsExecutable(candidate: string, platform: NodeJS.Platform)
   } catch {
     return false;
   }
+}
+
+async function maybeResolveWindowsClaudeExe(
+  command: string,
+  candidate: string,
+  isExecutable: (path: string, platform: NodeJS.Platform) => Promise<boolean>,
+): Promise<string> {
+  if (command.toLowerCase() !== 'claude' || !/\\claude\.cmd$/i.test(candidate)) {
+    return candidate;
+  }
+
+  const claudeExe = win32.join(
+    win32.dirname(candidate),
+    'node_modules',
+    '@anthropic-ai',
+    'claude-code',
+    'bin',
+    'claude.exe',
+  );
+
+  return await isExecutable(claudeExe, 'win32') ? claudeExe : candidate;
 }
 
 function formatPathDiagnostic(
@@ -207,9 +234,12 @@ export async function resolveExecutableCommand(
       const candidate = pathApi.resolve(dir, candidateName);
       searchedCandidates.push(candidate);
       if (await isExecutable(candidate, platform)) {
+        const resolvedCandidate = platform === 'win32'
+          ? await maybeResolveWindowsClaudeExe(command, candidate, isExecutable)
+          : candidate;
         return ok({
           originalCommand: command,
-          command: candidate,
+          command: resolvedCandidate,
           source: pathEntries.includes(dir) ? 'path' : 'fallback',
           pathEntries,
           fallbackDirs,

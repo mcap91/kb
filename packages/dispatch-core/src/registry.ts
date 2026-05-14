@@ -13,6 +13,13 @@ import { generateKey } from './token.js';
 const REGISTRY_FILE = 'launchers.v1.json';
 const THIS_DIR = dirname(fileURLToPath(import.meta.url));
 const KB_ROOT = resolve(THIS_DIR, '..', '..', '..');
+const CLAUDE_DISPATCH_SETTINGS_JSON = '{"disableAllHooks":true}';
+const CLAUDE_DISPATCH_ENV: Record<string, string> = {
+  CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1',
+  CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: '1',
+  CLAUDE_CODE_DISABLE_CRON: '1',
+  CLAUDE_CODE_SKIP_PROMPT_HISTORY: '1',
+};
 
 function hashText(text: string): string {
   return createHash('sha256').update(text).digest('hex');
@@ -58,9 +65,15 @@ export function createDefaultRegistry(): AgentRegistry {
     agents: {
       claude: {
         base_argv: ['claude'],
-        noninteractive_argv: ['--print', '--output-format', 'text', '--no-session-persistence'],
-        instruction_transport: { kind: 'argv_content' },
-        wrapper_arg: ['{wrapper_content}'],
+        noninteractive_argv: [
+          '--print',
+          '--output-format',
+          'text',
+          '--no-session-persistence',
+          '--settings',
+          CLAUDE_DISPATCH_SETTINGS_JSON,
+        ],
+        instruction_transport: { kind: 'stdin' },
         response_transport: { kind: 'stdout_capture' },
         timeout_seconds: 1800,
         read_only: {
@@ -74,6 +87,7 @@ export function createDefaultRegistry(): AgentRegistry {
           response_writable: true,
         },
         description: 'Claude Code CLI adapter',
+        env: CLAUDE_DISPATCH_ENV,
       },
       codex: {
         base_argv: ['codex', 'exec'],
@@ -189,7 +203,21 @@ export function resolveAgentConfig(
   agentName: string,
   mode: HandoffMode,
 ): DispatchResult<AgentLauncherConfig> {
-  const agent = registry.agents[agentName];
+  const rawAgent = registry.agents[agentName];
+  const agent = rawAgent && agentName === 'claude'
+    ? {
+      ...rawAgent,
+      noninteractive_argv: rawAgent.noninteractive_argv.includes('--settings')
+        ? [...rawAgent.noninteractive_argv]
+        : [...rawAgent.noninteractive_argv, '--settings', CLAUDE_DISPATCH_SETTINGS_JSON],
+      instruction_transport: { kind: 'stdin' as const },
+      wrapper_arg: undefined,
+      env: {
+        ...CLAUDE_DISPATCH_ENV,
+        ...rawAgent.env,
+      },
+    }
+    : rawAgent;
   if (!agent) {
     return fail('INVALID_AGENT', `Unknown agent in registry: ${agentName}`);
   }

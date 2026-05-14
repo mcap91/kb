@@ -55,7 +55,7 @@ Commands:
   search               Search wiki records and docs
   import-plan          Import artifacts into a PLN bundle
   validate-plan        Validate a PLN record and bundle
-  archive-plan         Archive a PLN record
+  archive-plan         Mark a PLN record done
 
 Global options:
   --help               Show this help text
