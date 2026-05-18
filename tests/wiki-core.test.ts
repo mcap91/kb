@@ -1117,6 +1117,17 @@ describe('generate', () => {
     }
   });
 
+  it('generates file-relative links in view files', async () => {
+    tmp = await createBootstrappedRepo();
+    await create({ dir: tmp.dir, prefix: 'WK', title: 'Test item' });
+
+    await generate({ dir: tmp.dir });
+
+    const catalog = readText(tmp.dir, 'wiki/catalog.md');
+    expect(catalog).toContain('[WK-0001](issues/WK-0001.md)');
+    expect(catalog).not.toContain('[WK-0001](wiki/issues/WK-0001.md)');
+  });
+
   it('excludes wiki/handoffs/ content', async () => {
     tmp = await createBootstrappedRepo();
 
