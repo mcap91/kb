@@ -132,6 +132,7 @@ function listMarkdownFiles(dirPath: string): string[] {
  */
 function collectRecords(
   targetDir: string,
+  wikiDir: string,
   manifest: { types: Record<string, ManifestRecordType> },
 ): RecordEntry[] {
   const entries: RecordEntry[] = [];
@@ -160,7 +161,7 @@ function collectRecords(
       const status = typeof fm['status'] === 'string' ? fm['status'] : '';
       const priority = typeof fm['priority'] === 'string' ? fm['priority'] : undefined;
       const prefix = typeDef.prefix || typeKey.toUpperCase();
-      const relPath = path.relative(targetDir, absPath).replace(/\\/g, '/');
+      const relPath = path.relative(wikiDir, absPath).replace(/\\/g, '/');
 
       entries.push({
         id,
@@ -356,7 +357,7 @@ export async function generate(
   const manifest = manifestResult.data;
 
   // 2. Collect all manifest-driven records
-  const records = collectRecords(targetDir, manifest);
+  const records = collectRecords(targetDir, wikiDir, manifest);
   const workTrackingRecords = records.filter(r => r.prefix !== 'PLN');
   debug(`generate: collected ${records.length} records`);
 
