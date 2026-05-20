@@ -176,8 +176,7 @@ async function writeRegistry(configDir: string, fakeAgentPath: string, registry?
       codex: {
         base_argv: ['codex', 'exec'],
         noninteractive_argv: [],
-        instruction_transport: { kind: 'argv_content' },
-        wrapper_arg: ['{wrapper_content}'],
+        instruction_transport: { kind: 'stdin' },
         response_transport: { kind: 'file' },
         response_arg: ['-o', '{response_path}'],
         timeout_seconds: 1800,
@@ -2149,6 +2148,36 @@ describe('dispatch', () => {
         CLAUDE_CODE_SKIP_PROMPT_HISTORY: '1',
       });
     });
+
+    it('normalizes legacy Codex argv_content profiles to stdin transport', async () => {
+      const { resolveAgentConfig } = await import('@kb/dispatch-core');
+
+      const result = resolveAgentConfig({
+        version: 1,
+        agents: {
+          codex: {
+            base_argv: ['codex', 'exec'],
+            noninteractive_argv: [],
+            instruction_transport: { kind: 'argv_content' },
+            wrapper_arg: ['{wrapper_content}'],
+            response_transport: { kind: 'file' },
+            response_arg: ['-o', '{response_path}'],
+            timeout_seconds: 1800,
+            read_only: {
+              supported: true,
+              argv_suffix: ['--sandbox', 'read-only'],
+              response_writable: true,
+            },
+          },
+        },
+      }, 'codex', 'code_review');
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.data.instruction_transport).toEqual({ kind: 'stdin' });
+      expect(result.data.wrapper_arg).toBeUndefined();
+      expect(result.data.response_arg).toEqual(['-o', '{response_path}']);
+    });
   });
 
   describe('dispatch-cli', () => {
@@ -2271,6 +2300,9 @@ describe('dispatch', () => {
           };
           codex: {
             base_argv: string[];
+            noninteractive_argv: string[];
+            instruction_transport: { kind: string };
+            wrapper_arg?: string[];
             response_transport: { kind: string };
             response_arg: string[];
           };
@@ -2298,6 +2330,9 @@ describe('dispatch', () => {
         CLAUDE_CODE_SKIP_PROMPT_HISTORY: '1',
       });
       expect(registry.agents.codex.base_argv).toEqual(['codex', 'exec']);
+      expect(registry.agents.codex.noninteractive_argv).toEqual([]);
+      expect(registry.agents.codex.instruction_transport.kind).toBe('stdin');
+      expect(registry.agents.codex.wrapper_arg).toBeUndefined();
       expect(registry.agents.codex.response_transport.kind).toBe('file');
       expect(registry.agents.codex.response_arg).toEqual(['-o', '{response_path}']);
       expect(Object.hasOwn(registry.agents, 'codex-danger-full-access')).toBe(false);

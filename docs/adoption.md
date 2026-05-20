@@ -241,6 +241,17 @@ For a single-step operator flow, use:
 npm run dispatch -- review-and-launch --dir ../my-project --handoff wiki/handoffs/HO-0001.md --agent codex --reviewed-and-accept-risks
 ```
 
+The generated default `claude` and `codex` launcher entries are configured for non-interactive
+child runs against the reviewed bundle. The launched child does not need `kb` MCP tools for the
+core workflow. The interactive parent/operator uses `kb-dispatch` MCP tools such as `status`,
+`wait-for-run`, and `get-response` to monitor the child run and retrieve its artifacts.
+
+Current defaults stream the reviewed wrapper over stdin for both Claude and Codex. Codex writes its
+last message to the launcher-owned response file via `-o {response_path}`.
+
+`read_only.argv_suffix` is a separate restriction layer used only for `mode: redteam`. It
+constrains the launched child run; it does not turn the child into a headless MCP client.
+
 If Codex is running on a Linux VM where sandbox startup fails with a `bwrap` / bubblewrap namespace error, treat that as a host problem. The supported path is to use Claude on that host or run Codex on a different host. `kb` does not ship a weaker-permission fallback profile by default.
 
 ### Consultation Handoffs
