@@ -60,6 +60,15 @@ export function getTokenDir(state: TokenState): string {
   return join(getConfigDir(), state);
 }
 
+/**
+ * Resolve the operator-owned host capabilities record path.
+ *
+ * Path: `<configDir>/host-capabilities.v1.json`
+ */
+export function getHostCapabilitiesPath(): string {
+  return join(getConfigDir(), 'host-capabilities.v1.json');
+}
+
 // ---------------------------------------------------------------------------
 // Repo runtime directories
 // ---------------------------------------------------------------------------

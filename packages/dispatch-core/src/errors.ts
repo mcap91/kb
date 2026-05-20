@@ -26,6 +26,7 @@ export type DispatchErrorCode =
   | 'FILE_WRITE_ERROR'
   | 'RUN_NOT_FOUND'
   | 'LOOKUP_FAILED'
+  | 'ENVIRONMENT_UNSUPPORTED'
   | 'BACKGROUND_LAUNCH_FAILED'
   | 'WAIT_TIMEOUT';
 

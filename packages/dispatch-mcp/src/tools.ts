@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import {
+  checkEnvironment,
   cleanup,
   createHandoff,
   getResponse,
@@ -46,6 +47,12 @@ export const tools: ToolDef[] = [
       force: z.boolean().optional(),
     }),
     handler: async (input) => initConfig(Boolean(input.force)),
+  },
+  {
+    name: 'check-environment',
+    description: 'Probe host sandbox capabilities and persist the operator-owned capability record',
+    inputSchema: z.object({}),
+    handler: async () => checkEnvironment(),
   },
   {
     name: 'create-handoff',

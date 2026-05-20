@@ -204,6 +204,10 @@ Fill in or refine:
 - `## Expected Output`
 - `## Context`
 
+`write_scope` may contain file paths or directory paths. During review, dispatch normalizes those
+into reviewed access directories. For Claude non-redteam launches, those directories become
+`--add-dir` grants. This is directory-granularity access, not per-file enforcement.
+
 ### Review and Launch
 
 Review the handoff (operator must explicitly acknowledge):
@@ -213,6 +217,16 @@ npm run dispatch -- review --dir ../my-project --handoff wiki/handoffs/HO-0001.m
 ```
 
 Review validates the handoff, creates an immutable reviewed bundle, and issues a pending token. The output includes a review ID (`RV-<uuid>`).
+
+If you want an explicit host probe before launch, run:
+
+```
+npm run dispatch -- check-environment
+```
+
+This writes an operator-owned `host-capabilities.v1.json` record next to the dispatch registry.
+Launch also refreshes that record automatically when it is missing or stale for the current
+registry hash.
 
 Reviewed bundle layout:
 
@@ -252,7 +266,10 @@ last message to the launcher-owned response file via `-o {response_path}`.
 `read_only.argv_suffix` is a separate restriction layer used only for `mode: redteam`. It
 constrains the launched child run; it does not turn the child into a headless MCP client.
 
-If Codex is running on a Linux VM where sandbox startup fails with a `bwrap` / bubblewrap namespace error, treat that as a host problem. The supported path is to use Claude on that host or run Codex on a different host. `kb` does not ship a weaker-permission fallback profile by default.
+If a Linux VM or nested container cannot satisfy the required bubblewrap capability, treat that as a
+host problem. Do not assume "use Claude on that host" automatically. Run `check-environment` and
+only use Claude there when the capability record says Claude's required sandbox features are
+supported. `kb` does not ship a weaker-permission fallback profile by default.
 
 ### Consultation Handoffs
 
@@ -265,7 +282,8 @@ Use the existing handoff schema for advice or design review:
 
 Do not add a separate `consult` mode. HOs are route-neutral packets: they can be read manually,
 reviewed into immutable bundles, or launched through dispatch when the selected agent supports that
-route.
+route. With `write_scope: []`, a launched child should be expected to work from the reviewed bundle
+only, not from broad live-repo access.
 
 ### Claude After June 15, 2026
 
@@ -355,6 +373,7 @@ Wiki MCP exposes:
 Dispatch MCP exposes:
 
 - `init-config`
+- `check-environment`
 - `create-handoff`
 - `review`
 - `launch`

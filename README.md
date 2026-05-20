@@ -12,7 +12,7 @@ Use this model:
 
 - Run the **wiki MCP server** and, when needed, the **dispatch MCP server** from the `kb` repo.
 - Use **MCP for wiki operations**: `bootstrap`, `sync-contract`, `allocate-id`, `create`, `lint`, `generate`, `build-search-index`, `search`.
-- Use **MCP or CLI for dispatch operations**: `init-config`, `create-handoff`, `review`, `launch`, `review-and-launch`, `status`, `cleanup`.
+- Use **MCP or CLI for dispatch operations**: `init-config`, `check-environment`, `create-handoff`, `review`, `launch`, `review-and-launch`, `status`, `cleanup`.
 - Use the **CLI from the `kb` repo** for `graph`.
 - Always target the consuming repo explicitly with `dir`.
 
@@ -439,6 +439,9 @@ Run from the `kb` repo:
 # initialize operator config
 npm run dispatch -- init-config
 
+# probe and persist host sandbox capabilities
+npm run dispatch -- check-environment
+
 # create a durable handoff in the consuming repo
 npm run dispatch -- create-handoff --dir ../my-project --title "Fix auth regression" --subject "Authentication" --allowed-agents codex,claude --mode implement --work-item WK-0001 --write-scope src/auth.ts,tests/auth.test.ts --read-first AGENTS.md,wiki/issues/WK-0001.md
 
@@ -459,7 +462,9 @@ Notes:
 - `dispatch create-handoff` writes durable files under `wiki/handoffs/`
 - `review` snapshots inputs under `.agent-runs/reviews/RV-.../agent-visible/` and `.agent-runs/reviews/RV-.../metadata/`
 - `launch` runs the agent from the reviewed `agent-visible/` bundle, not the live repo root
-- if Codex sandboxing is broken on a host, the supported path is Claude on that host or Codex on a different host, not weaker Codex permissions
+- `dispatch check-environment` writes `host-capabilities.v1.json` in the operator config and launch consults it automatically
+- Claude non-redteam launches honor reviewed `write_scope` by deriving directory-granularity `--add-dir` access; they do not receive blanket repo-root access unless the reviewed scope requires it
+- if a host cannot satisfy the required sandbox capability, fix the host or use a different host rather than weakening permissions
 
 ### Graph
 
@@ -555,6 +560,7 @@ When you need dispatch operations, prefer the `kb` dispatch MCP server or the `k
 Dispatch operations:
 
 - `init-config`
+- `check-environment`
 - `create-handoff`
 - `review`
 - `launch`

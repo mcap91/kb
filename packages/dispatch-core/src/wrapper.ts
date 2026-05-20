@@ -1,4 +1,5 @@
 import type {
+  CheckEnvironmentResult,
   CleanupOpts,
   CleanupReport,
   CreateHandoffOpts,
@@ -18,6 +19,7 @@ import { review } from './review.js';
 import { launch } from './launch.js';
 import { cleanup } from './cleanup.js';
 import { status } from './status.js';
+import { checkEnvironment } from './environment.js';
 import {
   launchBackground as launchBg,
   reviewAndLaunchBackground as reviewAndLaunchBg,
@@ -57,6 +59,10 @@ export async function createHandoffRecord(
  */
 export async function initializeDispatchConfig(force = false): Promise<DispatchResult<InitConfigResult>> {
   return initConfig(force);
+}
+
+export async function checkDispatchEnvironment(): Promise<DispatchResult<CheckEnvironmentResult>> {
+  return checkEnvironment();
 }
 
 /**

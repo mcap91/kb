@@ -127,6 +127,7 @@ describe('MCP smoke tests', () => {
     const { tools } = await import('@kb/dispatch-mcp');
     expect(tools).toBeInstanceOf(Array);
     const names = tools.map((t: { name: string }) => t.name);
+    expect(names).toContain('check-environment');
     expect(names).toContain('create-handoff');
     expect(names).toContain('review');
     expect(names).toContain('launch');
@@ -135,6 +136,6 @@ describe('MCP smoke tests', () => {
     expect(names).toContain('cleanup');
     expect(names).toContain('wait-for-run');
     expect(names).toContain('get-response');
-    expect(names).toHaveLength(9);
+    expect(names).toHaveLength(10);
   });
 });

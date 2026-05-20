@@ -1,9 +1,9 @@
 import { readFile, stat, realpath } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
-import { isAbsolute, normalize, relative, resolve } from 'node:path';
+import { dirname, isAbsolute, normalize, relative, resolve } from 'node:path';
 
 import { handoffFrontmatterSchema } from './schemas.js';
-import type { HandoffFrontmatter } from './types.js';
+import type { HandoffFrontmatter, ReviewedWriteScope, ReviewedWriteScopeEntry } from './types.js';
 import type { DispatchResult } from './errors.js';
 import { fail, ok } from './errors.js';
 
@@ -206,6 +206,114 @@ export function assertPathInside(repoRoot: string, targetPath: string, message: 
     return ok(true);
   }
   return fail('INVALID_HANDOFF', message);
+}
+
+async function nearestExistingDirectory(path: string): Promise<string | null> {
+  let current = path;
+  while (true) {
+    try {
+      const canonical = await canonicalizePath(current);
+      const currentStat = await stat(canonical);
+      if (currentStat.isDirectory()) {
+        return canonical;
+      }
+    } catch {
+      // keep walking upward until we find an existing directory
+    }
+
+    const parent = dirname(current);
+    if (parent === current) {
+      return null;
+    }
+    current = parent;
+  }
+}
+
+export async function reviewWriteScope(
+  repoRoot: string,
+  writeScope: string[] | undefined,
+): Promise<DispatchResult<ReviewedWriteScope>> {
+  const declaredPaths = writeScope ?? [];
+  const entries: ReviewedWriteScopeEntry[] = [];
+
+  for (const declaredPath of declaredPaths) {
+    if (isAbsolute(declaredPath)) {
+      return fail('INVALID_HANDOFF', `write_scope path must be relative: ${declaredPath}`);
+    }
+
+    const normalized = normalize(declaredPath);
+    if (normalized.startsWith('..')) {
+      return fail('INVALID_HANDOFF', `write_scope path escapes repo root: ${declaredPath}`);
+    }
+
+    const candidatePath = resolve(repoRoot, declaredPath);
+    const insideCandidate = assertPathInside(repoRoot, candidatePath, `write_scope path escapes repo root: ${declaredPath}`);
+    if (!insideCandidate.ok) {
+      return insideCandidate;
+    }
+
+    const canonicalPath = await canonicalizePath(candidatePath).catch(() => null);
+    if (canonicalPath) {
+      const insideCanonical = assertPathInside(repoRoot, canonicalPath, `write_scope path escapes repo root: ${declaredPath}`);
+      if (!insideCanonical.ok) {
+        return insideCanonical;
+      }
+
+      const candidateStat = await stat(canonicalPath);
+      if (candidateStat.isDirectory()) {
+        entries.push({
+          declared_path: declaredPath,
+          resolved_path: canonicalPath,
+          path_kind: 'directory',
+          access_directory: canonicalPath,
+          access_source: 'self',
+        });
+      } else {
+        entries.push({
+          declared_path: declaredPath,
+          resolved_path: canonicalPath,
+          path_kind: 'file',
+          access_directory: dirname(canonicalPath),
+          access_source: 'parent',
+        });
+      }
+      continue;
+    }
+
+    const existingAncestor = await nearestExistingDirectory(dirname(candidatePath));
+    if (!existingAncestor) {
+      return fail('INVALID_HANDOFF', `write_scope path does not have an accessible parent directory: ${declaredPath}`);
+    }
+
+    const insideAncestor = assertPathInside(repoRoot, existingAncestor, `write_scope path escapes repo root: ${declaredPath}`);
+    if (!insideAncestor.ok) {
+      return insideAncestor;
+    }
+
+    entries.push({
+      declared_path: declaredPath,
+      resolved_path: candidatePath,
+      path_kind: 'missing',
+      access_directory: existingAncestor,
+      access_source: 'nearest_existing_ancestor',
+    });
+  }
+
+  const sortedDirectories = [...new Set(entries.map((entry) => entry.access_directory))]
+    .sort((a, b) => a.localeCompare(b));
+  const accessDirectories = sortedDirectories.filter((candidate) => !sortedDirectories.some((other) => {
+    if (other === candidate) {
+      return false;
+    }
+    const relativeHint = relative(other, candidate);
+    return relativeHint !== '' && !relativeHint.startsWith('..') && !isAbsolute(relativeHint);
+  }));
+
+  return ok({
+    declared_paths: declaredPaths,
+    entries,
+    access_directories: accessDirectories,
+  });
 }
 
 export async function loadHandoff(

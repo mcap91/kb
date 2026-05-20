@@ -9,6 +9,14 @@ export type {
   HandoffMode,
   HandoffStatus,
   HandoffFrontmatter,
+  ReviewedWriteScopePathKind,
+  ReviewedWriteScopeAccessSource,
+  ReviewedWriteScopeEntry,
+  ReviewedWriteScope,
+  EnvironmentCapabilityStatus,
+  EnvironmentCapability,
+  HostCapabilitiesRecord,
+  CheckEnvironmentResult,
   AgentInstructionTransport,
   AgentResponseTransport,
   AgentReadOnlyConfig,
@@ -64,6 +72,7 @@ export type { TokenState } from './paths.js';
 export {
   getConfigDir,
   getTokenDir,
+  getHostCapabilitiesPath,
   getReviewDir,
   getRunDir,
   ensureConfigDirs,
@@ -85,6 +94,9 @@ export { review } from './review.js';
 
 // Launch
 export { launch } from './launch.js';
+
+// Environment
+export { checkEnvironment } from './environment.js';
 
 // Cleanup
 export { cleanup } from './cleanup.js';
@@ -121,6 +133,7 @@ export { launchBackground, reviewAndLaunchBackground } from './launch-background
 export {
   createHandoffRecord,
   initializeDispatchConfig,
+  checkDispatchEnvironment,
   reviewHandoff,
   launchReview,
   cleanupState,

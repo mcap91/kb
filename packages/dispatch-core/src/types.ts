@@ -32,6 +32,50 @@ export interface HandoffFrontmatter {
   write_scope?: string[];
 }
 
+export type ReviewedWriteScopePathKind = 'file' | 'directory' | 'missing';
+export type ReviewedWriteScopeAccessSource = 'self' | 'parent' | 'nearest_existing_ancestor';
+
+export interface ReviewedWriteScopeEntry {
+  declared_path: string;
+  resolved_path: string;
+  path_kind: ReviewedWriteScopePathKind;
+  access_directory: string;
+  access_source: ReviewedWriteScopeAccessSource;
+}
+
+export interface ReviewedWriteScope {
+  declared_paths: string[];
+  entries: ReviewedWriteScopeEntry[];
+  access_directories: string[];
+}
+
+export type EnvironmentCapabilityStatus = 'supported' | 'unsupported' | 'unknown' | 'not_applicable';
+
+export interface EnvironmentCapability {
+  status: EnvironmentCapabilityStatus;
+  checked_at: string;
+  detail: string;
+}
+
+export interface HostCapabilitiesRecord {
+  schema_version: 1;
+  checked_at: string;
+  platform: NodeJS.Platform;
+  arch: string;
+  registry_hash: string;
+  capabilities: {
+    claude_linux_sandbox: EnvironmentCapability;
+    claude_linux_add_dir: EnvironmentCapability;
+    codex_linux_sandbox: EnvironmentCapability;
+  };
+}
+
+export interface CheckEnvironmentResult {
+  configDir: string;
+  recordPath: string;
+  record: HostCapabilitiesRecord;
+}
+
 // ---------------------------------------------------------------------------
 // Agent registry
 // ---------------------------------------------------------------------------
