@@ -59,6 +59,46 @@ export function getRegistryPath(): string {
   return join(getConfigDir(), REGISTRY_FILE);
 }
 
+function normalizeCodexAgent(agent: AgentLauncherConfig): AgentLauncherConfig {
+  const usesLegacyWrapperContent = agent.instruction_transport.kind === 'argv_content' &&
+    Array.isArray(agent.wrapper_arg) &&
+    agent.wrapper_arg.length === 1 &&
+    agent.wrapper_arg[0] === '{wrapper_content}';
+
+  if (!usesLegacyWrapperContent) {
+    return agent;
+  }
+
+  return {
+    ...agent,
+    instruction_transport: { kind: 'stdin' },
+    wrapper_arg: undefined,
+  };
+}
+
+function normalizeAgentConfig(agentName: string, rawAgent: AgentLauncherConfig): AgentLauncherConfig {
+  if (agentName === 'claude') {
+    return {
+      ...rawAgent,
+      noninteractive_argv: rawAgent.noninteractive_argv.includes('--settings')
+        ? [...rawAgent.noninteractive_argv]
+        : [...rawAgent.noninteractive_argv, '--settings', CLAUDE_DISPATCH_SETTINGS_JSON],
+      instruction_transport: { kind: 'stdin' as const },
+      wrapper_arg: undefined,
+      env: {
+        ...CLAUDE_DISPATCH_ENV,
+        ...rawAgent.env,
+      },
+    };
+  }
+
+  if (agentName === 'codex') {
+    return normalizeCodexAgent(rawAgent);
+  }
+
+  return rawAgent;
+}
+
 export function createDefaultRegistry(): AgentRegistry {
   return {
     version: 1,
@@ -92,8 +132,7 @@ export function createDefaultRegistry(): AgentRegistry {
       codex: {
         base_argv: ['codex', 'exec'],
         noninteractive_argv: [],
-        instruction_transport: { kind: 'argv_content' },
-        wrapper_arg: ['{wrapper_content}'],
+        instruction_transport: { kind: 'stdin' },
         response_transport: { kind: 'file' },
         response_arg: ['-o', '{response_path}'],
         timeout_seconds: 1800,
@@ -191,10 +230,17 @@ export async function loadRegistry(): Promise<DispatchResult<{ path: string; has
     );
   }
 
+  const normalizedAgents = Object.fromEntries(
+    Object.entries(result.data.agents).map(([agentName, agent]) => [agentName, normalizeAgentConfig(agentName, agent)]),
+  ) as AgentRegistry['agents'];
+
   return ok({
     path: registryPath,
     hash: hashText(raw),
-    data: result.data as AgentRegistry,
+    data: {
+      ...result.data,
+      agents: normalizedAgents,
+    },
   });
 }
 
@@ -204,20 +250,7 @@ export function resolveAgentConfig(
   mode: HandoffMode,
 ): DispatchResult<AgentLauncherConfig> {
   const rawAgent = registry.agents[agentName];
-  const agent = rawAgent && agentName === 'claude'
-    ? {
-      ...rawAgent,
-      noninteractive_argv: rawAgent.noninteractive_argv.includes('--settings')
-        ? [...rawAgent.noninteractive_argv]
-        : [...rawAgent.noninteractive_argv, '--settings', CLAUDE_DISPATCH_SETTINGS_JSON],
-      instruction_transport: { kind: 'stdin' as const },
-      wrapper_arg: undefined,
-      env: {
-        ...CLAUDE_DISPATCH_ENV,
-        ...rawAgent.env,
-      },
-    }
-    : rawAgent;
+  const agent = rawAgent ? normalizeAgentConfig(agentName, rawAgent) : rawAgent;
   if (!agent) {
     return fail('INVALID_AGENT', `Unknown agent in registry: ${agentName}`);
   }

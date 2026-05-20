@@ -356,9 +356,18 @@ Claude, Codex, local model wrappers, and fake agents.
 
 | Agent | Command | Purpose |
 |-------|---------|---------|
-| `claude` | `claude` with wrapper-content argv transport and stdout capture | Claude Code CLI adapter |
-| `codex` | `codex exec` with wrapper-content argv transport and `-o {response_path}` | Codex CLI adapter |
+| `claude` | `claude` with stdin transport and stdout capture | Claude Code CLI adapter |
+| `codex` | `codex exec` with stdin transport and `-o {response_path}` | Codex CLI adapter |
 | `fake-agent` | Absolute `tsx` binary plus absolute `tests/fixtures/fake-agent.ts` path in the `kb` checkout | Deterministic test agent for dogfooding and sister-repo validation |
+
+The generated `claude` and `codex` entries are configured for non-interactive child runs against the
+reviewed bundle. The child process does not need `kb` MCP tools for the core dispatch workflow.
+The interactive parent/operator is the component that uses `kb-dispatch` MCP tools such as
+`status`, `wait-for-run`, and `get-response` to monitor progress and retrieve artifacts.
+
+The `read_only.argv_suffix` block is an additional restriction layer that is only appended for
+`mode: redteam`. It constrains the launched child run; it is not the mechanism that gives the child
+access to MCP tools.
 
 ### Claude Billing Constraint
 
