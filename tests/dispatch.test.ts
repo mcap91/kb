@@ -61,6 +61,79 @@ async function writeBareAgentLauncher(binDir: string, commandName: string): Prom
   return commandPath;
 }
 
+async function writeStdoutAgentLauncher(binDir: string, commandName: string): Promise<string> {
+  await mkdir(binDir, { recursive: true });
+  const agentScriptPath = join(binDir, `${commandName}-stdout-agent.cjs`);
+  await writeFile(
+    agentScriptPath,
+    [
+      "let input = '';",
+      "process.stdin.setEncoding('utf-8');",
+      "process.stdin.on('data', (chunk) => { input += chunk; });",
+      "process.stdin.on('end', () => {",
+      "  process.stdout.write([",
+      "    '# Fake Claude Response',",
+      "    '',",
+      "    `argv: ${JSON.stringify(process.argv.slice(2))}`,",
+      "    `cwd: ${process.cwd()}`,",
+      "    `wrapper_bytes: ${Buffer.byteLength(input, 'utf-8')}`,",
+      "  ].join('\\n'));",
+      "});",
+      '',
+    ].join('\n'),
+    'utf-8',
+  );
+
+  const commandPath = join(binDir, process.platform === 'win32' ? `${commandName}.CMD` : commandName);
+  const commandBody = process.platform === 'win32'
+    ? `@echo off\r\n"${process.execPath}" "${agentScriptPath}" %*\r\n`
+    : `#!/bin/sh\nexec ${quotePosixArg(process.execPath)} ${quotePosixArg(agentScriptPath)} "$@"\n`;
+  await writeFile(commandPath, commandBody, 'utf-8');
+  if (process.platform !== 'win32') {
+    await chmod(commandPath, 0o755);
+  }
+
+  return commandPath;
+}
+
+async function writeFakeBwrapLauncher(binDir: string): Promise<string> {
+  await mkdir(binDir, { recursive: true });
+  const agentScriptPath = join(binDir, 'fake-bwrap.cjs');
+  await writeFile(
+    agentScriptPath,
+    [
+      "const { spawn } = require('node:child_process');",
+      "const args = process.argv.slice(2);",
+      "let i = 0;",
+      "while (i < args.length) {",
+      "  const arg = args[i];",
+      "  if (arg === '--die-with-parent' || arg === '--unshare-all') { i += 1; continue; }",
+      "  if (arg === '--ro-bind' || arg === '--bind') { i += 3; continue; }",
+      "  if (arg === '--proc' || arg === '--dev') { i += 2; continue; }",
+      "  break;",
+      "}",
+      "const command = args[i];",
+      "if (!command) { process.exit(2); }",
+      "const child = spawn(command, args.slice(i + 1), { stdio: 'inherit', shell: false, env: process.env });",
+      "child.on('error', (err) => { console.error(String(err)); process.exit(1); });",
+      "child.on('close', (code) => process.exit(code ?? 1));",
+      '',
+    ].join('\n'),
+    'utf-8',
+  );
+
+  const commandPath = join(binDir, process.platform === 'win32' ? 'bwrap.CMD' : 'bwrap');
+  const commandBody = process.platform === 'win32'
+    ? `@echo off\r\n"${process.execPath}" "${agentScriptPath}" %*\r\n`
+    : `#!/bin/sh\nexec ${quotePosixArg(process.execPath)} ${quotePosixArg(agentScriptPath)} "$@"\n`;
+  await writeFile(commandPath, commandBody, 'utf-8');
+  if (process.platform !== 'win32') {
+    await chmod(commandPath, 0o755);
+  }
+
+  return commandPath;
+}
+
 async function pathExists(path: string): Promise<boolean> {
   try {
     await stat(path);
@@ -95,12 +168,14 @@ function makeManualHandoff(overrides?: Partial<{
   subject: string;
   allowed_agents: string[];
   mode: string;
+  write_scope: string[];
 }>): string {
   const id = overrides?.id ?? 'HO-0001';
   const title = overrides?.title ?? 'Test Handoff';
   const subject = overrides?.subject ?? 'kb:test';
   const agents = overrides?.allowed_agents ?? ['fake-agent'];
   const mode = overrides?.mode ?? 'implement';
+  const writeScope = overrides?.write_scope ?? [];
 
   return [
     '---',
@@ -110,6 +185,7 @@ function makeManualHandoff(overrides?: Partial<{
     `subject: ${subject}`,
     `allowed_agents: [${agents.join(', ')}]`,
     `mode: ${mode}`,
+    ...(writeScope.length > 0 ? ['write_scope:', ...writeScope.map((item) => `  - ${item}`)] : []),
     '---',
     '',
     '# Goal',
@@ -215,6 +291,8 @@ describe('dispatch', () => {
   let originalAppData: string | undefined;
   let originalHome: string | undefined;
   let originalUserProfile: string | undefined;
+  let originalPath: string | undefined;
+  let originalPathExt: string | undefined;
 
   const fakeAgentPath = resolve(TESTS_DIR, 'fixtures', 'fake-agent.ts');
   const delayedStdoutAgentPath = resolve(TESTS_DIR, 'fixtures', 'delayed-stdout-agent.mjs');
@@ -227,6 +305,8 @@ describe('dispatch', () => {
     originalAppData = process.env['APPDATA'];
     originalHome = process.env['HOME'];
     originalUserProfile = process.env['USERPROFILE'];
+    originalPath = process.env['PATH'];
+    originalPathExt = process.env['PATHEXT'];
   });
 
   afterEach(async () => {
@@ -246,6 +326,18 @@ describe('dispatch', () => {
       process.env['USERPROFILE'] = originalUserProfile;
     } else {
       delete process.env['USERPROFILE'];
+    }
+
+    if (originalPath !== undefined) {
+      process.env['PATH'] = originalPath;
+    } else {
+      delete process.env['PATH'];
+    }
+
+    if (originalPathExt !== undefined) {
+      process.env['PATHEXT'] = originalPathExt;
+    } else {
+      delete process.env['PATHEXT'];
     }
 
     try {
@@ -391,6 +483,88 @@ describe('dispatch', () => {
       expect(manifest.context_files.map((entry) => entry.source_path)).toEqual(['AGENTS.md', 'README.md']);
     });
 
+    it('records reviewed write_scope data in the signed input manifest', async () => {
+      await setupBootstrappedRepo(repoRoot);
+      await mkdir(join(repoRoot, 'src'), { recursive: true });
+      await writeFile(join(repoRoot, 'src', 'main.ts'), 'export const value = 1;\n');
+      await setupFullConfig();
+      const { review } = await import('@kb/dispatch-core');
+
+      await writeFile(
+        join(repoRoot, 'wiki', 'handoffs', 'HO-0001.md'),
+        makeManualHandoff({
+          write_scope: ['src/main.ts', 'docs/generated.ts'],
+        }),
+      );
+
+      const result = await review({
+        dir: repoRoot,
+        handoff: 'wiki/handoffs/HO-0001.md',
+        agent: 'fake-agent',
+        reviewedAndAcceptRisks: true,
+      });
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      const manifestRaw = await readFile(join(result.data.bundlePath, 'metadata', 'input-manifest.json'), 'utf-8');
+      const manifest = JSON.parse(manifestRaw) as {
+        reviewed_write_scope: {
+          declared_paths: string[];
+          entries: Array<{
+            declared_path: string;
+            path_kind: string;
+            access_directory: string;
+          }>;
+          access_directories: string[];
+        };
+      };
+
+      expect(manifest.reviewed_write_scope.declared_paths).toEqual(['src/main.ts', 'docs/generated.ts']);
+      expect(manifest.reviewed_write_scope.entries).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          declared_path: 'src/main.ts',
+          path_kind: 'file',
+          access_directory: join(repoRoot, 'src'),
+        }),
+        expect.objectContaining({
+          declared_path: 'docs/generated.ts',
+          path_kind: 'missing',
+          access_directory: join(repoRoot, 'docs'),
+        }),
+      ]));
+      expect(manifest.reviewed_write_scope.access_directories).toEqual([
+        join(repoRoot, 'docs'),
+        join(repoRoot, 'src'),
+      ]);
+    });
+
+    it('rejects write_scope paths that escape the repo root', async () => {
+      await setupBootstrappedRepo(repoRoot);
+      await setupFullConfig();
+      const { review } = await import('@kb/dispatch-core');
+
+      await writeFile(
+        join(repoRoot, 'wiki', 'handoffs', 'HO-0001.md'),
+        makeManualHandoff({
+          write_scope: ['../outside.md'],
+        }),
+      );
+
+      const result = await review({
+        dir: repoRoot,
+        handoff: 'wiki/handoffs/HO-0001.md',
+        agent: 'fake-agent',
+        reviewedAndAcceptRisks: true,
+      });
+
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.error).toBe('INVALID_HANDOFF');
+        expect(result.message).toContain('write_scope path escapes repo root');
+      }
+    });
+
     it('rejects redteam review for an agent without read-only support', async () => {
       await setupBootstrappedRepo(repoRoot);
       await setupFullConfig({
@@ -517,6 +691,201 @@ describe('dispatch', () => {
       expect(meta.operator_id).toBeTruthy();
       expect(meta.launcher_version).toBe('1.0.0');
     }, 30000);
+
+    it('adds reviewed write_scope directories to Claude launches without widening to repo root', async () => {
+      await setupBootstrappedRepo(repoRoot);
+      await mkdir(join(repoRoot, 'src'), { recursive: true });
+      await writeFile(join(repoRoot, 'src', 'main.ts'), 'export const value = 1;\n');
+      const binDir = join(tempDir, 'claude-bin');
+      await writeStdoutAgentLauncher(binDir, 'claude');
+      if (process.platform === 'linux') {
+        await writeFakeBwrapLauncher(binDir);
+      }
+
+      await setupFullConfig({
+        version: 1,
+        agents: {
+          claude: {
+            base_argv: ['claude'],
+            noninteractive_argv: ['--print', '--output-format', 'text', '--no-session-persistence'],
+            instruction_transport: { kind: 'stdin' },
+            response_transport: { kind: 'stdout_capture' },
+            timeout_seconds: 30,
+            read_only: {
+              supported: true,
+              argv_suffix: ['--permission-mode', 'default', '--disallowedTools', 'Edit Write NotebookEdit Bash'],
+              response_writable: true,
+            },
+            env: {
+              PATH: binDir,
+              PATHEXT: '.CMD;.EXE',
+            },
+          },
+        },
+      });
+      const { review, launch } = await import('@kb/dispatch-core');
+
+      await writeFile(
+        join(repoRoot, 'wiki', 'handoffs', 'HO-0001.md'),
+        makeManualHandoff({
+          allowed_agents: ['claude'],
+          write_scope: ['src/main.ts', 'docs'],
+        }),
+      );
+
+      const reviewResult = await review({
+        dir: repoRoot,
+        handoff: 'wiki/handoffs/HO-0001.md',
+        agent: 'claude',
+        reviewedAndAcceptRisks: true,
+      });
+      expect(reviewResult.ok).toBe(true);
+      if (!reviewResult.ok) return;
+
+      const launchResult = await launch({
+        reviewId: reviewResult.data.reviewId,
+        dir: repoRoot,
+      });
+      expect(launchResult.ok).toBe(true);
+      if (!launchResult.ok) return;
+
+      const response = launchResult.data.response ?? '';
+      const argvMatch = response.match(/^argv: (.+)$/m);
+      expect(argvMatch).toBeTruthy();
+      if (!argvMatch) return;
+
+      const argv = JSON.parse(argvMatch[1]!) as string[];
+      const addDirValues = argv.flatMap((value, index) => argv[index - 1] === '--add-dir' ? [value] : []);
+      expect(addDirValues).toEqual(expect.arrayContaining([
+        join(repoRoot, 'docs'),
+        join(repoRoot, 'src'),
+      ]));
+      expect(addDirValues).not.toContain(repoRoot);
+    }, 30_000);
+
+    it('fails before spawn when the reviewed write_scope parent is no longer accessible', async () => {
+      await setupBootstrappedRepo(repoRoot);
+      await mkdir(join(repoRoot, 'generated'), { recursive: true });
+      const binDir = join(tempDir, 'claude-preflight-bin');
+      await writeStdoutAgentLauncher(binDir, 'claude');
+      if (process.platform === 'linux') {
+        await writeFakeBwrapLauncher(binDir);
+      }
+
+      await setupFullConfig({
+        version: 1,
+        agents: {
+          claude: {
+            base_argv: ['claude'],
+            noninteractive_argv: ['--print', '--output-format', 'text', '--no-session-persistence'],
+            instruction_transport: { kind: 'stdin' },
+            response_transport: { kind: 'stdout_capture' },
+            timeout_seconds: 30,
+            read_only: {
+              supported: true,
+              argv_suffix: ['--permission-mode', 'default', '--disallowedTools', 'Edit Write NotebookEdit Bash'],
+              response_writable: true,
+            },
+            env: {
+              PATH: binDir,
+              PATHEXT: '.CMD;.EXE',
+            },
+          },
+        },
+      });
+      const { review, launch } = await import('@kb/dispatch-core');
+
+      await writeFile(
+        join(repoRoot, 'wiki', 'handoffs', 'HO-0001.md'),
+        makeManualHandoff({
+          allowed_agents: ['claude'],
+          write_scope: ['generated/output.ts'],
+        }),
+      );
+
+      const reviewResult = await review({
+        dir: repoRoot,
+        handoff: 'wiki/handoffs/HO-0001.md',
+        agent: 'claude',
+        reviewedAndAcceptRisks: true,
+      });
+      expect(reviewResult.ok).toBe(true);
+      if (!reviewResult.ok) return;
+
+      await rm(join(repoRoot, 'generated'), { recursive: true, force: true });
+
+      const launchResult = await launch({
+        reviewId: reviewResult.data.reviewId,
+        dir: repoRoot,
+      });
+      expect(launchResult.ok).toBe(false);
+      if (!launchResult.ok) {
+        expect(launchResult.error).toBe('ENVIRONMENT_UNSUPPORTED');
+        expect(launchResult.message).toContain('write_scope path generated/output.ts is not accessible');
+      }
+    }, 30_000);
+
+    it('blocks Claude launches on Linux when additional-directory sandbox capability is known unsupported', async () => {
+      if (process.platform !== 'linux') {
+        return;
+      }
+
+      await setupBootstrappedRepo(repoRoot);
+      await mkdir(join(repoRoot, 'src'), { recursive: true });
+      await writeFile(join(repoRoot, 'src', 'main.ts'), 'export const value = 1;\n');
+      const binDir = join(tempDir, 'claude-no-bwrap-bin');
+      await writeStdoutAgentLauncher(binDir, 'claude');
+
+      await setupFullConfig({
+        version: 1,
+        agents: {
+          claude: {
+            base_argv: ['claude'],
+            noninteractive_argv: ['--print', '--output-format', 'text', '--no-session-persistence'],
+            instruction_transport: { kind: 'stdin' },
+            response_transport: { kind: 'stdout_capture' },
+            timeout_seconds: 30,
+            read_only: {
+              supported: true,
+              argv_suffix: ['--permission-mode', 'default', '--disallowedTools', 'Edit Write NotebookEdit Bash'],
+              response_writable: true,
+            },
+            env: {
+              PATH: binDir,
+              PATHEXT: '.CMD;.EXE',
+            },
+          },
+        },
+      });
+      const { review, launch } = await import('@kb/dispatch-core');
+
+      await writeFile(
+        join(repoRoot, 'wiki', 'handoffs', 'HO-0001.md'),
+        makeManualHandoff({
+          allowed_agents: ['claude'],
+          write_scope: ['src/main.ts'],
+        }),
+      );
+
+      const reviewResult = await review({
+        dir: repoRoot,
+        handoff: 'wiki/handoffs/HO-0001.md',
+        agent: 'claude',
+        reviewedAndAcceptRisks: true,
+      });
+      expect(reviewResult.ok).toBe(true);
+      if (!reviewResult.ok) return;
+
+      const launchResult = await launch({
+        reviewId: reviewResult.data.reviewId,
+        dir: repoRoot,
+      });
+      expect(launchResult.ok).toBe(false);
+      if (!launchResult.ok) {
+        expect(launchResult.error).toBe('ENVIRONMENT_UNSUPPORTED');
+        expect(launchResult.message).toContain('additional-directory sandbox mounts');
+      }
+    }, 30_000);
 
     it('resolves a bare launcher command at launch time before spawning', async () => {
       await setupBootstrappedRepo(repoRoot);
@@ -1732,6 +2101,68 @@ describe('dispatch', () => {
       }
     }, 20_000);
 
+    it('surfaces environment-gate failures even when no run directory is created', async () => {
+      if (process.platform !== 'linux') {
+        return;
+      }
+
+      await setupBootstrappedRepo(repoRoot);
+      await mkdir(join(repoRoot, 'src'), { recursive: true });
+      await writeFile(join(repoRoot, 'src', 'main.ts'), 'export const value = 1;\n');
+      const binDir = join(tempDir, 'claude-background-no-bwrap-bin');
+      await writeStdoutAgentLauncher(binDir, 'claude');
+      await setupFullConfig({
+        version: 1,
+        agents: {
+          claude: {
+            base_argv: ['claude'],
+            noninteractive_argv: ['--print', '--output-format', 'text', '--no-session-persistence'],
+            instruction_transport: { kind: 'stdin' },
+            response_transport: { kind: 'stdout_capture' },
+            timeout_seconds: 30,
+            read_only: {
+              supported: true,
+              argv_suffix: ['--permission-mode', 'default', '--disallowedTools', 'Edit Write NotebookEdit Bash'],
+              response_writable: true,
+            },
+            env: {
+              PATH: binDir,
+              PATHEXT: '.CMD;.EXE',
+            },
+          },
+        },
+      });
+      const { review, launchBackground } = await import('@kb/dispatch-core');
+
+      await writeFile(
+        join(repoRoot, 'wiki', 'handoffs', 'HO-0001.md'),
+        makeManualHandoff({
+          allowed_agents: ['claude'],
+          write_scope: ['src/main.ts'],
+        }),
+      );
+
+      const reviewResult = await review({
+        dir: repoRoot,
+        handoff: 'wiki/handoffs/HO-0001.md',
+        agent: 'claude',
+        reviewedAndAcceptRisks: true,
+      });
+      expect(reviewResult.ok).toBe(true);
+      if (!reviewResult.ok) return;
+
+      const result = await launchBackground({
+        reviewId: reviewResult.data.reviewId,
+        dir: repoRoot,
+        startupTimeoutMs: 15_000,
+      });
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.error).toBe('BACKGROUND_LAUNCH_FAILED');
+        expect(result.message).toContain('additional-directory sandbox mounts');
+      }
+    }, 20_000);
+
     it('concurrent background runs for independent HOs', async () => {
       await setupBootstrappedRepo(repoRoot);
       const tsxPath = getTsxPath();
@@ -1810,6 +2241,79 @@ describe('dispatch', () => {
       expect(['completed', 'failed']).toContain(wait1.data.status);
       expect(['completed', 'failed']).toContain(wait2.data.status);
     }, 45_000);
+  });
+
+  describe('environment checks', () => {
+    it('writes an operator-owned host capability record', async () => {
+      const binDir = join(tempDir, 'capability-bin');
+      if (process.platform === 'linux') {
+        await writeFakeBwrapLauncher(binDir);
+      } else {
+        await mkdir(binDir, { recursive: true });
+      }
+
+      const pathValue = process.platform === 'linux'
+        ? binDir
+        : process.env['PATH'] ?? originalPath ?? '';
+      await setupFullConfig({
+        version: 1,
+        agents: {
+          claude: {
+            base_argv: ['claude'],
+            noninteractive_argv: ['--print', '--output-format', 'text', '--no-session-persistence'],
+            instruction_transport: { kind: 'stdin' },
+            response_transport: { kind: 'stdout_capture' },
+            timeout_seconds: 30,
+            read_only: {
+              supported: true,
+              argv_suffix: ['--permission-mode', 'default', '--disallowedTools', 'Edit Write NotebookEdit Bash'],
+              response_writable: true,
+            },
+            env: {
+              PATH: pathValue,
+              PATHEXT: '.CMD;.EXE',
+            },
+          },
+          codex: {
+            base_argv: ['codex', 'exec'],
+            noninteractive_argv: [],
+            instruction_transport: { kind: 'stdin' },
+            response_transport: { kind: 'file' },
+            response_arg: ['-o', '{response_path}'],
+            timeout_seconds: 30,
+            read_only: {
+              supported: true,
+              argv_suffix: ['--sandbox', 'read-only'],
+              response_writable: true,
+            },
+            env: {
+              PATH: pathValue,
+              PATHEXT: '.CMD;.EXE',
+            },
+          },
+        },
+      });
+
+      const { checkEnvironment, getHostCapabilitiesPath } = await import('@kb/dispatch-core');
+      const result = await checkEnvironment();
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      expect(result.data.recordPath).toBe(getHostCapabilitiesPath());
+      expect(await pathExists(result.data.recordPath)).toBe(true);
+      expect(result.data.record.schema_version).toBe(1);
+      expect(result.data.record.registry_hash).toBeTruthy();
+      if (process.platform === 'linux') {
+        expect(result.data.record.capabilities.claude_linux_sandbox.status).toBe('supported');
+        expect(result.data.record.capabilities.claude_linux_add_dir.status).toBe('supported');
+        expect(result.data.record.capabilities.codex_linux_sandbox.status).toBe('supported');
+      } else {
+        expect(result.data.record.capabilities.claude_linux_sandbox.status).toBe('not_applicable');
+        expect(result.data.record.capabilities.claude_linux_add_dir.status).toBe('not_applicable');
+        expect(result.data.record.capabilities.codex_linux_sandbox.status).toBe('not_applicable');
+      }
+    });
   });
 
   describe('token state transitions', () => {

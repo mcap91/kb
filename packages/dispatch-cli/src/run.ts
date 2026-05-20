@@ -2,6 +2,7 @@ import { join, resolve } from 'node:path';
 
 import {
   VERSION,
+  checkEnvironment,
   cleanup,
   createHandoff,
   initConfig,
@@ -12,6 +13,7 @@ import {
 } from '@kb/dispatch-core';
 
 import type {
+  CheckEnvironmentResult,
   CleanupReport,
   CreateHandoffResult,
   LaunchEvent,
@@ -99,6 +101,7 @@ Usage:
 
 Commands:
   init-config                Initialize operator dispatch configuration
+  check-environment          Probe and record host sandbox capabilities
   create-handoff             Create a repo-local HO handoff
   review                     Review a handoff document
   launch                     Launch a reviewed handoff
@@ -114,6 +117,9 @@ Global Options:
 Command Options:
   init-config
     --force                  Overwrite the existing launcher registry
+
+  check-environment
+    (no required flags)
 
   create-handoff
     --dir <path>             Repository root directory (required)
@@ -166,6 +172,24 @@ async function cmdInitConfig(args: string[]): Promise<number> {
   console.log(`Registry: ${result.data.registryPath}`);
   console.log(`Key created: ${result.data.keyCreated ? 'yes' : 'no'}`);
   console.log(`Registry created: ${result.data.registryCreated ? 'yes' : 'no'}`);
+  return 0;
+}
+
+async function cmdCheckEnvironment(): Promise<number> {
+  const result = await checkEnvironment();
+  if (!result.ok) {
+    console.error(`Environment check failed: [${result.error}] ${result.message}`);
+    return 1;
+  }
+
+  const data: CheckEnvironmentResult = result.data;
+  console.log(`Config directory: ${data.configDir}`);
+  console.log(`Record: ${data.recordPath}`);
+  console.log(`Checked: ${data.record.checked_at}`);
+  console.log(`Platform: ${data.record.platform}/${data.record.arch}`);
+  console.log(`Claude Linux sandbox: ${data.record.capabilities.claude_linux_sandbox.status}`);
+  console.log(`Claude Linux add-dir: ${data.record.capabilities.claude_linux_add_dir.status}`);
+  console.log(`Codex Linux sandbox: ${data.record.capabilities.codex_linux_sandbox.status}`);
   return 0;
 }
 
@@ -404,6 +428,8 @@ export async function run(args: string[]): Promise<number> {
   switch (command) {
     case 'init-config':
       return cmdInitConfig(args);
+    case 'check-environment':
+      return cmdCheckEnvironment();
     case 'create-handoff':
       return cmdCreateHandoff(args);
     case 'review':

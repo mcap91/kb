@@ -112,7 +112,7 @@ Handoff documents are markdown files in `wiki/handoffs/` with YAML frontmatter.
 | `area` | string | Area slug |
 | `initiative` | string | Initiative ID |
 | `work_item` | string | Work item ID |
-| `write_scope` | string[] | Paths the agent should modify |
+| `write_scope` | string[] | Repo-relative file or directory paths the agent should modify |
 
 ### Forbidden Frontmatter Fields
 
@@ -160,7 +160,8 @@ The review operation (`dispatch-core/src/review.ts`) validates a handoff and cre
 4. Required fields pass Zod schema validation
 5. Requesting agent is in the handoff's `allowed_agents` list
 6. Read First paths are valid repo-relative paths that exist
-7. Agent exists in the operator's registry
+7. `write_scope` paths are relative, stay inside the repo root, and are normalized into reviewed access directories
+8. Agent exists in the operator's registry
 
 ### Immutable Bundle Creation
 
@@ -179,13 +180,13 @@ On successful validation, review creates:
     review.json
 ```
 
-Read First files are copied into `agent-visible/context/` using stable hashed filenames. `metadata/input-manifest.json` records the original repo-relative source paths and the snapshot paths.
+Read First files are copied into `agent-visible/context/` using stable hashed filenames. `metadata/input-manifest.json` records the original repo-relative source paths, the snapshot paths, and the reviewed `write_scope` data used later at launch time.
 
 ### Hash Capture
 
 Review captures two hashes:
 
-- **Input manifest hash**: SHA-256 of all bundle file hashes, sorted by path. Detects tampering with the handoff or Read First files.
+- **Input manifest hash**: SHA-256 of the serialized `metadata/input-manifest.json` file. Detects tampering with the handoff bundle and reviewed launch inputs.
 - **Registry hash**: SHA-256 of the `launchers.v1.json` content. Detects changes to agent configurations between review and launch.
 
 ### Pending Token
@@ -217,16 +218,19 @@ The launch operation (`dispatch-core/src/launch.ts`) executes a reviewed handoff
 6. **Re-verify registry hash** -- recompute hash of `launchers.v1.json` and compare against the token's `registryHash`
 7. **Load agent config** -- look up the agent in the registry
 8. **Resolve executable** -- bare `base_argv[0]` commands are resolved to executable paths using PATH plus platform fallback directories; path-bearing commands are left unchanged
-9. **Move token to launching/** -- atomic state transition
-10. **Create run directory** -- `.agent-runs/runs/<handoffId>/RUN-<uuid>/`
-11. **Copy reviewed bundle** -- copy `agent-visible/` and metadata into the run directory
-12. **Build filtered environment** -- only allowlisted env vars plus `AGENT_BLACKBOARD_*` variables
-13. **Write initial launch metadata** -- `metadata/launch.json` with `token_state = launching`
-14. **Spawn agent** -- child process with `cwd = agent-visible`, no TTY, and redirected stdout/stderr
-15. **Record live runtime state** -- write `metadata/state.json` with `status = launching`, `pid`, `pgid`, and `heartbeat_at`
-16. **Confirm child start** -- move token to `consumed/` and update `metadata/launch.json.token_state = consumed`
-17. **Stream response/logs live** -- `stdout_capture` adapters stream stdout directly to `response.md`; file adapters stream stdout to `metadata/stdout.log`; stderr streams to `metadata/stderr.log`
-18. **Write final metadata** -- on terminal exit, write `metadata/meta.json`, update `metadata/state.json` to a terminal status, and keep `launch.json.token_state = consumed` for started runs
+9. **Check or refresh host capabilities** -- consult the operator-owned `host-capabilities.v1.json` record and refresh it when missing or stale for the current registry hash
+10. **Gate unsupported hosts** -- refuse launches when the selected agent requires a known-unsupported sandbox capability
+11. **Pre-flight reviewed write scope** -- verify each reviewed `write_scope` target or access directory is reachable from the host
+12. **Move token to launching/** -- atomic state transition
+13. **Create run directory** -- `.agent-runs/runs/<handoffId>/RUN-<uuid>/`
+14. **Copy reviewed bundle** -- copy `agent-visible/` and metadata into the run directory
+15. **Build filtered environment** -- only allowlisted env vars plus `AGENT_BLACKBOARD_*` variables
+16. **Write initial launch metadata** -- `metadata/launch.json` with `token_state = launching`
+17. **Spawn agent** -- child process with `cwd = agent-visible`, no TTY, and redirected stdout/stderr
+18. **Record live runtime state** -- write `metadata/state.json` with `status = launching`, `pid`, `pgid`, and `heartbeat_at`
+19. **Confirm child start** -- move token to `consumed/` and update `metadata/launch.json.token_state = consumed`
+20. **Stream response/logs live** -- `stdout_capture` adapters stream stdout directly to `response.md`; file adapters stream stdout to `metadata/stdout.log`; stderr streams to `metadata/stderr.log`
+21. **Write final metadata** -- on terminal exit, write `metadata/meta.json`, update `metadata/state.json` to a terminal status, and keep `launch.json.token_state = consumed` for started runs
 
 ### Reviewed Bundle Invariant
 
@@ -256,6 +260,42 @@ Launch constructs a filtered environment for the agent process. Only these categ
 | `AGENT_BLACKBOARD_RUN_ID` | The run ID (`RUN-<uuid>`) |
 
 **Launcher-configured env:** Additional variables from the agent's `env` field in the registry.
+
+### Reviewed `write_scope` and Claude Sandbox Access
+
+`write_scope` remains HO-authored intent, but launch only acts on the reviewed manifest form.
+
+For non-redteam Claude launches:
+
+- dispatch derives a directory allowlist from reviewed `write_scope`
+- file paths widen to their parent directory
+- directory paths stay as themselves
+- missing paths widen to the nearest existing parent directory inside the repo
+- each reviewed directory is passed as `--add-dir <absolute-directory>`
+
+Dispatch does **not** automatically add `--add-dir <repoRoot>`. If a root-level file is in `write_scope`, the reviewed access directory becomes the repo root as a consequence of that declared scope.
+
+This is directory-granularity access, not exact per-file enforcement. That is a Claude sandbox limitation, not a dispatch review-model gap.
+
+Redteam mode is unchanged. No `--add-dir` flags are added there.
+
+### Host Capability Record
+
+Dispatch maintains an operator-owned host capability record at:
+
+```text
+<configDir>/host-capabilities.v1.json
+```
+
+`dispatch check-environment` probes the current host and writes that record explicitly. Launch also refreshes the record automatically when it is missing or when the current registry hash differs from the recorded one.
+
+Today the record tracks the Linux bubblewrap capabilities that matter to shipped agents:
+
+- basic sandbox startup for Codex
+- basic sandbox startup for Claude
+- additional writable directory mounts for Claude non-redteam `write_scope`
+
+Launch only blocks when the required capability is **known unsupported** for the selected agent/mode.
 
 ### Empty Response Failure
 
@@ -414,13 +454,14 @@ Edit `launchers.v1.json` in your config directory to add new agents:
 
 After editing the registry, any pending review tokens become invalid because the registry hash will no longer match. You must re-review handoffs after registry changes.
 
-### Codex Sandbox Caveat On Linux VMs
+### Linux Sandbox Caveat On VMs / Nested Containers
 
-Some Linux VM or nested-container environments do not support the sandbox startup path used by the Codex CLI. The failure often appears as a `bwrap` / bubblewrap mount or namespace error before the agent reads the reviewed handoff.
+Some Linux VM or nested-container environments do not support the bubblewrap sandbox behavior required by Claude and/or Codex. Failures often appear as `bwrap` mount or namespace errors, or as inability to grant reviewed extra directories for Claude.
 
 What this means operationally:
 
-- `codex` may launch correctly through dispatch but still fail before reading `handoff.snapshot.md`
+- the host can be incapable of starting the required sandbox at all
+- the host can start Claude's sandbox but still fail the additional-directory capability needed for non-empty reviewed `write_scope`
 - this is an infrastructure problem on the host, not a dispatch review/launch protocol problem
 - `redteam` should still fail closed on those hosts unless a real read-only Codex sandbox is available
 
@@ -428,14 +469,17 @@ What this means operationally:
 
 The recommended responses are:
 
+- run `npm run dispatch -- check-environment`
 - fix the host so the Codex sandbox can start successfully
+- fix the host so Claude can honor reviewed `write_scope` with additional directories
 - use a different host for Codex runs
-- use Claude or another non-bwrap-dependent agent on that host for work that cannot tolerate sandbox startup failure
+- use Claude on that host only if the capability record says Claude's required sandbox capabilities are supported
+- otherwise use a different host or a different agent route
 
 The supported recommendation in `kb` is:
 
-- if Codex sandboxing is broken on a host, use Claude on that host or run Codex on a different host
-- do not weaken Codex permissions just to get around the sandbox failure
+- do not weaken Codex or Claude permissions just to get around sandbox failure
+- do not assume "Claude works there" without checking the capability record
 
 If an operator chooses to customize `launchers.v1.json` locally, that is an explicit local trust decision outside the shipped defaults. Any registry change requires re-reviewing pending handoffs because the registry hash is bound into review tokens.
 

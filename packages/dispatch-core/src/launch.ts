@@ -1,7 +1,8 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { spawn, type ChildProcess } from 'node:child_process';
-import { createWriteStream } from 'node:fs';
+import { constants, createWriteStream } from 'node:fs';
 import {
+  access,
   copyFile,
   mkdir,
   open,
@@ -17,10 +18,12 @@ import type {
   AgentLauncherConfig,
   LaunchEvent,
   LaunchOpts,
+  ReviewedWriteScope,
   RunResult,
 } from './types.js';
 import type { DispatchResult } from './errors.js';
 import { fail, ok } from './errors.js';
+import { ensureHostCapabilities, gateLaunchEnvironment } from './environment.js';
 import { readTokenFile, verifyToken, moveToken } from './token.js';
 import { getReviewDir, getRunDir } from './paths.js';
 import { loadRegistry, resolveAgentConfig } from './registry.js';
@@ -66,6 +69,7 @@ type TerminalRunStatus = 'completed' | 'failed' | 'timed_out' | 'cancelled' | 'r
 type ReviewManifest = {
   handoff_id: string;
   mode: RunResult['mode'];
+  reviewed_write_scope?: ReviewedWriteScope;
   wrapper: { path: string; sha256: string };
   handoff_snapshot: { path: string; sha256: string };
   context_files: Array<{ snapshot_path: string; sha256: string }>;
@@ -205,12 +209,14 @@ function buildEnv(
 }
 
 function buildCommand(
+  agentName: string,
   agent: AgentLauncherConfig,
   mode: RunResult['mode'],
   wrapperContent: string,
   wrapperPath: string,
   responsePath: string,
   repoRoot: string,
+  additionalDirectories: string[],
 ): { command: string; args: string[] } {
   const replacements = {
     repo_root: repoRoot,
@@ -224,6 +230,12 @@ function buildCommand(
     ...agent.base_argv.slice(1),
     ...agent.noninteractive_argv,
   ];
+
+  if (agentName === 'claude' && mode !== 'redteam') {
+    for (const directory of additionalDirectories) {
+      args.push('--add-dir', directory);
+    }
+  }
 
   if (agent.instruction_transport.kind !== 'stdin' && agent.wrapper_arg) {
     for (const value of agent.wrapper_arg) {
@@ -242,6 +254,31 @@ function buildCommand(
   }
 
   return { command, args };
+}
+
+async function preflightReviewedWriteScope(reviewedWriteScope: ReviewedWriteScope): Promise<DispatchResult<void>> {
+  for (const entry of reviewedWriteScope.entries) {
+    const targetPath = entry.path_kind === 'missing'
+      ? entry.access_directory
+      : entry.resolved_path;
+    try {
+      await access(targetPath, constants.R_OK | constants.W_OK);
+    } catch (err) {
+      return fail(
+        'ENVIRONMENT_UNSUPPORTED',
+        `write_scope path ${entry.declared_path} is not accessible from this host via ${targetPath}. If running in a container, the required path may not be mounted or writable.`,
+        {
+          declaredPath: entry.declared_path,
+          checkedPath: targetPath,
+          pathKind: entry.path_kind,
+          accessDirectory: entry.access_directory,
+          error: err,
+        },
+      );
+    }
+  }
+
+  return ok(undefined);
 }
 
 async function writeLaunchMetadata(
@@ -513,6 +550,11 @@ export async function launch(opts: LaunchOpts): Promise<DispatchResult<RunResult
 
   const manifestResult = await verifyReviewedBundle(reviewDir, payload.inputManifestHash);
   if (!manifestResult.ok) return manifestResult;
+  const reviewedWriteScope: ReviewedWriteScope = manifestResult.data.manifest.reviewed_write_scope ?? {
+    declared_paths: [],
+    entries: [],
+    access_directories: [],
+  };
 
   const registryResult = await loadRegistry();
   if (!registryResult.ok) return registryResult;
@@ -523,6 +565,24 @@ export async function launch(opts: LaunchOpts): Promise<DispatchResult<RunResult
 
   const agentConfigResult = resolveAgentConfig(registryResult.data.data, payload.agent, payload.mode);
   if (!agentConfigResult.ok) return agentConfigResult;
+
+  if (payload.agent === 'claude' || payload.agent === 'codex') {
+    const capabilityResult = await ensureHostCapabilities(registryResult.data.data, registryResult.data.hash);
+    if (!capabilityResult.ok) return capabilityResult;
+
+    const gateResult = gateLaunchEnvironment(
+      capabilityResult.data,
+      payload.agent,
+      payload.mode,
+      reviewedWriteScope.access_directories.length > 0,
+    );
+    if (!gateResult.ok) return gateResult;
+  }
+
+  if (reviewedWriteScope.entries.length > 0) {
+    const preflightResult = await preflightReviewedWriteScope(reviewedWriteScope);
+    if (!preflightResult.ok) return preflightResult;
+  }
 
   const commandResolution = await resolveExecutableCommand(agentConfigResult.data.base_argv[0]!, {
     env: buildBaseEnv(agentConfigResult.data.env),
@@ -580,12 +640,14 @@ export async function launch(opts: LaunchOpts): Promise<DispatchResult<RunResult
   );
 
   const { command, args } = buildCommand(
+    payload.agent,
     agentConfig,
     payload.mode,
     wrapperContent,
     wrapperPath,
     responsePath,
     repoRoot,
+    reviewedWriteScope.access_directories,
   );
   const argv = [command, ...args];
   const redactionPlaceholders: Array<[string, string]> = [

@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, open, readFile, rename, stat, writeFile } from 'node:fs/promises';
 import { basename, dirname, extname, join, resolve } from 'node:path';
 
-import { DEFAULT_LIMITS, assertPathInside, canonicalizePath, loadHandoff } from './handoff.js';
+import { DEFAULT_LIMITS, assertPathInside, canonicalizePath, loadHandoff, reviewWriteScope } from './handoff.js';
 import { getWrapperForMode, WRAPPER_VERSION } from './prompts.js';
 import { loadRegistry, resolveAgentConfig } from './registry.js';
 import type {
@@ -71,6 +71,9 @@ export async function review(opts: ReviewOpts): Promise<DispatchResult<ReviewRes
   if (!handoffResult.ok) return handoffResult;
 
   const handoff = handoffResult.data;
+  const reviewedWriteScopeResult = await reviewWriteScope(repoRoot, handoff.frontmatter.write_scope);
+  if (!reviewedWriteScopeResult.ok) return reviewedWriteScopeResult;
+
   if (!handoff.frontmatter.allowed_agents.includes(opts.agent)) {
     return fail(
       'AGENT_NOT_ALLOWED',
@@ -148,6 +151,7 @@ export async function review(opts: ReviewOpts): Promise<DispatchResult<ReviewRes
     handoff_id: handoff.frontmatter.id,
     subject: handoff.frontmatter.subject,
     mode: handoff.frontmatter.mode,
+    reviewed_write_scope: reviewedWriteScopeResult.data,
     wrapper_version: WRAPPER_VERSION,
     wrapper: {
       path: 'agent-visible/wrapper.md',
@@ -179,6 +183,7 @@ export async function review(opts: ReviewOpts): Promise<DispatchResult<ReviewRes
     registry_hash: registryResult.data.hash,
     created_at: new Date().toISOString(),
     expires_at: expiresAt,
+    reviewed_write_scope: reviewedWriteScopeResult.data,
     limits: {
       max_handoff_bytes: DEFAULT_LIMITS.maxHandoffBytes,
       max_linked_file_bytes: DEFAULT_LIMITS.maxLinkedFileBytes,

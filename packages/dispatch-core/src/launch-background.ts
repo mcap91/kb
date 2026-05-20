@@ -69,6 +69,13 @@ async function tryReadJson(path: string): Promise<Record<string, unknown> | null
   }
 }
 
+async function tryReadPrelaunchState(
+  repoRoot: string,
+  reviewId: string,
+): Promise<Record<string, unknown> | null> {
+  return tryReadJson(join(repoRoot, '.agent-runs', 'reviews', reviewId, 'metadata', 'background-launch.json'));
+}
+
 async function findRunDir(
   repoRoot: string,
   reviewId: string,
@@ -187,6 +194,17 @@ async function pollStartGate(
           launchMeta: deadLaunchMeta,
           metaJson: deadMetaJson,
         });
+      }
+      const prelaunchState = await tryReadPrelaunchState(repoRoot, reviewId);
+      if (prelaunchState && typeof prelaunchState.error === 'string') {
+        return fail(
+          'BACKGROUND_LAUNCH_FAILED',
+          prelaunchState.error,
+          {
+            controllerPid,
+            prelaunchState,
+          },
+        );
       }
       return fail('BACKGROUND_LAUNCH_FAILED', 'Controller process exited before any run was created.', {
         controllerPid,

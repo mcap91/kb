@@ -2,6 +2,7 @@ import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { launch } from './launch.js';
+import { getReviewDir } from './paths.js';
 import type { LaunchEvent } from './types.js';
 import type { ControllerMetadata } from './types-background.js';
 
@@ -28,10 +29,15 @@ function writeControllerJson(metadataDir: string, data: ControllerMetadata): voi
   writeFileSync(join(metadataDir, 'controller.json'), `${JSON.stringify(data, null, 2)}\n`, 'utf-8');
 }
 
+function writePrelaunchJson(metadataDir: string, data: ControllerMetadata): void {
+  writeFileSync(join(metadataDir, 'background-launch.json'), `${JSON.stringify(data, null, 2)}\n`, 'utf-8');
+}
+
 async function main(): Promise<void> {
   const { reviewId, dir } = parseArgs(process.argv.slice(2));
   const startedAt = new Date().toISOString();
   const controllerPid = process.pid;
+  const reviewMetadataDir = join(getReviewDir(dir, reviewId), 'metadata');
 
   let metadataDir: string | null = null;
 
@@ -46,6 +52,7 @@ async function main(): Promise<void> {
     status: 'launching',
     error: null,
   };
+  writePrelaunchJson(reviewMetadataDir, controllerState);
 
   const onEvent = (event: LaunchEvent): void => {
     if (event.type === 'run_created') {
@@ -76,6 +83,16 @@ async function main(): Promise<void> {
     }
     controllerState.completed_at = controllerState.completed_at ?? new Date().toISOString();
     writeControllerJson(metadataDir, controllerState);
+    writePrelaunchJson(reviewMetadataDir, controllerState);
+  } else {
+    controllerState.status = result.ok
+      ? 'completed'
+      : result.error === 'TOKEN_INVALID' || result.error === 'HASH_MISMATCH'
+        ? 'rejected'
+        : 'failed';
+    controllerState.error = result.ok ? null : result.message;
+    controllerState.completed_at = new Date().toISOString();
+    writePrelaunchJson(reviewMetadataDir, controllerState);
   }
 
   process.exit(result.ok ? 0 : 1);
