@@ -31,8 +31,6 @@ Do not parallelize implementation search with the initial retrieval pass. Comple
 
 If generated views are missing or stale, prefer canonical pages directly over derived views.
 
-`docs/superpowers/specs/` and `docs/superpowers/plans/` are supporting planning material, not the first source of current feature status.
-
 The wiki MCP tools and the wiki CLI both go through the same `wiki-core` implementation, so manifest rules, prefix validation, handoff exclusion, generated-view exclusion, ID allocation, linting, and search scope are enforced consistently.
 
 ## Repo Layout
@@ -52,17 +50,13 @@ The examples below assume:
 
 If your layout differs, adjust the path to `kb`.
 
-## Install Modes
+## Install
 
-There are two normal ways to use `kb` as a private sister repo.
+Clone `kb` as a sibling repo next to your consuming repo:
 
-### Mode 1: Local Sibling Repo
-
-Use this when:
-
-- you already have `kb` checked out locally
-- you are working across your own local repos
-- the same GitHub identity already has access to both repos
+```bash
+git clone https://github.com/mcap91/kb.git
+```
 
 Layout:
 
@@ -71,41 +65,6 @@ projects/
   kb/
   my-project/
 ```
-
-In this mode, just use the existing `kb` checkout directly.
-
-### Mode 2: Private Collaborator Access
-
-Use this when:
-
-- `kb` is private
-- the consuming repo is private
-- you are accessing `kb` from a different GitHub account
-- that account is added as a collaborator to the private `kb` repo
-
-Flow:
-
-1. Add the other GitHub account as a collaborator on the private `kb` repo.
-2. Accept the invitation from that account.
-3. Clone `kb` locally from that account.
-4. Keep using `kb` as a sibling repo next to the consuming repo.
-
-Example:
-
-```bash
-git clone git@github.com:<kb-owner>/kb.git
-git clone git@github.com:<client-owner>/my-project.git
-```
-
-Local layout stays the same:
-
-```text
-projects/
-  kb/
-  my-project/
-```
-
-If you are the one operating both accounts on the same machine and Git auth is already set up, this is enough. You can clone the private `kb` repo and update it later with normal Git commands.
 
 ## Install kb
 
@@ -151,15 +110,13 @@ When the current repository is `kb` itself:
 
 - `kb` is both the MCP provider and the target repo
 - use `dir` pointing at this `kb` checkout
-- Claude can use the committed repo-root `.mcp.json`
+- create a local `.mcp.json` using the template in the Claude Project section below
 - Codex can register this checkout with `npm run codex:mcp:register`
 
 This does not change the sister-repo model for other projects. Consuming repos still point back to the `kb` checkout via `--dir`.
 
 Important boundary:
 
-- the committed `kb/.mcp.json` is only for self-hosting this `kb` repo
-- do not copy `kb/.mcp.json` verbatim into a consuming repo
 - a consuming repo needs its own Claude `.mcp.json` that points back to the chosen `kb` checkout
 - Codex MCP registration is user-level on the machine and should point at one chosen `kb` checkout
 
@@ -209,7 +166,7 @@ Why the direct command matters:
 
 ### Self-Hosted `kb` Repo
 
-If Claude is opened in this `kb` repo, it can use the committed repo-root `.mcp.json` directly.
+If Claude is opened in this `kb` repo, create a local `.mcp.json` using the template in the Claude Project section below, with paths pointing at this checkout.
 
 If Codex is opened in this `kb` repo, run this once from the `kb` checkout:
 
@@ -339,20 +296,6 @@ If you want the same server without the npm wrapper output:
 ```bash
 node --import tsx packages/dispatch-mcp/src/server.ts
 ```
-
-## Update a Private `kb` Checkout
-
-If you cloned `kb` through collaborator access, updates are normal Git updates:
-
-```bash
-cd kb
-git pull
-npm install
-npm run typecheck
-npm test
-```
-
-If you remove collaborator access later, that stops future GitHub access to the repo. It does not remove any local clone that already exists.
 
 ## Bootstrap a Consuming Repo
 
@@ -773,4 +716,20 @@ It also does not overwrite `wiki/schema.md`, `wiki/conventions.md`, or `wiki/ind
 - The `fake-agent` launcher written by `npm run dispatch -- init-config --force` is concrete and sister-repo safe.
 - The wiki MCP server serves the `kb` repo but operates on the consuming repo through `dir`.
 - If wiki records and code/tests disagree, report the mismatch explicitly instead of silently trusting grep-first conclusions.
-- Treat `docs/superpowers/specs/` and `docs/superpowers/plans/` as supporting context, not the first source for current feature status.
+
+## Maintainer Setup
+
+Maintainers who track development in the project wiki:
+
+```bash
+git clone https://github.com/mcap91/kb.git
+cd kb
+git clone https://github.com/mcap91/kb-wiki.git wiki
+npm install
+```
+
+The `wiki/` directory is gitignored. Changes to wiki records are committed and pushed from within `wiki/` (which has its own git repo).
+
+## License
+
+[MIT](LICENSE)

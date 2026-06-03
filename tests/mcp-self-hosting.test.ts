@@ -1,5 +1,3 @@
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -9,14 +7,14 @@ import {
   getCodexExecutable,
 } from '../scripts/mcp-self-hosting.js';
 
-const ROOT = resolve(process.cwd());
-
 describe('self-hosting MCP setup', () => {
-  it('committed Claude project config matches the generated config', () => {
-    const configPath = resolve(ROOT, '.mcp.json');
-    const raw = readFileSync(configPath, 'utf-8');
+  it('generates a valid Claude project config', () => {
+    const config = createClaudeProjectMcpConfig();
 
-    expect(JSON.parse(raw)).toEqual(createClaudeProjectMcpConfig());
+    expect(config).toHaveProperty('mcpServers.kb-wiki');
+    expect(config).toHaveProperty('mcpServers.kb-dispatch');
+    expect(config.mcpServers['kb-wiki'].command).toBe('node');
+    expect(config.mcpServers['kb-dispatch'].command).toBe('node');
   });
 
   it('builds Windows Codex registrations with file URL loader paths', () => {
