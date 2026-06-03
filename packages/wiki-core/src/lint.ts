@@ -61,7 +61,7 @@ interface ParsedRecord {
 function parseFrontmatter(
   raw: string,
 ): { data: Record<string, unknown>; body: string } | null {
-  const trimmed = raw.replace(/^﻿/, ''); // strip BOM
+  const trimmed = raw.replace(/\r\n/g, '\n').replace(/^﻿/, ''); // strip BOM
   if (!trimmed.startsWith('---')) return null;
 
   const endIdx = trimmed.indexOf('\n---', 3);

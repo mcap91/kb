@@ -23,7 +23,7 @@ import {
 } from './plan-bundle.js';
 
 function parseFrontmatter(raw: string): Record<string, unknown> | null {
-  const trimmed = raw.replace(/^\uFEFF/, '');
+  const trimmed = raw.replace(/\r\n/g, '\n').replace(/^\uFEFF/, '');
   if (!trimmed.startsWith('---')) return null;
 
   const endIdx = trimmed.indexOf('\n---', 3);
