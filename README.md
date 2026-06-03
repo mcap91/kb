@@ -730,6 +730,18 @@ npm install
 
 The `wiki/` directory is gitignored. Changes to wiki records are committed and pushed from within `wiki/` (which has its own git repo).
 
+### Day-to-day workflow
+
+This repo uses a dual-commit model because the code (`kb`) and the wiki (`kb-wiki`) are separate git repositories that share a directory tree:
+
+- **Code changes** go to `kb` (public): stage, commit, and push from the repo root as normal.
+- **Wiki changes** go to `kb-wiki` (private): `cd wiki && git add . && git commit && git push`.
+- Both can change in the same session — just commit to each repo separately before pushing.
+
+The `/close_up` Claude Code skill automates this entire flow: it runs typecheck, lint, regenerates wiki views, then commits and pushes both repos. Use it at the end of any session that touched code or wiki files.
+
+For testing consumer-repo workflows (bootstrap, dispatch, handoffs), use the `test_kb` fixture at `../test_kb`. All `kb` commands target it via `--dir ../test_kb`.
+
 ## License
 
 [MIT](LICENSE)
