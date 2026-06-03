@@ -31,13 +31,12 @@ If you are wiring `kb` into a native MCP client, use direct `node` launch comman
 
 When you are working in `kb` itself, this checkout can self-host its own MCP tools:
 
-- Claude can use the committed repo-root `.mcp.json`
+- Claude can use a local `.mcp.json` created from the template below
 - Codex can be pointed at this checkout with `npm run codex:mcp:register`
 - in that mode, `dir` should point back at this `kb` repo
 
 This self-hosted setup does not replace the sister-repo model:
 
-- `kb/.mcp.json` is only for the self-hosted `kb` repo case
 - a consuming repo needs its own Claude `.mcp.json` that points back to the chosen `kb` checkout
 - Codex MCP registration is user-level and should point at one chosen `kb` checkout per machine
 
@@ -203,7 +202,6 @@ If generated views are missing or stale, fall back to:
 - `wiki/decisions/DEC-*` records durable repo decisions.
 - `wiki/sources/SRC-*` records provenance and evidence when needed.
 - `wiki/areas/*.md` records durable repo boundaries and ownership.
-- `docs/superpowers/specs/` and `docs/superpowers/plans/` are planning/supporting material. Use them after the relevant wiki records, not as the first source of current feature status.
 - `wiki/catalog.md`, `wiki/now.md`, `wiki/backlog.md`, `wiki/archive.md`, and `wiki/inbox.md` are generated views, not canonical state.
 - `.agent-runs/` is runtime state only and must never be treated as committed or canonical content.
 
