@@ -78,7 +78,7 @@ function readTemplate(targetDir: string, templateName: string): Result<string> {
   }
 
   try {
-    const content = fs.readFileSync(templatePath, 'utf-8');
+    const content = fs.readFileSync(templatePath, 'utf-8').replace(/\r\n/g, '\n');
     return ok(content);
   } catch (err) {
     return fail(

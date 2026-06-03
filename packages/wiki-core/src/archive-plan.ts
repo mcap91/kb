@@ -18,7 +18,7 @@ interface MarkdownRecord {
 }
 
 function parseMarkdownRecord(raw: string): MarkdownRecord | null {
-  const trimmed = raw.replace(/^\uFEFF/, '');
+  const trimmed = raw.replace(/\r\n/g, '\n').replace(/^\uFEFF/, '');
   if (!trimmed.startsWith('---')) return null;
 
   const endIdx = trimmed.indexOf('\n---', 3);
