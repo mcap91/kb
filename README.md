@@ -742,6 +742,8 @@ The `/close_up` Claude Code skill automates this entire flow: it runs typecheck,
 
 For testing consumer-repo workflows (bootstrap, dispatch, handoffs), use the `test_kb` fixture at `../test_kb`. All `kb` commands target it via `--dir ../test_kb`.
 
+**Note:** `git clean -fdx` (single `-f`) is safe — git protects the nested `wiki/` repo. Never use `git clean -ffdx` (double `-f`), which overrides that protection and deletes `wiki/`.
+
 ## License
 
 [MIT](LICENSE)
