@@ -17,6 +17,7 @@ function runCli(args: string): { stdout: string; exitCode: number } {
       encoding: 'utf-8',
       timeout: 10000,
       stdio: ['pipe', 'pipe', 'pipe'],
+      windowsHide: true,
     });
     return { stdout, exitCode: 0 };
   } catch (err: unknown) {
