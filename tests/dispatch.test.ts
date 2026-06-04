@@ -1827,7 +1827,7 @@ describe('dispatch', () => {
 
       execSync(
         `"${getTsxPath()}" "${controllerEntryPath}" --review-id "${rev.data.reviewId}" --dir "${repoRoot}"`,
-        { timeout: 30_000, env: process.env, encoding: 'utf-8' },
+        { timeout: 30_000, env: process.env, encoding: 'utf-8', windowsHide: true },
       );
 
       const runsDir = join(repoRoot, '.agent-runs', 'runs');
@@ -2712,6 +2712,7 @@ describe('dispatch', () => {
           cwd: resolve(TESTS_DIR, '..'),
           env: process.env,
           encoding: 'utf-8',
+          windowsHide: true,
         },
       );
       const stderr = await readFile(stderrPath, 'utf-8');
@@ -2753,6 +2754,7 @@ describe('dispatch', () => {
           cwd: resolve(TESTS_DIR, '..'),
           env: process.env,
           encoding: 'utf-8',
+          windowsHide: true,
         },
       );
 
@@ -2790,6 +2792,7 @@ describe('dispatch', () => {
         cwd: resolve(TESTS_DIR, '..'),
         env: process.env,
         encoding: 'utf-8',
+        windowsHide: true,
       });
 
       const registryRaw = await readFile(join(configDir, 'launchers.v1.json'), 'utf-8');

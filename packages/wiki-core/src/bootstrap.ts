@@ -94,6 +94,86 @@ function mergeMissingIdStateEntries(current: IdState, manifestState: IdState): b
   return changed;
 }
 
+/**
+ * Scan wiki directories for existing {PREFIX}-{NNNN}.md files.
+ * Returns a map of prefix → sorted list of numeric IDs found on disk.
+ */
+function scanExistingEntries(
+  targetDir: string,
+  manifest: WikiManifest,
+): Record<string, number[]> {
+  const found: Record<string, number[]> = {};
+
+  for (const typeDef of Object.values(manifest.types)) {
+    if (typeDef.idStrategy !== 'allocated' || !typeDef.prefix) continue;
+
+    const prefix = typeDef.prefix;
+    const dir = path.join(targetDir, typeDef.directory);
+
+    if (!fs.existsSync(dir)) continue;
+
+    const pattern = new RegExp(`^${prefix}-(\\d{4})\\.md$`);
+    let entries: string[];
+    try {
+      entries = fs.readdirSync(dir);
+    } catch {
+      continue;
+    }
+
+    const numbers: number[] = [];
+    for (const entry of entries) {
+      const match = entry.match(pattern);
+      if (match) {
+        numbers.push(parseInt(match[1], 10));
+      }
+    }
+
+    if (numbers.length > 0) {
+      found[prefix] = numbers.sort((a, b) => a - b);
+    }
+  }
+
+  return found;
+}
+
+/**
+ * Reconcile ID state with entries found on disk.
+ * Bumps `next` to max(on-disk) + 1 if stale, adds missing numbers to `allocated`.
+ */
+function reconcileIdState(state: IdState, diskEntries: Record<string, number[]>): boolean {
+  let anyChanged = false;
+
+  for (const [prefix, numbers] of Object.entries(diskEntries)) {
+    if (!state[prefix]) {
+      state[prefix] = { next: 1, allocated: [] };
+    }
+
+    const entry = state[prefix];
+    const maxOnDisk = Math.max(...numbers);
+    let prefixChanged = false;
+
+    if (entry.next <= maxOnDisk) {
+      entry.next = maxOnDisk + 1;
+      prefixChanged = true;
+    }
+
+    const allocSet = new Set(entry.allocated);
+    for (const num of numbers) {
+      if (!allocSet.has(num)) {
+        entry.allocated.push(num);
+        prefixChanged = true;
+      }
+    }
+
+    if (prefixChanged) {
+      entry.allocated.sort((a, b) => a - b);
+      anyChanged = true;
+    }
+  }
+
+  return anyChanged;
+}
+
 function ensureContractMetadata(
   filePath: string,
   metadata: WikiContractMetadata,
@@ -119,14 +199,21 @@ function ensureContractMetadata(
 function ensureIdState(
   filePath: string,
   manifestState: IdState,
+  targetDir: string,
+  manifest: WikiManifest,
   dryRun: boolean,
   created: string[],
   skipped: string[],
 ): Result<void> {
+  const diskEntries = scanExistingEntries(targetDir, manifest);
+
   if (!fs.existsSync(filePath)) {
+    const state: IdState = JSON.parse(JSON.stringify(manifestState)) as IdState;
+    reconcileIdState(state, diskEntries);
+
     if (!dryRun) {
       fs.mkdirSync(path.dirname(filePath), { recursive: true });
-      fs.writeFileSync(filePath, JSON.stringify(manifestState, null, 2) + '\n', 'utf-8');
+      fs.writeFileSync(filePath, JSON.stringify(state, null, 2) + '\n', 'utf-8');
     }
     created.push(filePath);
     debug(`wrote id state: ${filePath}`);
@@ -140,8 +227,10 @@ function ensureIdState(
     return fail('PARSE_ERROR', `Failed to read existing ID state: ${String(err)}`, err);
   }
 
-  const changed = mergeMissingIdStateEntries(current, manifestState);
-  if (!changed) {
+  const merged = mergeMissingIdStateEntries(current, manifestState);
+  const reconciled = reconcileIdState(current, diskEntries);
+
+  if (!merged && !reconciled) {
     skipped.push(filePath);
     debug(`skipped id state (current): ${filePath}`);
     return ok(undefined);
@@ -151,7 +240,7 @@ function ensureIdState(
     fs.writeFileSync(filePath, JSON.stringify(current, null, 2) + '\n', 'utf-8');
   }
   created.push(filePath);
-  debug(`merged missing id state entries: ${filePath}`);
+  debug(`reconciled id state: ${filePath}`);
   return ok(undefined);
 }
 
@@ -215,6 +304,8 @@ export async function bootstrap(
   const idStateResult = ensureIdState(
     path.join(wikiDir, '.id-state.json'),
     initialIdState(manifest),
+    targetDir,
+    manifest,
     dryRun,
     created,
     skipped,

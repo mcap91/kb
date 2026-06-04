@@ -61,6 +61,7 @@ async function runProcess(
       env,
       shell: false,
       stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
     });
 
     let stdout = '';

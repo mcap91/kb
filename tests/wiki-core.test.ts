@@ -187,6 +187,133 @@ describe('bootstrap', () => {
     expect(readText(tmp.dir, 'CLAUDE.md')).toBe('claude doc');
   });
 
+  it('reconciles ID counters from existing entry files when .id-state.json is absent', async () => {
+    tmp = createTmpDir();
+
+    const wikiDir = path.join(tmp.dir, 'wiki');
+    fs.mkdirSync(path.join(wikiDir, 'issues'), { recursive: true });
+    fs.mkdirSync(path.join(wikiDir, 'initiatives'), { recursive: true });
+
+    for (let i = 1; i <= 16; i++) {
+      const id = `WK-${String(i).padStart(4, '0')}`;
+      writeRecord(tmp.dir, `wiki/issues/${id}.md`, {
+        id,
+        title: `Issue ${i}`,
+        type: 'task',
+        status: 'inbox',
+        priority: 'medium',
+        owner: 'test',
+        created: '2026-01-01',
+        updated: '2026-01-01',
+      });
+    }
+
+    writeRecord(tmp.dir, 'wiki/initiatives/IN-0001.md', {
+      id: 'IN-0001',
+      title: 'Init 1',
+      status: 'todo',
+      priority: 'medium',
+      owner: 'test',
+      created: '2026-01-01',
+      updated: '2026-01-01',
+    });
+    writeRecord(tmp.dir, 'wiki/initiatives/IN-0002.md', {
+      id: 'IN-0002',
+      title: 'Init 2',
+      status: 'todo',
+      priority: 'medium',
+      owner: 'test',
+      created: '2026-01-01',
+      updated: '2026-01-01',
+    });
+
+    const result = await bootstrap({ dir: tmp.dir, repo: 'test/repo' });
+    expect(result.ok).toBe(true);
+
+    const state = readJson<IdState>(tmp.dir, 'wiki/.id-state.json');
+    expect(state['WK'].next).toBe(17);
+    expect(state['WK'].allocated).toEqual(
+      Array.from({ length: 16 }, (_, i) => i + 1),
+    );
+    expect(state['IN'].next).toBe(3);
+    expect(state['IN'].allocated).toEqual([1, 2]);
+    expect(state['DEC']).toEqual({ next: 1, allocated: [] });
+    expect(state['SRC']).toEqual({ next: 1, allocated: [] });
+    expect(state['PLN']).toEqual({ next: 1, allocated: [] });
+  });
+
+  it('reconciles stale ID counters in existing .id-state.json', async () => {
+    tmp = createTmpDir();
+
+    const wikiDir = path.join(tmp.dir, 'wiki');
+    fs.mkdirSync(path.join(wikiDir, 'issues'), { recursive: true });
+
+    for (let i = 1; i <= 5; i++) {
+      const id = `WK-${String(i).padStart(4, '0')}`;
+      writeRecord(tmp.dir, `wiki/issues/${id}.md`, {
+        id,
+        title: `Issue ${i}`,
+        type: 'task',
+        status: 'inbox',
+        priority: 'medium',
+        owner: 'test',
+        created: '2026-01-01',
+        updated: '2026-01-01',
+      });
+    }
+
+    fs.writeFileSync(
+      path.join(wikiDir, '.id-state.json'),
+      JSON.stringify({
+        WK: { next: 1, allocated: [] },
+        IN: { next: 1, allocated: [] },
+        DEC: { next: 1, allocated: [] },
+        SRC: { next: 1, allocated: [] },
+        PLN: { next: 1, allocated: [] },
+      }, null, 2) + '\n',
+      'utf-8',
+    );
+
+    const result = await bootstrap({ dir: tmp.dir, repo: 'test/repo' });
+    expect(result.ok).toBe(true);
+
+    const state = readJson<IdState>(tmp.dir, 'wiki/.id-state.json');
+    expect(state['WK'].next).toBe(6);
+    expect(state['WK'].allocated).toEqual([1, 2, 3, 4, 5]);
+  });
+
+  it('does not clobber existing entries after reconciliation', async () => {
+    tmp = createTmpDir();
+    await bootstrap({ dir: tmp.dir, repo: 'test/repo' });
+
+    for (let i = 1; i <= 3; i++) {
+      const id = `WK-${String(i).padStart(4, '0')}`;
+      writeRecord(tmp.dir, `wiki/issues/${id}.md`, {
+        id,
+        title: `Existing issue ${i}`,
+        type: 'task',
+        status: 'inbox',
+        priority: 'medium',
+        owner: 'test',
+        created: '2026-01-01',
+        updated: '2026-01-01',
+      });
+    }
+
+    fs.unlinkSync(path.join(tmp.dir, 'wiki/.id-state.json'));
+
+    await bootstrap({ dir: tmp.dir, repo: 'test/repo' });
+
+    const createResult = await create({ dir: tmp.dir, prefix: 'WK', title: 'New issue' });
+    expect(createResult.ok).toBe(true);
+    if (createResult.ok) {
+      expect(createResult.data.id).toBe('WK-0004');
+    }
+
+    const original = readText(tmp.dir, 'wiki/issues/WK-0001.md');
+    expect(original).toContain('Existing issue 1');
+  });
+
   it('dry-run reports but does not create files', async () => {
     tmp = createTmpDir();
     const result = await bootstrap({ dir: tmp.dir, repo: 'test/repo', dryRun: true });

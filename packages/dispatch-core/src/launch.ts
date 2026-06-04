@@ -851,6 +851,7 @@ export async function launch(opts: LaunchOpts): Promise<DispatchResult<RunResult
         'pipe',
       ],
       shell: spawnInvocation.shell,
+      windowsHide: true,
     });
 
     if (child.stdout) {
