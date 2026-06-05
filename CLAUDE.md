@@ -35,6 +35,10 @@ Six packages under `packages/`: `wiki-core`, `wiki-cli`, `wiki-mcp`, `dispatch-c
 
 Contract lives in `contract/` with `manifest.json` as the source of truth for record types.
 
+### Subagents
+
+Subagents default to Sonnet via `CLAUDE_CODE_SUBAGENT_MODEL` in `.claude/settings.json`. Pass `model: "opus"` on individual Agent calls only when the subagent needs complex reasoning or a Sonnet attempt produced inadequate results.
+
 ### Do Not
 
 - Modify files under `scratch_space/`
