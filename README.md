@@ -16,18 +16,17 @@ Use this model:
 - Use the **CLI from the `kb` repo** for `graph`.
 - Always target the consuming repo explicitly with `dir`.
 
-Repository-context retrieval is a wiki/docs retrieval problem first, not a broad filesystem search problem first.
+Repository-context retrieval is a wiki/docs retrieval problem first, not a filesystem-search problem first.
 
 Before substantive work:
 
-1. Start from `wiki/catalog.md`.
-2. Read the relevant durable `docs/` reference pages.
-3. Check related `wiki/decisions/`, `wiki/issues/`, `wiki/initiatives/`, `wiki/areas/`, and `wiki/sources/`.
-4. Only then inspect `packages/` and `tests/`.
+1. Search the wiki with the kb wiki MCP `search` tool. This is the first retrieval step.
+2. If you need a structured overview, regenerate views with the MCP `generate` tool and read them (`catalog`, `now`, `inbox`, `backlog`, `archive`).
+3. Then read the relevant durable `docs/` pages.
+4. Then check related `wiki/decisions/`, `wiki/issues/`, `wiki/initiatives/`, `wiki/areas/`, and `wiki/sources/`.
+5. Only then inspect `packages/` and `tests/`.
 
-Do not use raw `rg` as the first retrieval step for repo-context questions. Use `wiki/catalog.md` or `wiki search` first.
-
-Do not parallelize implementation search with the initial retrieval pass. Complete steps 1-3 before searching `packages/` or `tests/`.
+If the kb wiki MCP server is not available this session, run the same steps via the kb CLI from the kb checkout. Do not use raw `rg`, file globbing, or direct file reads as the first retrieval step. Do not parallelize implementation search with the initial retrieval pass.
 
 If generated views are missing or stale, prefer canonical pages directly over derived views.
 
@@ -515,18 +514,17 @@ When you need graph operations, use the `kb` CLI from `../kb`.
 
 Do not run `kb` commands from this repo root unless explicitly instructed. Run them from `../kb` and point back to this repo with `--dir`.
 
-Repository-context retrieval is a wiki/docs retrieval problem first, not a broad filesystem search problem first.
+Repository-context retrieval is a wiki/docs retrieval problem first, not a filesystem-search problem first.
 
 Before substantive work:
 
-1. Start from `wiki/catalog.md`.
-2. Read the relevant durable `docs/` reference pages.
-3. Check related `wiki/decisions/`, `wiki/issues/`, `wiki/initiatives/`, `wiki/areas/`, and `wiki/sources/`.
-4. Only then inspect implementation files.
+1. Search the wiki with the kb wiki MCP `search` tool. This is the first retrieval step.
+2. If you need a structured overview, regenerate views with the MCP `generate` tool and read them (`catalog`, `now`, `inbox`, `backlog`, `archive`).
+3. Then read the relevant durable `docs/` pages.
+4. Then check related `wiki/decisions/`, `wiki/issues/`, `wiki/initiatives/`, `wiki/areas/`, and `wiki/sources/`.
+5. Only then inspect implementation files.
 
-Do not use raw `rg` as the first retrieval step for repo-context questions. Use `wiki/catalog.md` or `wiki search` first.
-
-Do not parallelize implementation search with the initial retrieval pass. Complete steps 1-3 before searching code.
+If the kb wiki MCP server is not available this session, run the same steps via the kb CLI from the kb checkout. Do not use raw `rg`, file globbing, or direct file reads as the first retrieval step. Do not parallelize implementation search with the initial retrieval pass.
 
 ## First-Time Setup
 
@@ -539,16 +537,7 @@ npm run typecheck
 npm test
 ```
 
-If Claude will run in this consuming repo, create this repo's own `.mcp.json` that points back to `../kb` or to the absolute `kb` path.
-
-If Codex will run on this machine, register the `kb` checkout once and reuse it:
-
-```bash
-cd ../kb
-npm run codex:mcp:register
-```
-
-Do not copy `../kb/.mcp.json` into this repo verbatim. That file is only for self-hosting the `kb` repo itself.
+Bootstrap writes `.mcp.json` (Claude) automatically with resolved paths. For Codex, pass `--mcp-client codex` to get the registration commands instead.
 
 If this repo has not been bootstrapped yet:
 
@@ -586,8 +575,8 @@ cd ../kb
 npm run dispatch -- init-config --force
 ```
 
-`sync-contract` does not update this repo's `AGENTS.md` or `CLAUDE.md`.
-It also does not overwrite `wiki/schema.md`, `wiki/conventions.md`, or `wiki/index.md`.
+`sync-contract` refreshes the managed block in `AGENTS.md`/`CLAUDE.md` and merges `.mcp.json`.
+It does not overwrite `wiki/schema.md`, `wiki/conventions.md`, or `wiki/index.md`.
 
 ## Rules
 
@@ -605,108 +594,51 @@ npm test
 ```
 ````
 
-## Paste-Ready `CLAUDE.md` Snippet for a Consuming Repo
+## Auto-Managed Agent Instructions
 
-Paste this into the consuming repo's `CLAUDE.md`:
+`kb bootstrap` and `kb sync-contract` automatically write a managed block into the consuming repo's
+`AGENTS.md` and `CLAUDE.md` between `<!-- BEGIN kb-managed -->` / `<!-- END kb-managed -->` markers.
+The block is the same in both files and contains the MCP-first retrieval procedure and operating rules.
+Content outside the markers is never touched.
 
-Replace these two placeholders once after pasting:
+Bootstrap also writes `.mcp.json` (for Claude, default) with resolved paths to `kb-wiki` and `kb-dispatch`
+servers. For Codex, pass `--mcp-client codex` to get `codex mcp add` commands instead.
 
-- `<owner/name>`
-- `../<this-repo-name>`
+The managed block content is shown here for reference:
 
 ````md
-# kb Integration
+## kb integration
 
-This repo is managed with the `kb` toolkit from `../kb`.
+This repository uses the `kb` toolkit (repo-local wiki, reviewed dispatch, deterministic graph). The kb
+MCP servers (`kb-wiki`, `kb-dispatch`) are registered in this repo's `.mcp.json` and run from the kb
+checkout; every kb tool call targets this repository via `dir`.
 
-Use this operating model:
+### Retrieval — do this before substantive work
 
-- run the `kb` wiki MCP server from `../kb`
-- run the `kb` dispatch MCP server from `../kb` when you need handoff lifecycle tools
-- use MCP for wiki operations against this repo
-- use dispatch MCP or `../kb` CLI for dispatch
-- use `../kb` CLI for graph
-- target this repo explicitly with `dir`
-- keep Claude project MCP config in this repo, not copied verbatim from `../kb/.mcp.json`
+Repository-context retrieval is a wiki/docs retrieval problem first, not a filesystem-search problem first.
 
-Repository-context retrieval is a wiki/docs retrieval problem first, not a broad filesystem search problem first.
+1. Search the wiki with the kb wiki MCP `search` tool. This is the first retrieval step.
+2. If you need a structured overview, regenerate views with the MCP `generate` tool and read them
+   (`catalog`, `now`, `inbox`, `backlog`, `archive`).
+3. Then read the relevant durable `docs/` pages.
+4. Then check related `wiki/decisions/`, `wiki/issues/`, `wiki/initiatives/`, `wiki/areas/`, `wiki/sources/`.
+5. Only then inspect implementation files.
 
-Before substantive work:
+If the kb wiki MCP server is not available this session, run the same steps via the kb CLI from the kb
+checkout (`npm run wiki -- search --dir <this repo>`, `npm run wiki -- generate --dir <this repo>`). Do
+not use raw `rg`, file globbing, or direct file reads as the first retrieval step — use the wiki MCP tools
+(`search`, `generate`, `lint`), or the CLI fallback, first. Do not parallelize implementation search with
+the initial retrieval pass.
 
-1. Start from `wiki/catalog.md`.
-2. Read the relevant durable `docs/` reference pages.
-3. Check related `wiki/decisions/`, `wiki/issues/`, `wiki/initiatives/`, `wiki/areas/`, and `wiki/sources/`.
-4. Only then inspect implementation files.
+### Operating rules
 
-Do not use raw `rg` as the first retrieval step for repo-context questions. Use `wiki/catalog.md` or `wiki search` first.
-
-Do not parallelize implementation search with the initial retrieval pass. Complete steps 1-3 before searching code.
-
-## Commands
-
-Install or update `kb`:
-
-```bash
-cd ../kb
-npm install
-npm run typecheck
-npm test
-```
-
-If Claude runs in this consuming repo, put a repo-local `.mcp.json` here that points back to `../kb`.
-
-If Codex runs on this machine, register the `kb` checkout once from `../kb`:
-
-```bash
-cd ../kb
-npm run codex:mcp:register
-```
-
-Do not copy `../kb/.mcp.json` into this repo unchanged. That file is only for the self-hosted `kb` repo case.
-
-Bootstrap this repo:
-
-```bash
-cd ../kb
-npm run wiki -- bootstrap --dir ../<this-repo-name> --repo <owner/name>
-npm run dispatch -- init-config
-npm run wiki -- generate --dir ../<this-repo-name>
-npm run wiki -- build-search-index --dir ../<this-repo-name>
-npm run graph -- --dir ../<this-repo-name>
-```
-
-Update this repo after `kb` changes:
-
-```bash
-cd ../kb
-git pull
-npm install
-npm run typecheck
-npm test
-npm run wiki -- sync-contract --dir ../<this-repo-name>
-npm run wiki -- lint --dir ../<this-repo-name>
-npm run wiki -- generate --dir ../<this-repo-name>
-npm run wiki -- build-search-index --dir ../<this-repo-name>
-npm run graph -- --dir ../<this-repo-name>
-```
-
-If this repo uses dispatch and is upgrading from the older dispatch registry format:
-
-```bash
-cd ../kb
-npm run dispatch -- init-config --force
-```
-
-`sync-contract` does not update this repo's `AGENTS.md` or `CLAUDE.md`.
-It also does not overwrite `wiki/schema.md`, `wiki/conventions.md`, or `wiki/index.md`.
-
-## Rules
-
-- Prefer `kb` MCP for wiki operations.
-- Prefer dispatch MCP or `kb` CLI for `dispatch`.
-- Use `kb` CLI for `graph`.
-- Do not create `HO-*` with `wiki create`.
-- Run `kb` from `../kb`, not from this repo root.
+- Wiki: prefer the `kb-wiki` MCP tools (`search`, `generate`, `lint`, `create`, `allocate-id`,
+  `build-search-index`, `sync-contract`, `bootstrap`); CLI fallback `npm run wiki -- … --dir <this repo>`.
+- Dispatch: prefer the `kb-dispatch` MCP tools or the kb CLI.
+- Graph: kb CLI (`npm run graph -- --dir <this repo>`).
+- Always pass `dir` pointing at this repository; run kb from its own checkout, not this repo root.
+- Do not create `HO-*` via `wiki create` — handoffs are dispatch-owned under `wiki/handoffs/`.
+- If wiki records and code/tests disagree, report the mismatch rather than trusting a grep-first conclusion.
 ````
 
 ## Notes for Agents

@@ -178,14 +178,13 @@ Do not treat generated views, launcher runtime artifacts, or `scratch_space/` ma
 
 Before substantive work:
 
-1. Start from `wiki/catalog.md`.
-2. Read the relevant durable `docs/` reference pages.
-3. Check related `wiki/decisions/`, `wiki/issues/`, `wiki/initiatives/`, `wiki/areas/`, and `wiki/sources/` pages when they exist.
-4. Only then drill into implementation files under `packages/` and `tests/`.
+1. Search the wiki with the kb wiki MCP `search` tool. This is the first retrieval step.
+2. If you need a structured overview, regenerate views with the MCP `generate` tool and read them (`catalog`, `now`, `inbox`, `backlog`, `archive`).
+3. Then read the relevant durable `docs/` pages.
+4. Then check related `wiki/decisions/`, `wiki/issues/`, `wiki/initiatives/`, `wiki/areas/`, and `wiki/sources/` pages when they exist.
+5. Only then drill into implementation files under `packages/` and `tests/`.
 
-Do not use raw `rg` as the first retrieval step for repo-context questions. Use `wiki/catalog.md` or `wiki search` first.
-
-Do not parallelize implementation search with the initial retrieval pass. Complete steps 1-3 before searching `packages/` or `tests/`.
+If the kb wiki MCP server is not available this session, run the same steps via the kb CLI (`npm run wiki -- search --dir .`, `npm run wiki -- generate --dir .`). Do not use raw `rg`, file globbing, or direct file reads as the first retrieval step. Do not parallelize implementation search with the initial retrieval pass.
 
 If generated views are missing or stale, fall back to:
 

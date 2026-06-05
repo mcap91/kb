@@ -34,11 +34,13 @@ After that, the consuming repo can use newly added wiki surfaces such as `PLN-*`
 - adds missing allocator entries such as `PLN`
 - updates `wiki/.wiki-contract.json` with the current contract version and `lastSyncedAt`
 - reports drift in consumer-owned bootstrap docs without overwriting them
+- refreshes the managed block in `AGENTS.md` and `CLAUDE.md` (between `<!-- BEGIN kb-managed -->` / `<!-- END kb-managed -->` markers; content outside the markers is never touched)
+- merges `kb-wiki` and `kb-dispatch` entries into `.mcp.json` (Claude), preserving existing servers
+
+Note: `wiki/conventions.md` stays consumer-owned (not rewritten by sync), but the `AGENTS.md`/`CLAUDE.md` managed block is now authoritative for retrieval instructions.
 
 It does not update:
 
-- `AGENTS.md`
-- `CLAUDE.md`
 - project-specific docs
 - operator dispatch registry files
 
@@ -112,7 +114,9 @@ For strict stdio clients, use direct `node --import ... server.ts` registrations
 
 - Pulling `kb` is not enough; run `sync-contract` for each consuming repo.
 - Do not run `bootstrap` as the normal upgrade step.
-- `sync-contract` does not edit `AGENTS.md` or `CLAUDE.md`.
+- `sync-contract` now refreshes the managed block in `AGENTS.md`/`CLAUDE.md` and merges `.mcp.json`. Content outside the `<!-- BEGIN kb-managed -->` / `<!-- END kb-managed -->` markers is never touched.
 - `wiki create` does not create `HO-*`; handoffs remain dispatch-owned.
 - If `sync-contract --check` reports `wiki/.id-state.json`, it means a new prefix will be merged in
   normal mode without resetting existing allocations.
+- Use `--mcp-client codex` to get `codex mcp add` commands instead of writing `.mcp.json`.
+- Use `--no-agent-instructions` to skip the managed block entirely.

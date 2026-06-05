@@ -6,10 +6,11 @@ After bootstrap, this file is consumer-owned. You may customize it for your proj
 
 ## Retrieval
 
-- start retrieval from `wiki/catalog.md`
-- treat `wiki/catalog.md`, `wiki/now.md`, `wiki/inbox.md`, `wiki/backlog.md`, and `wiki/archive.md` as non-canonical generated views
-- when generated views are missing or may be stale, prefer canonical pages directly
-- use related issue, initiative, decision, source, and area pages as the canonical record surfaces
+- use the kb wiki MCP `search` tool as the first retrieval step; if the MCP server is unavailable, use the kb CLI (`npm run wiki -- search --dir .`)
+- if you need a structured overview, regenerate views with the MCP `generate` tool and read them (`catalog`, `now`, `inbox`, `backlog`, `archive`)
+- treat generated views as non-canonical — prefer canonical record pages directly when views are missing or stale
+- then read the relevant durable `docs/` pages and related issue, initiative, decision, source, and area records
+- do not use raw `rg`, file globbing, or direct file reads as the first retrieval step
 
 ## Creating Records
 

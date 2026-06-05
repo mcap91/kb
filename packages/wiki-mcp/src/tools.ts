@@ -33,6 +33,8 @@ export const tools: ToolDef[] = [
     inputSchema: dirSchema.extend({
       repo: z.string().describe('Repo identifier (e.g. org/name)'),
       dryRun: z.boolean().optional(),
+      mcpClient: z.enum(['claude', 'codex', 'none']).optional().describe('MCP client type (default: claude)'),
+      agentInstructions: z.boolean().optional().describe('Write managed block to AGENTS.md/CLAUDE.md (default: true)'),
     }),
     handler: async (input) => bootstrap(input as unknown as Parameters<typeof bootstrap>[0]),
   },
@@ -41,6 +43,8 @@ export const tools: ToolDef[] = [
     description: 'Sync contract templates into an already-bootstrapped repo',
     inputSchema: dirSchema.extend({
       check: z.boolean().optional(),
+      mcpClient: z.enum(['claude', 'codex', 'none']).optional().describe('MCP client type (default: claude)'),
+      agentInstructions: z.boolean().optional().describe('Refresh managed block in AGENTS.md/CLAUDE.md (default: true)'),
     }),
     handler: async (input) => sync(input as unknown as Parameters<typeof sync>[0]),
   },

@@ -22,7 +22,10 @@ import {
   loadManifest,
   getRecordTemplates,
   bootstrapDir,
+  getAgentInstructionsTemplate,
 } from './contract.js';
+import { writeManagedBlock } from './agent-instructions.js';
+import { writeMcpConfig } from './mcp-config.js';
 import { debug, setVerbose } from './debug.js';
 
 // ---------------------------------------------------------------------------
@@ -318,5 +321,46 @@ export async function sync(opts: SyncOpts): Promise<Result<SyncResult>> {
     }
   }
 
-  return ok({ synced, drifted, skipped });
+  // 5. Write agent instructions managed block
+  const updated: string[] = [];
+  const instructions: string[] = [];
+
+  const agentInstructions = opts.agentInstructions ?? true;
+  if (agentInstructions) {
+    const templateResult = getAgentInstructionsTemplate();
+    if (templateResult.ok) {
+      const blockResult = writeManagedBlock(targetDir, templateResult.data, { dryRun: checkOnly });
+      if (blockResult.ok) {
+        for (const entry of blockResult.data) {
+          if (entry.action !== 'unchanged') {
+            updated.push(entry.file);
+          }
+        }
+      }
+    }
+  }
+
+  // 6. Write .mcp.json
+  const mcpClient = opts.mcpClient ?? 'claude';
+  const mcpResult = writeMcpConfig(targetDir, { client: mcpClient, dryRun: checkOnly });
+  if (mcpResult.ok) {
+    const mcpData = mcpResult.data;
+    if (mcpData.action === 'created' || mcpData.action === 'updated') {
+      updated.push('.mcp.json');
+      instructions.push('Merged kb servers into .mcp.json');
+    } else if (mcpData.action === 'unchanged') {
+      instructions.push('.mcp.json already up to date');
+    }
+    if (mcpData.commands) {
+      instructions.push(...mcpData.commands);
+    }
+  }
+
+  return ok({
+    synced,
+    drifted,
+    skipped,
+    updated,
+    instructions: instructions.length > 0 ? instructions : undefined,
+  });
 }

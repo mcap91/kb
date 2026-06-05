@@ -19,14 +19,21 @@ related: []
 
 # {{id}}: {{title}}
 
-## Description
+## Objective
 
-<!-- Describe the work item here -->
+<!-- What is this work item trying to accomplish? -->
 
-## Acceptance Criteria
+## Scope
+
+<!-- Define the boundaries and approach -->
+
+## Checklist
+
+<!-- Add checklist items as work progresses -->
+
+## Acceptance criteria
 
 - [ ] <!-- Criterion 1 -->
-- [ ] <!-- Criterion 2 -->
 
 ## Notes
 

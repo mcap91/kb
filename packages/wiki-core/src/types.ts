@@ -344,12 +344,16 @@ export interface BootstrapOpts {
   repo: string;
   dryRun?: boolean;
   verbose?: boolean;
+  mcpClient?: 'claude' | 'codex' | 'none';
+  agentInstructions?: boolean;
 }
 
 /** Result of a bootstrap operation. */
 export interface BootstrapResult {
   created: string[];
   skipped: string[];
+  updated?: string[];
+  instructions?: string[];
 }
 
 /** Options for sync-contract operation. */
@@ -357,6 +361,8 @@ export interface SyncOpts {
   dir: string;
   check?: boolean;
   verbose?: boolean;
+  mcpClient?: 'claude' | 'codex' | 'none';
+  agentInstructions?: boolean;
 }
 
 /** Result of a sync-contract operation. */
@@ -364,6 +370,8 @@ export interface SyncResult {
   synced: string[];
   drifted: string[];
   skipped: string[];
+  updated?: string[];
+  instructions?: string[];
 }
 
 /** Options for ID allocation. */
@@ -385,6 +393,7 @@ export interface CreateOpts {
   prefix: string;
   title: string;
   slug?: string;
+  owner?: string;
   verbose?: boolean;
 }
 

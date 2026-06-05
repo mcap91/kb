@@ -61,7 +61,9 @@ export async function cmdBootstrap(args: string[]): Promise<void> {
   }
 
   const dryRun = parseFlag(args, '--dry-run');
-  const result = await bootstrap({ dir, repo, dryRun });
+  const mcpClient = (parseValue(args, '--mcp-client') ?? 'claude') as 'claude' | 'codex' | 'none';
+  const agentInstructions = !parseFlag(args, '--no-agent-instructions');
+  const result = await bootstrap({ dir, repo, dryRun, mcpClient, agentInstructions });
 
   if (!result.ok) {
     console.error(`Error [${result.error}]: ${result.message}`);
@@ -76,8 +78,19 @@ export async function cmdBootstrap(args: string[]): Promise<void> {
   }
   console.log(`  Created: ${result.data.created.length} items`);
   console.log(`  Skipped: ${result.data.skipped.length} items`);
+  if (result.data.updated && result.data.updated.length > 0) {
+    console.log(`  Updated: ${result.data.updated.length} items`);
+    for (const f of result.data.updated) {
+      console.log(`    ~ ${f}`);
+    }
+  }
   for (const f of result.data.created) {
     console.log(`    + ${f}`);
+  }
+  if (result.data.instructions) {
+    for (const line of result.data.instructions) {
+      console.log(`  > ${line}`);
+    }
   }
 }
 
@@ -90,7 +103,9 @@ export async function cmdSyncContract(args: string[]): Promise<void> {
   try { dir = requireDir(args); } catch { return; }
 
   const check = parseFlag(args, '--check');
-  const result = await sync({ dir, check });
+  const mcpClient = (parseValue(args, '--mcp-client') ?? 'claude') as 'claude' | 'codex' | 'none';
+  const agentInstructions = !parseFlag(args, '--no-agent-instructions');
+  const result = await sync({ dir, check, mcpClient, agentInstructions });
 
   if (!result.ok) {
     console.error(`Error [${result.error}]: ${result.message}`);
@@ -106,9 +121,20 @@ export async function cmdSyncContract(args: string[]): Promise<void> {
   console.log(`  Synced:  ${result.data.synced.length}`);
   console.log(`  Drifted: ${result.data.drifted.length}`);
   console.log(`  Skipped: ${result.data.skipped.length}`);
+  if (result.data.updated && result.data.updated.length > 0) {
+    console.log(`  Updated: ${result.data.updated.length}`);
+    for (const f of result.data.updated) {
+      console.log(`    ~ ${f}`);
+    }
+  }
 
   for (const f of result.data.drifted) {
     console.log(`  ! drift: ${f}`);
+  }
+  if (result.data.instructions) {
+    for (const line of result.data.instructions) {
+      console.log(`  > ${line}`);
+    }
   }
 }
 
@@ -161,8 +187,9 @@ export async function cmdCreate(args: string[]): Promise<void> {
   }
 
   const slug = parseValue(args, '--slug');
+  const owner = parseValue(args, '--owner') || undefined;
 
-  const result = await create({ dir, prefix, title, slug });
+  const result = await create({ dir, prefix, title, slug, owner });
 
   if (!result.ok) {
     console.error(`Error [${result.error}]: ${result.message}`);
