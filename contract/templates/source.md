@@ -4,8 +4,8 @@ title: "{{title}}"
 kind: article
 captured: "{{date}}"
 updated: "{{date}}"
-source_uri: ""
-authority: ""
+source_uri: "tbd"
+authority: "unknown"
 immutable_hint: false
 related_docs: []
 related_work: []

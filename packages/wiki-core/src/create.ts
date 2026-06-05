@@ -8,6 +8,7 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { execSync } from 'node:child_process';
 import { ok, fail, type Result } from './errors.js';
 import type {
   CreateOpts,
@@ -104,6 +105,16 @@ function fillTemplate(
   return result;
 }
 
+function getGitUserName(cwd: string): string | undefined {
+  try {
+    execSync('git rev-parse --git-dir', { cwd, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
+    const name = execSync('git config user.name', { cwd, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
+    return name || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Create
 // ---------------------------------------------------------------------------
@@ -161,6 +172,8 @@ export async function create(
   const { def: typeDef } = typeMatch;
   const targetDir = path.resolve(opts.dir);
   const now = new Date().toISOString();
+  const dateOnly = now.slice(0, 10);
+  const owner = opts.owner ?? getGitUserName(targetDir) ?? 'unassigned';
 
   // 3. Determine the ID and filename
   let id: string;
@@ -201,8 +214,8 @@ export async function create(
   const values: Record<string, string> = {
     id,
     title: opts.title,
-    date: now,
-    owner: 'unassigned',
+    date: dateOnly,
+    owner,
     slug: typeDef.idStrategy === 'slug' ? id : '',
     bundle_path: typeDef.prefix === 'PLN' ? getPlanBundleRelPath(id) : '',
     design_entry: typeDef.prefix === 'PLN' ? getPlanDesignRelPath(id) : '',

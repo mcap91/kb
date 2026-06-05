@@ -8,6 +8,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { execSync } from 'node:child_process';
 
 import {
   bootstrap,
@@ -171,7 +172,7 @@ describe('bootstrap', () => {
     expect(content).toBe('custom content');
   });
 
-  it('preserves existing docs/, AGENTS.md, CLAUDE.md', async () => {
+  it('preserves existing consumer content in docs/, AGENTS.md, CLAUDE.md', async () => {
     tmp = createTmpDir();
 
     // Pre-create existing files
@@ -183,8 +184,11 @@ describe('bootstrap', () => {
     await bootstrap({ dir: tmp.dir, repo: 'test/repo' });
 
     expect(readText(tmp.dir, 'docs/existing.md')).toBe('doc content');
-    expect(readText(tmp.dir, 'AGENTS.md')).toBe('agent doc');
-    expect(readText(tmp.dir, 'CLAUDE.md')).toBe('claude doc');
+    // Bootstrap now adds a managed block but preserves consumer content
+    expect(readText(tmp.dir, 'AGENTS.md')).toContain('agent doc');
+    expect(readText(tmp.dir, 'CLAUDE.md')).toContain('claude doc');
+    expect(readText(tmp.dir, 'AGENTS.md')).toContain('<!-- BEGIN kb-managed -->');
+    expect(readText(tmp.dir, 'CLAUDE.md')).toContain('<!-- BEGIN kb-managed -->');
   });
 
   it('reconciles ID counters from existing entry files when .id-state.json is absent', async () => {
@@ -612,9 +616,12 @@ describe('create', () => {
     expect(content).toContain('id: "PLN-0001"');
     expect(content).toContain('title: "Test plan"');
     expect(content).toContain('status: draft');
+    expect(content).toContain('owner: "unassigned"');
     expect(content).toContain('bundle_path: "wiki/plans/PLN-0001/"');
     expect(content).toContain('design_entry: "wiki/plans/PLN-0001/design/spec.md"');
     expect(content).toContain('execution_entry: "wiki/plans/PLN-0001/execution/tracker.md"');
+    expect(content).toMatch(/created: "\d{4}-\d{2}-\d{2}"/);
+    expect(content).not.toMatch(/created: "\d{4}-\d{2}-\d{2}T/);
   });
 
   it('creates PLN bundle skeleton successfully', async () => {
@@ -665,6 +672,11 @@ describe('create', () => {
     expect(content).toContain('id: "WK-0001"');
     expect(content).toContain('title: "My Task"');
     expect(content).toContain('status: inbox');
+    expect(content).toContain('owner: "unassigned"');
+    expect(content).toMatch(/created: "\d{4}-\d{2}-\d{2}"/);
+    expect(content).not.toMatch(/created: "\d{4}-\d{2}-\d{2}T/);
+    expect(content).toMatch(/updated: "\d{4}-\d{2}-\d{2}"/);
+    expect(content).not.toMatch(/updated: "\d{4}-\d{2}-\d{2}T/);
   });
 
   it('created record is written to correct directory', async () => {
@@ -677,6 +689,148 @@ describe('create', () => {
     expect(fileExists(tmp.dir, 'wiki/issues/WK-0001.md')).toBe(true);
     expect(fileExists(tmp.dir, 'wiki/initiatives/IN-0001.md')).toBe(true);
     expect(fileExists(tmp.dir, 'wiki/decisions/DEC-0001.md')).toBe(true);
+  });
+
+  it('every prefix lints clean (0 errors, 0 warnings)', async () => {
+    tmp = await createBootstrappedRepo();
+    await create({ dir: tmp.dir, prefix: 'WK', title: 'Issue' });
+    await create({ dir: tmp.dir, prefix: 'IN', title: 'Initiative' });
+    await create({ dir: tmp.dir, prefix: 'DEC', title: 'Decision' });
+    await create({ dir: tmp.dir, prefix: 'SRC', title: 'Source' });
+    await create({ dir: tmp.dir, prefix: 'AREA', title: 'Area', slug: 'area-test' });
+    await create({ dir: tmp.dir, prefix: 'PLN', title: 'Plan' });
+
+    const result = await lint({ dir: tmp.dir });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.data.errorCount).toBe(0);
+      expect(result.data.warningCount).toBe(0);
+    }
+  });
+
+  it('WK body contains house sections', async () => {
+    tmp = await createBootstrappedRepo();
+    await create({ dir: tmp.dir, prefix: 'WK', title: 'Test issue' });
+
+    const content = readText(tmp.dir, 'wiki/issues/WK-0001.md');
+    expect(content).toContain('## Objective');
+    expect(content).toContain('## Scope');
+    expect(content).toContain('## Checklist');
+    expect(content).toContain('## Acceptance criteria');
+    expect(content).toContain('## Notes');
+  });
+
+  it('IN body contains house sections', async () => {
+    tmp = await createBootstrappedRepo();
+    await create({ dir: tmp.dir, prefix: 'IN', title: 'Test initiative' });
+
+    const content = readText(tmp.dir, 'wiki/initiatives/IN-0001.md');
+    expect(content).toContain('## Summary');
+    expect(content).toContain('## Goals');
+    expect(content).toContain('## Work Items');
+    expect(content).toContain('## Notes');
+  });
+
+  it('DEC body contains house sections', async () => {
+    tmp = await createBootstrappedRepo();
+    await create({ dir: tmp.dir, prefix: 'DEC', title: 'Test decision' });
+
+    const content = readText(tmp.dir, 'wiki/decisions/DEC-0001.md');
+    expect(content).toContain('## Context');
+    expect(content).toContain('## Decision');
+    expect(content).toContain('## Rationale');
+    expect(content).toContain('## Consequences');
+    expect(content).toContain('## Alternatives Considered');
+  });
+
+  it('SRC body contains house sections', async () => {
+    tmp = await createBootstrappedRepo();
+    await create({ dir: tmp.dir, prefix: 'SRC', title: 'Test source' });
+
+    const content = readText(tmp.dir, 'wiki/sources/SRC-0001.md');
+    expect(content).toContain('## Summary');
+    expect(content).toContain('## Key Points');
+    expect(content).toContain('## Relevance');
+    expect(content).toContain('## Notes');
+  });
+
+  it('AREA body contains house sections', async () => {
+    tmp = await createBootstrappedRepo();
+    await create({ dir: tmp.dir, prefix: 'AREA', title: 'Test area', slug: 'test-area' });
+
+    const content = readText(tmp.dir, 'wiki/areas/test-area.md');
+    expect(content).toContain('## Overview');
+    expect(content).toContain('## Key Initiatives');
+    expect(content).toContain('## Key Decisions');
+    expect(content).toContain('## Notes');
+  });
+
+  it('PLN body contains house sections', async () => {
+    tmp = await createBootstrappedRepo();
+    await create({ dir: tmp.dir, prefix: 'PLN', title: 'Test plan' });
+
+    const content = readText(tmp.dir, 'wiki/plans/PLN-0001.md');
+    expect(content).toContain('## Summary');
+    expect(content).toContain('## Scope');
+    expect(content).toContain('## Bundle');
+    expect(content).toContain('## Emergent Work');
+    expect(content).toContain('## Notes');
+  });
+
+  it('owner defaults to git user.name in a git repo', async () => {
+    tmp = createTmpDir();
+    execSync('git init', { cwd: tmp.dir, stdio: 'pipe' });
+    execSync('git config user.name "Test Author"', { cwd: tmp.dir, stdio: 'pipe' });
+    execSync('git config user.email "test@test.com"', { cwd: tmp.dir, stdio: 'pipe' });
+
+    await bootstrap({ dir: tmp.dir, repo: 'test/repo' });
+    await create({ dir: tmp.dir, prefix: 'WK', title: 'Test' });
+
+    const content = readText(tmp.dir, 'wiki/issues/WK-0001.md');
+    expect(content).toContain('owner: "Test Author"');
+  });
+
+  it('explicit owner overrides git user.name', async () => {
+    tmp = createTmpDir();
+    execSync('git init', { cwd: tmp.dir, stdio: 'pipe' });
+    execSync('git config user.name "Git User"', { cwd: tmp.dir, stdio: 'pipe' });
+    execSync('git config user.email "git@test.com"', { cwd: tmp.dir, stdio: 'pipe' });
+
+    await bootstrap({ dir: tmp.dir, repo: 'test/repo' });
+    await create({ dir: tmp.dir, prefix: 'WK', title: 'Test', owner: 'explicit-owner' });
+
+    const content = readText(tmp.dir, 'wiki/issues/WK-0001.md');
+    expect(content).toContain('owner: "explicit-owner"');
+    expect(content).not.toContain('Git User');
+  });
+
+  it('owner falls back to unassigned outside a git repo', async () => {
+    tmp = await createBootstrappedRepo();
+    await create({ dir: tmp.dir, prefix: 'WK', title: 'Test' });
+
+    const content = readText(tmp.dir, 'wiki/issues/WK-0001.md');
+    expect(content).toContain('owner: "unassigned"');
+  });
+
+  it('dates are emitted as date-only YYYY-MM-DD for all types', async () => {
+    tmp = await createBootstrappedRepo();
+
+    await create({ dir: tmp.dir, prefix: 'DEC', title: 'Date test' });
+    const dec = readText(tmp.dir, 'wiki/decisions/DEC-0001.md');
+    expect(dec).toMatch(/date: "\d{4}-\d{2}-\d{2}"/);
+    expect(dec).not.toMatch(/date: "\d{4}-\d{2}-\d{2}T/);
+
+    await create({ dir: tmp.dir, prefix: 'SRC', title: 'Date test' });
+    const src = readText(tmp.dir, 'wiki/sources/SRC-0001.md');
+    expect(src).toMatch(/captured: "\d{4}-\d{2}-\d{2}"/);
+    expect(src).not.toMatch(/captured: "\d{4}-\d{2}-\d{2}T/);
+    expect(src).toMatch(/updated: "\d{4}-\d{2}-\d{2}"/);
+    expect(src).not.toMatch(/updated: "\d{4}-\d{2}-\d{2}T/);
+
+    await create({ dir: tmp.dir, prefix: 'AREA', title: 'Date test', slug: 'date-area' });
+    const area = readText(tmp.dir, 'wiki/areas/date-area.md');
+    expect(area).toMatch(/updated: "\d{4}-\d{2}-\d{2}"/);
+    expect(area).not.toMatch(/updated: "\d{4}-\d{2}-\d{2}T/);
   });
 });
 

@@ -85,7 +85,14 @@ export {
   getBootstrapTemplates,
   getRecordTemplates,
   getTemplate,
+  getAgentInstructionsTemplate,
 } from './contract.js';
+
+// Agent instructions (managed block)
+export { writeManagedBlock } from './agent-instructions.js';
+
+// MCP config (.mcp.json)
+export { writeMcpConfig } from './mcp-config.js';
 
 // Bootstrap
 export { bootstrap } from './bootstrap.js';

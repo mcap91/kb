@@ -29,7 +29,7 @@ npm install
 
 ## Bootstrap
 
-Bootstrap creates the wiki directory structure in your repo:
+Bootstrap creates the wiki directory structure in your repo and sets up agent integration:
 
 ```
 npm run wiki -- bootstrap --dir ../my-project --repo org/my-project
@@ -42,11 +42,27 @@ This creates:
 - `wiki/.id-state.json` -- ID allocation state
 - `wiki/schema.md`, `wiki/conventions.md`, `wiki/index.md` -- bootstrap surfaces (created if absent, never overwritten)
 - Record templates copied into wiki directories
+- `AGENTS.md` and `CLAUDE.md` -- managed block with MCP-first retrieval and operating rules (between `<!-- BEGIN kb-managed -->` / `<!-- END kb-managed -->` markers; consumer content outside the markers is preserved)
+- `.mcp.json` -- Claude MCP client config with `kb-wiki` and `kb-dispatch` servers pointing at resolved kb paths (merged with existing entries if present)
 
 Use `--dry-run` to preview without writing:
 
 ```
 npm run wiki -- bootstrap --dir ../my-project --repo org/my-project --dry-run
+```
+
+### MCP Client Options
+
+By default, bootstrap writes `.mcp.json` for Claude. Use `--mcp-client` to change this:
+
+- `--mcp-client claude` (default): writes `.mcp.json` with `kb-wiki` and `kb-dispatch` server entries
+- `--mcp-client codex`: prints `codex mcp add` commands instead of writing a file
+- `--mcp-client none`: skips MCP config entirely
+
+To skip the managed block in `AGENTS.md`/`CLAUDE.md`:
+
+```
+npm run wiki -- bootstrap --dir ../my-project --repo org/my-project --no-agent-instructions
 ```
 
 ## Daily Operations

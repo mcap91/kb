@@ -10,16 +10,17 @@ Repository-context retrieval is a wiki/docs retrieval problem first, not a broad
 
 ## Retrieval Entrypoint
 
-The primary retrieval entrypoint is `wiki/catalog.md`, a generated view that lists all manifest-driven records organized by type and status. Agents and humans can use the catalog as a starting point for navigating the wiki.
+The primary retrieval entrypoint is the kb wiki MCP `search` tool. For a structured overview, use the MCP `generate` tool and read the generated views (`catalog`, `now`, `inbox`, `backlog`, `archive`). If the MCP server is unavailable, use the kb CLI (`npm run wiki -- search --dir .`, `npm run wiki -- generate --dir .`).
 
 ## Retrieval Order
 
-1. Start from `wiki/catalog.md`.
-2. Read the relevant durable `docs/` reference pages.
-3. Check related `wiki/decisions/`, `wiki/issues/`, `wiki/initiatives/`, `wiki/areas/`, and `wiki/sources/` pages.
-4. Only then drill into implementation files under `packages/` and `tests/`.
+1. Search the wiki with the kb wiki MCP `search` tool. This is the first retrieval step.
+2. If you need a structured overview, regenerate views with the MCP `generate` tool and read them (`catalog`, `now`, `inbox`, `backlog`, `archive`).
+3. Then read the relevant durable `docs/` reference pages.
+4. Then check related `wiki/decisions/`, `wiki/issues/`, `wiki/initiatives/`, `wiki/areas/`, and `wiki/sources/` pages.
+5. Only then drill into implementation files under `packages/` and `tests/`.
 
-If generated views are missing or may be stale, prefer canonical pages directly over derived views.
+If the kb wiki MCP server is not available this session, run the same steps via the kb CLI. Do not use raw `rg`, file globbing, or direct file reads as the first retrieval step. If generated views are missing or stale, prefer canonical pages directly over derived views.
 
 ## Canonical Content
 

@@ -143,6 +143,25 @@ export function getRecordTemplates(): Result<string[]> {
 }
 
 /**
+ * Read the agent-instructions template from contract/agent-instructions.md.
+ */
+export function getAgentInstructionsTemplate(): Result<string> {
+  const tp = path.join(findKbRoot(), 'contract', 'agent-instructions.md');
+  debug(`reading agent instructions template from ${tp}`);
+
+  if (!fs.existsSync(tp)) {
+    return fail('FILE_NOT_FOUND', `Agent instructions template not found at ${tp}`);
+  }
+
+  try {
+    const content = fs.readFileSync(tp, 'utf-8');
+    return ok(content);
+  } catch (err) {
+    return fail('FILE_NOT_FOUND', `Failed to read agent instructions template: ${String(err)}`, err);
+  }
+}
+
+/**
  * Read a specific template by filename (e.g. `"issue.md"` or `"handoff.md"`).
  */
 export function getTemplate(name: string): Result<string> {

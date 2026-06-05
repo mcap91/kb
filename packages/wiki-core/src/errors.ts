@@ -22,7 +22,8 @@ export type ErrorCode =
   | 'GENERATE_ERROR'
   | 'IMPORT_ERROR'
   | 'ARCHIVE_ERROR'
-  | 'SYNC_ERROR';
+  | 'SYNC_ERROR'
+  | 'MCP_CONFIG_PARSE_ERROR';
 
 /**
  * Discriminated union result type for wiki-core operations.
