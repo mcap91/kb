@@ -319,7 +319,7 @@ async function writeStateMetadata(
   metadataDir: string,
   data: {
     runId: string;
-    status: 'launching' | TerminalRunStatus;
+    status: 'launching' | 'running' | TerminalRunStatus;
     pid: number;
     pgid: number;
     startedAt: string;
@@ -933,6 +933,15 @@ export async function launch(opts: LaunchOpts): Promise<DispatchResult<RunResult
       stderrPath,
     });
 
+    await writeStateMetadata(metadataDir, {
+      runId,
+      status: 'running',
+      pid: child.pid,
+      pgid: child.pid,
+      startedAt,
+      heartbeatAt: new Date().toISOString(),
+    });
+
     heartbeatTimer = setInterval(async () => {
       if (!child?.pid || terminalStatus) {
         return;
@@ -941,7 +950,7 @@ export async function launch(opts: LaunchOpts): Promise<DispatchResult<RunResult
         const heartbeatAt = new Date().toISOString();
         await writeStateMetadata(metadataDir, {
           runId,
-          status: 'launching',
+          status: 'running',
           pid: child.pid,
           pgid: child.pid,
           startedAt,

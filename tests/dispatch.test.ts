@@ -1017,7 +1017,7 @@ describe('dispatch', () => {
         pgid: number;
         heartbeat_at: string;
       };
-      expect(state.status).toBe('launching');
+      expect(state.status).toBe('running');
       expect(state.pid).toBeGreaterThan(0);
       expect(state.pgid).toBeGreaterThan(0);
       expect(state.heartbeat_at).toBeTruthy();
@@ -1567,7 +1567,7 @@ describe('dispatch', () => {
       expect(waitResult.data.pid).toBeGreaterThan(0);
     }, 30000);
 
-    it('returns launching on timeout for an active run', async () => {
+    it('returns running on timeout for an active run', async () => {
       await setupBootstrappedRepo(repoRoot);
       await setupFullConfig({
         version: 1,
@@ -1620,7 +1620,7 @@ describe('dispatch', () => {
       });
       expect(waitResult.ok).toBe(true);
       if (!waitResult.ok) return;
-      expect(waitResult.data.status).toBe('launching');
+      expect(waitResult.data.status).toBe('running');
 
       await launchPromise;
     }, 30000);
@@ -1791,7 +1791,7 @@ describe('dispatch', () => {
       });
       expect(resp.ok).toBe(true);
       if (!resp.ok) return;
-      expect(resp.data.status).toBe('launching');
+      expect(resp.data.status).toBe('running');
       expect(resp.data.state).not.toBeNull();
 
       await launchPromise;
@@ -2022,7 +2022,7 @@ describe('dispatch', () => {
       const controllerJson = JSON.parse(await readFile(bg.data.controllerPath, 'utf-8'));
       expect(controllerJson.schema_version).toBe(1);
       expect(controllerJson.review_id).toBe(rev.data.reviewId);
-      expect(controllerJson.status).toBe('launching');
+      expect(controllerJson.status).toBe('running');
       expect(controllerJson.confirmed_child_start_at).toEqual(expect.any(String));
 
       await waitForRun({ dir: repoRoot, runId: bg.data.runId, timeoutSeconds: 30 });

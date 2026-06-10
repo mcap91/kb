@@ -22,7 +22,7 @@ export interface BackgroundLaunchResult {
 }
 
 export type TerminalRunStatus = 'completed' | 'failed' | 'timed_out' | 'cancelled' | 'rejected';
-export type RunStatus = 'launching' | TerminalRunStatus;
+export type RunStatus = 'launching' | 'running' | TerminalRunStatus;
 export type InternalRunStatus = RunStatus | 'unknown';
 
 export interface WaitForRunResult {
@@ -81,7 +81,7 @@ export interface ControllerMetadata {
   started_at: string;
   confirmed_child_start_at: string | null;
   completed_at: string | null;
-  status: 'launching' | 'completed' | 'failed' | 'rejected';
+  status: 'launching' | 'running' | 'completed' | 'failed' | 'rejected';
   error: string | null;
 }
 

@@ -97,7 +97,7 @@ export async function waitForRun(opts: WaitForRunOpts): Promise<DispatchResult<W
     handoffId: artifacts.data.handoffId,
     agent: artifacts.data.agent,
     mode: artifacts.data.mode,
-    status: isTerminal ? artifacts.data.status : 'launching',
+    status: artifacts.data.status,
     runDir: artifacts.data.runDir,
     responsePath: artifacts.data.responsePath,
     metaPath: artifacts.data.metaPath,
