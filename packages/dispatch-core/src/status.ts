@@ -61,7 +61,7 @@ async function listTerminalRunReviewIds(repoRoot: string): Promise<Set<string>> 
         const raw = await readFile(metaPath, 'utf-8');
         const meta = JSON.parse(raw) as { status?: string; review_id?: string; reviewId?: string };
         const reviewId = meta.review_id ?? meta.reviewId;
-        if (reviewId && meta.status && meta.status !== 'launching') {
+        if (reviewId && meta.status && meta.status !== 'launching' && meta.status !== 'running') {
           reviewIds.add(reviewId);
         }
       } catch {
@@ -119,7 +119,7 @@ async function listActiveRunTokens(repoRoot: string): Promise<ActiveLaunchInfo[]
           heartbeat_at?: string;
         };
 
-        if (state.status !== 'launching' || typeof state.pid !== 'number') {
+        if ((state.status !== 'launching' && state.status !== 'running') || typeof state.pid !== 'number') {
           continue;
         }
 
@@ -147,7 +147,7 @@ async function listActiveRunTokens(repoRoot: string): Promise<ActiveLaunchInfo[]
         }
 
         const artifacts = await readRunArtifacts(runDir, { includeMeta: true });
-        if (!artifacts.ok || artifacts.data.status !== 'launching') {
+        if (!artifacts.ok || (artifacts.data.status !== 'launching' && artifacts.data.status !== 'running')) {
           continue;
         }
 

@@ -62,6 +62,7 @@ async function main(): Promise<void> {
       writeControllerJson(metadataDir, controllerState);
     } else if (event.type === 'token_consumed' && metadataDir) {
       controllerState.confirmed_child_start_at = new Date().toISOString();
+      controllerState.status = 'running';
       writeControllerJson(metadataDir, controllerState);
     } else if (event.type === 'finalized' && metadataDir) {
       controllerState.status = 'completed';
