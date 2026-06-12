@@ -17,6 +17,7 @@ import {
   getPlanBundleDir,
   getPlanBundleManifestPath,
   getPlanBundleRelPath,
+  getPlanExecutionPath,
   getPlanRecordPath,
   isPathInsidePlanBundle,
   readPlanBundleManifest,
@@ -97,8 +98,9 @@ function addIssue(
   code: string,
   message: string,
   issuePath?: string,
+  severity: 'error' | 'warning' = 'error',
 ): void {
-  issues.push({ code, message, ...(issuePath ? { path: issuePath } : {}) });
+  issues.push({ code, message, severity, ...(issuePath ? { path: issuePath } : {}) });
 }
 
 function getStringField(fm: Record<string, unknown>, field: string): string | undefined {
@@ -271,10 +273,138 @@ export async function validatePlan(
   }
 
   validateSourceArtifacts(targetDir, planId, manifest, issues);
+  validateTrackerContent(targetDir, planId, issues);
 
   return ok({
     plan: planId,
-    valid: issues.length === 0,
+    valid: issues.filter(i => i.severity === 'error').length === 0,
     issues,
   });
+}
+
+// ---------------------------------------------------------------------------
+// Tracker content validation (warning-severity)
+// ---------------------------------------------------------------------------
+
+const REQUIRED_TRACKER_SECTIONS = [
+  'How to Use This Tracker',
+  'Project Context',
+  'Gates',
+  'Task-to-Phase Mapping',
+  'How to Dispatch',
+  'Phase Status Table',
+  'Completed Log',
+  'Failure Log',
+];
+
+function extractSections(content: string): string[] {
+  const headingRe = /^##\s+(.+)$/gm;
+  const sections: string[] = [];
+  let match;
+  while ((match = headingRe.exec(content)) !== null) {
+    sections.push(match[1].trim());
+  }
+  return sections;
+}
+
+function getSectionContent(content: string, sectionName: string): string {
+  const escaped = sectionName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const re = new RegExp(`^##\\s+${escaped}\\s*$`, 'm');
+  const match = re.exec(content);
+  if (!match) return '';
+
+  const start = match.index + match[0].length;
+  const nextHeading = content.indexOf('\n## ', start);
+  return nextHeading === -1
+    ? content.slice(start)
+    : content.slice(start, nextHeading);
+}
+
+function validateTrackerContent(
+  targetDir: string,
+  planId: string,
+  issues: ValidatePlanIssue[],
+): void {
+  const trackerPath = getPlanExecutionPath(targetDir, planId);
+  if (!fs.existsSync(trackerPath)) return;
+
+  let content: string;
+  try {
+    content = fs.readFileSync(trackerPath, 'utf-8');
+  } catch {
+    return;
+  }
+
+  const trackerRelPath = repoRel(targetDir, trackerPath);
+
+  // PLN_MISSING_TRACKER_SECTIONS
+  const presentSections = extractSections(content);
+  for (const required of REQUIRED_TRACKER_SECTIONS) {
+    if (!presentSections.includes(required)) {
+      addIssue(
+        issues,
+        'PLN_MISSING_TRACKER_SECTIONS',
+        `Tracker is missing required section: "${required}"`,
+        trackerRelPath,
+        'warning',
+      );
+    }
+  }
+
+  // PLN_DISPATCH_TEMPLATE_INCOMPLETE
+  const dispatchContent = getSectionContent(content, 'How to Dispatch');
+  if (presentSections.includes('How to Dispatch')) {
+    const missing: string[] = [];
+    if (!/\*\*Target file:\*\*/i.test(dispatchContent)) missing.push('target file');
+    if (!/\*\*Test command:\*\*/i.test(dispatchContent)) missing.push('test command');
+    if (!/\*\*Worktree isolation:\*\*/i.test(dispatchContent)) missing.push('worktree-isolation note');
+    if (!/###\s+Critical Rules/i.test(dispatchContent) &&
+        !/critical rule/i.test(dispatchContent)) {
+      missing.push('critical rule');
+    }
+    if (missing.length > 0) {
+      addIssue(
+        issues,
+        'PLN_DISPATCH_TEMPLATE_INCOMPLETE',
+        `How to Dispatch is missing: ${missing.join(', ')}`,
+        trackerRelPath,
+        'warning',
+      );
+    }
+  }
+
+  // PLN_NO_USER_INTERACTION_FLAGS
+  const mappingContent = getSectionContent(content, 'Task-to-Phase Mapping');
+  if (presentSections.includes('Task-to-Phase Mapping')) {
+    const lines = mappingContent.split('\n').filter(l => l.trim().startsWith('|'));
+    // Find header row to locate the user_interaction column index
+    const headerRow = lines.find(l => /user_interaction/i.test(l));
+    if (headerRow) {
+      const headers = headerRow.split('|').slice(1, -1).map(c => c.trim());
+      const uiColIdx = headers.findIndex(h => /user_interaction/i.test(h));
+      if (uiColIdx >= 0) {
+        // Skip header and separator rows
+        const dataRows = lines.filter(l => {
+          const cells = l.split('|').slice(1, -1).map(c => c.trim());
+          if (cells.length < headers.length) return false;
+          if (/^[-:]+$/.test(cells[0])) return false;
+          if (cells[0] === headers[0]) return false;
+          return true;
+        });
+        for (const row of dataRows) {
+          const cells = row.split('|').slice(1, -1).map(c => c.trim());
+          const uiValue = cells[uiColIdx] ?? '';
+          if (!uiValue) {
+            addIssue(
+              issues,
+              'PLN_NO_USER_INTERACTION_FLAGS',
+              `Task-to-Phase row "${cells[0] || '?'}" has no user_interaction value`,
+              trackerRelPath,
+              'warning',
+            );
+          }
+        }
+      }
+    }
+  }
 }

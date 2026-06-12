@@ -369,7 +369,8 @@ export async function cmdValidatePlan(args: string[]): Promise<void> {
 
   for (const issue of result.data.issues) {
     const issuePath = issue.path ? ` [${issue.path}]` : '';
-    console.log(`  ${issue.code}${issuePath}: ${issue.message}`);
+    const tag = issue.severity === 'warning' ? 'warning' : 'error';
+    console.log(`  ${tag}: ${issue.code}${issuePath}: ${issue.message}`);
   }
 
   if (!result.data.valid) {
