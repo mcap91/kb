@@ -253,6 +253,7 @@ export interface ValidatePlanIssue {
   code: string;
   path?: string;
   message: string;
+  severity: 'error' | 'warning';
 }
 
 /** Result of explicit PLN-* validation. */

@@ -6,6 +6,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { ok, fail, type Result } from './errors.js';
 import type { PlanBundleManifest } from './types.js';
+import { getTemplate } from './contract.js';
 
 function repoRel(...segments: string[]): string {
   return segments.join('/');
@@ -132,10 +133,13 @@ export function ensurePlanBundleSkeleton(
       getPlanDesignPath(targetDir, planId),
       `# ${planId} Design\n\nMachine-seeded placeholder for the normalized plan design.\n`,
     );
-    writeIfAbsent(
-      getPlanExecutionPath(targetDir, planId),
-      `# ${planId} Execution\n\nMachine-seeded placeholder for the normalized execution tracker.\n`,
-    );
+
+    let trackerContent = `# ${planId} Execution Tracker\n\nMachine-seeded placeholder for the normalized execution tracker.\n`;
+    const templateResult = getTemplate('plan-execution-tracker.md');
+    if (templateResult.ok) {
+      trackerContent = templateResult.data.replace(/\{\{id\}\}/g, planId);
+    }
+    writeIfAbsent(getPlanExecutionPath(targetDir, planId), trackerContent);
   } catch (err) {
     return fail(
       'FILE_WRITE_ERROR',

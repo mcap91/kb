@@ -649,7 +649,7 @@ describe('create', () => {
       '# PLN-0001 Design',
     );
     expect(readText(tmp.dir, 'wiki/plans/PLN-0001/execution/tracker.md')).toContain(
-      '# PLN-0001 Execution',
+      '# PLN-0001 Execution Tracker',
     );
   });
 
@@ -940,6 +940,149 @@ describe('validatePlan', () => {
     if (result.ok) {
       expect(result.data.valid).toBe(false);
       expect(result.data.issues.map(i => i.code)).toContain('PATH_OUTSIDE_SOURCE_RAW');
+    }
+  });
+
+  it('existing error-severity issues include severity field', async () => {
+    tmp = await createBootstrappedRepo();
+
+    const result = await validatePlan({ dir: tmp.dir, plan: 'PLN-9999' });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.data.issues.length).toBeGreaterThan(0);
+      for (const issue of result.data.issues) {
+        expect(issue.severity).toBe('error');
+      }
+    }
+  });
+
+  it('warns on missing tracker sections (PLN_MISSING_TRACKER_SECTIONS)', async () => {
+    tmp = await createBootstrappedRepo();
+    await create({ dir: tmp.dir, prefix: 'PLN', title: 'Missing sections' });
+
+    fs.writeFileSync(
+      path.join(tmp.dir, 'wiki/plans/PLN-0001/execution/tracker.md'),
+      '# PLN-0001 Execution\n\nJust a bare tracker with no sections.\n',
+      'utf-8',
+    );
+
+    const result = await validatePlan({ dir: tmp.dir, plan: 'PLN-0001' });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.data.valid).toBe(true);
+      const missing = result.data.issues.filter(
+        i => i.code === 'PLN_MISSING_TRACKER_SECTIONS',
+      );
+      expect(missing.length).toBeGreaterThan(0);
+      for (const issue of missing) {
+        expect(issue.severity).toBe('warning');
+      }
+    }
+  });
+
+  it('warns on incomplete dispatch template (PLN_DISPATCH_TEMPLATE_INCOMPLETE)', async () => {
+    tmp = await createBootstrappedRepo();
+    await create({ dir: tmp.dir, prefix: 'PLN', title: 'Incomplete dispatch' });
+
+    const trackerPath = path.join(tmp.dir, 'wiki/plans/PLN-0001/execution/tracker.md');
+    const tracker = fs.readFileSync(trackerPath, 'utf-8');
+    const stripped = tracker
+      .replace(/\*\*Target file:\*\*.*/g, '')
+      .replace(/\*\*Test command:\*\*.*/g, '')
+      .replace(/\*\*Worktree isolation:\*\*.*/g, '');
+    fs.writeFileSync(trackerPath, stripped, 'utf-8');
+
+    const result = await validatePlan({ dir: tmp.dir, plan: 'PLN-0001' });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.data.valid).toBe(true);
+      const incomplete = result.data.issues.filter(
+        i => i.code === 'PLN_DISPATCH_TEMPLATE_INCOMPLETE',
+      );
+      expect(incomplete.length).toBeGreaterThan(0);
+      for (const issue of incomplete) {
+        expect(issue.severity).toBe('warning');
+      }
+    }
+  });
+
+  it('warns on missing user_interaction flags (PLN_NO_USER_INTERACTION_FLAGS)', async () => {
+    tmp = await createBootstrappedRepo();
+    await create({ dir: tmp.dir, prefix: 'PLN', title: 'Missing flags' });
+
+    const trackerPath = path.join(tmp.dir, 'wiki/plans/PLN-0001/execution/tracker.md');
+    const tracker = fs.readFileSync(trackerPath, 'utf-8');
+    const broken = tracker.replace(
+      /\| T1 .*\|/,
+      '| T1 | P1 | Example task | no |  |',
+    );
+    fs.writeFileSync(trackerPath, broken, 'utf-8');
+
+    const result = await validatePlan({ dir: tmp.dir, plan: 'PLN-0001' });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.data.valid).toBe(true);
+      const noFlags = result.data.issues.filter(
+        i => i.code === 'PLN_NO_USER_INTERACTION_FLAGS',
+      );
+      expect(noFlags.length).toBeGreaterThan(0);
+      for (const issue of noFlags) {
+        expect(issue.severity).toBe('warning');
+      }
+    }
+  });
+
+  it('warnings do not flip valid to false', async () => {
+    tmp = await createBootstrappedRepo();
+    await create({ dir: tmp.dir, prefix: 'PLN', title: 'Warnings only' });
+
+    fs.writeFileSync(
+      path.join(tmp.dir, 'wiki/plans/PLN-0001/execution/tracker.md'),
+      '# PLN-0001 Execution\n\nBare tracker.\n',
+      'utf-8',
+    );
+
+    const result = await validatePlan({ dir: tmp.dir, plan: 'PLN-0001' });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.data.valid).toBe(true);
+      expect(result.data.issues.length).toBeGreaterThan(0);
+      for (const issue of result.data.issues) {
+        expect(issue.severity).toBe('warning');
+      }
+    }
+  });
+
+  it('freshly created PLN has full tracker template with required sections', async () => {
+    tmp = await createBootstrappedRepo();
+    await create({ dir: tmp.dir, prefix: 'PLN', title: 'Template check' });
+
+    const tracker = readText(tmp.dir, 'wiki/plans/PLN-0001/execution/tracker.md');
+    expect(tracker).toContain('## How to Use This Tracker');
+    expect(tracker).toContain('## Project Context');
+    expect(tracker).toContain('## Gates');
+    expect(tracker).toContain('## Task-to-Phase Mapping');
+    expect(tracker).toContain('## How to Dispatch');
+    expect(tracker).toContain('## Phase Status Table');
+    expect(tracker).toContain('## Completed Log');
+    expect(tracker).toContain('## Failure Log');
+  });
+
+  it('compliant tracker produces zero issues', async () => {
+    tmp = await createBootstrappedRepo();
+    await create({ dir: tmp.dir, prefix: 'PLN', title: 'Compliant plan' });
+
+    const result = await validatePlan({ dir: tmp.dir, plan: 'PLN-0001' });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.data.valid).toBe(true);
+      expect(result.data.issues).toEqual([]);
     }
   });
 });

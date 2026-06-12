@@ -6,7 +6,7 @@ This document is the primary reference for any agent session working in the `kb`
 
 `kb` is a TypeScript monorepo toolkit providing three subsystems:
 
-1. **Wiki** -- Structured repo-local wiki with manifest-driven record types (WK, IN, DEC, SRC, AREA). Operations: bootstrap, sync-contract, allocate-id, create, lint, generate, build-search-index, search. Interfaces: CLI and MCP server.
+1. **Wiki** -- Structured repo-local wiki with manifest-driven record types (WK, IN, DEC, SRC, AREA, PLN). Operations: bootstrap, sync-contract, allocate-id, create, lint, generate, build-search-index, search, import-plan, validate-plan, archive-plan. Interfaces: CLI and MCP server.
 2. **Dispatch Protocol** -- Reviewed multi-agent handoff workflow using HO-\* documents. Token-based state machine (review then launch). Platform-aware config. Deterministic fake-agent for testing.
 3. **Graph Explore** -- Deterministic code-first graph extraction at file/module level. Wiki overlay from frontmatter. Produces JSON and markdown summary.
 
@@ -143,7 +143,7 @@ kb/
 
 The `contract/manifest.json` file is the source of truth for wiki record types. It defines:
 
-- Which prefixes exist (WK, IN, DEC, SRC, AREA)
+- Which prefixes exist (WK, IN, DEC, SRC, AREA, PLN)
 - Which prefixes are excluded (HO)
 - Required and optional frontmatter fields per type
 - Enum values for status, priority, type fields
@@ -236,7 +236,7 @@ All public functions return Result types. Never throw from public API functions.
 
 ### Manifest-Driven Records
 
-The five manifest-driven record types:
+The six manifest-driven record types:
 
 | Prefix | Type | Directory | ID Strategy |
 |--------|------|-----------|-------------|
@@ -245,6 +245,7 @@ The five manifest-driven record types:
 | DEC | Decision | `wiki/decisions/` | Allocated sequential |
 | SRC | Source | `wiki/sources/` | Allocated sequential |
 | AREA | Area | `wiki/areas/` | Slug-based |
+| PLN | Plan | `wiki/plans/` | Allocated sequential |
 
 ### HO-\* Ownership
 
@@ -394,7 +395,7 @@ Both must pass.
 - **Do not add HO to the manifest.** HO-\* is dispatch-owned, not manifest-driven.
 - **Do not include `wiki/handoffs/` in wiki operations.** Lint, generate, search, and graph all exclude it.
 - **Do not add semantic or heuristic graph features.** Graph is deterministic, code-first, file/module level only.
-- **Do not modify `contract/manifest.json` to add post-MVP types.** The five types (WK, IN, DEC, SRC, AREA) are the MVP set.
+- **Do not modify `contract/manifest.json` to add new record types without a design decision.** The six types (WK, IN, DEC, SRC, AREA, PLN) are the current set.
 - **Do not throw from public API functions.** Use the Result type pattern.
 - **Do not import across subsystem boundaries.** wiki-cli uses wiki-core. dispatch-cli uses dispatch-core. graph-explore is standalone.
 - **Do not describe features that do not exist.** No semantic search, no embeddings, no function-level graphs.
