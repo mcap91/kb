@@ -12,6 +12,7 @@
     "dispatch": "tsx packages/dispatch-cli/src/index.ts",
     "dispatch:mcp": "tsx packages/dispatch-mcp/src/server.ts",
     "graph": "tsx packages/graph-explore/src/extract.ts",
+    "setup:test-kb": "node scripts/setup-test-kb.mjs",
     "test": "vitest run",
     "typecheck": "tsc --build"
   },
