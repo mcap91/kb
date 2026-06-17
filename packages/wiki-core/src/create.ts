@@ -19,6 +19,7 @@ import type {
 import { loadManifest } from './contract.js';
 import { allocate } from './allocate.js';
 import { debug, setVerbose } from './debug.js';
+import { localDateStamp } from './date.js';
 import {
   ensurePlanBundleSkeleton,
   getPlanBundleRelPath,
@@ -171,8 +172,9 @@ export async function create(
 
   const { def: typeDef } = typeMatch;
   const targetDir = path.resolve(opts.dir);
-  const now = new Date().toISOString();
-  const dateOnly = now.slice(0, 10);
+  const nowDate = new Date();
+  const now = nowDate.toISOString(); // full ISO (UTC) — used for the plan bundle skeleton
+  const dateOnly = localDateStamp(nowDate); // local YYYY-MM-DD — created/updated/date fields
   const owner = opts.owner ?? getGitUserName(targetDir) ?? 'unassigned';
 
   // 3. Determine the ID and filename

@@ -4,6 +4,8 @@ This document defines the frontmatter schema for all manifest-driven wiki record
 
 > **Note:** `HO-*` handoff records are **dispatch-owned** and are not covered by this schema reference. Handoff frontmatter is defined and validated by `dispatch-core`. See `contract/templates/handoff.md` for the handoff template.
 
+> **Date vs. timestamp fields.** Fields typed *"ISO 8601 date"* below (e.g. `created`, `updated`, `date`, `target`, `started`, `captured`) are stamped as date-only `YYYY-MM-DD` in the machine's **local** timezone, so they line up with git commit dates and the human "today". By contrast, the plan-lifecycle bumps written by `import-plan` and `archive-plan` (a plan's `completed` and its `updated`) are full **ISO-8601 UTC timestamps** (`…Z`) — machine timestamps, intentionally UTC. Local date stamping is centralized in `localDateStamp()` (`packages/wiki-core/src/date.ts`); setting the `TZ` env var does **not** change `Date.prototype.toISOString()` (UTC by spec), so the fix lives in code, not env.
+
 ## WK-* Work Items
 
 Directory: `wiki/issues/`

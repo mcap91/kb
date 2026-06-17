@@ -74,6 +74,9 @@ export {
 // Debug utilities
 export { setVerbose, isVerbose, debug, debugTagged } from './debug.js';
 
+// Date utilities
+export { localDateStamp } from './date.js';
+
 // Contract resolution
 export {
   findKbRoot,
