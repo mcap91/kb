@@ -1,5 +1,31 @@
 # {{id}} Execution Tracker
 
+<!--
+AUTHORING GUIDE — delete this block after filling in the tracker.
+
+This tracker must be self-contained (cold-start principle): a fresh agent with
+zero prior context must be able to execute the plan from this document alone.
+
+Required sections (validate-plan checks for these):
+  1. How to Use This Tracker — keep the boilerplate below
+  2. Project Context         — repo, branch, target files, test command
+  3. Gates                   — checkable criteria per phase
+  4. Task-to-Phase Mapping   — table with: Task, Phase, Description, parallelizable, user_interaction
+  5. How to Dispatch         — Target file, Test command, Worktree isolation, Critical Rules
+  6. Phase Status Table      — Phase, Status, Started, Completed, Notes
+  7. Completed Log           — date, task ID, summary, follow-up
+  8. Failure Log             — date, task ID, what failed, root cause, remediation
+
+user_interaction column values: none | required | recommended
+  none        — agent can complete without human input
+  required    — must pause for human input before proceeding
+  recommended — agent should attempt, but flag for human review
+
+Phase status values: not_started | in_progress | done | blocked
+
+Do NOT read other PLN tracker files for examples. This template is self-contained.
+-->
+
 ## How to Use This Tracker
 
 This tracker is the single source of truth for executing {{id}}. An agent picking
@@ -17,8 +43,6 @@ in the respective logs at the bottom.
 - **Test command:** `npm run typecheck && npm test`
 
 ## Gates
-
-<!-- Checkable criteria that must be met before advancing to the next phase -->
 
 - [ ] Phase 1 gate: <!-- describe -->
 - [ ] Phase 2 gate: <!-- describe -->
