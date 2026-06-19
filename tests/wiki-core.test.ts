@@ -485,17 +485,49 @@ describe('allocation', () => {
     tmp?.cleanup();
   });
 
-  it('returns sequential IDs (WK-0001, WK-0002, etc.)', async () => {
+  it('returns sequential IDs as records are materialized (WK-0001, WK-0002, etc.)', async () => {
     tmp = await createBootstrappedRepo();
 
-    const r1 = await allocate({ dir: tmp.dir, prefix: 'WK' as WikiPrefix });
-    const r2 = await allocate({ dir: tmp.dir, prefix: 'WK' as WikiPrefix });
+    // Sequential IDs are guaranteed across materialized records. A bare allocate is
+    // an idempotent reservation (see the peek test), so distinct IDs come from
+    // distinct records, not from repeated allocate calls.
+    const r1 = await create({ dir: tmp.dir, prefix: 'WK', title: 'one' });
+    const r2 = await create({ dir: tmp.dir, prefix: 'WK', title: 'two' });
 
     expect(r1.ok).toBe(true);
     expect(r2.ok).toBe(true);
     if (r1.ok && r2.ok) {
       expect(r1.data.id).toBe('WK-0001');
       expect(r2.data.id).toBe('WK-0002');
+    }
+  });
+
+  it('reuses a reservation until a record materializes it (peek must not burn an ID)', async () => {
+    tmp = await createBootstrappedRepo();
+
+    // Two bare allocations with no record written must collapse onto the same ID.
+    // Why: agents call allocate-id to "check" the next ID, then call create — if each
+    // bare call advanced the counter, every record would burn an extra orphaned ID.
+    const r1 = await allocate({ dir: tmp.dir, prefix: 'WK' as WikiPrefix });
+    const r2 = await allocate({ dir: tmp.dir, prefix: 'WK' as WikiPrefix });
+    expect(r1.ok && r2.ok).toBe(true);
+    if (r1.ok && r2.ok) {
+      expect(r1.data.id).toBe('WK-0001');
+      expect(r2.data.id).toBe('WK-0001');
+    }
+
+    // create() materializes the reservation rather than skipping ahead to WK-0002.
+    const created = await create({ dir: tmp.dir, prefix: 'WK', title: 'First issue' });
+    expect(created.ok).toBe(true);
+    if (created.ok) {
+      expect(created.data.id).toBe('WK-0001');
+    }
+
+    // Once the file exists, the next allocation advances.
+    const r3 = await allocate({ dir: tmp.dir, prefix: 'WK' as WikiPrefix });
+    expect(r3.ok).toBe(true);
+    if (r3.ok) {
+      expect(r3.data.id).toBe('WK-0002');
     }
   });
 
