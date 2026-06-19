@@ -121,28 +121,48 @@ export async function allocate(
     idState[prefix] = { next: 1, allocated: [] };
   }
 
-  // 3. Allocate the next ID
+  // 3. Allocate the next ID.
+  //
+  // Allocation is idempotent until a record file claims the ID. A bare allocate
+  // (a "peek"/reserve that writes no record) advances `next` exactly once, leaving
+  // a single fileless slot at `next - 1`. Subsequent allocations reuse that slot
+  // instead of advancing again, so repeated peeks and the eventual create() collapse
+  // onto the same number rather than burning orphaned IDs. We only reclaim the
+  // contiguous tail slot (`next - 1`); gaps left by deleted mid-records are never
+  // refilled, so existing references are never resurrected.
   const entry = idState[prefix];
-  const number = entry.next;
-  entry.next = number + 1;
-  entry.allocated.push(number);
+  const recordDir = path.join(targetDir, typeDef.directory);
+  const reservedNumber = entry.next - 1;
+  const reservedIsFileless =
+    reservedNumber >= 1 &&
+    !fs.existsSync(path.join(recordDir, `${prefix}-${padId(reservedNumber)}.md`));
 
-  // 4. Write state atomically (write-to-temp-then-rename)
-  const tmpPath = idStatePath + `.tmp-${crypto.randomBytes(4).toString('hex')}`;
-  try {
-    const content = JSON.stringify(idState, null, 2) + '\n';
-    fs.writeFileSync(tmpPath, content, 'utf-8');
-    fs.renameSync(tmpPath, idStatePath);
-  } catch (err) {
-    // Clean up temp file on failure
+  let number: number;
+  if (reservedIsFileless) {
+    // Reuse the prior reservation; state is unchanged, so no write needed.
+    number = reservedNumber;
+  } else {
+    number = entry.next;
+    entry.next = number + 1;
+    if (!entry.allocated.includes(number)) entry.allocated.push(number);
+
+    // 4. Write state atomically (write-to-temp-then-rename)
+    const tmpPath = idStatePath + `.tmp-${crypto.randomBytes(4).toString('hex')}`;
     try {
-      if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
-    } catch { /* ignore cleanup errors */ }
-    return fail(
-      'ALLOCATION_FAILED',
-      `Failed to write ID state atomically: ${String(err)}`,
-      err,
-    );
+      const content = JSON.stringify(idState, null, 2) + '\n';
+      fs.writeFileSync(tmpPath, content, 'utf-8');
+      fs.renameSync(tmpPath, idStatePath);
+    } catch (err) {
+      // Clean up temp file on failure
+      try {
+        if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
+      } catch { /* ignore cleanup errors */ }
+      return fail(
+        'ALLOCATION_FAILED',
+        `Failed to write ID state atomically: ${String(err)}`,
+        err,
+      );
+    }
   }
 
   // 5. Return the allocated ID
