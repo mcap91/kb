@@ -80,7 +80,7 @@ export const tools: ToolDef[] = [
     name: 'review',
     description: 'Review a handoff document and create a reviewed bundle',
     inputSchema: dirSchema.extend({
-      handoff: z.string(),
+      handoff: z.string().describe('Repo-relative path to the handoff file, e.g. wiki/handoffs/HO-0001.md'),
       agent: z.string(),
       reviewedAndAcceptRisks: z.boolean(),
     }),
@@ -109,7 +109,7 @@ export const tools: ToolDef[] = [
     name: 'review-and-launch',
     description: 'Review a handoff and immediately launch it. Defaults to background mode for MCP callers.',
     inputSchema: dirSchema.extend({
-      handoff: z.string(),
+      handoff: z.string().describe('Repo-relative path to the handoff file, e.g. wiki/handoffs/HO-0001.md'),
       agent: z.string(),
       reviewedAndAcceptRisks: z.boolean(),
       background: z.boolean().optional(),
