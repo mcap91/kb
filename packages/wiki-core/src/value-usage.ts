@@ -1,35 +1,45 @@
 /**
  * Value-usage module — the ONE kb module that shells npx and makes a network call.
  *
- * Runs `ccusage` for both the `claude` and `codex` tools, filters instances to the
- * target repo by the encoded-cwd rule, identifies arms by model string, and assigns
- * cost provenance in code. Self-aware: missing/empty data is DATA (`ok()` with
- * cost_provenance: unavailable + reason), never a failure.
+ * Scrapes token/cost usage for the target repo + date window across every arm the
+ * user runs, and repo-attributes it:
+ *
+ *  - Claude family (subscription Claude, local Ollama/OSS, OpenRouter) all run
+ *    THROUGH Claude Code, so they share `~/.claude/projects/<encoded-cwd>/*.jsonl`.
+ *    `ccusage claude daily --json --instances` reads them, grouped by project cwd
+ *    (the encoded-cwd key), and prices them. Arm is identified per model string.
+ *  - Codex is a SEPARATE CLI (`~/.codex/sessions/.../rollout-*.jsonl`). ccusage's codex
+ *    views expose NO cwd, so codex cannot be repo-scoped via ccusage. Instead we
+ *    read the raw session logs directly: `session_meta.cwd` (and `turn_context`)
+ *    carry the launch directory — for interactive sessions the repo root, for kb
+ *    dispatch runs a subdir under the repo — so a cwd prefix-match attributes
+ *    codex usage to the repo. Codex tokens are captured; codex carries no
+ *    per-repo dollar figure (tokens-only), since ccusage isn't pricing it here.
  *
  * Public API: computeValueUsage(opts, deps?) → Promise<Result<UsageMetrics>>
  *
  * Rules:
  * - Result<T> everywhere; never throw from computeValueUsage
- * - Exactly two egress points: runCcusage + fetchOpenRouterCredits — both injectable via UsageDeps
+ * - Egress points are injectable via UsageDeps (ccusage exec, codex-log read, OR fetch)
  * - NEVER log, echo, or include the OpenRouter key in any returned value or output
- * - Use execFileSync with arg array (no shell string interpolation) in the default impl
+ * - Use execFileSync with an arg array (no shell string interpolation) in defaults
  *
- * Assumed ccusage --json --instances shape (verified against model-usage skill, spec §2.3):
+ * ccusage `claude daily --json --instances` shape (verified against ccusage 20.0.17):
  * {
- *   daily: Array<{
- *     date: string;               // "YYYY-MM-DD"
- *     projects: Array<{
- *       projectPath: string;      // unencoded cwd, e.g. "C:\Users\mcap9\projects\kb"
- *       models: Array<{
- *         model: string;
- *         input_tokens: number;
- *         cache_creation_input_tokens: number;
- *         cache_read_input_tokens: number;
- *         output_tokens: number;
- *         cost_usd: number;       // ccusage LiteLLM-priced estimate
- *       }>
- *     }>
- *   }>
+ *   projects: {
+ *     "<encoded-cwd>": [                 // key = cwd with : \ / replaced by -
+ *       {
+ *         date, project, inputTokens, outputTokens,
+ *         cacheCreationTokens, cacheReadTokens, totalCost, totalTokens,
+ *         modelsUsed: string[],
+ *         modelBreakdowns: [
+ *           { modelName, inputTokens, outputTokens,
+ *             cacheCreationTokens, cacheReadTokens, cost }
+ *         ]
+ *       }
+ *     ]
+ *   },
+ *   totals: { ... }
  * }
  */
 
@@ -48,24 +58,48 @@ import type {
 
 // ---------------------------------------------------------------------------
 // Pinned ccusage version (spec §2.3: @latest forbidden for reproducibility)
-// Config-overridable via opts.ccusageVersion
+// Config-overridable via opts.ccusageVersion. Verified current 2026-07-10.
 // ---------------------------------------------------------------------------
 
-const CCUSAGE_VERSION = '0.8.0';
+const CCUSAGE_VERSION = '20.0.17';
 
 // ---------------------------------------------------------------------------
 // UsageDeps — injectable seams for testing
 // ---------------------------------------------------------------------------
 
 /**
- * The two egress points of value-usage, both injectable so tests are hermetic.
+ * A single repo-attributable codex session's usage, read from raw ~/.codex logs.
+ * Tokens are already normalized to the same shape as the claude family:
+ * `input_tokens` is NON-cached input; `cache_read_tokens` is cached input.
+ */
+export interface CodexSessionUsage {
+  /** session_meta.cwd (or turn_context.cwd) — the codex launch directory. */
+  cwd: string;
+  /** turn_context.model, e.g. "gpt-5.5"; falls back to "codex". */
+  model: string;
+  input_tokens: number;
+  cache_read_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+}
+
+/**
+ * The egress points of value-usage, all injectable so tests are hermetic.
  */
 export interface UsageDeps {
   /**
-   * Run `npx ccusage@<version> <tool> daily --json --since --until --instances`.
+   * Run `npx ccusage@<version> claude daily --json --instances --since --until`.
    * Returns raw stdout string. May throw if ccusage is absent.
+   * Covers the whole Claude family (subscription / local / OpenRouter arms).
    */
-  runCcusage(tool: 'claude' | 'codex', version: string, since: string, until: string): string;
+  runClaudeCcusage(version: string, since: string, until: string): string;
+
+  /**
+   * Read raw ~/.codex session logs for the date window and return every
+   * session's usage WITH its launch cwd (repo filtering happens in the caller).
+   * Returns [] when codex is absent or unreadable. Must never throw for that.
+   */
+  readCodexSessions(since: string, until: string): CodexSessionUsage[];
 
   /**
    * OpenRouter credits reconcile: reads key from ~/.claude/arms/secrets.env,
@@ -79,13 +113,144 @@ export interface UsageDeps {
 // Default real implementations
 // ---------------------------------------------------------------------------
 
-const defaultRunCcusage: UsageDeps['runCcusage'] = (tool, version, since, until) => {
-  return execFileSync(
-    'npx',
-    [`ccusage@${version}`, tool, 'daily', '--json', `--since=${since}`, `--until=${until}`, '--instances'],
-    { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] },
-  );
+const defaultRunClaudeCcusage: UsageDeps['runClaudeCcusage'] = (version, since, until) => {
+  const ccArgs = [
+    `ccusage@${version}`,
+    'claude',
+    'daily',
+    '--json',
+    '--instances',
+    '--since',
+    since,
+    '--until',
+    until,
+  ];
+  // Windows: the `npx.cmd` shim can't be spawned via execFile directly
+  // (spawnSync EINVAL — Node's CVE-2024-27980 fix bars .cmd without a shell).
+  // Route through cmd.exe (a real .exe) which resolves `npx` on PATH. This is
+  // NOT `shell: true`, so args are passed as argv and never re-concatenated.
+  if (process.platform === 'win32') {
+    return execFileSync('cmd.exe', ['/c', 'npx', '-y', ...ccArgs], {
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+      windowsHide: true,
+    });
+  }
+  return execFileSync('npx', ['-y', ...ccArgs], {
+    encoding: 'utf-8',
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
 };
+
+/**
+ * Default codex reader: walk ~/.codex/sessions/<Y>/<M>/<D>/rollout-*.jsonl,
+ * keep files whose date is within [since, until], and for each extract the
+ * launch cwd, model, and final cumulative token usage. Never throws.
+ */
+const defaultReadCodexSessions: UsageDeps['readCodexSessions'] = (since, until) => {
+  const sessionsRoot = path.join(os.homedir(), '.codex', 'sessions');
+  const out: CodexSessionUsage[] = [];
+  let files: string[];
+  try {
+    files = listCodexRollouts(sessionsRoot);
+  } catch {
+    return out;
+  }
+
+  for (const file of files) {
+    // Date is embedded in the filename: rollout-YYYY-MM-DDThh-...
+    const m = path.basename(file).match(/rollout-(\d{4}-\d{2}-\d{2})T/);
+    const date = m?.[1];
+    if (!date || date < since || date > until) continue;
+
+    const session = readOneCodexRollout(file);
+    if (session) out.push(session);
+  }
+  return out;
+};
+
+/** Recursively collect rollout-*.jsonl paths under the codex sessions root. */
+function listCodexRollouts(root: string): string[] {
+  const results: string[] = [];
+  const walk = (dir: string): void => {
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      const full = path.join(dir, e.name);
+      if (e.isDirectory()) walk(full);
+      else if (e.isFile() && /^rollout-.*\.jsonl$/.test(e.name)) results.push(full);
+    }
+  };
+  if (fs.existsSync(root)) walk(root);
+  return results;
+}
+
+/**
+ * Parse one codex rollout file: cwd (session_meta / turn_context), model
+ * (last turn_context.model), and the final cumulative total_token_usage.
+ * Returns null if the file has no usable token data.
+ */
+function readOneCodexRollout(file: string): CodexSessionUsage | null {
+  let raw: string;
+  try {
+    raw = fs.readFileSync(file, 'utf-8');
+  } catch {
+    return null;
+  }
+
+  let cwd: string | undefined;
+  let model: string | undefined;
+  let lastUsage: { input: number; cached: number; output: number; total: number } | undefined;
+
+  for (const line of raw.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    let d: unknown;
+    try {
+      d = JSON.parse(trimmed);
+    } catch {
+      continue;
+    }
+    if (typeof d !== 'object' || d === null) continue;
+    const rec = d as { type?: string; payload?: Record<string, unknown> };
+    const payload = rec.payload ?? {};
+
+    if (rec.type === 'session_meta' && typeof payload.cwd === 'string') {
+      cwd = payload.cwd;
+    }
+    if (rec.type === 'turn_context') {
+      if (typeof payload.cwd === 'string' && !cwd) cwd = payload.cwd;
+      if (typeof payload.model === 'string') model = payload.model;
+    }
+    if (payload.type === 'token_count') {
+      const info = payload.info as { total_token_usage?: Record<string, number> } | undefined;
+      const tu = info?.total_token_usage;
+      if (tu) {
+        lastUsage = {
+          input: Number(tu.input_tokens ?? 0),
+          cached: Number(tu.cached_input_tokens ?? 0),
+          output: Number(tu.output_tokens ?? 0),
+          total: Number(tu.total_tokens ?? 0),
+        };
+      }
+    }
+  }
+
+  if (!cwd || !lastUsage) return null;
+  // Normalize to Claude-family shape: input_tokens excludes cached; cache_read = cached.
+  return {
+    cwd,
+    model: model ?? 'codex',
+    input_tokens: Math.max(0, lastUsage.input - lastUsage.cached),
+    cache_read_tokens: lastUsage.cached,
+    output_tokens: lastUsage.output,
+    total_tokens: lastUsage.total,
+  };
+}
 
 const defaultFetchOpenRouterCredits: UsageDeps['fetchOpenRouterCredits'] = async () => {
   // Read key in-process; NEVER log or include in any returned value
@@ -121,7 +286,8 @@ const defaultFetchOpenRouterCredits: UsageDeps['fetchOpenRouterCredits'] = async
 };
 
 const DEFAULT_DEPS: UsageDeps = {
-  runCcusage: defaultRunCcusage,
+  runClaudeCcusage: defaultRunClaudeCcusage,
+  readCodexSessions: defaultReadCodexSessions,
   fetchOpenRouterCredits: defaultFetchOpenRouterCredits,
 };
 
@@ -130,11 +296,12 @@ const DEFAULT_DEPS: UsageDeps = {
 // ---------------------------------------------------------------------------
 
 /**
- * Identify the arm from a model string:
+ * Identify the arm from a claude-family model string:
  * - `claude-*` → subscription
- * - `name:tag` (contains colon, not slash-namespaced) → local
  * - slash-namespaced (`z-ai/glm-5.2`, `deepseek/deepseek-chat`) → openrouter
+ * - `name:tag` (colon, not slash) → local
  * - anything else → unknown
+ * (Codex rows are tagged `codex` at their source, not via this function.)
  */
 function identifyArm(model: string): UsageArm {
   if (model.startsWith('claude-')) return 'subscription';
@@ -144,75 +311,101 @@ function identifyArm(model: string): UsageArm {
 }
 
 // ---------------------------------------------------------------------------
-// CWD encoding (spec §2.3)
-// Encode dir by replacing `:` `\` `/` with `-`
+// CWD encoding + repo matching (spec §2.3)
 // ---------------------------------------------------------------------------
 
+/** Encode a cwd the way Claude Code does: replace `:` `\` `/` with `-`. */
 function encodeCwd(cwdPath: string): string {
-  return cwdPath.replace(/[:\\\/]/g, '-');
+  return cwdPath.replace(/[:\\/]/g, '-');
+}
+
+/** True if two paths encode to the same string (claude projects-key match). */
+function encodedMatches(projectKey: string, targetDir: string): boolean {
+  return encodeCwd(projectKey) === encodeCwd(targetDir);
 }
 
 /**
- * Returns true if the projectPath from ccusage output matches the target dir.
- * Matching is done by comparing encoded forms.
+ * True if `cwd` is the target repo or a directory under it (codex prefix match).
+ * Case-insensitive on Windows. Guards `kb` vs `kb-other` via the separator.
  */
-function projectMatchesDir(projectPath: string, targetDir: string): boolean {
-  return encodeCwd(projectPath) === encodeCwd(targetDir);
+function isUnderDir(cwd: string, targetDir: string): boolean {
+  const a = path.resolve(cwd);
+  const b = path.resolve(targetDir);
+  const na = process.platform === 'win32' ? a.toLowerCase() : a;
+  const nb = process.platform === 'win32' ? b.toLowerCase() : b;
+  return na === nb || na.startsWith(nb + path.sep);
 }
 
 // ---------------------------------------------------------------------------
-// ccusage JSON shape types (internal; matches assumed shape in module header)
+// Internal row model (source-tagged: claude family vs codex)
 // ---------------------------------------------------------------------------
 
-interface CcusageModelRow {
+interface UsageRow {
   model: string;
+  source: 'claude' | 'codex';
   input_tokens: number;
-  cache_creation_input_tokens: number;
-  cache_read_input_tokens: number;
+  cache_write_tokens: number;
+  cache_read_tokens: number;
   output_tokens: number;
-  cost_usd: number;
+  /** ccusage-priced $ estimate (claude family only; 0 for codex). */
+  ccusage_cost: number;
 }
 
-interface CcusageProject {
-  projectPath: string;
-  models: CcusageModelRow[];
+// ---------------------------------------------------------------------------
+// ccusage claude JSON shape (v20 `claude daily --json --instances`)
+// ---------------------------------------------------------------------------
+
+interface CcusageModelBreakdown {
+  modelName: string;
+  inputTokens: number;
+  outputTokens: number;
+  cacheCreationTokens: number;
+  cacheReadTokens: number;
+  cost: number;
 }
 
 interface CcusageDayEntry {
   date: string;
-  projects: CcusageProject[];
+  project: string;
+  modelBreakdowns?: CcusageModelBreakdown[];
 }
 
-interface CcusageOutput {
-  daily: CcusageDayEntry[];
+interface CcusageClaudeOutput {
+  projects: Record<string, CcusageDayEntry[]>;
+  totals?: unknown;
 }
-
-// ---------------------------------------------------------------------------
-// Parse and filter ccusage output for the target dir
-// ---------------------------------------------------------------------------
 
 /**
- * Parse raw ccusage JSON and extract per-model rows for the target dir.
- * Returns null if JSON is malformed or shape is unexpected.
+ * Parse `ccusage claude daily --json --instances` and extract per-model rows
+ * for the target dir (matched on the encoded-cwd project key).
+ * Returns null if the shape is unrecognizable; [] if the dir has no entry.
  */
-function parseCcusageOutput(raw: string, targetDir: string): CcusageModelRow[] | null {
-  let parsed: CcusageOutput;
+function parseClaudeInstances(raw: string, targetDir: string): UsageRow[] | null {
+  let parsed: CcusageClaudeOutput;
   try {
-    parsed = JSON.parse(raw) as CcusageOutput;
+    parsed = JSON.parse(raw) as CcusageClaudeOutput;
   } catch {
     return null;
   }
+  if (!parsed?.projects || typeof parsed.projects !== 'object') return null;
 
-  if (!parsed?.daily || !Array.isArray(parsed.daily)) return null;
-
-  const rows: CcusageModelRow[] = [];
-  for (const day of parsed.daily) {
-    if (!day.projects || !Array.isArray(day.projects)) continue;
-    for (const project of day.projects) {
-      if (!projectMatchesDir(project.projectPath, targetDir)) continue;
-      if (!project.models || !Array.isArray(project.models)) continue;
-      for (const model of project.models) {
-        rows.push(model);
+  const rows: UsageRow[] = [];
+  for (const [projectKey, dayEntries] of Object.entries(parsed.projects)) {
+    if (!encodedMatches(projectKey, targetDir)) continue;
+    if (!Array.isArray(dayEntries)) continue;
+    for (const day of dayEntries) {
+      const breakdowns = day?.modelBreakdowns;
+      if (!Array.isArray(breakdowns)) continue;
+      for (const mb of breakdowns) {
+        rows.push({
+          model: mb.modelName,
+          source: 'claude',
+          input_tokens: Number(mb.inputTokens ?? 0),
+          cache_write_tokens: Number(mb.cacheCreationTokens ?? 0),
+          cache_read_tokens: Number(mb.cacheReadTokens ?? 0),
+          output_tokens: Number(mb.outputTokens ?? 0),
+          ccusage_cost: Number(mb.cost ?? 0),
+        });
       }
     }
   }
@@ -220,21 +413,22 @@ function parseCcusageOutput(raw: string, targetDir: string): CcusageModelRow[] |
 }
 
 // ---------------------------------------------------------------------------
-// Merge model rows: combine rows with same model string
+// Merge rows: combine rows with same (source, model)
 // ---------------------------------------------------------------------------
 
-function mergeModelRows(rows: CcusageModelRow[]): Map<string, CcusageModelRow> {
-  const merged = new Map<string, CcusageModelRow>();
+function mergeRows(rows: UsageRow[]): Map<string, UsageRow> {
+  const merged = new Map<string, UsageRow>();
   for (const row of rows) {
-    const existing = merged.get(row.model);
+    const key = `${row.source}::${row.model}`;
+    const existing = merged.get(key);
     if (existing) {
       existing.input_tokens += row.input_tokens;
-      existing.cache_creation_input_tokens += row.cache_creation_input_tokens;
-      existing.cache_read_input_tokens += row.cache_read_input_tokens;
+      existing.cache_write_tokens += row.cache_write_tokens;
+      existing.cache_read_tokens += row.cache_read_tokens;
       existing.output_tokens += row.output_tokens;
-      existing.cost_usd += row.cost_usd;
+      existing.ccusage_cost += row.ccusage_cost;
     } else {
-      merged.set(row.model, { ...row });
+      merged.set(key, { ...row });
     }
   }
   return merged;
@@ -265,7 +459,8 @@ function unavailableMetrics(reason: string): UsageMetrics {
 // ---------------------------------------------------------------------------
 
 /**
- * Scrape token/cost usage from ccusage + OpenRouter for the target repo + date window.
+ * Scrape token/cost usage from ccusage (claude family) + raw ~/.codex logs
+ * (codex) + OpenRouter, repo-attributed for the target repo + date window.
  *
  * Self-aware: missing data, ccusage errors, and empty-for-span all produce
  * `ok()` with `cost_provenance: 'unavailable'` + a machine-readable `reason`.
@@ -278,16 +473,13 @@ export async function computeValueUsage(
   const version = opts.ccusageVersion ?? CCUSAGE_VERSION;
   const targetDir = path.resolve(opts.dir);
 
-  // --- Step 1: Run ccusage for both tools ---
+  // --- Step 1: Claude family via ccusage (repo-filtered by encoded cwd) ---
 
-  let claudeRows: CcusageModelRow[] | null = null;
-  let codexRows: CcusageModelRow[] | null = null;
+  let claudeRows: UsageRow[] | null = null;
   let claudeError: string | undefined;
-  let codexError: string | undefined;
-
   try {
-    const raw = deps.runCcusage('claude', version, opts.since, opts.until);
-    claudeRows = parseCcusageOutput(raw, targetDir);
+    const raw = deps.runClaudeCcusage(version, opts.since, opts.until);
+    claudeRows = parseClaudeInstances(raw, targetDir);
     if (claudeRows === null) {
       claudeError = 'ccusage claude output malformed or unparseable';
     }
@@ -295,42 +487,47 @@ export async function computeValueUsage(
     claudeError = `ccusage claude failed: ${e instanceof Error ? e.message : String(e)}`;
   }
 
+  // --- Step 2: Codex via raw ~/.codex logs (repo-filtered by cwd prefix) ---
+
+  let codexRows: UsageRow[] = [];
   try {
-    const raw = deps.runCcusage('codex', version, opts.since, opts.until);
-    codexRows = parseCcusageOutput(raw, targetDir);
-    if (codexRows === null) {
-      codexError = 'ccusage codex output malformed or unparseable';
-    }
-  } catch (e) {
-    codexError = `ccusage codex failed: ${e instanceof Error ? e.message : String(e)}`;
+    const sessions = deps.readCodexSessions(opts.since, opts.until);
+    codexRows = sessions
+      .filter((s) => isUnderDir(s.cwd, targetDir))
+      .map((s) => ({
+        model: s.model,
+        source: 'codex' as const,
+        input_tokens: s.input_tokens,
+        cache_write_tokens: 0,
+        cache_read_tokens: s.cache_read_tokens,
+        output_tokens: s.output_tokens,
+        ccusage_cost: 0,
+      }));
+  } catch {
+    codexRows = [];
   }
 
-  // Both failed entirely → unavailable
-  if (claudeRows === null && codexRows === null) {
-    const reason = [claudeError, codexError].filter(Boolean).join('; ') || 'ccusage unavailable';
-    return ok(unavailableMetrics(reason));
+  // Claude scrape failed entirely AND no codex rows → unavailable
+  if (claudeRows === null && codexRows.length === 0) {
+    return ok(unavailableMetrics(claudeError ?? 'ccusage unavailable'));
   }
 
-  // Merge all rows
-  const allRows: CcusageModelRow[] = [
-    ...(claudeRows ?? []),
-    ...(codexRows ?? []),
-  ];
+  const allRows: UsageRow[] = [...(claudeRows ?? []), ...codexRows];
 
-  // Empty for span (data exists but no entries match this dir)
+  // Data sources responded but nothing matched this repo in the window
   if (allRows.length === 0) {
-    return ok(unavailableMetrics('ccusage returned no data for this directory in the given window'));
+    return ok(unavailableMetrics('no token data for this directory in the given window'));
   }
 
-  // --- Step 2: Merge by model ---
+  // --- Step 3: Merge by (source, model) ---
 
-  const byModel = mergeModelRows(allRows);
+  const byModel = mergeRows(allRows);
 
-  // --- Step 3: Fetch OR credits (single call; key never leaves the dep) ---
+  // --- Step 4: Fetch OR credits (single call; key never leaves the dep) ---
 
   const orCredits = await deps.fetchOpenRouterCredits();
 
-  // --- Step 4: Build per-model detail + compute arm provenances ---
+  // --- Step 5: Build per-model detail + compute arm provenances ---
 
   const modelDetails: UsageModelDetail[] = [];
   const armProvenances = new Set<CostProvenance>();
@@ -338,16 +535,19 @@ export async function computeValueUsage(
   // For OR reconcile: sum ccusage-estimated OR cost to weight OR credits allocation
   let totalOrCcusageCost = 0;
   for (const [, row] of byModel) {
-    if (identifyArm(row.model) === 'openrouter') {
-      totalOrCcusageCost += row.cost_usd;
+    if (row.source === 'claude' && identifyArm(row.model) === 'openrouter') {
+      totalOrCcusageCost += row.ccusage_cost;
     }
   }
+  const orModelCount = [...byModel.values()].filter(
+    (r) => r.source === 'claude' && identifyArm(r.model) === 'openrouter',
+  ).length;
 
-  for (const [modelStr, row] of byModel) {
-    const arm: UsageArm = identifyArm(modelStr);
+  for (const [, row] of byModel) {
+    const arm: UsageArm = row.source === 'codex' ? 'codex' : identifyArm(row.model);
     const inputTokens = row.input_tokens;
-    const cacheWrite = row.cache_creation_input_tokens;
-    const cacheRead = row.cache_read_input_tokens;
+    const cacheWrite = row.cache_write_tokens;
+    const cacheRead = row.cache_read_tokens;
     const outputTokens = row.output_tokens;
     const total = inputTokens + cacheWrite + cacheRead + outputTokens;
 
@@ -361,6 +561,13 @@ export async function computeValueUsage(
         armProvenance = 'subscription-covered';
         break;
 
+      case 'codex':
+        // Tokens captured + repo-attributed; no per-repo $ (ccusage isn't pricing
+        // codex here). Grouped with subscription for provenance (tokens-only).
+        costUsd = null;
+        armProvenance = 'subscription-covered';
+        break;
+
       case 'local':
         // Always $0 (spec §2.3)
         costUsd = 0;
@@ -369,33 +576,30 @@ export async function computeValueUsage(
 
       case 'openrouter':
         if (orCredits !== null) {
-          // Authoritative: use OR total_usage (spec §2.3)
-          // When multiple OR models: allocate proportionally by ccusage weight
+          // Authoritative: use OR total_usage (spec §2.3), allocated proportionally
           if (totalOrCcusageCost > 0) {
-            costUsd = orCredits.total_usage * (row.cost_usd / totalOrCcusageCost);
+            costUsd = orCredits.total_usage * (row.ccusage_cost / totalOrCcusageCost);
           } else {
-            // Can't weight: split equally? Use OR total for this model's contribution
-            const orModelCount = [...byModel.values()].filter(r => identifyArm(r.model) === 'openrouter').length;
             costUsd = orCredits.total_usage / Math.max(1, orModelCount);
           }
           armProvenance = 'openrouter-api';
         } else {
           // Degrade to ccusage-priced (spec §2.3)
-          costUsd = row.cost_usd;
+          costUsd = row.ccusage_cost;
           armProvenance = 'ccusage-priced';
         }
         break;
 
       default:
         // unknown arm — use ccusage pricing
-        costUsd = row.cost_usd;
+        costUsd = row.ccusage_cost;
         armProvenance = 'ccusage-priced';
         break;
     }
 
     armProvenances.add(armProvenance);
     modelDetails.push({
-      model: modelStr,
+      model: row.model,
       arm,
       input_tokens: inputTokens,
       output_tokens: outputTokens,
@@ -406,7 +610,7 @@ export async function computeValueUsage(
     });
   }
 
-  // --- Step 5: Compute totals ---
+  // --- Step 6: Compute totals ---
 
   const totalInputTokens = modelDetails.reduce((s, m) => s + m.input_tokens, 0);
   const totalOutputTokens = modelDetails.reduce((s, m) => s + m.output_tokens, 0);
@@ -414,19 +618,18 @@ export async function computeValueUsage(
   const totalCacheWrite = modelDetails.reduce((s, m) => s + m.cache_write_tokens, 0);
   const totalAllTokens = modelDetails.reduce((s, m) => s + m.total_tokens, 0);
 
-  // Cost: sum numeric costs; if any model is null (subscription), overall cost is null
-  // unless there are other arms with costs
+  // Cost: sum numeric costs; pure tokens-only (subscription/codex) → null.
   let totalCostUsd: number | null = null;
-  const numericCosts = modelDetails.map(m => m.cost_usd).filter((c): c is number => c !== null);
-  const hasSubscriptionOnly = modelDetails.every(m => m.arm === 'subscription');
+  const numericCosts = modelDetails.map((m) => m.cost_usd).filter((c): c is number => c !== null);
+  const allTokensOnly = modelDetails.every((m) => m.arm === 'subscription' || m.arm === 'codex');
 
-  if (hasSubscriptionOnly) {
+  if (allTokensOnly) {
     totalCostUsd = null;
   } else if (numericCosts.length > 0) {
     totalCostUsd = numericCosts.reduce((s, c) => s + c, 0);
   }
 
-  // --- Step 6: Overall provenance ---
+  // --- Step 7: Overall provenance ---
 
   let overallProvenance: CostProvenance;
   if (armProvenances.size === 1) {
@@ -435,14 +638,11 @@ export async function computeValueUsage(
     overallProvenance = 'mixed';
   }
 
-  // --- Step 7: Agents list ---
+  // --- Step 8: Agents list (repo-attributable arms only) ---
 
   const agents: string[] = [];
-  if (claudeRows !== null && claudeRows.length > 0) agents.push('claude');
-  if (codexRows !== null && codexRows.length > 0) agents.push('codex');
-  // If both had data but both matched dir (already filtered above), include accordingly
-  // If no agents detected but we have model data, infer from presence
-  if (agents.length === 0 && modelDetails.length > 0) agents.push('claude');
+  if (modelDetails.some((m) => m.arm !== 'codex')) agents.push('claude');
+  if (modelDetails.some((m) => m.arm === 'codex')) agents.push('codex');
 
   return ok({
     input_tokens: totalInputTokens,
