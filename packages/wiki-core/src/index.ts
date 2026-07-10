@@ -167,3 +167,7 @@ export { buildSearchIndex, search } from './search.js';
 
 // Value report (deterministic, offline)
 export { computeValueReport } from './value-report.js';
+
+// Value usage (token/cost scraper — the one kb module that shells npx and makes a network call)
+export { computeValueUsage } from './value-usage.js';
+export type { UsageDeps } from './value-usage.js';
