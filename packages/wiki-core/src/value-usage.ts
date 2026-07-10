@@ -468,11 +468,26 @@ function parseClaudeInstances(raw: string, targetDir: string): UsageRow[] | null
 
 interface CcusageCodexSession {
   sessionId?: string;
+  sessionFile?: string;
   costUSD?: number;
 }
 
 /**
- * Parse `ccusage codex session --json` into a sessionId → costUSD map.
+ * Extract the bare session UUID from any of the id forms floating around:
+ * raw `session_meta.payload.id` (bare UUID), a rollout filename, or ccusage
+ * v20's composite `sessionId` (`<Y>/<M>/<D>/rollout-<ISO>-<uuid>` — verified
+ * 2026-07-10; NOT the bare UUID the shape was first assumed to be). The UUID
+ * is always the tail, so both join sides normalize through this.
+ */
+const SESSION_UUID_TAIL_RE =
+  /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:\.jsonl)?\s*$/i;
+
+function extractSessionUuid(id: string): string | undefined {
+  return id.match(SESSION_UUID_TAIL_RE)?.[1]?.toLowerCase();
+}
+
+/**
+ * Parse `ccusage codex session --json` into a bare-UUID → costUSD map.
  * Returns null if the shape is unrecognizable (treated as no prices).
  */
 function parseCodexSessionPrices(raw: string): Map<string, number> | null {
@@ -486,9 +501,10 @@ function parseCodexSessionPrices(raw: string): Map<string, number> | null {
 
   const prices = new Map<string, number>();
   for (const s of parsed.sessions) {
-    if (typeof s?.sessionId === 'string' && typeof s?.costUSD === 'number') {
-      prices.set(s.sessionId, s.costUSD);
-    }
+    const idSource = typeof s?.sessionId === 'string' ? s.sessionId : s?.sessionFile;
+    if (typeof idSource !== 'string' || typeof s?.costUSD !== 'number') continue;
+    const uuid = extractSessionUuid(idSource);
+    if (uuid) prices.set(uuid, s.costUSD);
   }
   return prices;
 }
@@ -594,18 +610,20 @@ export async function computeValueUsage(
       }
     }
 
-    codexRows = repoSessions.map((s) => ({
-      model: s.model,
-      source: 'codex' as const,
-      input_tokens: s.input_tokens,
-      cache_write_tokens: 0,
-      cache_read_tokens: s.cache_read_tokens,
-      output_tokens: s.output_tokens,
-      ccusage_est_cost:
-        s.session_id !== undefined && codexPrices?.has(s.session_id)
-          ? codexPrices.get(s.session_id)!
-          : null,
-    }));
+    codexRows = repoSessions.map((s) => {
+      // Both sides normalize to the bare UUID (ccusage sessionId is composite).
+      const uuid = s.session_id !== undefined ? extractSessionUuid(s.session_id) : undefined;
+      return {
+        model: s.model,
+        source: 'codex' as const,
+        input_tokens: s.input_tokens,
+        cache_write_tokens: 0,
+        cache_read_tokens: s.cache_read_tokens,
+        output_tokens: s.output_tokens,
+        ccusage_est_cost:
+          uuid !== undefined && codexPrices?.has(uuid) ? codexPrices.get(uuid)! : null,
+      };
+    });
   } catch {
     codexRows = [];
   }
