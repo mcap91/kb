@@ -57,10 +57,11 @@ function buildProbeEnv(extraEnv?: Record<string, string>): Record<string, string
   };
 }
 
-async function runProcess(
+export async function runProcess(
   command: string,
   args: string[],
   env: Record<string, string | undefined>,
+  timeoutMs?: number,
 ): Promise<{ code: number; stdout: string; stderr: string }> {
   return await new Promise((resolvePromise) => {
     const child = spawn(command, args, {
@@ -72,6 +73,18 @@ async function runProcess(
 
     let stdout = '';
     let stderr = '';
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    if (timeoutMs !== undefined) {
+      timer = setTimeout(() => {
+        child.kill('SIGKILL');
+        resolvePromise({
+          code: 1,
+          stdout,
+          stderr: `${stderr}\nProcess timeout: exceeded ${timeoutMs}ms and was killed.`,
+        });
+      }, timeoutMs);
+    }
 
     child.stdout?.on('data', (chunk) => {
       stdout += chunk.toString();
@@ -81,6 +94,7 @@ async function runProcess(
     });
 
     child.on('error', (err) => {
+      if (timer) clearTimeout(timer);
       resolvePromise({
         code: 1,
         stdout,
@@ -89,6 +103,7 @@ async function runProcess(
     });
 
     child.on('close', (code) => {
+      if (timer) clearTimeout(timer);
       resolvePromise({
         code: code ?? 1,
         stdout,
@@ -97,6 +112,12 @@ async function runProcess(
     });
   });
 }
+
+// Bubblewrap probes attempt to start a real kernel sandbox. On container-served
+// compute (e.g. Saturn pods) the seccomp/no-new-privs policy can make that spawn
+// hang indefinitely instead of failing fast, which would freeze check-environment.
+// Bound the wait so a hung probe degrades to "unsupported" like any other failure.
+const BWRAP_PROBE_TIMEOUT_MS = 10_000;
 
 async function probeLinuxBwrap(
   extraEnv: Record<string, string> | undefined,
@@ -129,7 +150,7 @@ async function probeLinuxBwrap(
       '-e',
       script,
     ];
-    const result = await runProcess(resolution.data.command, args, env);
+    const result = await runProcess(resolution.data.command, args, env, BWRAP_PROBE_TIMEOUT_MS);
     if (result.code !== 0) {
       const detail = result.stderr.trim() || result.stdout.trim() || `bwrap probe exited with code ${result.code}.`;
       return {

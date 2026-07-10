@@ -13,6 +13,7 @@ import {
 } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
+import { pathToFileURL } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import type { EnvironmentCapabilityStatus, HostCapabilitiesRecord } from '@kb/dispatch-core';
 
@@ -29,6 +30,14 @@ function getTsxPath(): string {
     return join(repoRoot, 'node_modules', '.bin', 'tsx.cmd');
   }
   return join(repoRoot, 'node_modules', '.bin', 'tsx');
+}
+
+function fakeAgentBaseArgv(fixturePath: string): string[] {
+  // Mirror the production fake-agent launcher: run the fixture via node's in-process
+  // tsx loader, not the tsx binary (whose IPC pipe is blocked in container sandboxes).
+  const repoRoot = resolve(TESTS_DIR, '..');
+  const loaderUrl = pathToFileURL(join(repoRoot, 'node_modules', 'tsx', 'dist', 'loader.mjs')).href;
+  return [process.execPath, '--import', loaderUrl, fixturePath];
 }
 
 function quotePosixArg(value: string): string {
@@ -221,7 +230,6 @@ type TestRegistry = {
 };
 
 async function writeRegistry(configDir: string, fakeAgentPath: string, registry?: TestRegistry): Promise<void> {
-  const tsxPath = getTsxPath();
   const defaultRegistry: TestRegistry = {
     version: 1,
     agents: {
@@ -264,7 +272,7 @@ async function writeRegistry(configDir: string, fakeAgentPath: string, registry?
         },
       },
       'fake-agent': {
-        base_argv: [tsxPath, fakeAgentPath],
+        base_argv: fakeAgentBaseArgv(fakeAgentPath),
         noninteractive_argv: [],
         instruction_transport: { kind: 'argv_content' },
         wrapper_arg: ['{wrapper_content}'],
@@ -3150,7 +3158,32 @@ describe('dispatch', () => {
       expect(registry.agents.codex.response_transport.kind).toBe('file');
       expect(registry.agents.codex.response_arg).toEqual(['-o', '{response_path}']);
       expect(Object.hasOwn(registry.agents, 'codex-danger-full-access')).toBe(false);
-      expect(registry.agents['fake-agent'].base_argv[0]).toBe(getTsxPath());
+      const fakeArgv = registry.agents['fake-agent'].base_argv;
+      // The fake-agent launcher must NOT use the tsx binary: its IPC pipe (listen() on a
+      // /tmp socket) is blocked in container sandboxes such as Saturn pods. It runs the
+      // fixture via node's in-process tsx loader instead. See WK-0034 Saturn validation.
+      expect(fakeArgv[0]).not.toMatch(/tsx(\.cmd)?$/i);
+      expect(fakeArgv).toContain('--import');
+      const loaderSpec = fakeArgv[fakeArgv.indexOf('--import') + 1]!;
+      expect(loaderSpec).toContain('tsx/dist/loader.mjs');
+      expect(fakeArgv[fakeArgv.length - 1]).toMatch(/fake-agent\.ts$/);
     });
   });
+});
+
+describe('runProcess timeout guard', () => {
+  it('kills a child that never exits and reports failure within the timeout', async () => {
+    // Regression: on container sandboxes (Saturn pods) the bwrap probe spawns a process
+    // that neither exits nor errors under seccomp, hanging check-environment forever.
+    // runProcess must bound the wait so the probe degrades to "unsupported" rather than hang.
+    const { runProcess } = await import('@kb/dispatch-core');
+    const result = await runProcess(
+      process.execPath,
+      ['-e', 'setTimeout(() => {}, 10000)'],
+      process.env,
+      1000,
+    );
+    expect(result.code).not.toBe(0);
+    expect(result.stderr.toLowerCase()).toContain('timeout');
+  }, 8000);
 });

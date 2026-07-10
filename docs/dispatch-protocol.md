@@ -482,6 +482,11 @@ What degrades on a pod, and what does not:
 - **Codex** sandboxes with Landlock, not bubblewrap, so it is not gated on the bwrap probe. kb does not probe Landlock (parked); run `codex exec` to confirm viability. Platforms may also mount agent state paths (`~/.codex`) read-only as policy, which blocks Codex independently of kb.
 - **redteam** still fails closed: app-level read-only is deliberately not accepted in place of a kernel sandbox.
 
+**Runtime on pods (no `tsx` binary, no hanging probe).** Two implementation details make the routes above actually hold on a real pod:
+
+- kb's CLIs and the `fake-agent` launcher run TypeScript through node's in-process tsx loader (`node --import tsx …`), never the `tsx` executable. The binary forks a helper and talks to it over a `/tmp` IPC socket, whose `listen()` a pod's seccomp policy blocks with `EPERM`; the loader registers its hooks in-process, so there is no socket. Invoke kb via `npm run …` (which uses the loader) rather than the `tsx` binary directly.
+- `check-environment`'s bubblewrap probe is time-bounded. Under a pod's seccomp policy the probe can neither complete nor fail cleanly and would otherwise hang the whole report; it is killed after a bounded wait and recorded as `unsupported`, so the route report always returns.
+
 **Read-only HOME recipe.** Many pods mount `$HOME` read-only, which breaks the config/token store (`FILE_WRITE_ERROR` at `init-config`/review, before gating is ever reached). Redirect the store to a writable directory with `XDG_CONFIG_HOME`:
 
 ```bash
@@ -496,7 +501,7 @@ If an operator chooses to customize `launchers.v1.json` locally, that is an expl
 
 ### Fake Agent
 
-The `fake-agent` entry points to the `kb` repo's `tests/fixtures/fake-agent.ts` via absolute paths written by `init-config`. The fixture runs inside the reviewed `agent-visible/` bundle, reads the handoff from `AGENT_BLACKBOARD_HANDOFF_PATH`, writes a fixed response to `AGENT_BLACKBOARD_RESPONSE_PATH`, and exits with code 0. It is used for:
+The `fake-agent` entry points to the `kb` repo's `tests/fixtures/fake-agent.ts` via absolute paths written by `init-config`, run through node's in-process tsx loader (`node --import <tsx loader> …`) so it needs no `tsx` binary and works on container pods that block the binary's IPC pipe. The fixture runs inside the reviewed `agent-visible/` bundle, reads the handoff from `AGENT_BLACKBOARD_HANDOFF_PATH`, writes a fixed response to `AGENT_BLACKBOARD_RESPONSE_PATH`, and exits with code 0. It is used for:
 
 - Automated testing in `tests/dispatch.test.ts`
 - Dogfooding the full review-launch cycle
