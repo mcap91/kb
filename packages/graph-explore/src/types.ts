@@ -6,7 +6,7 @@
 export type NodeKind = 'code_file' | 'doc_file' | 'wiki_record';
 
 /** Wiki record prefix (manifest-driven only; excludes HO-*). */
-export type GraphWikiPrefix = 'WK' | 'IN' | 'DEC' | 'SRC' | 'AREA';
+export type GraphWikiPrefix = 'WK' | 'IN' | 'DEC' | 'SRC' | 'AREA' | 'PLN' | 'VAL';
 
 /** Relation types between graph nodes. */
 export type EdgeRelation =

@@ -19,6 +19,8 @@ import {
   cmdImportPlan,
   cmdValidatePlan,
   cmdArchivePlan,
+  cmdValueReport,
+  cmdValueUsage,
 } from './commands.js';
 
 // ---------------------------------------------------------------------------
@@ -56,6 +58,8 @@ Commands:
   import-plan          Import artifacts into a PLN bundle
   validate-plan        Validate a PLN record and bundle
   archive-plan         Mark a PLN record done
+  value-report         Compute git + graph metrics for a VAL value report (JSON)
+  value-usage          Scrape token/cost data from ccusage + OpenRouter (JSON)
 
 Global options:
   --help               Show this help text
@@ -79,6 +83,8 @@ const COMMANDS: Record<string, (args: string[]) => Promise<void>> = {
   'import-plan': cmdImportPlan,
   'validate-plan': cmdValidatePlan,
   'archive-plan': cmdArchivePlan,
+  'value-report': cmdValueReport,
+  'value-usage': cmdValueUsage,
 };
 
 // ---------------------------------------------------------------------------
