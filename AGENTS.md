@@ -36,6 +36,20 @@ the initial retrieval pass.
 - Do not create `HO-*` via `wiki create` — handoffs are dispatch-owned under `wiki/handoffs/`.
 - If wiki records and code/tests disagree, report the mismatch rather than trusting a grep-first conclusion.
 
+### Value reports (value-report-recipe-v1)
+
+When the operator asks for a value report:
+
+0. Refresh the graph: `npm run graph -- --dir <repo>` (regenerates `wiki/.graph.json`).
+1. Run `value-report` (MCP tool) or `npm run wiki -- value-report --dir <repo>` (CLI fallback) to compute watermark, chain status, git metrics, unit evidence, candidates, and estimate anchors.
+2. Run `value-usage` (MCP tool) or `npm run wiki -- value-usage --dir <repo> --since <window_start> --until <window_end>` using the dates from step 1.
+3. Run `create --prefix VAL` to scaffold `wiki/value-reports/VAL-XXXX.md`.
+4. Present the candidate list and computed numbers to the **operator** for confirm/reject; collect `operator_assessment`. You may never confirm candidates or self-attest units yourself — operator-only gate.
+5. Fill the record per `wiki/templates/value.md` (tool-filled fields from step 1, scraped fields from step 2, operator fields from step 4, agent-judged narrative grounded in the returned WK ids). Agent adjustments to the estimate are downward-only with justification.
+6. Print the ROI line: `shipped <units_valued> working units; agents cost $<cost_usd> / <total_tokens> tokens; <time_saved_days> human-days vs. baseline (~<speedup>×, floor-anchored)`.
+
+Rules: report every watermark span — never skip a poor one; null and negative results are stated plainly. Never edit a prior VAL record.
+
 <!-- END kb-managed -->
 
 
