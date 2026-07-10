@@ -13,8 +13,15 @@
  *    read the raw session logs directly: `session_meta.cwd` (and `turn_context`)
  *    carry the launch directory — for interactive sessions the repo root, for kb
  *    dispatch runs a subdir under the repo — so a cwd prefix-match attributes
- *    codex usage to the repo. Codex tokens are captured; codex carries no
- *    per-repo dollar figure (tokens-only), since ccusage isn't pricing it here.
+ *    codex usage to the repo. Codex dollars-at-API-rates come from joining the
+ *    repo-matched sessions to `ccusage codex session --json` on the session UUID.
+ *
+ * Dual cost fields (operator decision 2026-07-10):
+ *  - cost_usd      real/marginal out-of-pocket: OR → authoritative API $; local → 0;
+ *                  subscription (incl. codex-on-subscription) → null (flat fee).
+ *  - cost_usd_est  ccusage (LiteLLM) at-API-rates estimate for EVERY arm — the
+ *                  interpretable "what it would have metered" figure. Partial codex
+ *                  pricing (some sessions unjoinable) sums what it can: downward-biased.
  *
  * Public API: computeValueUsage(opts, deps?) → Promise<Result<UsageMetrics>>
  *
@@ -77,6 +84,12 @@ export interface CodexSessionUsage {
   cwd: string;
   /** turn_context.model, e.g. "gpt-5.5"; falls back to "codex". */
   model: string;
+  /**
+   * Rollout session UUID (session_meta.payload.id, or parsed from the rollout
+   * filename) — the join key for `ccusage codex session` pricing. Absent when
+   * unparseable; such sessions stay tokens-only (cost_usd_est null).
+   */
+  session_id?: string;
   input_tokens: number;
   cache_read_tokens: number;
   output_tokens: number;
@@ -102,6 +115,15 @@ export interface UsageDeps {
   readCodexSessions(since: string, until: string): CodexSessionUsage[];
 
   /**
+   * Run `npx ccusage@<version> codex session --json --since --until`.
+   * Returns raw stdout: the $-lookup table for pricing repo-matched codex
+   * sessions by sessionId (cost_usd_est only). May throw if ccusage is absent;
+   * pricing is best-effort and tokens never depend on it. Optional so partial
+   * test deps stay valid; when absent, codex stays unpriced (est null).
+   */
+  runCodexCcusageSessions?(version: string, since: string, until: string): string;
+
+  /**
    * OpenRouter credits reconcile: reads key from ~/.claude/arms/secrets.env,
    * calls GET /api/v1/credits. Returns null if key unavailable or call fails.
    * MUST NEVER log or expose the key.
@@ -113,22 +135,14 @@ export interface UsageDeps {
 // Default real implementations
 // ---------------------------------------------------------------------------
 
-const defaultRunClaudeCcusage: UsageDeps['runClaudeCcusage'] = (version, since, until) => {
-  const ccArgs = [
-    `ccusage@${version}`,
-    'claude',
-    'daily',
-    '--json',
-    '--instances',
-    '--since',
-    since,
-    '--until',
-    until,
-  ];
-  // Windows: the `npx.cmd` shim can't be spawned via execFile directly
-  // (spawnSync EINVAL — Node's CVE-2024-27980 fix bars .cmd without a shell).
-  // Route through cmd.exe (a real .exe) which resolves `npx` on PATH. This is
-  // NOT `shell: true`, so args are passed as argv and never re-concatenated.
+/**
+ * Shell out to `npx -y <ccArgs...>`.
+ * Windows: the `npx.cmd` shim can't be spawned via execFile directly
+ * (spawnSync EINVAL — Node's CVE-2024-27980 fix bars .cmd without a shell).
+ * Route through cmd.exe (a real .exe) which resolves `npx` on PATH. This is
+ * NOT `shell: true`, so args are passed as argv and never re-concatenated.
+ */
+function execNpx(ccArgs: string[]): string {
   if (process.platform === 'win32') {
     return execFileSync('cmd.exe', ['/c', 'npx', '-y', ...ccArgs], {
       encoding: 'utf-8',
@@ -140,7 +154,26 @@ const defaultRunClaudeCcusage: UsageDeps['runClaudeCcusage'] = (version, since, 
     encoding: 'utf-8',
     stdio: ['pipe', 'pipe', 'pipe'],
   });
-};
+}
+
+const defaultRunClaudeCcusage: UsageDeps['runClaudeCcusage'] = (version, since, until) =>
+  execNpx([
+    `ccusage@${version}`,
+    'claude',
+    'daily',
+    '--json',
+    '--instances',
+    '--since',
+    since,
+    '--until',
+    until,
+  ]);
+
+const defaultRunCodexCcusageSessions: NonNullable<UsageDeps['runCodexCcusageSessions']> = (
+  version,
+  since,
+  until,
+) => execNpx([`ccusage@${version}`, 'codex', 'session', '--json', '--since', since, '--until', until]);
 
 /**
  * Default codex reader: walk ~/.codex/sessions/<Y>/<M>/<D>/rollout-*.jsonl,
@@ -204,6 +237,7 @@ function readOneCodexRollout(file: string): CodexSessionUsage | null {
 
   let cwd: string | undefined;
   let model: string | undefined;
+  let sessionId: string | undefined;
   let lastUsage: { input: number; cached: number; output: number; total: number } | undefined;
 
   for (const line of raw.split('\n')) {
@@ -219,8 +253,9 @@ function readOneCodexRollout(file: string): CodexSessionUsage | null {
     const rec = d as { type?: string; payload?: Record<string, unknown> };
     const payload = rec.payload ?? {};
 
-    if (rec.type === 'session_meta' && typeof payload.cwd === 'string') {
-      cwd = payload.cwd;
+    if (rec.type === 'session_meta') {
+      if (typeof payload.cwd === 'string') cwd = payload.cwd;
+      if (typeof payload.id === 'string') sessionId = payload.id;
     }
     if (rec.type === 'turn_context') {
       if (typeof payload.cwd === 'string' && !cwd) cwd = payload.cwd;
@@ -241,10 +276,18 @@ function readOneCodexRollout(file: string): CodexSessionUsage | null {
   }
 
   if (!cwd || !lastUsage) return null;
+  // Join key fallback: the session UUID is also embedded in the rollout filename.
+  if (!sessionId) {
+    const fm = path
+      .basename(file)
+      .match(/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i);
+    sessionId = fm?.[1];
+  }
   // Normalize to Claude-family shape: input_tokens excludes cached; cache_read = cached.
   return {
     cwd,
     model: model ?? 'codex',
+    session_id: sessionId,
     input_tokens: Math.max(0, lastUsage.input - lastUsage.cached),
     cache_read_tokens: lastUsage.cached,
     output_tokens: lastUsage.output,
@@ -288,6 +331,7 @@ const defaultFetchOpenRouterCredits: UsageDeps['fetchOpenRouterCredits'] = async
 const DEFAULT_DEPS: UsageDeps = {
   runClaudeCcusage: defaultRunClaudeCcusage,
   readCodexSessions: defaultReadCodexSessions,
+  runCodexCcusageSessions: defaultRunCodexCcusageSessions,
   fetchOpenRouterCredits: defaultFetchOpenRouterCredits,
 };
 
@@ -347,8 +391,12 @@ interface UsageRow {
   cache_write_tokens: number;
   cache_read_tokens: number;
   output_tokens: number;
-  /** ccusage-priced $ estimate (claude family only; 0 for codex). */
-  ccusage_cost: number;
+  /**
+   * ccusage (LiteLLM) at-API-rates $ estimate. Claude-family rows always carry a
+   * number (modelBreakdowns[].cost); codex rows carry the sessionId-joined
+   * costUSD, or null when the session couldn't be priced.
+   */
+  ccusage_est_cost: number | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -404,12 +452,45 @@ function parseClaudeInstances(raw: string, targetDir: string): UsageRow[] | null
           cache_write_tokens: Number(mb.cacheCreationTokens ?? 0),
           cache_read_tokens: Number(mb.cacheReadTokens ?? 0),
           output_tokens: Number(mb.outputTokens ?? 0),
-          ccusage_cost: Number(mb.cost ?? 0),
+          ccusage_est_cost: Number(mb.cost ?? 0),
         });
       }
     }
   }
   return rows;
+}
+
+// ---------------------------------------------------------------------------
+// ccusage codex session JSON shape (v20 `codex session --json`) — the $ lookup
+// table for the sessionId join. `directory` there is the DATE folder, not cwd,
+// so it can't repo-scope; only sessionId + costUSD are consumed.
+// ---------------------------------------------------------------------------
+
+interface CcusageCodexSession {
+  sessionId?: string;
+  costUSD?: number;
+}
+
+/**
+ * Parse `ccusage codex session --json` into a sessionId → costUSD map.
+ * Returns null if the shape is unrecognizable (treated as no prices).
+ */
+function parseCodexSessionPrices(raw: string): Map<string, number> | null {
+  let parsed: { sessions?: CcusageCodexSession[] };
+  try {
+    parsed = JSON.parse(raw) as { sessions?: CcusageCodexSession[] };
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(parsed?.sessions)) return null;
+
+  const prices = new Map<string, number>();
+  for (const s of parsed.sessions) {
+    if (typeof s?.sessionId === 'string' && typeof s?.costUSD === 'number') {
+      prices.set(s.sessionId, s.costUSD);
+    }
+  }
+  return prices;
 }
 
 // ---------------------------------------------------------------------------
@@ -426,7 +507,11 @@ function mergeRows(rows: UsageRow[]): Map<string, UsageRow> {
       existing.cache_write_tokens += row.cache_write_tokens;
       existing.cache_read_tokens += row.cache_read_tokens;
       existing.output_tokens += row.output_tokens;
-      existing.ccusage_cost += row.ccusage_cost;
+      // Est merge: all-null stays null; otherwise sum what was priced (downward-biased).
+      existing.ccusage_est_cost =
+        existing.ccusage_est_cost === null && row.ccusage_est_cost === null
+          ? null
+          : (existing.ccusage_est_cost ?? 0) + (row.ccusage_est_cost ?? 0);
     } else {
       merged.set(key, { ...row });
     }
@@ -446,6 +531,7 @@ function unavailableMetrics(reason: string): UsageMetrics {
     cache_write_tokens: 0,
     total_tokens: 0,
     cost_usd: null,
+    cost_usd_est: null,
     cost_provenance: 'unavailable',
     agents: [],
     by_model: [],
@@ -492,17 +578,34 @@ export async function computeValueUsage(
   let codexRows: UsageRow[] = [];
   try {
     const sessions = deps.readCodexSessions(opts.since, opts.until);
-    codexRows = sessions
-      .filter((s) => isUnderDir(s.cwd, targetDir))
-      .map((s) => ({
-        model: s.model,
-        source: 'codex' as const,
-        input_tokens: s.input_tokens,
-        cache_write_tokens: 0,
-        cache_read_tokens: s.cache_read_tokens,
-        output_tokens: s.output_tokens,
-        ccusage_cost: 0,
-      }));
+    const repoSessions = sessions.filter((s) => isUnderDir(s.cwd, targetDir));
+
+    // Price the repo-matched sessions by sessionId join against
+    // `ccusage codex session --json` (cost_usd_est only — best-effort; tokens
+    // never depend on it, and a failed join degrades to est null, never fail()).
+    let codexPrices: Map<string, number> | null = null;
+    if (repoSessions.length > 0 && deps.runCodexCcusageSessions) {
+      try {
+        codexPrices = parseCodexSessionPrices(
+          deps.runCodexCcusageSessions(version, opts.since, opts.until),
+        );
+      } catch {
+        codexPrices = null;
+      }
+    }
+
+    codexRows = repoSessions.map((s) => ({
+      model: s.model,
+      source: 'codex' as const,
+      input_tokens: s.input_tokens,
+      cache_write_tokens: 0,
+      cache_read_tokens: s.cache_read_tokens,
+      output_tokens: s.output_tokens,
+      ccusage_est_cost:
+        s.session_id !== undefined && codexPrices?.has(s.session_id)
+          ? codexPrices.get(s.session_id)!
+          : null,
+    }));
   } catch {
     codexRows = [];
   }
@@ -536,7 +639,7 @@ export async function computeValueUsage(
   let totalOrCcusageCost = 0;
   for (const [, row] of byModel) {
     if (row.source === 'claude' && identifyArm(row.model) === 'openrouter') {
-      totalOrCcusageCost += row.ccusage_cost;
+      totalOrCcusageCost += row.ccusage_est_cost ?? 0;
     }
   }
   const orModelCount = [...byModel.values()].filter(
@@ -556,14 +659,14 @@ export async function computeValueUsage(
 
     switch (arm) {
       case 'subscription':
-        // Tokens only; NO dollar estimate (spec §2.3)
+        // Marginal $: none (flat fee). The at-API-rates figure lives in cost_usd_est.
         costUsd = null;
         armProvenance = 'subscription-covered';
         break;
 
       case 'codex':
-        // Tokens captured + repo-attributed; no per-repo $ (ccusage isn't pricing
-        // codex here). Grouped with subscription for provenance (tokens-only).
+        // Tokens repo-attributed from raw logs; marginal $ none (subscription-
+        // covered). At-API-rates $ arrives via the sessionId join (cost_usd_est).
         costUsd = null;
         armProvenance = 'subscription-covered';
         break;
@@ -578,21 +681,21 @@ export async function computeValueUsage(
         if (orCredits !== null) {
           // Authoritative: use OR total_usage (spec §2.3), allocated proportionally
           if (totalOrCcusageCost > 0) {
-            costUsd = orCredits.total_usage * (row.ccusage_cost / totalOrCcusageCost);
+            costUsd = orCredits.total_usage * ((row.ccusage_est_cost ?? 0) / totalOrCcusageCost);
           } else {
             costUsd = orCredits.total_usage / Math.max(1, orModelCount);
           }
           armProvenance = 'openrouter-api';
         } else {
           // Degrade to ccusage-priced (spec §2.3)
-          costUsd = row.ccusage_cost;
+          costUsd = row.ccusage_est_cost ?? 0;
           armProvenance = 'ccusage-priced';
         }
         break;
 
       default:
         // unknown arm — use ccusage pricing
-        costUsd = row.ccusage_cost;
+        costUsd = row.ccusage_est_cost ?? 0;
         armProvenance = 'ccusage-priced';
         break;
     }
@@ -607,6 +710,8 @@ export async function computeValueUsage(
       cache_write_tokens: cacheWrite,
       total_tokens: total,
       cost_usd: costUsd,
+      // At-API-rates estimate for every arm; null only when unpriceable (codex join miss)
+      cost_usd_est: row.ccusage_est_cost,
     });
   }
 
@@ -628,6 +733,13 @@ export async function computeValueUsage(
   } else if (numericCosts.length > 0) {
     totalCostUsd = numericCosts.reduce((s, c) => s + c, 0);
   }
+
+  // At-API-rates estimate: sum whatever was priced; null when nothing was.
+  const estCosts = modelDetails
+    .map((m) => m.cost_usd_est)
+    .filter((c): c is number => c !== null);
+  const totalCostUsdEst: number | null =
+    estCosts.length > 0 ? estCosts.reduce((s, c) => s + c, 0) : null;
 
   // --- Step 7: Overall provenance ---
 
@@ -651,6 +763,7 @@ export async function computeValueUsage(
     cache_write_tokens: totalCacheWrite,
     total_tokens: totalAllTokens,
     cost_usd: totalCostUsd,
+    cost_usd_est: totalCostUsdEst,
     cost_provenance: overallProvenance,
     agents,
     by_model: modelDetails,

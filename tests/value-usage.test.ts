@@ -675,6 +675,331 @@ describe('ccusage version', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Dual cost fields — cost_usd_est (ccusage at-API-rates estimate, every arm)
+//
+// cost_usd stays the real/marginal out-of-pocket figure (subscription/codex →
+// null, local → 0, OR → authoritative). cost_usd_est is the ccusage LiteLLM
+// "what it would've metered at API rates" figure, populated for ALL arms:
+// claude family from modelBreakdowns[].cost; codex by joining repo-matched raw
+// sessions to `ccusage codex session --json` on sessionId.
+// ---------------------------------------------------------------------------
+
+/** Codex session usage with the rollout session UUID (join key). */
+function codexSessionWithId(
+  id: string,
+  cwd: string,
+  model: string,
+  input: number,
+  cacheRead: number,
+  output: number,
+): CodexSessionUsage {
+  return { ...codexSession(cwd, model, input, cacheRead, output), session_id: id };
+}
+
+/** Build a `ccusage codex session --json` payload (the $ lookup table). */
+function codexSessionsJson(entries: { sessionId: string; costUSD: number }[]): string {
+  return JSON.stringify({
+    sessions: entries.map((e) => ({
+      sessionId: e.sessionId,
+      sessionFile: `rollout-2026-07-10T00-00-00-${e.sessionId}.jsonl`,
+      directory: '2026/07/10', // date folder, NOT cwd — useless for repo scope
+      costUSD: e.costUSD,
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheCreationTokens: 0,
+      cacheReadTokens: 0,
+      reasoningOutputTokens: 0,
+      totalTokens: 0,
+      lastActivity: '2026-07-10T00:00:00Z',
+      models: {},
+    })),
+    totals: {},
+  });
+}
+
+describe('cost_usd_est — subscription arm carries the ccusage estimate', () => {
+  it('populates per-model and total cost_usd_est while cost_usd stays null', async () => {
+    const claudeJson = makeClaudeJson([
+      {
+        modelName: 'claude-opus-4-8',
+        inputTokens: 1000,
+        cacheCreationTokens: 200,
+        cacheReadTokens: 300,
+        outputTokens: 500,
+        cost: 46.36,
+      },
+    ]);
+
+    const deps: UsageDeps = {
+      runClaudeCcusage: () => claudeJson,
+      readCodexSessions: noCodex(),
+      fetchOpenRouterCredits: async () => null,
+    };
+
+    const result = await computeValueUsage({ dir: DIR, since: SINCE, until: UNTIL }, deps);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const d = result.data;
+    expect(d.cost_usd).toBeNull(); // marginal out-of-pocket: still null
+    expect(d.cost_usd_est).toBeCloseTo(46.36, 6); // at-API-rates estimate kept
+    expect(d.cost_provenance).toBe('subscription-covered');
+    expect(d.by_model[0]?.cost_usd).toBeNull();
+    expect(d.by_model[0]?.cost_usd_est).toBeCloseTo(46.36, 6);
+  });
+});
+
+describe('cost_usd_est — local arm', () => {
+  it('carries the ccusage estimate while cost_usd stays 0', async () => {
+    const claudeJson = makeClaudeJson([
+      {
+        modelName: 'qwen3-coder:30b',
+        inputTokens: 500,
+        cacheCreationTokens: 0,
+        cacheReadTokens: 0,
+        outputTokens: 200,
+        cost: 0.001,
+      },
+    ]);
+
+    const deps: UsageDeps = {
+      runClaudeCcusage: () => claudeJson,
+      readCodexSessions: noCodex(),
+      fetchOpenRouterCredits: async () => null,
+    };
+
+    const result = await computeValueUsage({ dir: DIR, since: SINCE, until: UNTIL }, deps);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.data.cost_usd).toBe(0);
+    expect(result.data.cost_usd_est).toBeCloseTo(0.001, 6);
+    expect(result.data.by_model[0]?.cost_usd_est).toBeCloseTo(0.001, 6);
+  });
+});
+
+describe('cost_usd_est — openrouter arm keeps the estimate beside the authoritative $', () => {
+  it('cost_usd from OR credits, cost_usd_est from ccusage pricing', async () => {
+    const claudeJson = makeClaudeJson([
+      {
+        modelName: 'z-ai/glm-5.2',
+        inputTokens: 800,
+        cacheCreationTokens: 0,
+        cacheReadTokens: 0,
+        outputTokens: 400,
+        cost: 0.02,
+      },
+    ]);
+
+    const deps: UsageDeps = {
+      runClaudeCcusage: () => claudeJson,
+      readCodexSessions: noCodex(),
+      fetchOpenRouterCredits: async () => ({ total_credits: 10.0, total_usage: 0.05 }),
+    };
+
+    const result = await computeValueUsage({ dir: DIR, since: SINCE, until: UNTIL }, deps);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.data.cost_usd).toBe(0.05); // authoritative
+    expect(result.data.cost_usd_est).toBeCloseTo(0.02, 6); // ccusage estimate preserved
+    expect(result.data.by_model[0]?.cost_usd_est).toBeCloseTo(0.02, 6);
+  });
+});
+
+describe('cost_usd_est — codex priced via sessionId join', () => {
+  it('joins repo-matched raw sessions to ccusage codex session costUSD', async () => {
+    const deps: UsageDeps = {
+      runClaudeCcusage: () => emptyClaudeJson(),
+      readCodexSessions: () => [
+        codexSessionWithId('019f4d52-ebe1-7381-b007-7445c17cfc72', DIR, 'gpt-5.5', 1000, 5000, 300),
+      ],
+      runCodexCcusageSessions: () =>
+        codexSessionsJson([
+          { sessionId: '019f4d52-ebe1-7381-b007-7445c17cfc72', costUSD: 1.921991 },
+          { sessionId: 'ffffffff-0000-0000-0000-000000000000', costUSD: 99.0 }, // other repo — not ours
+        ]),
+      fetchOpenRouterCredits: async () => null,
+    };
+
+    const result = await computeValueUsage({ dir: DIR, since: SINCE, until: UNTIL }, deps);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const d = result.data;
+    const codexModel = d.by_model.find((m) => m.arm === 'codex');
+    expect(codexModel?.cost_usd).toBeNull(); // marginal: still tokens-only
+    expect(codexModel?.cost_usd_est).toBeCloseTo(1.921991, 6); // only OUR session's $
+    expect(d.cost_usd).toBeNull();
+    expect(d.cost_usd_est).toBeCloseTo(1.921991, 6);
+  });
+
+  it('sums priced sessions per model and ignores unpriced ones (partial, downward-biased)', async () => {
+    const deps: UsageDeps = {
+      runClaudeCcusage: () => emptyClaudeJson(),
+      readCodexSessions: () => [
+        codexSessionWithId('aaaaaaaa-1111-1111-1111-111111111111', DIR, 'gpt-5.5', 100, 0, 50),
+        codexSessionWithId('bbbbbbbb-2222-2222-2222-222222222222', DIR, 'gpt-5.5', 200, 0, 80),
+        codexSession(DIR, 'gpt-5.5', 300, 0, 90), // no session_id → can't join
+      ],
+      runCodexCcusageSessions: () =>
+        codexSessionsJson([
+          { sessionId: 'aaaaaaaa-1111-1111-1111-111111111111', costUSD: 0.5 },
+          // bbbbbbbb missing from ccusage list → unpriced
+        ]),
+      fetchOpenRouterCredits: async () => null,
+    };
+
+    const result = await computeValueUsage({ dir: DIR, since: SINCE, until: UNTIL }, deps);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const codexModel = result.data.by_model.find((m) => m.arm === 'codex');
+    expect(codexModel?.cost_usd_est).toBeCloseTo(0.5, 6);
+    // tokens still counted for ALL sessions regardless of pricing
+    expect(result.data.total_tokens).toBe(150 + 280 + 390);
+  });
+});
+
+describe('cost_usd_est — codex join unavailable degrades to null, never errors', () => {
+  it('est is null when the codex ccusage pricing call throws', async () => {
+    const deps: UsageDeps = {
+      runClaudeCcusage: () => emptyClaudeJson(),
+      readCodexSessions: () => [
+        codexSessionWithId('019f4d52-ebe1-7381-b007-7445c17cfc72', DIR, 'gpt-5.5', 1000, 0, 300),
+      ],
+      runCodexCcusageSessions: () => {
+        throw new Error('npx: command not found');
+      },
+      fetchOpenRouterCredits: async () => null,
+    };
+
+    const result = await computeValueUsage({ dir: DIR, since: SINCE, until: UNTIL }, deps);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const codexModel = result.data.by_model.find((m) => m.arm === 'codex');
+    expect(codexModel?.cost_usd_est).toBeNull();
+    expect(result.data.cost_usd_est).toBeNull(); // nothing priced anywhere
+    expect(result.data.total_tokens).toBe(1300); // tokens unaffected
+  });
+
+  it('est is null when the pricing dep is not provided at all', async () => {
+    const deps: UsageDeps = {
+      runClaudeCcusage: () => emptyClaudeJson(),
+      readCodexSessions: () => [codexSessionWithId('cccccccc-3333-3333-3333-333333333333', DIR, 'gpt-5.5', 500, 0, 100)],
+      fetchOpenRouterCredits: async () => null,
+    };
+
+    const result = await computeValueUsage({ dir: DIR, since: SINCE, until: UNTIL }, deps);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.data.by_model.find((m) => m.arm === 'codex')?.cost_usd_est).toBeNull();
+    expect(result.data.cost_usd_est).toBeNull();
+  });
+});
+
+describe('cost_usd_est — mixed claude + codex total', () => {
+  it('sums claude and joined codex estimates into the total', async () => {
+    const claudeJson = makeClaudeJson([
+      {
+        modelName: 'claude-opus-4-8',
+        inputTokens: 1000,
+        cacheCreationTokens: 0,
+        cacheReadTokens: 0,
+        outputTokens: 400,
+        cost: 86.57,
+      },
+    ]);
+
+    const deps: UsageDeps = {
+      runClaudeCcusage: () => claudeJson,
+      readCodexSessions: () => [
+        codexSessionWithId('019f4d52-ebe1-7381-b007-7445c17cfc72', DIR, 'gpt-5.5', 200, 0, 100),
+      ],
+      runCodexCcusageSessions: () =>
+        codexSessionsJson([{ sessionId: '019f4d52-ebe1-7381-b007-7445c17cfc72', costUSD: 1.92 }]),
+      fetchOpenRouterCredits: async () => null,
+    };
+
+    const result = await computeValueUsage({ dir: DIR, since: SINCE, until: UNTIL }, deps);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.data.cost_usd).toBeNull(); // all subscription-covered
+    expect(result.data.cost_usd_est).toBeCloseTo(88.49, 6);
+  });
+
+  it('total est sums numeric per-model ests even when codex is unpriced', async () => {
+    const claudeJson = makeClaudeJson([
+      {
+        modelName: 'claude-sonnet-4-6',
+        inputTokens: 100,
+        cacheCreationTokens: 0,
+        cacheReadTokens: 0,
+        outputTokens: 50,
+        cost: 0.25,
+      },
+    ]);
+
+    const deps: UsageDeps = {
+      runClaudeCcusage: () => claudeJson,
+      readCodexSessions: () => [codexSession(DIR, 'gpt-5.5', 10, 0, 5)], // no id → unpriced
+      fetchOpenRouterCredits: async () => null,
+    };
+
+    const result = await computeValueUsage({ dir: DIR, since: SINCE, until: UNTIL }, deps);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.data.cost_usd_est).toBeCloseTo(0.25, 6);
+  });
+});
+
+describe('cost_usd_est — unavailable metrics carry null', () => {
+  it('unavailable result includes cost_usd_est null', async () => {
+    const deps: UsageDeps = {
+      runClaudeCcusage: () => {
+        throw new Error('npx: command not found');
+      },
+      readCodexSessions: noCodex(),
+      fetchOpenRouterCredits: async () => null,
+    };
+
+    const result = await computeValueUsage({ dir: DIR, since: SINCE, until: UNTIL }, deps);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.data.cost_provenance).toBe('unavailable');
+    expect(result.data.cost_usd_est).toBeNull();
+  });
+});
+
+describe('cost_usd_est — codex pricing call receives the pinned version and window', () => {
+  it('passes version/since/until through to runCodexCcusageSessions', async () => {
+    const calls: Array<{ version: string; since: string; until: string }> = [];
+
+    const deps: UsageDeps = {
+      runClaudeCcusage: () => emptyClaudeJson(),
+      readCodexSessions: () => [
+        codexSessionWithId('dddddddd-4444-4444-4444-444444444444', DIR, 'gpt-5.5', 10, 0, 5),
+      ],
+      runCodexCcusageSessions: (version, since, until) => {
+        calls.push({ version, since, until });
+        return codexSessionsJson([]);
+      },
+      fetchOpenRouterCredits: async () => null,
+    };
+
+    await computeValueUsage({ dir: DIR, since: SINCE, until: UNTIL, ccusageVersion: '99.0.0' }, deps);
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toEqual({ version: '99.0.0', since: SINCE, until: UNTIL });
+  });
+});
+
+// ---------------------------------------------------------------------------
 // agents field
 // ---------------------------------------------------------------------------
 

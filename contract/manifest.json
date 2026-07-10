@@ -313,6 +313,7 @@
         "cache_write_tokens",
         "total_tokens",
         "cost_usd",
+        "cost_usd_est",
         "cost_provenance",
         "agents",
         "span_days",
