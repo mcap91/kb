@@ -41,6 +41,6 @@ When the operator asks for a value report:
 3. Run `create --prefix VAL` to scaffold `wiki/value-reports/VAL-XXXX.md`.
 4. Present the candidate list and computed numbers to the **operator** for confirm/reject; collect `operator_assessment`. You may never confirm candidates or self-attest units yourself — operator-only gate.
 5. Fill the record per `wiki/templates/value.md` (tool-filled fields from step 1, scraped fields from step 2, operator fields from step 4, agent-judged narrative grounded in the returned WK ids). Agent adjustments to the estimate are downward-only with justification.
-6. Print the ROI line: `shipped <units_valued> working units; agents cost $<cost_usd> / <total_tokens> tokens; <time_saved_days> human-days vs. baseline (~<speedup>×, floor-anchored)`.
+6. Print the ROI line: `shipped <units_valued> working units; agents cost $<cost_usd> (est. $<cost_usd_est> at API rates) / <total_tokens> tokens; <time_saved_days> human-days vs. baseline (~<speedup>×, floor-anchored)`. If `cost_usd` is null (pure subscription-covered), render it as $0 out-of-pocket; the estimate carries the interpretable figure.
 
 Rules: report every watermark span — never skip a poor one; null and negative results are stated plainly. Never edit a prior VAL record.

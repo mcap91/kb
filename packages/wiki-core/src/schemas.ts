@@ -264,6 +264,7 @@ export const valueFrontmatterSchema = z.object({
   cache_write_tokens: z.coerce.number().optional(),
   total_tokens: z.coerce.number().optional(),
   cost_usd: z.coerce.number().optional(),
+  cost_usd_est: z.coerce.number().optional(),
   cost_provenance: costProvenanceSchema.optional(),
   agents: z.array(z.string()).optional(),
   // Output — observed (tool-filled)

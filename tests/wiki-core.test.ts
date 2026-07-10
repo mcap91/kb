@@ -1992,6 +1992,7 @@ describe('VAL value-report record type', () => {
         cache_write_tokens: 250,
         total_tokens: 3750,
         cost_usd: 1.23,
+        cost_usd_est: 4.56,
         cost_provenance: 'openrouter-api',
         agents: ['claude', 'codex'],
         span_days: 9,

@@ -231,7 +231,10 @@ export interface ValueFrontmatter {
   cache_read_tokens?: number;
   cache_write_tokens?: number;
   total_tokens?: number;
+  /** Real/marginal out-of-pocket $ (OR authoritative; local 0; subscription blank). */
   cost_usd?: number;
+  /** ccusage (LiteLLM) at-API-rates estimate, populated for every arm. */
+  cost_usd_est?: number;
   cost_provenance?: CostProvenance;
   agents?: string[];
   // Output — observed (tool-filled by value-report)
@@ -415,7 +418,9 @@ export interface ValueUsageOpts {
 /**
  * Which arm a model/tool belongs to (spec §2.3).
  * `codex` is a separate CLI (its own ~/.codex logs); tokens are captured and
- * repo-attributed by cwd, but it carries no per-repo dollar figure (tokens-only).
+ * repo-attributed by cwd. Its marginal cost_usd stays null (subscription-
+ * covered), but cost_usd_est is priced by joining `ccusage codex session`
+ * on the session UUID.
  */
 export type UsageArm = 'subscription' | 'local' | 'openrouter' | 'codex' | 'unknown';
 
@@ -428,8 +433,10 @@ export interface UsageModelDetail {
   cache_read_tokens: number;
   cache_write_tokens: number;
   total_tokens: number;
-  /** null when the arm carries no dollar figure (subscription/unavailable). */
+  /** Real/marginal out-of-pocket $; null when the arm has no marginal charge figure (subscription/codex). */
   cost_usd: number | null;
+  /** ccusage (LiteLLM) at-API-rates estimate; null only when unpriceable (codex join failed). */
+  cost_usd_est: number | null;
 }
 
 /** Scraped token/cost metrics from value-usage. */
@@ -439,7 +446,10 @@ export interface UsageMetrics {
   cache_read_tokens: number;
   cache_write_tokens: number;
   total_tokens: number;
+  /** Real/marginal out-of-pocket $ summed across arms; null when every arm is tokens-only. */
   cost_usd: number | null;
+  /** At-API-rates estimate summed across arms; null when nothing could be priced. */
+  cost_usd_est: number | null;
   cost_provenance: CostProvenance;
   agents: string[];
   by_model: UsageModelDetail[];
