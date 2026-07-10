@@ -108,6 +108,7 @@ export {
   deriveRouteVerdicts,
   detectContainer,
   probeWritability,
+  runProcess,
 } from './environment.js';
 
 // Cleanup

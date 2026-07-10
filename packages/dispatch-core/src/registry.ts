@@ -1,5 +1,5 @@
 import { access, writeFile, readFile } from 'node:fs/promises';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 
@@ -42,13 +42,13 @@ function looksLikeLegacyRegistry(value: unknown): boolean {
   });
 }
 
-function getTsxBinaryPath(): string {
-  return join(
-    KB_ROOT,
-    'node_modules',
-    '.bin',
-    process.platform === 'win32' ? 'tsx.cmd' : 'tsx',
-  );
+// Run the fake-agent fixture through node's in-process tsx loader rather than the tsx
+// binary. The binary forks a child and talks to it over an IPC pipe (listen() on a /tmp
+// socket), which container sandboxes such as Saturn pods block with EPERM. The loader
+// registers its hooks in-process, so there is no pipe. Absolute file URL because the
+// agent is spawned with cwd inside the reviewed bundle, not the kb checkout.
+function getTsxLoaderSpecifier(): string {
+  return pathToFileURL(join(KB_ROOT, 'node_modules', 'tsx', 'dist', 'loader.mjs')).href;
 }
 
 function getFakeAgentFixturePath(): string {
@@ -144,7 +144,7 @@ export function createDefaultRegistry(): AgentRegistry {
         description: 'Codex CLI adapter',
       },
       'fake-agent': {
-        base_argv: [getTsxBinaryPath(), getFakeAgentFixturePath()],
+        base_argv: [process.execPath, '--import', getTsxLoaderSpecifier(), getFakeAgentFixturePath()],
         noninteractive_argv: [],
         instruction_transport: { kind: 'argv_content' },
         wrapper_arg: ['{wrapper_content}'],
