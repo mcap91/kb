@@ -287,15 +287,23 @@ Dispatch maintains an operator-owned host capability record at:
 <configDir>/host-capabilities.v1.json
 ```
 
-`dispatch check-environment` probes the current host and writes that record explicitly. Launch also refreshes the record automatically when it is missing or when the current registry hash differs from the recorded one.
+`dispatch check-environment` probes the current host, persists that record, and prints a route-viability report. Launch also refreshes the record automatically when it is missing or when the current registry hash differs from the recorded one.
 
-Today the record tracks the Linux bubblewrap capabilities that matter to shipped agents:
+The record tracks **facts, not decisions**:
 
-- basic sandbox startup for Codex
-- basic sandbox startup for Claude
-- additional writable directory mounts for Claude non-redteam `write_scope`
+- Linux bubblewrap capabilities that matter to shipped agents:
+  - basic sandbox startup for Codex (bwrap probe)
+  - basic sandbox startup for Claude (bwrap probe)
+  - additional writable directory mounts for Claude non-redteam `write_scope` (bwrap bind-mount probe)
+- container-detection signals: `KUBERNETES_SERVICE_HOST`, `/.dockerenv`, and the first line of `/proc/1/cgroup`
+- writability of `$HOME` and of the resolved config store
 
-Launch only blocks when the required capability is **known unsupported** for the selected agent/mode.
+From those facts, `check-environment` derives a plain per-route verdict (computed, not persisted): plain adapters, headless Claude, `write_scope` enforcement level (kernel vs app-level), Codex, and redteam. Run it first on any new host to see what dispatch can do there.
+
+Gating consumes the record at launch time:
+
+- **redteam** still fails closed: a launch is blocked when the required kernel sandbox is **known unsupported** for the selected agent.
+- **non-redteam** launches are never hard-stopped by a bwrap probe. Codex is not gated on a bwrap probe at all (it sandboxes with Landlock, not bubblewrap). Headless Claude does not hard-require bubblewrap. When Claude has a non-empty reviewed `write_scope` and the additional-directory bind-mount probe is unsupported, the launch still proceeds and passes `--add-dir`, but records a warning in the run's `metadata/launch.json` that `write_scope` enforcement is app-level only on that host — the kernel-backed guarantee is lost, the capability is not.
 
 ### Empty Response Failure
 
@@ -454,32 +462,35 @@ Edit `launchers.v1.json` in your config directory to add new agents:
 
 After editing the registry, any pending review tokens become invalid because the registry hash will no longer match. You must re-review handoffs after registry changes.
 
-### Linux Sandbox Caveat On VMs / Nested Containers
+### Linux Sandbox Caveat: Shared Hosts vs Single-Tenant Container Pods
 
-Some Linux VM or nested-container environments do not support the bubblewrap sandbox behavior required by Claude and/or Codex. Failures often appear as `bwrap` mount or namespace errors, or as inability to grant reviewed extra directories for Claude.
+Some Linux hosts cannot run the bubblewrap sandbox that Claude's `write_scope` -> `--add-dir` feature relies on. Failures appear as `bwrap` mount or namespace errors. How to respond depends on what kind of host it is — run `npm run dispatch -- check-environment` first and read the route verdicts.
 
-What this means operationally:
+**Shared / multi-tenant hosts (workstations, shared VMs).** Here the agent's kernel sandbox is a real isolation boundary, so a bwrap failure is an infrastructure problem to fix on the host:
 
-- the host can be incapable of starting the required sandbox at all
-- the host can start Claude's sandbox but still fail the additional-directory capability needed for non-empty reviewed `write_scope`
-- this is an infrastructure problem on the host, not a dispatch review/launch protocol problem
-- `redteam` should still fail closed on those hosts unless a real read-only Codex sandbox is available
+- prefer fixing the host so the required sandbox can start
+- do not weaken agent permissions just to get around a sandbox failure
+- `redteam` fails closed on these hosts unless the kernel sandbox is available
 
-`kb` does not ship a default fallback profile that weakens Codex permissions for these hosts.
+**Single-tenant container pods (Saturn Cloud, Posit, generic Kubernetes).** On an ephemeral, single-tenant pod the *pod itself* is the isolation boundary; the agent's inner kernel sandbox is defense-in-depth, not the operative control. bubblewrap cannot start in a typical pod (default seccomp blocks `unshare`/`clone`, capabilities are dropped, `no-new-privileges` defeats the setuid fallback), and this is unfixable from inside the pod. "Fix the host" does not apply — use `check-environment` verdicts to pick a working route.
 
-The recommended responses are:
+What degrades on a pod, and what does not:
 
-- run `npm run dispatch -- check-environment`
-- fix the host so the Codex sandbox can start successfully
-- fix the host so Claude can honor reviewed `write_scope` with additional directories
-- use a different host for Codex runs
-- use Claude on that host only if the capability record says Claude's required sandbox capabilities are supported
-- otherwise use a different host or a different agent route
+- **Plain-process adapters** (`fake-agent`, the ollama adapter, custom wrappers) need no kernel sandbox and work as-is, given network reach to any model endpoint.
+- **Headless Claude** (`claude --print`, empty `write_scope`) does not hard-require bubblewrap and is no longer gated on the bwrap probe.
+- **Claude `write_scope`** still applies via `--add-dir`, but enforcement drops from kernel-backed to app-level; the run records a warning in `metadata/launch.json` saying so. The directories are still granted.
+- **Codex** sandboxes with Landlock, not bubblewrap, so it is not gated on the bwrap probe. kb does not probe Landlock (parked); run `codex exec` to confirm viability. Platforms may also mount agent state paths (`~/.codex`) read-only as policy, which blocks Codex independently of kb.
+- **redteam** still fails closed: app-level read-only is deliberately not accepted in place of a kernel sandbox.
 
-The supported recommendation in `kb` is:
+**Read-only HOME recipe.** Many pods mount `$HOME` read-only, which breaks the config/token store (`FILE_WRITE_ERROR` at `init-config`/review, before gating is ever reached). Redirect the store to a writable directory with `XDG_CONFIG_HOME`:
 
-- do not weaken Codex or Claude permissions just to get around sandbox failure
-- do not assume "Claude works there" without checking the capability record
+```bash
+export XDG_CONFIG_HOME="$PWD/.kbconfig"   # any writable dir (workdir, /tmp)
+npm run dispatch -- init-config
+npm run dispatch -- check-environment      # verify config-dir writable + route verdicts
+```
+
+On POSIX, `getConfigDir()` honors a set, non-empty `XDG_CONFIG_HOME` (`$XDG_CONFIG_HOME/kb-dispatch`) and otherwise falls back to `$HOME/.config/kb-dispatch`. `XDG_CONFIG_HOME` is on the launch env allowlist, so the redirected store is visible to launched agents too.
 
 If an operator chooses to customize `launchers.v1.json` locally, that is an explicit local trust decision outside the shipped defaults. Any registry change requires re-reviewing pending handoffs because the registry hash is bound into review tokens.
 

@@ -183,13 +183,31 @@ async function cmdCheckEnvironment(): Promise<number> {
   }
 
   const data: CheckEnvironmentResult = result.data;
+  const rec = data.record;
   console.log(`Config directory: ${data.configDir}`);
   console.log(`Record: ${data.recordPath}`);
-  console.log(`Checked: ${data.record.checked_at}`);
-  console.log(`Platform: ${data.record.platform}/${data.record.arch}`);
-  console.log(`Claude Linux sandbox: ${data.record.capabilities.claude_linux_sandbox.status}`);
-  console.log(`Claude Linux add-dir: ${data.record.capabilities.claude_linux_add_dir.status}`);
-  console.log(`Codex Linux sandbox: ${data.record.capabilities.codex_linux_sandbox.status}`);
+  console.log(`Checked: ${rec.checked_at}`);
+  console.log(`Platform: ${rec.platform}/${rec.arch}`);
+  console.log(`Claude Linux sandbox: ${rec.capabilities.claude_linux_sandbox.status}`);
+  console.log(`Claude Linux add-dir: ${rec.capabilities.claude_linux_add_dir.status}`);
+  console.log(`Codex Linux sandbox: ${rec.capabilities.codex_linux_sandbox.status}`);
+
+  if (rec.container) {
+    const c = rec.container;
+    const cgroup = c.cgroup_hint ? `, cgroup=${c.cgroup_hint}` : '';
+    console.log(`Container detected: ${c.detected} (k8s=${c.kubernetes_service_host}, dockerenv=${c.dockerenv}${cgroup})`);
+  }
+  if (rec.writability) {
+    console.log(`HOME writable: ${rec.writability.home.writable} (${rec.writability.home.path ?? 'unset'})`);
+    console.log(`Config dir writable: ${rec.writability.config_dir.writable} (${rec.writability.config_dir.path ?? 'unresolved'})`);
+  }
+
+  console.log('');
+  console.log('Route viability (what dispatch can do on this host):');
+  for (const verdict of data.verdicts) {
+    console.log(`  ${verdict.route}: ${verdict.viability}`);
+    console.log(`    ${verdict.detail}`);
+  }
   return 0;
 }
 

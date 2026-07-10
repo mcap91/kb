@@ -240,9 +240,11 @@ If you want an explicit host probe before launch, run:
 npm run dispatch -- check-environment
 ```
 
-This writes an operator-owned `host-capabilities.v1.json` record next to the dispatch registry.
-Launch also refreshes that record automatically when it is missing or stale for the current
-registry hash.
+This writes an operator-owned `host-capabilities.v1.json` record next to the dispatch registry and
+prints a route-viability report (container detection, HOME/config-dir writability, and a per-route
+verdict for plain adapters / headless Claude / `write_scope` enforcement level / Codex / redteam).
+Run it first on any new host. Launch also refreshes that record automatically when it is missing or
+stale for the current registry hash.
 
 Reviewed bundle layout:
 
@@ -282,10 +284,17 @@ last message to the launcher-owned response file via `-o {response_path}`.
 `read_only.argv_suffix` is a separate restriction layer used only for `mode: redteam`. It
 constrains the launched child run; it does not turn the child into a headless MCP client.
 
-If a Linux VM or nested container cannot satisfy the required bubblewrap capability, treat that as a
-host problem. Do not assume "use Claude on that host" automatically. Run `check-environment` and
-only use Claude there when the capability record says Claude's required sandbox features are
-supported. `kb` does not ship a weaker-permission fallback profile by default.
+If a host cannot satisfy the required bubblewrap capability, the right response depends on the host.
+On a **shared / multi-tenant** host (workstation, shared VM), treat it as a host problem: the kernel
+sandbox is a real boundary, so prefer fixing the host and do not weaken permissions to work around it.
+On a **single-tenant container pod** (Saturn Cloud, Posit, generic Kubernetes), bubblewrap cannot run
+and cannot be fixed from inside the pod — the pod itself is the isolation boundary. There, "fix the
+host" does not apply: run `check-environment` and use its per-route verdicts. Plain-process adapters
+and headless Claude work; non-redteam Claude `write_scope` degrades to app-level enforcement (recorded
+as a launch warning); redteam still fails closed. If `$HOME` is read-only, redirect the config store
+with `export XDG_CONFIG_HOME="$PWD/.kbconfig"` before `init-config`. See the "Linux Sandbox Caveat"
+section of `docs/dispatch-protocol.md` for the full recipe. `kb` does not ship a weaker-permission
+fallback profile by default.
 
 ### Consultation Handoffs
 
