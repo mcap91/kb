@@ -696,12 +696,17 @@ function codexSessionWithId(
   return { ...codexSession(cwd, model, input, cacheRead, output), session_id: id };
 }
 
-/** Build a `ccusage codex session --json` payload (the $ lookup table). */
+/**
+ * Build a `ccusage codex session --json` payload (the $ lookup table).
+ * REAL v20 shape (verified 2026-07-10): `sessionId` is the relative session
+ * path WITHOUT extension — `<Y>/<M>/<D>/rollout-<ISO>-<uuid>` — not the bare
+ * UUID. The join must therefore normalize on the trailing UUID.
+ */
 function codexSessionsJson(entries: { sessionId: string; costUSD: number }[]): string {
   return JSON.stringify({
     sessions: entries.map((e) => ({
-      sessionId: e.sessionId,
-      sessionFile: `rollout-2026-07-10T00-00-00-${e.sessionId}.jsonl`,
+      sessionId: `2026/07/10/rollout-2026-07-10T00-00-00-${e.sessionId}`,
+      sessionFile: `rollout-2026-07-10T00-00-00-${e.sessionId}`,
       directory: '2026/07/10', // date folder, NOT cwd — useless for repo scope
       costUSD: e.costUSD,
       inputTokens: 0,
