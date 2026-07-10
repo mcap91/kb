@@ -63,8 +63,31 @@ export type PlanStatus =
 /** Priority level. */
 export type Priority = 'critical' | 'high' | 'medium' | 'low';
 
+/** VAL-* value report status. */
+export type ValueStatus = 'draft' | 'published';
+
+/** Provenance of scraped token/cost data (assigned in code by value-usage). */
+export type CostProvenance =
+  | 'openrouter-api'
+  | 'ccusage-priced'
+  | 'subscription-covered'
+  | 'local-free'
+  | 'unavailable'
+  | 'mixed';
+
+/** Watermark chain status across the VAL series. */
+export type ChainStatus = 'complete' | 'first' | 'gap' | 'overlap' | 'unknown';
+
+/** Operator's independent calibration verdict on a value report. */
+export type OperatorAssessment =
+  | 'agree'
+  | 'too_high'
+  | 'too_low'
+  | 'unclear'
+  | 'not_reviewed';
+
 /** Manifest-driven wiki record prefixes. */
-export type WikiPrefix = 'WK' | 'IN' | 'DEC' | 'SRC' | 'AREA' | 'PLN';
+export type WikiPrefix = 'WK' | 'IN' | 'DEC' | 'SRC' | 'AREA' | 'PLN' | 'VAL';
 
 // ---------------------------------------------------------------------------
 // Frontmatter interfaces for manifest-driven record types
@@ -182,6 +205,84 @@ export interface PlanFrontmatter {
   superseded_by?: string;
 }
 
+/**
+ * VAL-* value report frontmatter — FLAT scalars and string arrays only.
+ * The line-oriented parser yields every scalar as a string; numeric fields are
+ * coerced by the zod schema (`z.coerce.number()`). No nested objects anywhere:
+ * per-model token detail lives in the `## Token Detail` body table (spec §5.4).
+ */
+export interface ValueFrontmatter {
+  // Identity / scope (required)
+  id: string;
+  title: string;
+  status: ValueStatus;
+  owner: string;
+  created: string;
+  updated: string;
+  window_start: string;
+  window_end: string;
+  base_commit: string;
+  head_commit: string;
+  prior_val: string; // prior VAL id, or "none"
+  chain_status: ChainStatus;
+  // Cost — observed (scraped by value-usage)
+  input_tokens?: number;
+  output_tokens?: number;
+  cache_read_tokens?: number;
+  cache_write_tokens?: number;
+  total_tokens?: number;
+  cost_usd?: number;
+  cost_provenance?: CostProvenance;
+  agents?: string[];
+  // Output — observed (tool-filled by value-report)
+  span_days?: number;
+  commits?: number;
+  files_changed?: number;
+  net_loc_added?: number;
+  net_loc_removed?: number;
+  tests_added?: number;
+  units_scripts_survives?: number;
+  units_scripts_wired?: number;
+  units_scripts_tested?: number;
+  units_modules_survives?: number;
+  units_modules_wired?: number;
+  units_modules_tested?: number;
+  units_tools_survives?: number;
+  units_tools_wired?: number;
+  units_tools_tested?: number;
+  units_docs_survives?: number;
+  units_docs_wired?: number;
+  units_docs_tested?: number;
+  units_candidates?: number;
+  churn_loc?: number;
+  excluded_files?: number;
+  excluded_loc?: number;
+  reverted_commits?: number;
+  wk_created?: number;
+  wk_closed?: number;
+  graph_available?: boolean;
+  // Operator-filled at authoring
+  units_attested?: number;
+  units_valued?: number;
+  operator_assessment?: OperatorAssessment;
+  operator_notes?: string;
+  // Estimate (tool-computed anchors; agent may adjust downward only)
+  human_days_units?: number;
+  human_days_loc?: number;
+  human_days_anchor?: number;
+  time_saved_days?: number; // may be negative — never clamped
+  speedup?: number; // may be < 1 — never clamped
+  estimate_basis?: string;
+  // Research — observed, agent-supplied (optional)
+  files_read?: number;
+  papers_read?: number;
+  items_parsed?: number;
+  outputs_organized?: number;
+  // Links
+  tags?: string[];
+  related?: string[];
+}
+
 /** AREA record frontmatter (slug-based, no numeric prefix). */
 export interface AreaFrontmatter {
   id: string;
@@ -202,7 +303,147 @@ export type WikiFrontmatter =
   | DecisionFrontmatter
   | SourceFrontmatter
   | PlanFrontmatter
+  | ValueFrontmatter
   | AreaFrontmatter;
+
+// ---------------------------------------------------------------------------
+// Value report / usage operation types (value-report + value-usage tools)
+// ---------------------------------------------------------------------------
+
+/** Unit classes for the working-shipped-units capture model (spec §5.1). */
+export type UnitClass = 'scripts' | 'modules' | 'tools' | 'docs';
+
+/**
+ * Tunable estimate/classification config, loaded from `wiki/.value-config.json`.
+ * Precedence: tool args > file > code defaults (spec §9).
+ */
+export interface ValueConfig {
+  per_unit_days: Record<UnitClass, number>;
+  loc_per_day: number;
+  speedup_cap: number;
+  ccusage_version: string;
+  exclude_globs: string[];
+  classification_patterns: {
+    script_extensions: string[];
+    candidate_locations: string[];
+    test_patterns: string[];
+    module_patterns: string[];
+    doc_patterns: string[];
+  };
+}
+
+/** Options for computeValueReport (deterministic, offline). */
+export interface ValueReportOpts {
+  dir: string;
+  /** Base ref override; default = prior VAL head_commit, else repo first commit. */
+  since?: string;
+  /** Head ref override; default = HEAD. */
+  untilRef?: string;
+  config?: Partial<ValueConfig>;
+  verbose?: boolean;
+}
+
+/** A pattern-only unit surfaced for OPERATOR confirmation (valued at zero until then). */
+export interface ValueCandidate {
+  path: string;
+  unitClass: UnitClass;
+  /** The runnable-location pattern that matched (audit trail). */
+  reason: string;
+}
+
+/** Per-unit evidence detail (verbose audit trail; which branch fired). */
+export interface ValueUnitDetail {
+  path: string;
+  unitClass: UnitClass;
+  evidence: 'wired' | 'tested' | 'survives' | 'candidate';
+  netLoc: number;
+}
+
+/** Per-class survives/wired/tested counts. */
+export interface UnitClassCounts {
+  survives: number;
+  wired: number;
+  tested: number;
+}
+
+/** Deterministic metrics computed by value-report. */
+export interface ValueMetrics {
+  window_start: string;
+  window_end: string;
+  base_commit: string;
+  head_commit: string;
+  prior_val: string;
+  chain_status: ChainStatus;
+  span_days: number;
+  commits: number;
+  files_changed: number;
+  net_loc_added: number;
+  net_loc_removed: number;
+  tests_added: number;
+  units: Record<UnitClass, UnitClassCounts>;
+  units_candidates: number;
+  /** wired ∪ tested (attested is added by the operator at authoring). */
+  units_valued: number;
+  churn_loc: number;
+  excluded_files: number;
+  excluded_loc: number;
+  reverted_commits: number;
+  wk_created: number;
+  wk_closed: number;
+  /** In-scope WK ids gathered for the narrative (spec §5.2). */
+  wk_ids: string[];
+  graph_available: boolean;
+  human_days_units: number;
+  human_days_loc: number;
+  human_days_anchor: number;
+  time_saved_days: number;
+  speedup: number;
+  estimate_basis: string;
+  candidates: ValueCandidate[];
+  unit_details: ValueUnitDetail[];
+}
+
+/** Options for computeValueUsage (the one network/exec-touching tool). */
+export interface ValueUsageOpts {
+  dir: string;
+  since: string;
+  until: string;
+  ccusageVersion?: string;
+  verbose?: boolean;
+}
+
+/** Which arm a model string belongs to (spec §2.3). */
+export type UsageArm = 'subscription' | 'local' | 'openrouter' | 'unknown';
+
+/** Per-model token/cost detail (goes to the record body table, not frontmatter). */
+export interface UsageModelDetail {
+  model: string;
+  arm: UsageArm;
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  cache_write_tokens: number;
+  total_tokens: number;
+  /** null when the arm carries no dollar figure (subscription/unavailable). */
+  cost_usd: number | null;
+}
+
+/** Scraped token/cost metrics from value-usage. */
+export interface UsageMetrics {
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  cache_write_tokens: number;
+  total_tokens: number;
+  cost_usd: number | null;
+  cost_provenance: CostProvenance;
+  agents: string[];
+  by_model: UsageModelDetail[];
+  /** Always "date-window-approx" — adjacent non-committed work may bleed in (spec §6.4). */
+  attribution: string;
+  /** Machine-readable reason when cost_provenance is "unavailable". */
+  reason?: string;
+}
 
 /** Machine-readable manifest for a PLN-* companion bundle. */
 export interface PlanBundleManifest {
