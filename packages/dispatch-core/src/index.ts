@@ -15,7 +15,12 @@ export type {
   ReviewedWriteScope,
   EnvironmentCapabilityStatus,
   EnvironmentCapability,
+  EnvironmentWritability,
+  ContainerDetection,
   HostCapabilitiesRecord,
+  RouteViability,
+  RouteVerdict,
+  GateDecision,
   CheckEnvironmentResult,
   AgentInstructionTransport,
   AgentResponseTransport,
@@ -70,6 +75,7 @@ export {
 // Platform-aware paths
 export type { TokenState } from './paths.js';
 export {
+  resolveConfigDir,
   getConfigDir,
   getTokenDir,
   getHostCapabilitiesPath,
@@ -96,7 +102,13 @@ export { review } from './review.js';
 export { launch } from './launch.js';
 
 // Environment
-export { checkEnvironment } from './environment.js';
+export {
+  checkEnvironment,
+  gateLaunchEnvironment,
+  deriveRouteVerdicts,
+  detectContainer,
+  probeWritability,
+} from './environment.js';
 
 // Cleanup
 export { cleanup } from './cleanup.js';

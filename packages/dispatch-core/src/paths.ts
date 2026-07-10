@@ -13,21 +13,27 @@ export type TokenState = 'pending' | 'launching' | 'consumed' | 'rejected';
 // ---------------------------------------------------------------------------
 
 /**
- * Resolve the operator config directory.
+ * Resolve the operator config directory for a given platform and environment.
  *
- * - POSIX: `~/.config/kb-dispatch/`
+ * - POSIX: honors a set, non-empty `XDG_CONFIG_HOME` (→ `$XDG_CONFIG_HOME/kb-dispatch`),
+ *   otherwise `$HOME/.config/kb-dispatch/`. Honoring `XDG_CONFIG_HOME` lets dispatch run
+ *   on hosts whose `$HOME` is mounted read-only (e.g. Saturn/Posit container pods) by
+ *   redirecting the token store to a writable directory.
  * - Windows primary: `%APPDATA%\kb-dispatch\`
  * - Windows fallback: `%USERPROFILE%\.config\kb-dispatch\`
+ *
+ * Pure and platform-parameterized so config resolution is unit-testable on any host.
  */
-export function getConfigDir(): string {
-  const isWindows = process.platform === 'win32';
-
-  if (isWindows) {
-    const appData = process.env['APPDATA'];
+export function resolveConfigDir(
+  platform: NodeJS.Platform,
+  env: NodeJS.ProcessEnv,
+): string {
+  if (platform === 'win32') {
+    const appData = env['APPDATA'];
     if (appData) {
       return join(appData, 'kb-dispatch');
     }
-    const userProfile = process.env['USERPROFILE'];
+    const userProfile = env['USERPROFILE'];
     if (userProfile) {
       return join(userProfile, '.config', 'kb-dispatch');
     }
@@ -37,11 +43,22 @@ export function getConfigDir(): string {
   }
 
   // POSIX
-  const home = process.env['HOME'];
+  const xdgConfigHome = env['XDG_CONFIG_HOME'];
+  if (xdgConfigHome !== undefined && xdgConfigHome !== '') {
+    return join(xdgConfigHome, 'kb-dispatch');
+  }
+  const home = env['HOME'];
   if (!home) {
     throw new Error('Cannot resolve config directory: HOME is not set');
   }
   return join(home, '.config', 'kb-dispatch');
+}
+
+/**
+ * Resolve the operator config directory for the current process.
+ */
+export function getConfigDir(): string {
+  return resolveConfigDir(process.platform, process.env);
 }
 
 // ---------------------------------------------------------------------------

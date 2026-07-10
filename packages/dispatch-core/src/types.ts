@@ -57,6 +57,29 @@ export interface EnvironmentCapability {
   detail: string;
 }
 
+/** Writability fact for a single filesystem location. */
+export interface EnvironmentWritability {
+  /** The resolved path probed, or null if it could not be resolved. */
+  path: string | null;
+  writable: boolean;
+  detail: string;
+}
+
+/**
+ * Container-detection facts. Informational only — MVP gating never keys off
+ * these (operator attestation is parked, WK-0034).
+ */
+export interface ContainerDetection {
+  /** True if any container signal fired. */
+  detected: boolean;
+  /** `KUBERNETES_SERVICE_HOST` is present in the environment. */
+  kubernetes_service_host: boolean;
+  /** `/.dockerenv` exists. */
+  dockerenv: boolean;
+  /** First line of `/proc/1/cgroup`, or null when unavailable. */
+  cgroup_hint: string | null;
+}
+
 export interface HostCapabilitiesRecord {
   schema_version: 1;
   checked_at: string;
@@ -68,12 +91,36 @@ export interface HostCapabilitiesRecord {
     claude_linux_add_dir: EnvironmentCapability;
     codex_linux_sandbox: EnvironmentCapability;
   };
+  /** Container-detection facts (additive; absent on records written before WK-0034). */
+  container?: ContainerDetection;
+  /** HOME and resolved-config-dir writability facts (additive). */
+  writability?: {
+    home: EnvironmentWritability;
+    config_dir: EnvironmentWritability;
+  };
+}
+
+/** Viability of a dispatch route on the current host. */
+export type RouteViability = 'available' | 'degraded' | 'blocked' | 'unknown';
+
+/** A per-route viability verdict derived from host-capability facts. */
+export interface RouteVerdict {
+  route: string;
+  viability: RouteViability;
+  detail: string;
+}
+
+/** Non-blocking advisories produced by the launch environment gate. */
+export interface GateDecision {
+  warnings: string[];
 }
 
 export interface CheckEnvironmentResult {
   configDir: string;
   recordPath: string;
   record: HostCapabilitiesRecord;
+  /** Per-route viability verdicts (derived, not persisted). */
+  verdicts: RouteVerdict[];
 }
 
 // ---------------------------------------------------------------------------

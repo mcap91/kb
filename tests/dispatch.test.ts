@@ -14,6 +14,7 @@ import {
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
+import type { EnvironmentCapabilityStatus, HostCapabilitiesRecord } from '@kb/dispatch-core';
 
 const TESTS_DIR = resolve(process.cwd(), 'tests');
 const DISPATCH_CLI = resolve(process.cwd(), 'packages', 'dispatch-cli', 'src', 'index.ts');
@@ -293,6 +294,7 @@ describe('dispatch', () => {
   let originalUserProfile: string | undefined;
   let originalPath: string | undefined;
   let originalPathExt: string | undefined;
+  let originalXdgConfigHome: string | undefined;
 
   const fakeAgentPath = resolve(TESTS_DIR, 'fixtures', 'fake-agent.ts');
   const delayedStdoutAgentPath = resolve(TESTS_DIR, 'fixtures', 'delayed-stdout-agent.mjs');
@@ -307,6 +309,7 @@ describe('dispatch', () => {
     originalUserProfile = process.env['USERPROFILE'];
     originalPath = process.env['PATH'];
     originalPathExt = process.env['PATHEXT'];
+    originalXdgConfigHome = process.env['XDG_CONFIG_HOME'];
   });
 
   afterEach(async () => {
@@ -340,6 +343,12 @@ describe('dispatch', () => {
       delete process.env['PATHEXT'];
     }
 
+    if (originalXdgConfigHome !== undefined) {
+      process.env['XDG_CONFIG_HOME'] = originalXdgConfigHome;
+    } else {
+      delete process.env['XDG_CONFIG_HOME'];
+    }
+
     try {
       await rm(tempDir, { recursive: true, force: true });
     } catch {
@@ -356,6 +365,8 @@ describe('dispatch', () => {
     } else {
       const home = join(tempDir, 'posix-home');
       process.env['HOME'] = home;
+      // Ensure the HOME-based fallback is exercised, not an ambient XDG override.
+      delete process.env['XDG_CONFIG_HOME'];
       actualConfigDir = join(home, '.config', 'kb-dispatch');
     }
 
@@ -825,7 +836,7 @@ describe('dispatch', () => {
       }
     }, 30_000);
 
-    it('blocks Claude launches on Linux when additional-directory sandbox capability is known unsupported', async () => {
+    it('proceeds with an app-level warning when additional-directory sandbox is unsupported (non-redteam)', async () => {
       if (process.platform !== 'linux') {
         return;
       }
@@ -880,11 +891,26 @@ describe('dispatch', () => {
         reviewId: reviewResult.data.reviewId,
         dir: repoRoot,
       });
-      expect(launchResult.ok).toBe(false);
-      if (!launchResult.ok) {
-        expect(launchResult.error).toBe('ENVIRONMENT_UNSUPPORTED');
-        expect(launchResult.message).toContain('additional-directory sandbox mounts');
+      // Non-redteam launches are no longer hard-stopped by a failing bwrap probe.
+      expect(launchResult.ok).toBe(true);
+      if (!launchResult.ok) return;
+
+      // --add-dir is still passed even though bwrap could not start...
+      const response = launchResult.data.response ?? '';
+      const argvMatch = response.match(/^argv: (.+)$/m);
+      expect(argvMatch).toBeTruthy();
+      if (argvMatch) {
+        const argv = JSON.parse(argvMatch[1]!) as string[];
+        const addDirValues = argv.flatMap((value, index) => argv[index - 1] === '--add-dir' ? [value] : []);
+        expect(addDirValues).toContain(join(repoRoot, 'src'));
       }
+
+      // ...and the run records that write_scope enforcement is app-level only here.
+      const launchJson = JSON.parse(
+        await readFile(join(launchResult.data.runDir, 'metadata', 'launch.json'), 'utf-8'),
+      ) as { warnings?: string[] };
+      expect(launchJson.warnings).toBeDefined();
+      expect(launchJson.warnings!.some((w) => /app-level/i.test(w))).toBe(true);
     }, 30_000);
 
     it('resolves a bare launcher command at launch time before spawning', async () => {
@@ -2312,6 +2338,287 @@ describe('dispatch', () => {
         expect(result.data.record.capabilities.claude_linux_sandbox.status).toBe('not_applicable');
         expect(result.data.record.capabilities.claude_linux_add_dir.status).toBe('not_applicable');
         expect(result.data.record.capabilities.codex_linux_sandbox.status).toBe('not_applicable');
+      }
+    });
+
+    it('returns route verdicts and records container + writability facts', async () => {
+      await setupFullConfig();
+
+      const { checkEnvironment } = await import('@kb/dispatch-core');
+      const result = await checkEnvironment();
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      // Facts are persisted on the record...
+      expect(result.data.record.container).toBeDefined();
+      expect(result.data.record.writability).toBeDefined();
+      expect(result.data.record.writability!.config_dir.writable).toBe(true);
+
+      // ...and verdicts are derived (not persisted) for every core route.
+      const routes = result.data.verdicts.map((v) => v.route);
+      expect(routes).toEqual(expect.arrayContaining([
+        'plain-adapters',
+        'claude-headless',
+        'write_scope-enforcement',
+        'codex',
+        'redteam',
+      ]));
+      const plain = result.data.verdicts.find((v) => v.route === 'plain-adapters');
+      expect(plain?.viability).toBe('available');
+    });
+  });
+
+  const synthCapabilityRecord = (options: {
+    platform?: NodeJS.Platform;
+    claudeBasic?: EnvironmentCapabilityStatus;
+    claudeAddDir?: EnvironmentCapabilityStatus;
+    codex?: EnvironmentCapabilityStatus;
+    homeWritable?: boolean;
+    configWritable?: boolean;
+    kubernetes?: boolean;
+  } = {}): HostCapabilitiesRecord => {
+    const checkedAt = '2026-07-10T00:00:00.000Z';
+    const cap = (status: EnvironmentCapabilityStatus) => ({
+      status,
+      checked_at: checkedAt,
+      detail: `${status} (synthetic)`,
+    });
+    return {
+      schema_version: 1,
+      checked_at: checkedAt,
+      platform: options.platform ?? 'linux',
+      arch: 'x64',
+      registry_hash: 'sha256:test',
+      capabilities: {
+        claude_linux_sandbox: cap(options.claudeBasic ?? 'supported'),
+        claude_linux_add_dir: cap(options.claudeAddDir ?? 'supported'),
+        codex_linux_sandbox: cap(options.codex ?? 'supported'),
+      },
+      container: {
+        detected: options.kubernetes ?? false,
+        kubernetes_service_host: options.kubernetes ?? false,
+        dockerenv: false,
+        cgroup_hint: null,
+      },
+      writability: {
+        home: { path: '/home/jovyan', writable: options.homeWritable ?? true, detail: 'synthetic' },
+        config_dir: {
+          path: '/work/.kbconfig/kb-dispatch',
+          writable: options.configWritable ?? true,
+          detail: 'synthetic',
+        },
+      },
+    };
+  };
+
+  describe('config dir resolution (XDG)', () => {
+    it('honors a set, non-empty XDG_CONFIG_HOME on POSIX', async () => {
+      const { resolveConfigDir } = await import('@kb/dispatch-core');
+      expect(resolveConfigDir('linux', { XDG_CONFIG_HOME: '/work/.kbconfig', HOME: '/home/jovyan' }))
+        .toBe(join('/work/.kbconfig', 'kb-dispatch'));
+    });
+
+    it('falls back to ~/.config when XDG_CONFIG_HOME is unset on POSIX', async () => {
+      const { resolveConfigDir } = await import('@kb/dispatch-core');
+      expect(resolveConfigDir('linux', { HOME: '/home/jovyan' }))
+        .toBe(join('/home/jovyan', '.config', 'kb-dispatch'));
+    });
+
+    it('falls back to ~/.config when XDG_CONFIG_HOME is set but empty on POSIX', async () => {
+      const { resolveConfigDir } = await import('@kb/dispatch-core');
+      expect(resolveConfigDir('linux', { XDG_CONFIG_HOME: '', HOME: '/home/jovyan' }))
+        .toBe(join('/home/jovyan', '.config', 'kb-dispatch'));
+    });
+
+    it('throws on POSIX when neither XDG_CONFIG_HOME nor HOME is set', async () => {
+      const { resolveConfigDir } = await import('@kb/dispatch-core');
+      expect(() => resolveConfigDir('linux', {})).toThrow(/HOME is not set/);
+    });
+
+    it('ignores XDG_CONFIG_HOME on Windows and prefers APPDATA', async () => {
+      const { resolveConfigDir } = await import('@kb/dispatch-core');
+      expect(resolveConfigDir('win32', { APPDATA: 'C:\\AppData', XDG_CONFIG_HOME: '/ignored' }))
+        .toBe(join('C:\\AppData', 'kb-dispatch'));
+    });
+
+    it('falls back to USERPROFILE/.config on Windows when APPDATA is unset', async () => {
+      const { resolveConfigDir } = await import('@kb/dispatch-core');
+      expect(resolveConfigDir('win32', { USERPROFILE: 'C:\\Users\\u' }))
+        .toBe(join('C:\\Users\\u', '.config', 'kb-dispatch'));
+    });
+  });
+
+  describe('launch environment gate', () => {
+    it('redteam blocks claude on a linux host that cannot start the kernel sandbox', async () => {
+      const { gateLaunchEnvironment } = await import('@kb/dispatch-core');
+      const result = gateLaunchEnvironment(
+        synthCapabilityRecord({ claudeBasic: 'unsupported' }),
+        'claude',
+        'redteam',
+        false,
+      );
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.error).toBe('ENVIRONMENT_UNSUPPORTED');
+    });
+
+    it('redteam blocks codex on a linux host that cannot start the kernel sandbox', async () => {
+      const { gateLaunchEnvironment } = await import('@kb/dispatch-core');
+      const result = gateLaunchEnvironment(
+        synthCapabilityRecord({ codex: 'unsupported' }),
+        'codex',
+        'redteam',
+        false,
+      );
+      expect(result.ok).toBe(false);
+    });
+
+    it('redteam still passes when the kernel sandbox is supported', async () => {
+      const { gateLaunchEnvironment } = await import('@kb/dispatch-core');
+      const result = gateLaunchEnvironment(synthCapabilityRecord({}), 'claude', 'redteam', false);
+      expect(result.ok).toBe(true);
+      if (result.ok) expect(result.data.warnings).toEqual([]);
+    });
+
+    it('non-redteam never blocks codex even when the bwrap probe is unsupported', async () => {
+      const { gateLaunchEnvironment } = await import('@kb/dispatch-core');
+      const result = gateLaunchEnvironment(
+        synthCapabilityRecord({ codex: 'unsupported' }),
+        'codex',
+        'implement',
+        false,
+      );
+      expect(result.ok).toBe(true);
+    });
+
+    it('non-redteam never blocks claude when the basic bwrap probe is unsupported', async () => {
+      const { gateLaunchEnvironment } = await import('@kb/dispatch-core');
+      const result = gateLaunchEnvironment(
+        synthCapabilityRecord({ claudeBasic: 'unsupported', claudeAddDir: 'unsupported' }),
+        'claude',
+        'implement',
+        false,
+      );
+      expect(result.ok).toBe(true);
+      if (result.ok) expect(result.data.warnings).toEqual([]);
+    });
+
+    it('non-redteam claude with write_scope on a bwrap-less host proceeds with an app-level warning', async () => {
+      const { gateLaunchEnvironment } = await import('@kb/dispatch-core');
+      const result = gateLaunchEnvironment(
+        synthCapabilityRecord({ claudeAddDir: 'unsupported' }),
+        'claude',
+        'implement',
+        true,
+      );
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.data.warnings.length).toBe(1);
+        expect(result.data.warnings[0]).toMatch(/app-level/i);
+      }
+    });
+
+    it('non-redteam claude with write_scope on a kernel-capable host emits no warning', async () => {
+      const { gateLaunchEnvironment } = await import('@kb/dispatch-core');
+      const result = gateLaunchEnvironment(
+        synthCapabilityRecord({ claudeAddDir: 'supported' }),
+        'claude',
+        'implement',
+        true,
+      );
+      expect(result.ok).toBe(true);
+      if (result.ok) expect(result.data.warnings).toEqual([]);
+    });
+
+    it('does not hard-stop on a non-linux host record', async () => {
+      const { gateLaunchEnvironment } = await import('@kb/dispatch-core');
+      const result = gateLaunchEnvironment(
+        synthCapabilityRecord({
+          platform: 'win32',
+          claudeBasic: 'not_applicable',
+          claudeAddDir: 'not_applicable',
+          codex: 'not_applicable',
+        }),
+        'claude',
+        'redteam',
+        true,
+      );
+      expect(result.ok).toBe(true);
+    });
+  });
+
+  describe('route viability verdicts', () => {
+    const verdictFor = (
+      verdicts: Array<{ route: string; viability: string; detail: string }>,
+      route: string,
+    ): { route: string; viability: string; detail: string } => {
+      const found = verdicts.find((v) => v.route === route);
+      if (!found) throw new Error(`missing verdict for ${route}`);
+      return found;
+    };
+
+    it('reports the core routes available on a kernel-capable host', async () => {
+      const { deriveRouteVerdicts } = await import('@kb/dispatch-core');
+      const verdicts = deriveRouteVerdicts(synthCapabilityRecord({}));
+      expect(verdictFor(verdicts, 'plain-adapters').viability).toBe('available');
+      expect(verdictFor(verdicts, 'claude-headless').viability).toBe('available');
+      expect(verdictFor(verdicts, 'write_scope-enforcement').detail).toMatch(/kernel/i);
+      expect(verdictFor(verdicts, 'redteam').viability).toBe('available');
+    });
+
+    it('degrades write_scope enforcement and blocks redteam on a pod-like host', async () => {
+      const { deriveRouteVerdicts } = await import('@kb/dispatch-core');
+      const verdicts = deriveRouteVerdicts(synthCapabilityRecord({
+        claudeBasic: 'unsupported',
+        claudeAddDir: 'unsupported',
+        codex: 'unsupported',
+        kubernetes: true,
+      }));
+      expect(verdictFor(verdicts, 'plain-adapters').viability).toBe('available');
+      expect(verdictFor(verdicts, 'claude-headless').viability).toBe('available');
+      const ws = verdictFor(verdicts, 'write_scope-enforcement');
+      expect(ws.viability).toBe('degraded');
+      expect(ws.detail).toMatch(/app-level/i);
+      expect(verdictFor(verdicts, 'redteam').viability).toBe('blocked');
+      expect(verdictFor(verdicts, 'codex').viability).toBe('unknown');
+    });
+
+    it('blocks every launch route when the config store is not writable', async () => {
+      const { deriveRouteVerdicts } = await import('@kb/dispatch-core');
+      const verdicts = deriveRouteVerdicts(synthCapabilityRecord({ configWritable: false }));
+      expect(verdictFor(verdicts, 'plain-adapters').viability).toBe('blocked');
+      expect(verdictFor(verdicts, 'claude-headless').viability).toBe('blocked');
+      expect(verdictFor(verdicts, 'codex').viability).toBe('blocked');
+      expect(verdictFor(verdicts, 'redteam').viability).toBe('blocked');
+      expect(verdictFor(verdicts, 'plain-adapters').detail).toMatch(/XDG_CONFIG_HOME/);
+    });
+  });
+
+  describe('container detection', () => {
+    it('flags a Kubernetes host via KUBERNETES_SERVICE_HOST', async () => {
+      const { detectContainer } = await import('@kb/dispatch-core');
+      const original = process.env['KUBERNETES_SERVICE_HOST'];
+      process.env['KUBERNETES_SERVICE_HOST'] = '172.20.0.1';
+      try {
+        const detection = await detectContainer();
+        expect(detection.kubernetes_service_host).toBe(true);
+        expect(detection.detected).toBe(true);
+      } finally {
+        if (original !== undefined) process.env['KUBERNETES_SERVICE_HOST'] = original;
+        else delete process.env['KUBERNETES_SERVICE_HOST'];
+      }
+    });
+
+    it('does not flag Kubernetes without the service-host env var', async () => {
+      const { detectContainer } = await import('@kb/dispatch-core');
+      const original = process.env['KUBERNETES_SERVICE_HOST'];
+      delete process.env['KUBERNETES_SERVICE_HOST'];
+      try {
+        const detection = await detectContainer();
+        expect(detection.kubernetes_service_host).toBe(false);
+        if (process.platform === 'win32') expect(detection.detected).toBe(false);
+      } finally {
+        if (original !== undefined) process.env['KUBERNETES_SERVICE_HOST'] = original;
       }
     });
   });

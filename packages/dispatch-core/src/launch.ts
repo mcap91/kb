@@ -295,6 +295,7 @@ async function writeLaunchMetadata(
     stdoutPath?: string | null;
     stderrPath?: string | null;
     responseTransport?: 'file' | 'stdout_capture';
+    warnings?: string[];
   },
 ): Promise<void> {
   const payload = {
@@ -310,6 +311,7 @@ async function writeLaunchMetadata(
     ...(data.stdoutPath !== undefined ? { stdout_path: data.stdoutPath } : {}),
     ...(data.stderrPath !== undefined ? { stderr_path: data.stderrPath } : {}),
     ...(data.responseTransport !== undefined ? { response_transport: data.responseTransport } : {}),
+    ...(data.warnings !== undefined && data.warnings.length > 0 ? { warnings: data.warnings } : {}),
   };
 
   await writeJsonAtomic(join(metadataDir, 'launch.json'), payload);
@@ -566,6 +568,7 @@ export async function launch(opts: LaunchOpts): Promise<DispatchResult<RunResult
   const agentConfigResult = resolveAgentConfig(registryResult.data.data, payload.agent, payload.mode);
   if (!agentConfigResult.ok) return agentConfigResult;
 
+  const launchWarnings: string[] = [];
   if (payload.agent === 'claude' || payload.agent === 'codex') {
     const capabilityResult = await ensureHostCapabilities(registryResult.data.data, registryResult.data.hash);
     if (!capabilityResult.ok) return capabilityResult;
@@ -577,6 +580,7 @@ export async function launch(opts: LaunchOpts): Promise<DispatchResult<RunResult
       reviewedWriteScope.access_directories.length > 0,
     );
     if (!gateResult.ok) return gateResult;
+    launchWarnings.push(...gateResult.data.warnings);
   }
 
   if (reviewedWriteScope.entries.length > 0) {
@@ -615,6 +619,7 @@ export async function launch(opts: LaunchOpts): Promise<DispatchResult<RunResult
     runId,
     tokenState: 'launching',
     startedAt,
+    warnings: launchWarnings,
   });
 
   const responsePath = join(runDir, 'response.md');
@@ -753,6 +758,7 @@ export async function launch(opts: LaunchOpts): Promise<DispatchResult<RunResult
       startedAt,
       completedAt,
       exitCode,
+      warnings: launchWarnings,
       error: emptyResponse ? 'Empty agent response' : errorMessage,
       responsePath,
       stdoutPath: agentConfig.response_transport.kind === 'file' ? stdoutPath : null,
@@ -918,6 +924,7 @@ export async function launch(opts: LaunchOpts): Promise<DispatchResult<RunResult
       runId,
       tokenState: 'consumed',
       startedAt,
+      warnings: launchWarnings,
       responsePath,
       stdoutPath: agentConfig.response_transport.kind === 'file' ? stdoutPath : null,
       stderrPath,
@@ -1026,6 +1033,7 @@ export async function launch(opts: LaunchOpts): Promise<DispatchResult<RunResult
         startedAt,
         completedAt: new Date().toISOString(),
         error: 'Agent process failed before confirmed start.',
+        warnings: launchWarnings,
         responsePath,
         stdoutPath: agentConfig.response_transport.kind === 'file' ? stdoutPath : null,
         stderrPath,
