@@ -17,6 +17,8 @@ import {
   importPlan,
   validatePlan,
   archivePlan,
+  computeValueReport,
+  computeValueUsage,
   type WikiPrefix,
 } from '@kb/wiki-core';
 import { parseFlag, parseValue } from './run.js';
@@ -400,4 +402,55 @@ export async function cmdArchivePlan(args: string[]): Promise<void> {
   console.log(`Completed plan: ${result.data.plan}`);
   console.log(`Path:          ${result.data.path}`);
   console.log(`Completed:     ${result.data.completed}`);
+}
+
+// ---------------------------------------------------------------------------
+// value-report
+// ---------------------------------------------------------------------------
+
+export async function cmdValueReport(args: string[]): Promise<void> {
+  let dir: string;
+  try { dir = requireDir(args); } catch { return; }
+
+  const since = parseValue(args, '--since');
+  const untilRef = parseValue(args, '--until-ref');
+  const verbose = parseFlag(args, '--verbose');
+
+  const result = await computeValueReport({ dir, since, untilRef, verbose });
+
+  if (!result.ok) {
+    console.error(`Error [${result.error}]: ${result.message}`);
+    process.exitCode = 1;
+    return;
+  }
+
+  console.log(JSON.stringify(result.data, null, 2));
+}
+
+// ---------------------------------------------------------------------------
+// value-usage
+// ---------------------------------------------------------------------------
+
+export async function cmdValueUsage(args: string[]): Promise<void> {
+  let dir: string;
+  try { dir = requireDir(args); } catch { return; }
+
+  const since = requireValue(args, '--since', 'YYYY-MM-DD');
+  if (!since) return;
+
+  const until = requireValue(args, '--until', 'YYYY-MM-DD');
+  if (!until) return;
+
+  const ccusageVersion = parseValue(args, '--ccusage-version');
+  const verbose = parseFlag(args, '--verbose');
+
+  const result = await computeValueUsage({ dir, since, until, ccusageVersion, verbose });
+
+  if (!result.ok) {
+    console.error(`Error [${result.error}]: ${result.message}`);
+    process.exitCode = 1;
+    return;
+  }
+
+  console.log(JSON.stringify(result.data, null, 2));
 }

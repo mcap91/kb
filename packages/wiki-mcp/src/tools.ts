@@ -11,6 +11,8 @@ import {
   importPlan,
   validatePlan,
   archivePlan,
+  computeValueReport,
+  computeValueUsage,
 } from '@kb/wiki-core';
 import type { WikiPrefix } from '@kb/wiki-core';
 
@@ -127,5 +129,39 @@ export const tools: ToolDef[] = [
     }),
     handler: async (input) =>
       archivePlan(input as unknown as Parameters<typeof archivePlan>[0]),
+  },
+  {
+    name: 'value-report',
+    description:
+      'Compute deterministic git + graph metrics for a VAL value report: watermark, chain status, unit evidence (wired/tested/candidates), estimate anchors. Offline and reproducible. Returns ValueMetrics as JSON.',
+    inputSchema: dirSchema.extend({
+      since: z.string().optional().describe('Base ref override (default: prior VAL head_commit, else repo first commit)'),
+      untilRef: z.string().optional().describe('Head ref override (default: HEAD)'),
+    }),
+    handler: async (input) =>
+      computeValueReport({
+        dir: input.dir as string,
+        since: input.since as string | undefined,
+        untilRef: input.untilRef as string | undefined,
+        verbose: input.verbose as boolean | undefined,
+      }),
+  },
+  {
+    name: 'value-usage',
+    description:
+      'Scrape token/cost data from ccusage (claude + codex) and OpenRouter /credits for a date window. Returns UsageMetrics as JSON. Degrades gracefully when ccusage or keys are absent.',
+    inputSchema: dirSchema.extend({
+      since: z.string().describe('Window start date (YYYY-MM-DD) — use window_start from value-report output'),
+      until: z.string().describe('Window end date (YYYY-MM-DD) — use window_end from value-report output'),
+      ccusageVersion: z.string().optional().describe('Pin ccusage version (default: from wiki/.value-config.json or built-in pin)'),
+    }),
+    handler: async (input) =>
+      computeValueUsage({
+        dir: input.dir as string,
+        since: input.since as string,
+        until: input.until as string,
+        ccusageVersion: input.ccusageVersion as string | undefined,
+        verbose: input.verbose as boolean | undefined,
+      }),
   },
 ];

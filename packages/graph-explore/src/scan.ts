@@ -66,6 +66,8 @@ const WIKI_PREFIX_MAP: Record<string, GraphWikiPrefix> = {
   'wiki/decisions': 'DEC',
   'wiki/sources': 'SRC',
   'wiki/areas': 'AREA',
+  'wiki/plans': 'PLN',
+  'wiki/value-reports': 'VAL',
 };
 
 // ---------------------------------------------------------------------------
