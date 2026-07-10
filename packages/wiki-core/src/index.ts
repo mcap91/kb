@@ -164,3 +164,6 @@ export { generate } from './generate.js';
 
 // Search
 export { buildSearchIndex, search } from './search.js';
+
+// Value report (deterministic, offline)
+export { computeValueReport } from './value-report.js';
