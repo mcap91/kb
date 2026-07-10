@@ -412,8 +412,12 @@ export interface ValueUsageOpts {
   verbose?: boolean;
 }
 
-/** Which arm a model string belongs to (spec §2.3). */
-export type UsageArm = 'subscription' | 'local' | 'openrouter' | 'unknown';
+/**
+ * Which arm a model/tool belongs to (spec §2.3).
+ * `codex` is a separate CLI (its own ~/.codex logs); tokens are captured and
+ * repo-attributed by cwd, but it carries no per-repo dollar figure (tokens-only).
+ */
+export type UsageArm = 'subscription' | 'local' | 'openrouter' | 'codex' | 'unknown';
 
 /** Per-model token/cost detail (goes to the record body table, not frontmatter). */
 export interface UsageModelDetail {

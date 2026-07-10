@@ -56,7 +56,7 @@ const DEFAULT_CONFIG: ValueConfig = {
   per_unit_days: { scripts: 0.25, modules: 2, tools: 3, docs: 0.25 },
   loc_per_day: 150,
   speedup_cap: 10,
-  ccusage_version: '0.8.0',
+  ccusage_version: '20.0.17',
   exclude_globs: [
     'scratch_space/**',
     'experiments/**',
