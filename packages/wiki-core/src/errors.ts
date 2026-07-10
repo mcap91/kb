@@ -23,7 +23,8 @@ export type ErrorCode =
   | 'IMPORT_ERROR'
   | 'ARCHIVE_ERROR'
   | 'SYNC_ERROR'
-  | 'MCP_CONFIG_PARSE_ERROR';
+  | 'MCP_CONFIG_PARSE_ERROR'
+  | 'GIT_UNAVAILABLE';
 
 /**
  * Discriminated union result type for wiki-core operations.
