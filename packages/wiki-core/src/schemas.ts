@@ -62,6 +62,33 @@ export const planStatusSchema = z.enum([
 
 export const prioritySchema = z.enum(['critical', 'high', 'medium', 'low']);
 
+export const valueStatusSchema = z.enum(['draft', 'published']);
+
+export const costProvenanceSchema = z.enum([
+  'openrouter-api',
+  'ccusage-priced',
+  'subscription-covered',
+  'local-free',
+  'unavailable',
+  'mixed',
+]);
+
+export const chainStatusSchema = z.enum([
+  'complete',
+  'first',
+  'gap',
+  'overlap',
+  'unknown',
+]);
+
+export const operatorAssessmentSchema = z.enum([
+  'agree',
+  'too_high',
+  'too_low',
+  'unclear',
+  'not_reviewed',
+]);
+
 // ---------------------------------------------------------------------------
 // Frontmatter Zod schemas for manifest-driven wiki record types
 // ---------------------------------------------------------------------------
@@ -209,6 +236,86 @@ export const areaFrontmatterSchema = z.object({
 });
 
 /**
+ * VAL-* value report frontmatter schema.
+ *
+ * FLAT scalars + string arrays only (the parser is line-oriented and yields every
+ * scalar as a string). Numeric fields use `z.coerce.number()` so string values from
+ * the parser coerce cleanly; they are NOT clamped — a negative `time_saved_days` or a
+ * `speedup` below 1 is valid and must lint clean (spec §8.1 falsifiability).
+ */
+export const valueFrontmatterSchema = z.object({
+  // Identity / scope (required)
+  id: z.string(),
+  title: z.string(),
+  status: valueStatusSchema,
+  owner: z.string(),
+  created: z.string(),
+  updated: z.string(),
+  window_start: z.string(),
+  window_end: z.string(),
+  base_commit: z.string(),
+  head_commit: z.string(),
+  prior_val: z.string(),
+  chain_status: chainStatusSchema,
+  // Cost — observed (scraped)
+  input_tokens: z.coerce.number().optional(),
+  output_tokens: z.coerce.number().optional(),
+  cache_read_tokens: z.coerce.number().optional(),
+  cache_write_tokens: z.coerce.number().optional(),
+  total_tokens: z.coerce.number().optional(),
+  cost_usd: z.coerce.number().optional(),
+  cost_provenance: costProvenanceSchema.optional(),
+  agents: z.array(z.string()).optional(),
+  // Output — observed (tool-filled)
+  span_days: z.coerce.number().optional(),
+  commits: z.coerce.number().optional(),
+  files_changed: z.coerce.number().optional(),
+  net_loc_added: z.coerce.number().optional(),
+  net_loc_removed: z.coerce.number().optional(),
+  tests_added: z.coerce.number().optional(),
+  units_scripts_survives: z.coerce.number().optional(),
+  units_scripts_wired: z.coerce.number().optional(),
+  units_scripts_tested: z.coerce.number().optional(),
+  units_modules_survives: z.coerce.number().optional(),
+  units_modules_wired: z.coerce.number().optional(),
+  units_modules_tested: z.coerce.number().optional(),
+  units_tools_survives: z.coerce.number().optional(),
+  units_tools_wired: z.coerce.number().optional(),
+  units_tools_tested: z.coerce.number().optional(),
+  units_docs_survives: z.coerce.number().optional(),
+  units_docs_wired: z.coerce.number().optional(),
+  units_docs_tested: z.coerce.number().optional(),
+  units_candidates: z.coerce.number().optional(),
+  churn_loc: z.coerce.number().optional(),
+  excluded_files: z.coerce.number().optional(),
+  excluded_loc: z.coerce.number().optional(),
+  reverted_commits: z.coerce.number().optional(),
+  wk_created: z.coerce.number().optional(),
+  wk_closed: z.coerce.number().optional(),
+  graph_available: z.boolean().optional(),
+  // Operator-filled at authoring
+  units_attested: z.coerce.number().optional(),
+  units_valued: z.coerce.number().optional(),
+  operator_assessment: operatorAssessmentSchema.optional(),
+  operator_notes: z.string().optional(),
+  // Estimate (tool-computed; downward-only agent adjustment)
+  human_days_units: z.coerce.number().optional(),
+  human_days_loc: z.coerce.number().optional(),
+  human_days_anchor: z.coerce.number().optional(),
+  time_saved_days: z.coerce.number().optional(),
+  speedup: z.coerce.number().optional(),
+  estimate_basis: z.string().optional(),
+  // Research — observed, agent-supplied (optional)
+  files_read: z.coerce.number().optional(),
+  papers_read: z.coerce.number().optional(),
+  items_parsed: z.coerce.number().optional(),
+  outputs_organized: z.coerce.number().optional(),
+  // Links
+  tags: z.array(z.string()).optional(),
+  related: z.array(z.string()).optional(),
+});
+
+/**
  * Map of prefix to its corresponding Zod schema.
  */
 export const frontmatterSchemas = {
@@ -218,4 +325,5 @@ export const frontmatterSchemas = {
   SRC: sourceFrontmatterSchema,
   PLN: planFrontmatterSchema,
   AREA: areaFrontmatterSchema,
+  VAL: valueFrontmatterSchema,
 } as const;

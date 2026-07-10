@@ -731,6 +731,7 @@ describe('create', () => {
     await create({ dir: tmp.dir, prefix: 'SRC', title: 'Source' });
     await create({ dir: tmp.dir, prefix: 'AREA', title: 'Area', slug: 'area-test' });
     await create({ dir: tmp.dir, prefix: 'PLN', title: 'Plan' });
+    await create({ dir: tmp.dir, prefix: 'VAL', title: 'Value report' });
 
     const result = await lint({ dir: tmp.dir });
     expect(result.ok).toBe(true);
@@ -1908,6 +1909,152 @@ describe('search', () => {
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.data.hits).toHaveLength(0);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// VAL value-report record type (P1 contract + schema)
+// ---------------------------------------------------------------------------
+
+describe('VAL value-report record type', () => {
+  let tmp: TmpRepo;
+
+  afterEach(() => {
+    tmp?.cleanup();
+  });
+
+  it('bootstrap creates the wiki/value-reports surface and value.md template', async () => {
+    tmp = await createBootstrappedRepo();
+    expect(fs.existsSync(path.join(tmp.dir, 'wiki/value-reports'))).toBe(true);
+    expect(fileExists(tmp.dir, 'wiki/templates/value.md')).toBe(true);
+  });
+
+  it('seeds a VAL entry in .id-state.json at bootstrap', async () => {
+    tmp = await createBootstrappedRepo();
+    const state = readJson<IdState>(tmp.dir, 'wiki/.id-state.json');
+    expect(state['VAL']).toEqual({ next: 1, allocated: [] });
+  });
+
+  it('allocate-id --prefix VAL yields VAL-0001', async () => {
+    tmp = await createBootstrappedRepo();
+    const result = await allocate({ dir: tmp.dir, prefix: 'VAL' as WikiPrefix });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.data.id).toBe('VAL-0001');
+    }
+  });
+
+  it('a created VAL scaffold lints clean (template defaults are valid)', async () => {
+    // WHY: create --prefix VAL is the P5 authoring entrypoint; the scaffold it writes from
+    // value.md must satisfy every required field with a lint-valid default before the tool
+    // and operator fill it in.
+    tmp = await createBootstrappedRepo();
+    const created = await create({ dir: tmp.dir, prefix: 'VAL', title: 'Span report' });
+    expect(created.ok).toBe(true);
+    if (created.ok) {
+      expect(created.data.id).toBe('VAL-0001');
+      expect(created.data.path).toContain('wiki/value-reports/VAL-0001.md');
+    }
+
+    const result = await lint({ dir: tmp.dir });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.data.errorCount).toBe(0);
+      expect(result.data.warningCount).toBe(0);
+    }
+  });
+
+  it('a hand-filled flat, numeric VAL record lints clean (z.coerce.number path)', async () => {
+    // WHY: the frontmatter parser yields every scalar as a string, so VAL's schema must
+    // coerce numbers. A full numeric record — including a NEGATIVE time_saved_days and a
+    // speedup < 1 — must lint clean: the schema never clamps or rejects "no value" (spec §8.1).
+    tmp = await createBootstrappedRepo();
+    writeRecord(
+      tmp.dir,
+      'wiki/value-reports/VAL-0001.md',
+      {
+        id: 'VAL-0001',
+        title: 'Value report for span A',
+        status: 'published',
+        owner: 'mcap91',
+        created: '2026-07-10',
+        updated: '2026-07-10',
+        window_start: '2026-07-01',
+        window_end: '2026-07-10',
+        base_commit: 'abc123',
+        head_commit: 'def456',
+        prior_val: 'none',
+        chain_status: 'first',
+        input_tokens: 1000,
+        output_tokens: 2000,
+        cache_read_tokens: 500,
+        cache_write_tokens: 250,
+        total_tokens: 3750,
+        cost_usd: 1.23,
+        cost_provenance: 'openrouter-api',
+        agents: ['claude', 'codex'],
+        span_days: 9,
+        commits: 12,
+        files_changed: 20,
+        net_loc_added: 400,
+        net_loc_removed: 50,
+        tests_added: 3,
+        units_scripts_survives: 2,
+        units_valued: 0,
+        units_candidates: 1,
+        churn_loc: 120,
+        excluded_files: 2,
+        excluded_loc: 40,
+        reverted_commits: 0,
+        wk_created: 1,
+        wk_closed: 0,
+        graph_available: true,
+        human_days_units: 0,
+        human_days_loc: 2.67,
+        human_days_anchor: 0,
+        time_saved_days: -9,
+        speedup: 0,
+        operator_assessment: 'too_low',
+        estimate_basis: '0 valued units; loc floor 400/150; min->units=0; span 9',
+      },
+      '## Summary\n\nNo working units this span.\n',
+    );
+
+    const result = await lint({ dir: tmp.dir });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const valDiags = result.data.diagnostics.filter(d => d.file.includes('value-reports'));
+      expect(valDiags).toEqual([]);
+    }
+  });
+
+  it('rejects an invalid chain_status enum value', async () => {
+    // WHY: falsifiability controls (chain-status detection) depend on this being a real
+    // enum, not free text — a garbage chain_status must be caught at lint.
+    tmp = await createBootstrappedRepo();
+    writeRecord(tmp.dir, 'wiki/value-reports/VAL-0001.md', {
+      id: 'VAL-0001',
+      title: 'Bad chain status',
+      status: 'published',
+      owner: 'mcap91',
+      created: '2026-07-10',
+      updated: '2026-07-10',
+      window_start: '2026-07-01',
+      window_end: '2026-07-10',
+      base_commit: 'abc123',
+      head_commit: 'def456',
+      prior_val: 'none',
+      chain_status: 'bogus',
+    });
+
+    const result = await lint({ dir: tmp.dir });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const enumDiags = result.data.diagnostics.filter(
+        d => d.code === 'INVALID_ENUM' && d.file.includes('value-reports'),
+      );
+      expect(enumDiags.length).toBeGreaterThan(0);
     }
   });
 });
