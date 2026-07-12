@@ -61,6 +61,7 @@ import type {
   UsageModelDetail,
   UsageArm,
   CostProvenance,
+  ModelPatternEntry,
 } from './types.js';
 
 // ---------------------------------------------------------------------------
@@ -336,20 +337,101 @@ const DEFAULT_DEPS: UsageDeps = {
 };
 
 // ---------------------------------------------------------------------------
+// value-config model_patterns loader (minimal, value-usage-local, no shared dep)
+// ---------------------------------------------------------------------------
+
+/**
+ * Load model_patterns from `wiki/.value-config.json` best-effort.
+ * Returns [] when the file is absent, unreadable, or malformed.
+ * Mirror of value-report's loadConfig pattern (opts > file > default) but
+ * minimal: only the model_patterns field is consumed here.
+ * IMPORTANT: never import or call value-report.ts's private loadConfig —
+ * cross-function reuse would create a hard coupling across otherwise independent
+ * code paths.
+ */
+function loadModelPatterns(dir: string): ModelPatternEntry[] {
+  const configPath = path.join(dir, 'wiki', '.value-config.json');
+  try {
+    const raw = fs.readFileSync(configPath, 'utf-8');
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const patterns = parsed['model_patterns'];
+    if (!Array.isArray(patterns)) return [];
+    // Validate each entry: must have string pattern + valid arm string
+    const valid: ModelPatternEntry[] = [];
+    const validArms = new Set<string>([
+      'subscription',
+      'local',
+      'openrouter',
+      'codex',
+      'unknown',
+    ]);
+    for (const p of patterns) {
+      if (
+        typeof p === 'object' &&
+        p !== null &&
+        typeof (p as Record<string, unknown>)['pattern'] === 'string' &&
+        validArms.has(String((p as Record<string, unknown>)['arm']))
+      ) {
+        valid.push({
+          pattern: (p as Record<string, unknown>)['pattern'] as string,
+          arm: (p as Record<string, unknown>)['arm'] as UsageArm,
+        });
+      }
+    }
+    return valid;
+  } catch {
+    return [];
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Arm identification (spec §2.3)
 // ---------------------------------------------------------------------------
 
 /**
- * Identify the arm from a claude-family model string:
- * - `claude-*` → subscription
- * - slash-namespaced (`z-ai/glm-5.2`, `deepseek/deepseek-chat`) → openrouter
- * - `name:tag` (colon, not slash) → local
- * - anything else → unknown
+ * Identify the arm from a claude-family model string, consulting config patterns first.
+ *
+ * Resolution order:
+ * 1. `patterns` (from opts.config.model_patterns or wiki/.value-config.json):
+ *    case-insensitive substring match; first match wins → its arm.
+ * 2. Built-in heuristics:
+ *    a. `claude-*` → subscription
+ *    b. slash-namespaced (`z-ai/glm-5.2`, `deepseek/deepseek-chat`) → openrouter
+ *    c. Provider-namespaced Anthropic / Bedrock region-profile guard:
+ *       contains `anthropic.` OR starts with `us.` / `eu.` / `ap.` / `apac.`
+ *       → unknown (NEVER local — these are PAYG enterprise endpoints, real $)
+ *    d. `name:tag` (colon, not slash) → local
+ *    e. anything else → unknown
+ *
  * (Codex rows are tagged `codex` at their source, not via this function.)
+ *
+ * Match rule for patterns: case-insensitive substring. The model id and pattern
+ * are both lowercased before comparison; no regex escaping required.
  */
-function identifyArm(model: string): UsageArm {
+function identifyArm(model: string, patterns: ModelPatternEntry[]): UsageArm {
+  // 1. Config patterns first (case-insensitive substring, first match wins)
+  const modelLower = model.toLowerCase();
+  for (const entry of patterns) {
+    if (modelLower.includes(entry.pattern.toLowerCase())) {
+      return entry.arm;
+    }
+  }
+
+  // 2. Built-in heuristics
   if (model.startsWith('claude-')) return 'subscription';
   if (model.includes('/')) return 'openrouter';
+
+  // 2c. Enterprise/gateway guard: provider-namespaced Anthropic ids or
+  // Bedrock region-profile prefixes (us. / eu. / ap. / apac.) must NEVER
+  // be classified local — they are PAYG endpoints with real marginal cost.
+  // With no matching config pattern they degrade to unknown → ccusage-priced.
+  if (
+    model.includes('anthropic.') ||
+    /^(?:us|eu|ap|apac)\./.test(model)
+  ) {
+    return 'unknown';
+  }
+
   if (model.includes(':')) return 'local';
   return 'unknown';
 }
@@ -575,6 +657,13 @@ export async function computeValueUsage(
   const version = opts.ccusageVersion ?? CCUSAGE_VERSION;
   const targetDir = path.resolve(opts.dir);
 
+  // Load model_patterns: opts.config overrides > file > default [].
+  // opts.config.model_patterns = [] is a valid override (clears file patterns).
+  const modelPatterns: ModelPatternEntry[] =
+    opts.config?.model_patterns !== undefined
+      ? opts.config.model_patterns
+      : loadModelPatterns(targetDir);
+
   // --- Step 1: Claude family via ccusage (repo-filtered by encoded cwd) ---
 
   let claudeRows: UsageRow[] | null = null;
@@ -656,16 +745,16 @@ export async function computeValueUsage(
   // For OR reconcile: sum ccusage-estimated OR cost to weight OR credits allocation
   let totalOrCcusageCost = 0;
   for (const [, row] of byModel) {
-    if (row.source === 'claude' && identifyArm(row.model) === 'openrouter') {
+    if (row.source === 'claude' && identifyArm(row.model, modelPatterns) === 'openrouter') {
       totalOrCcusageCost += row.ccusage_est_cost ?? 0;
     }
   }
   const orModelCount = [...byModel.values()].filter(
-    (r) => r.source === 'claude' && identifyArm(r.model) === 'openrouter',
+    (r) => r.source === 'claude' && identifyArm(r.model, modelPatterns) === 'openrouter',
   ).length;
 
   for (const [, row] of byModel) {
-    const arm: UsageArm = row.source === 'codex' ? 'codex' : identifyArm(row.model);
+    const arm: UsageArm = row.source === 'codex' ? 'codex' : identifyArm(row.model, modelPatterns);
     const inputTokens = row.input_tokens;
     const cacheWrite = row.cache_write_tokens;
     const cacheRead = row.cache_read_tokens;

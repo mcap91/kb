@@ -1035,3 +1035,261 @@ describe('agents field', () => {
     expect(result.data.agents).toContain('codex');
   });
 });
+
+// ---------------------------------------------------------------------------
+// WK-0036 — Bedrock/Vertex enterprise ids must never be misclassified as local
+// ---------------------------------------------------------------------------
+
+describe('WK-0036: Bedrock inference-profile id without config — classifies unknown, never local/$0', () => {
+  it(
+    // WHY (WK-0036): Bedrock is PAYG; silent $0 undercounts real spend.
+    // A Bedrock id like "us.anthropic.claude-sonnet-4-6-v1:0" contains ":" so the
+    // old heuristic classified it as local → cost_usd=0.  After the fix it must
+    // fall through to unknown → ccusage-priced (a real number, never $0).
+    'us.anthropic.claude-sonnet-4-6-v1:0 → unknown arm, ccusage-priced provenance, cost_usd is the ccusage figure, NOT $0',
+    async () => {
+      const bedrockModel = 'us.anthropic.claude-sonnet-4-6-v1:0';
+      const claudeJson = makeClaudeJson([
+        {
+          modelName: bedrockModel,
+          inputTokens: 1000,
+          cacheCreationTokens: 0,
+          cacheReadTokens: 0,
+          outputTokens: 400,
+          cost: 0.042, // ccusage prices it — must flow through as real $
+        },
+      ]);
+
+      const deps: UsageDeps = {
+        runClaudeCcusage: () => claudeJson,
+        readCodexSessions: noCodex(),
+        fetchOpenRouterCredits: async () => null,
+      };
+
+      const result = await computeValueUsage({ dir: DIR, since: SINCE, until: UNTIL }, deps);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      const d = result.data;
+      const model = d.by_model.find((m) => m.model === bedrockModel);
+      expect(model).toBeDefined();
+
+      // Must NOT be local — that would zero out a real PAYG cost
+      expect(model?.arm).not.toBe('local');
+      // Must NOT be $0 — Bedrock charges are real
+      expect(model?.cost_usd).not.toBe(0);
+      // Must price via ccusage (unknown arm path)
+      expect(model?.arm).toBe('unknown');
+      expect(d.cost_provenance).toBe('ccusage-priced');
+      expect(d.cost_usd).toBeCloseTo(0.042, 6);
+    },
+  );
+
+  it('eu.anthropic.claude-opus-4-0-v1:0 (EU region profile) → unknown, never local', async () => {
+    // WHY (WK-0036): EU-region Bedrock profiles follow the same pattern.
+    const bedrockEu = 'eu.anthropic.claude-opus-4-0-v1:0';
+    const claudeJson = makeClaudeJson([
+      {
+        modelName: bedrockEu,
+        inputTokens: 200,
+        cacheCreationTokens: 0,
+        cacheReadTokens: 0,
+        outputTokens: 100,
+        cost: 0.01,
+      },
+    ]);
+
+    const deps: UsageDeps = {
+      runClaudeCcusage: () => claudeJson,
+      readCodexSessions: noCodex(),
+      fetchOpenRouterCredits: async () => null,
+    };
+
+    const result = await computeValueUsage({ dir: DIR, since: SINCE, until: UNTIL }, deps);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const model = result.data.by_model.find((m) => m.model === bedrockEu);
+    expect(model?.arm).not.toBe('local');
+    expect(model?.arm).toBe('unknown');
+    expect(model?.cost_usd).toBeCloseTo(0.01, 6);
+  });
+});
+
+describe('WK-0036: model_patterns config overrides heuristics', () => {
+  it(
+    // WHY (WK-0036): gateways rewrite model strings arbitrarily; config must
+    // override heuristics. A pattern matching "us.anthropic" with arm "openrouter"
+    // must win over the default unknown-arm heuristic.
+    'config pattern us.anthropic → arm openrouter wins; same id without config → unknown',
+    async () => {
+      const bedrockModel = 'us.anthropic.claude-sonnet-4-6-v1:0';
+      const claudeJson = makeClaudeJson([
+        {
+          modelName: bedrockModel,
+          inputTokens: 500,
+          cacheCreationTokens: 0,
+          cacheReadTokens: 0,
+          outputTokens: 200,
+          cost: 0.015,
+        },
+      ]);
+
+      // WITH config: pattern routes to openrouter
+      const depsWithConfig: UsageDeps = {
+        runClaudeCcusage: () => claudeJson,
+        readCodexSessions: noCodex(),
+        fetchOpenRouterCredits: async () => null,
+      };
+      const resultWithConfig = await computeValueUsage(
+        {
+          dir: DIR,
+          since: SINCE,
+          until: UNTIL,
+          config: { model_patterns: [{ pattern: 'us.anthropic', arm: 'openrouter' }] },
+        },
+        depsWithConfig,
+      );
+      expect(resultWithConfig.ok).toBe(true);
+      if (!resultWithConfig.ok) return;
+      const withConfigModel = resultWithConfig.data.by_model.find((m) => m.model === bedrockModel);
+      // Pattern wins → openrouter arm
+      expect(withConfigModel?.arm).toBe('openrouter');
+
+      // WITHOUT config: falls back to unknown
+      const depsNoConfig: UsageDeps = {
+        runClaudeCcusage: () => claudeJson,
+        readCodexSessions: noCodex(),
+        fetchOpenRouterCredits: async () => null,
+      };
+      const resultNoConfig = await computeValueUsage(
+        { dir: DIR, since: SINCE, until: UNTIL },
+        depsNoConfig,
+      );
+      expect(resultNoConfig.ok).toBe(true);
+      if (!resultNoConfig.ok) return;
+      const noConfigModel = resultNoConfig.data.by_model.find((m) => m.model === bedrockModel);
+      expect(noConfigModel?.arm).toBe('unknown');
+    },
+  );
+
+  it('first matching pattern wins; non-matching patterns are skipped', async () => {
+    // WHY (WK-0036): first-match semantics must be stable.
+    const model = 'us.anthropic.claude-haiku-3-v1:0';
+    const claudeJson = makeClaudeJson([
+      {
+        modelName: model,
+        inputTokens: 100,
+        cacheCreationTokens: 0,
+        cacheReadTokens: 0,
+        outputTokens: 50,
+        cost: 0.003,
+      },
+    ]);
+
+    const deps: UsageDeps = {
+      runClaudeCcusage: () => claudeJson,
+      readCodexSessions: noCodex(),
+      fetchOpenRouterCredits: async () => null,
+    };
+
+    const result = await computeValueUsage(
+      {
+        dir: DIR,
+        since: SINCE,
+        until: UNTIL,
+        config: {
+          model_patterns: [
+            { pattern: 'no-match-xyz', arm: 'local' }, // does not match
+            { pattern: 'us.anthropic', arm: 'subscription' }, // matches first
+            { pattern: 'anthropic', arm: 'openrouter' }, // would match but is after
+          ],
+        },
+      },
+      deps,
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const m = result.data.by_model.find((bm) => bm.model === model);
+    expect(m?.arm).toBe('subscription'); // first match wins
+  });
+});
+
+describe('WK-0036: contract preserved — pre-existing arm heuristics unchanged', () => {
+  it(
+    // WHY (WK-0036): fix must not regress the three plain heuristics.
+    'plain local colon form (qwen3-coder:30b) → still local/$0 with no config',
+    async () => {
+      const claudeJson = makeClaudeJson([
+        {
+          modelName: 'qwen3-coder:30b',
+          inputTokens: 500,
+          cacheCreationTokens: 0,
+          cacheReadTokens: 0,
+          outputTokens: 200,
+          cost: 0.001,
+        },
+      ]);
+      const deps: UsageDeps = {
+        runClaudeCcusage: () => claudeJson,
+        readCodexSessions: noCodex(),
+        fetchOpenRouterCredits: async () => null,
+      };
+      const result = await computeValueUsage({ dir: DIR, since: SINCE, until: UNTIL }, deps);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      const m = result.data.by_model[0];
+      expect(m?.arm).toBe('local'); // contract: plain name:tag → local
+      expect(m?.cost_usd).toBe(0); // contract: local → $0
+    },
+  );
+
+  it('claude-* → subscription/null unchanged', async () => {
+    // WHY (WK-0036): subscription heuristic must still fire first.
+    const claudeJson = makeClaudeJson([
+      {
+        modelName: 'claude-sonnet-4-6',
+        inputTokens: 100,
+        cacheCreationTokens: 0,
+        cacheReadTokens: 0,
+        outputTokens: 50,
+        cost: 0.005,
+      },
+    ]);
+    const deps: UsageDeps = {
+      runClaudeCcusage: () => claudeJson,
+      readCodexSessions: noCodex(),
+      fetchOpenRouterCredits: async () => null,
+    };
+    const result = await computeValueUsage({ dir: DIR, since: SINCE, until: UNTIL }, deps);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.by_model[0]?.arm).toBe('subscription');
+    expect(result.data.by_model[0]?.cost_usd).toBeNull();
+  });
+
+  it('slash-namespaced → openrouter unchanged', async () => {
+    // WHY (WK-0036): openrouter heuristic must still fire.
+    const claudeJson = makeClaudeJson([
+      {
+        modelName: 'z-ai/glm-5.2',
+        inputTokens: 200,
+        cacheCreationTokens: 0,
+        cacheReadTokens: 0,
+        outputTokens: 100,
+        cost: 0.002,
+      },
+    ]);
+    const deps: UsageDeps = {
+      runClaudeCcusage: () => claudeJson,
+      readCodexSessions: noCodex(),
+      fetchOpenRouterCredits: async () => null,
+    };
+    const result = await computeValueUsage({ dir: DIR, since: SINCE, until: UNTIL }, deps);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.by_model[0]?.arm).toBe('openrouter');
+  });
+});

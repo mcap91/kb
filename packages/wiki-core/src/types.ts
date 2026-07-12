@@ -317,6 +317,18 @@ export type WikiFrontmatter =
 export type UnitClass = 'scripts' | 'modules' | 'tools' | 'docs';
 
 /**
+ * One config-driven arm mapping rule.
+ * Match rule: case-insensitive substring — the model string is lowercased and
+ * tested against the lowercased `pattern`. First matching entry wins.
+ */
+export interface ModelPatternEntry {
+  /** Substring to search for in the model id (case-insensitive). */
+  pattern: string;
+  /** The arm to assign when the pattern matches. */
+  arm: UsageArm;
+}
+
+/**
  * Tunable estimate/classification config, loaded from `wiki/.value-config.json`.
  * Precedence: tool args > file > code defaults (spec §9).
  */
@@ -333,6 +345,14 @@ export interface ValueConfig {
     module_patterns: string[];
     doc_patterns: string[];
   };
+  /**
+   * Ordered list of pattern → arm rules consulted BEFORE the built-in heuristics.
+   * Use to map gateway-rewritten or enterprise model ids (Bedrock, Vertex) to
+   * the correct arm. First match wins. Default: [] (no overrides).
+   * Optional so existing ValueConfig literals (value-report.ts DEFAULT_CONFIG) do
+   * not require a migration — absent means [].
+   */
+  model_patterns?: ModelPatternEntry[];
 }
 
 /** Options for computeValueReport (deterministic, offline). */
@@ -413,6 +433,11 @@ export interface ValueUsageOpts {
   until: string;
   ccusageVersion?: string;
   verbose?: boolean;
+  /**
+   * Inline config overrides — primarily for tests (hermetic, no disk I/O).
+   * `model_patterns` here take precedence over `wiki/.value-config.json`.
+   */
+  config?: { model_patterns?: ModelPatternEntry[] };
 }
 
 /**
