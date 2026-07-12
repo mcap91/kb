@@ -181,16 +181,36 @@ function collectRecords(
 // ---------------------------------------------------------------------------
 // View builders
 // ---------------------------------------------------------------------------
+// generated views stay git-tracked; updated: bumps only on body change (WK-0031)
 
-/** Generated frontmatter marker block. */
-function generatedFrontmatter(title: string): string {
+/** Generated frontmatter marker block with the given timestamp. */
+function generatedFrontmatter(title: string, updated: string): string {
   return `---
 _generated: true
 title: "${title}"
-updated: "${new Date().toISOString()}"
+updated: "${updated}"
 ---
 
 `;
+}
+
+/**
+ * Read the existing view file and return its current updated timestamp and body
+ * (everything after the closing frontmatter fence).  Returns null if the file
+ * does not exist or cannot be parsed.
+ */
+function readExistingView(filePath: string): { updated: string; body: string } | null {
+  if (!fs.existsSync(filePath)) return null;
+  try {
+    const raw = fs.readFileSync(filePath, 'utf-8');
+    const parsed = parseFrontmatter(raw);
+    if (!parsed) return null;
+    const updated = typeof parsed.data['updated'] === 'string' ? parsed.data['updated'] : null;
+    if (!updated) return null;
+    return { updated, body: parsed.body };
+  } catch {
+    return null;
+  }
 }
 
 /** Format a single record as a markdown table row. */
@@ -202,11 +222,10 @@ function tableRow(rec: RecordEntry): string {
 const TABLE_HEADER =
   '| ID | Title | Status | Priority | Type |\n| --- | --- | --- | --- | --- |';
 
-/** Build catalog.md content. */
+/** Build catalog.md body (no frontmatter). */
 function buildCatalog(records: RecordEntry[]): string {
-  let content = generatedFrontmatter('Catalog');
-  content += '# Catalog\n\n';
-  content += 'Complete listing of all wiki records by type.\n\n';
+  let body = '# Catalog\n\n';
+  body += 'Complete listing of all wiki records by type.\n\n';
 
   // Group by type
   const byType = new Map<string, RecordEntry[]>();
@@ -217,88 +236,85 @@ function buildCatalog(records: RecordEntry[]): string {
   }
 
   for (const [typeLabel, recs] of byType.entries()) {
-    content += `## ${typeLabel.charAt(0).toUpperCase() + typeLabel.slice(1)}s\n\n`;
+    body += `## ${typeLabel.charAt(0).toUpperCase() + typeLabel.slice(1)}s\n\n`;
     if (recs.length === 0) {
-      content += '_No records._\n\n';
+      body += '_No records._\n\n';
     } else {
-      content += TABLE_HEADER + '\n';
+      body += TABLE_HEADER + '\n';
       for (const rec of recs) {
-        content += tableRow(rec) + '\n';
+        body += tableRow(rec) + '\n';
       }
-      content += '\n';
+      body += '\n';
     }
   }
 
-  return content;
+  return body;
 }
 
-/** Build now.md content — active / in-progress items. */
+/** Build now.md body — active / in-progress items. */
 function buildNow(records: RecordEntry[]): string {
   const activeStatuses = new Set(['in_progress', 'review', 'blocked']);
   const active = records.filter(r => activeStatuses.has(r.status));
 
-  let content = generatedFrontmatter('Now');
-  content += '# Now\n\n';
-  content += 'Active and in-progress work items.\n\n';
+  let body = '# Now\n\n';
+  body += 'Active and in-progress work items.\n\n';
 
   if (active.length === 0) {
-    content += '_No active items._\n';
+    body += '_No active items._\n';
   } else {
-    content += TABLE_HEADER + '\n';
+    body += TABLE_HEADER + '\n';
     for (const rec of active) {
-      content += tableRow(rec) + '\n';
+      body += tableRow(rec) + '\n';
     }
   }
 
-  content += '\n';
-  return content;
+  body += '\n';
+  return body;
 }
 
-/** Build inbox.md content — new / untriaged items. */
+/** Build inbox.md body — new / untriaged items. */
 function buildInbox(records: RecordEntry[]): string {
   const inboxStatuses = new Set(['inbox', 'proposed']);
   const inbox = records.filter(r => inboxStatuses.has(r.status));
 
-  let content = generatedFrontmatter('Inbox');
-  content += '# Inbox\n\n';
-  content += 'New and untriaged items.\n\n';
+  let body = '# Inbox\n\n';
+  body += 'New and untriaged items.\n\n';
 
   if (inbox.length === 0) {
-    content += '_No inbox items._\n';
+    body += '_No inbox items._\n';
   } else {
-    content += TABLE_HEADER + '\n';
+    body += TABLE_HEADER + '\n';
     for (const rec of inbox) {
-      content += tableRow(rec) + '\n';
+      body += tableRow(rec) + '\n';
     }
   }
 
-  content += '\n';
-  return content;
+  body += '\n';
+  return body;
 }
 
-/** Build backlog.md content — planned but not yet active items. */
+/** Build backlog.md body — planned but not yet active items. */
 function buildBacklog(records: RecordEntry[]): string {
   const backlogStatuses = new Set(['todo', 'parked']);
   const backlog = records.filter(r => backlogStatuses.has(r.status));
 
-  let content = generatedFrontmatter('Backlog');
-  content += '# Backlog\n\n';
-  content += 'Planned but not yet active items.\n\n';
+  let body = '# Backlog\n\n';
+  body += 'Planned but not yet active items.\n\n';
 
   if (backlog.length === 0) {
-    content += '_No backlog items._\n';
+    body += '_No backlog items._\n';
   } else {
-    content += TABLE_HEADER + '\n';
+    body += TABLE_HEADER + '\n';
     for (const rec of backlog) {
-      content += tableRow(rec) + '\n';
+      body += tableRow(rec) + '\n';
     }
   }
 
-  content += '\n';
-  return content;
+  body += '\n';
+  return body;
 }
 
-/** Build archive.md content — closed / completed items. */
+/** Build archive.md body — closed / completed items. */
 function buildArchive(records: RecordEntry[]): string {
   const archiveStatuses = new Set([
     'done',
@@ -313,21 +329,20 @@ function buildArchive(records: RecordEntry[]): string {
   ]);
   const archived = records.filter(r => archiveStatuses.has(r.status));
 
-  let content = generatedFrontmatter('Archive');
-  content += '# Archive\n\n';
-  content += 'Closed and completed items.\n\n';
+  let body = '# Archive\n\n';
+  body += 'Closed and completed items.\n\n';
 
   if (archived.length === 0) {
-    content += '_No archived items._\n';
+    body += '_No archived items._\n';
   } else {
-    content += TABLE_HEADER + '\n';
+    body += TABLE_HEADER + '\n';
     for (const rec of archived) {
-      content += tableRow(rec) + '\n';
+      body += tableRow(rec) + '\n';
     }
   }
 
-  content += '\n';
-  return content;
+  body += '\n';
+  return body;
 }
 
 // ---------------------------------------------------------------------------
@@ -364,14 +379,15 @@ export async function generate(
   // 3. Build and write each view
   const views: Array<{
     filename: string;
+    title: string;
     builder: (recs: RecordEntry[]) => string;
     includePlans?: boolean;
   }> = [
-    { filename: 'catalog.md', builder: buildCatalog, includePlans: true },
-    { filename: 'now.md', builder: buildNow },
-    { filename: 'inbox.md', builder: buildInbox },
-    { filename: 'backlog.md', builder: buildBacklog },
-    { filename: 'archive.md', builder: buildArchive },
+    { filename: 'catalog.md', title: 'Catalog', builder: buildCatalog, includePlans: true },
+    { filename: 'now.md', title: 'Now', builder: buildNow },
+    { filename: 'inbox.md', title: 'Inbox', builder: buildInbox },
+    { filename: 'backlog.md', title: 'Backlog', builder: buildBacklog },
+    { filename: 'archive.md', title: 'Archive', builder: buildArchive },
   ];
 
   const generated: string[] = [];
@@ -382,8 +398,21 @@ export async function generate(
   }
 
   for (const view of views) {
-    const content = view.builder(view.includePlans ? records : workTrackingRecords);
+    const newBody = view.builder(view.includePlans ? records : workTrackingRecords);
     const filePath = path.join(wikiDir, view.filename);
+
+    // Reuse the existing updated: timestamp if the body is unchanged (WK-0031).
+    // parseFrontmatter returns everything after the closing "---" fence, which
+    // includes the separator newline(s) prepended by generatedFrontmatter, so
+    // compare existing.body against the separator + newBody.
+    const FRONTMATTER_SEP = '\n\n';
+    const existing = readExistingView(filePath);
+    const updated =
+      existing !== null && existing.body === FRONTMATTER_SEP + newBody
+        ? existing.updated
+        : new Date().toISOString();
+
+    const content = generatedFrontmatter(view.title, updated) + newBody;
 
     try {
       fs.writeFileSync(filePath, content, 'utf-8');
