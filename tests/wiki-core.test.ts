@@ -1662,6 +1662,34 @@ describe('generate', () => {
       expect(content).not.toContain('PLN-0002');
     }
   });
+
+  it('is deterministic — repeated generate with no record changes leaves all 5 view files byte-identical (WK-0031)', async () => {
+    // WHY: generate() was stamping a fresh updated: timestamp on every run even
+    // when the view body was unchanged, causing phantom git diffs on all 5 files.
+    // The fix: updated: should only bump when the body content actually changes.
+    tmp = await createBootstrappedRepo();
+    await create({ dir: tmp.dir, prefix: 'WK', title: 'Stable item' });
+
+    // First generate pass
+    await generate({ dir: tmp.dir });
+    const views = ['catalog.md', 'now.md', 'inbox.md', 'backlog.md', 'archive.md'];
+    const bytesAfterFirst = views.map(v =>
+      fs.readFileSync(path.join(tmp.dir, 'wiki', v)),
+    );
+
+    // Second generate pass — same records, no changes
+    await generate({ dir: tmp.dir });
+    const bytesAfterSecond = views.map(v =>
+      fs.readFileSync(path.join(tmp.dir, 'wiki', v)),
+    );
+
+    for (let i = 0; i < views.length; i++) {
+      expect(
+        bytesAfterSecond[i].equals(bytesAfterFirst[i]),
+        `${views[i]} should be byte-identical between two generate() runs with no record changes`,
+      ).toBe(true);
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
