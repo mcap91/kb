@@ -19,6 +19,8 @@ After bootstrap, this file is consumer-owned. You may customize it for your proj
 | [decisions/](decisions/) | DEC-* decisions |
 | [sources/](sources/) | SRC-* sources |
 | [areas/](areas/) | AREA records |
+| [plans/](plans/) | PLN-* plans |
+| [value-reports/](value-reports/) | VAL-* value reports |
 | [handoffs/](handoffs/) | HO-* handoffs (dispatch-owned) |
 
 ## Generated Views

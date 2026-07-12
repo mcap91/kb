@@ -475,6 +475,119 @@ describe('sync-contract', () => {
 });
 
 // ---------------------------------------------------------------------------
+// WK-0037: Sync-Contract Seed / EOL / Adopt Tests
+// ---------------------------------------------------------------------------
+
+describe('sync-contract WK-0037', () => {
+  let tmp: TmpRepo;
+
+  afterEach(() => {
+    tmp?.cleanup();
+  });
+
+  // WHY (WK-0037-a): The bootstrap seed schema.md must list ALL manifest record
+  // types so consuming repos bootstrapped from the seed know about PLN and VAL.
+  it('seed schema.md lists PLN and VAL record type rows', () => {
+    // Read the actual seed file from the contract directory (not a consumer copy).
+    const seedPath = path.resolve(process.cwd(), 'contract/bootstrap/schema.md');
+    const content = fs.readFileSync(seedPath, 'utf-8');
+    // Must contain a row for PLN
+    expect(content).toMatch(/\|\s*`PLN`/);
+    // Must contain a row for VAL
+    expect(content).toMatch(/\|\s*`VAL`/);
+  });
+
+  // WHY (WK-0037-b): A dest core-doc that is byte-identical-modulo-EOL to the
+  // seed must NOT appear in drifted. Windows Git can commit CRLF files; without
+  // EOL normalization every Windows-checked-out file would report false drift.
+  it('CRLF dest that is identical to seed modulo line endings reports no drift', async () => {
+    tmp = await createBootstrappedRepo();
+
+    // Read the real seed content and make a CRLF copy as the dest
+    const seedPath = path.resolve(process.cwd(), 'contract/bootstrap/schema.md');
+    const seedContent = fs.readFileSync(seedPath, 'utf-8');
+    const crlfContent = seedContent.replace(/\r?\n/g, '\r\n');
+    fs.writeFileSync(path.join(tmp.dir, 'wiki/schema.md'), crlfContent, 'utf-8');
+
+    const result = await sync({ dir: tmp.dir, check: true });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      // schema.md must NOT be in drifted when the only difference is EOL style
+      expect(result.data.drifted).not.toContain('wiki/schema.md');
+    }
+  });
+
+  // WHY (WK-0037-c-1): --adopt overwrites the named surface with the seed
+  // content, enabling the orchestrator to refresh stale consumer docs.
+  it('adopt overwrites dest with seed content (stale dest scenario)', async () => {
+    tmp = await createBootstrappedRepo();
+
+    // Make schema.md stale
+    fs.writeFileSync(path.join(tmp.dir, 'wiki/schema.md'), 'stale content', 'utf-8');
+
+    const result = await sync({ dir: tmp.dir, adopt: 'wiki/schema.md' });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      // The adopted file must be recorded
+      expect(result.data.adopted).toContain('wiki/schema.md');
+    }
+
+    // Dest must now match seed (modulo EOL)
+    const seedPath = path.resolve(process.cwd(), 'contract/bootstrap/schema.md');
+    const seedContent = fs.readFileSync(seedPath, 'utf-8').replace(/\r?\n/g, '\n');
+    const destContent = fs.readFileSync(
+      path.join(tmp.dir, 'wiki/schema.md'),
+      'utf-8',
+    ).replace(/\r?\n/g, '\n');
+    expect(destContent).toBe(seedContent);
+  });
+
+  // WHY (WK-0037-c-2): Without --adopt, a customized surface must remain
+  // untouched (consumer ownership preserved). Drift is still reported.
+  it('without adopt, customized dest is not overwritten and still drifts', async () => {
+    tmp = await createBootstrappedRepo();
+
+    const custom = 'my custom schema content';
+    fs.writeFileSync(path.join(tmp.dir, 'wiki/schema.md'), custom, 'utf-8');
+
+    const result = await sync({ dir: tmp.dir });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.data.drifted).toContain('wiki/schema.md');
+    }
+
+    // File must remain unchanged
+    expect(readText(tmp.dir, 'wiki/schema.md')).toBe(custom);
+  });
+
+  // WHY (WK-0037-c-3): adopt is per-file explicit — only the named surface is
+  // overwritten; other drifted surfaces must remain untouched.
+  it('adopt is per-file: only named surface overwritten, others untouched', async () => {
+    tmp = await createBootstrappedRepo();
+
+    // Customize both schema.md and conventions.md
+    fs.writeFileSync(path.join(tmp.dir, 'wiki/schema.md'), 'stale schema', 'utf-8');
+    fs.writeFileSync(path.join(tmp.dir, 'wiki/conventions.md'), 'my conventions', 'utf-8');
+
+    // Adopt only schema.md (bare name form)
+    const result = await sync({ dir: tmp.dir, adopt: 'schema.md' });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.data.adopted).toContain('wiki/schema.md');
+    }
+
+    // schema.md must have been replaced by seed content; conventions.md untouched
+    const seedPath = path.resolve(process.cwd(), 'contract/bootstrap/schema.md');
+    const seedContent = fs.readFileSync(seedPath, 'utf-8').replace(/\r?\n/g, '\n');
+    const destSchema = fs.readFileSync(
+      path.join(tmp.dir, 'wiki/schema.md'), 'utf-8',
+    ).replace(/\r?\n/g, '\n');
+    expect(destSchema).toBe(seedContent);
+    expect(readText(tmp.dir, 'wiki/conventions.md')).toBe('my conventions');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Allocation Tests
 // ---------------------------------------------------------------------------
 

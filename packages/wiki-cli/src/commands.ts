@@ -107,7 +107,8 @@ export async function cmdSyncContract(args: string[]): Promise<void> {
   const check = parseFlag(args, '--check');
   const mcpClient = (parseValue(args, '--mcp-client') ?? 'claude') as 'claude' | 'codex' | 'none';
   const agentInstructions = !parseFlag(args, '--no-agent-instructions');
-  const result = await sync({ dir, check, mcpClient, agentInstructions });
+  const adopt = parseValue(args, '--adopt');
+  const result = await sync({ dir, check, mcpClient, agentInstructions, adopt });
 
   if (!result.ok) {
     console.error(`Error [${result.error}]: ${result.message}`);
@@ -130,6 +131,12 @@ export async function cmdSyncContract(args: string[]): Promise<void> {
     }
   }
 
+  if (result.data.adopted && result.data.adopted.length > 0) {
+    console.log(`  Adopted: ${result.data.adopted.length}`);
+    for (const f of result.data.adopted) {
+      console.log(`    = adopted: ${f}`);
+    }
+  }
   for (const f of result.data.drifted) {
     console.log(`  ! drift: ${f}`);
   }

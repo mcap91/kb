@@ -47,6 +47,11 @@ export const tools: ToolDef[] = [
       check: z.boolean().optional(),
       mcpClient: z.enum(['claude', 'codex', 'none']).optional().describe('MCP client type (default: claude)'),
       agentInstructions: z.boolean().optional().describe('Refresh managed block in AGENTS.md/CLAUDE.md (default: true)'),
+      adopt: z.string().optional().describe(
+        'Overwrite exactly one bootstrap surface with the current seed. ' +
+        'Accepts bare name ("schema.md") or repo-relative path ("wiki/schema.md"). ' +
+        'Must be one of: schema.md, conventions.md, index.md.',
+      ),
     }),
     handler: async (input) => sync(input as unknown as Parameters<typeof sync>[0]),
   },

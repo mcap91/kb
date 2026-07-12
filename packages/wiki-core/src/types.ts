@@ -644,6 +644,12 @@ export interface SyncOpts {
   verbose?: boolean;
   mcpClient?: 'claude' | 'codex' | 'none';
   agentInstructions?: boolean;
+  /**
+   * Adopt (overwrite) exactly one bootstrap surface with the current seed.
+   * Accepts either the bare surface name ("schema.md") or the repo-relative
+   * path ("wiki/schema.md"). Must be one of: schema.md, conventions.md, index.md.
+   */
+  adopt?: string;
 }
 
 /** Result of a sync-contract operation. */
@@ -653,6 +659,8 @@ export interface SyncResult {
   skipped: string[];
   updated?: string[];
   instructions?: string[];
+  /** Files adopted (overwritten with seed) during this run. */
+  adopted?: string[];
 }
 
 /** Options for ID allocation. */
