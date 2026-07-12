@@ -13,6 +13,8 @@ After bootstrap, this file is consumer-owned. You may customize it for your proj
 | `DEC` | Decision | `wiki/decisions/` | Allocated sequential |
 | `SRC` | Source | `wiki/sources/` | Allocated sequential |
 | `AREA` | Area | `wiki/areas/` | Slug-based |
+| `PLN` | Plan | `wiki/plans/` | Allocated sequential |
+| `VAL` | Value report | `wiki/value-reports/` | Allocated sequential |
 
 ## Frontmatter Reference
 

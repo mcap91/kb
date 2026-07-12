@@ -36,6 +36,22 @@ import { debug, setVerbose } from './debug.js';
 const BOOTSTRAP_SURFACES = ['schema.md', 'conventions.md', 'index.md'];
 
 // ---------------------------------------------------------------------------
+// EOL normalization
+// ---------------------------------------------------------------------------
+
+/** Strip carriage returns so CRLF vs LF differences do not trigger false drift. */
+function normalizeEol(s: string): string {
+  return s.replace(/\r/g, '');
+}
+
+/** Detect the dominant line ending in a string (CRLF or LF). */
+function dominantEol(s: string): '\r\n' | '\n' {
+  const crlf = (s.match(/\r\n/g) ?? []).length;
+  const lf = (s.match(/(?<!\r)\n/g) ?? []).length;
+  return crlf > lf ? '\r\n' : '\n';
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -237,6 +253,22 @@ export async function sync(opts: SyncOpts): Promise<Result<SyncResult>> {
   const synced: string[] = [];
   const drifted: string[] = [];
   const skipped: string[] = [];
+  const adopted: string[] = [];
+
+  // Resolve and validate the --adopt surface if provided.
+  let adoptSurface: string | undefined;
+  if (opts.adopt !== undefined) {
+    // Accept bare name ("schema.md") or wiki-relative path ("wiki/schema.md").
+    const bare = opts.adopt.replace(/^wiki\//, '');
+    if (!BOOTSTRAP_SURFACES.includes(bare)) {
+      return fail(
+        'SYNC_ERROR',
+        `--adopt: "${opts.adopt}" is not a valid bootstrap surface. ` +
+          `Must be one of: ${BOOTSTRAP_SURFACES.join(', ')}`,
+      );
+    }
+    adoptSurface = bare;
+  }
 
   // 1. Upgrade repo-local required surfaces and allocator state.
   syncRequiredSurfaces(targetDir, manifest, checkOnly, synced);
@@ -270,7 +302,7 @@ export async function sync(opts: SyncOpts): Promise<Result<SyncResult>> {
       debug(`synced template: ${filename}`);
     } else {
       const destContent = fs.readFileSync(destPath, 'utf-8');
-      if (srcContent !== destContent) {
+      if (normalizeEol(srcContent) !== normalizeEol(destContent)) {
         // Template has drifted — overwrite in normal mode
         if (!checkOnly) {
           fs.writeFileSync(destPath, srcContent, 'utf-8');
@@ -284,7 +316,7 @@ export async function sync(opts: SyncOpts): Promise<Result<SyncResult>> {
     }
   }
 
-  // 3. Check drift on bootstrap surfaces (never overwrite)
+  // 3. Check drift on bootstrap surfaces; adopt the named surface if requested.
   const bsDir = bootstrapDir();
   for (const surface of BOOTSTRAP_SURFACES) {
     const destPath = path.join(wikiDir, surface);
@@ -297,7 +329,19 @@ export async function sync(opts: SyncOpts): Promise<Result<SyncResult>> {
     const srcContent = fs.readFileSync(srcPath, 'utf-8');
     const destContent = fs.readFileSync(destPath, 'utf-8');
 
-    if (srcContent !== destContent) {
+    const hasDrift = normalizeEol(srcContent) !== normalizeEol(destContent);
+
+    if (adoptSurface === surface) {
+      // Adopt: overwrite dest with seed content, preserving dest's EOL style.
+      if (!checkOnly) {
+        const eol = fs.existsSync(destPath) ? dominantEol(destContent) : '\n';
+        const normalized = normalizeEol(srcContent);
+        const output = eol === '\r\n' ? normalized.replace(/\n/g, '\r\n') : normalized;
+        fs.writeFileSync(destPath, output, 'utf-8');
+      }
+      adopted.push(`wiki/${surface}`);
+      debug(`adopted: wiki/${surface}`);
+    } else if (hasDrift) {
       drifted.push(`wiki/${surface}`);
       debug(`drift detected: wiki/${surface}`);
     }
@@ -362,5 +406,6 @@ export async function sync(opts: SyncOpts): Promise<Result<SyncResult>> {
     skipped,
     updated,
     instructions: instructions.length > 0 ? instructions : undefined,
+    adopted: adopted.length > 0 ? adopted : undefined,
   });
 }

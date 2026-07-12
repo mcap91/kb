@@ -22,9 +22,10 @@ npm run wiki -- create --dir . --prefix IN --title "My new initiative"
 npm run wiki -- create --dir . --prefix DEC --title "My decision"
 npm run wiki -- create --dir . --prefix SRC --title "My source"
 npm run wiki -- create --dir . --prefix AREA --title "My area" --slug my-area
+npm run wiki -- create --dir . --prefix PLN --title "My plan"
 ```
 
-IDs are automatically allocated for `WK`, `IN`, `DEC`, and `SRC` records.
+IDs are automatically allocated for `WK`, `IN`, `DEC`, `SRC`, and `PLN` records. `VAL` value reports are managed via the `value-report` MCP tool or CLI command.
 
 ## Record Lifecycle
 

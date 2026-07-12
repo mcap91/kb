@@ -49,6 +49,9 @@ Usage: npm run wiki -- <command> [options]
 Commands:
   bootstrap            Bootstrap wiki directory in a consuming repo
   sync-contract        Sync contract templates into target repo
+                         --adopt <surface>  Overwrite one bootstrap surface with the seed
+                                            (schema.md | conventions.md | index.md;
+                                             bare name or wiki/<name> form accepted)
   allocate-id          Allocate a sequential ID for a record type
   create               Create a new wiki record
   lint                 Lint wiki records for frontmatter issues
