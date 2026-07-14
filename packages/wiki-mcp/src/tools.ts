@@ -59,7 +59,7 @@ export const tools: ToolDef[] = [
     name: 'allocate-id',
     description: 'Allocate the next sequential ID for a given prefix',
     inputSchema: dirSchema.extend({
-      prefix: z.string().describe('Record prefix (WK, IN, DEC, SRC, AREA, PLN)'),
+      prefix: z.string().describe('Record prefix (WK, IN, DEC, SRC, AREA, PLN, VAL)'),
     }),
     handler: async (input) =>
       allocate({ dir: input.dir as string, prefix: input.prefix as WikiPrefix, verbose: input.verbose as boolean | undefined }),
@@ -68,7 +68,7 @@ export const tools: ToolDef[] = [
     name: 'create',
     description: 'Create a new wiki record from a template',
     inputSchema: dirSchema.extend({
-      prefix: z.string().describe('Record prefix (WK, IN, DEC, SRC, AREA, PLN)'),
+      prefix: z.string().describe('Record prefix (WK, IN, DEC, SRC, AREA, PLN, VAL)'),
       title: z.string().describe('Record title'),
     }),
     handler: async (input) =>

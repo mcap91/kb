@@ -6,7 +6,7 @@
  *   2. search - queries the index with lexical matching and relevance ranking
  *
  * Included content:
- *   - Manifest-driven wiki records (WK, IN, DEC, SRC, AREA files)
+ *   - Manifest-driven wiki records (WK, IN, DEC, SRC, AREA, PLN, VAL files)
  *   - docs/**\/*.md, excluding planning-only docs under docs/superpowers/specs/ and docs/superpowers/plans/
  *   - Root README.md, AGENTS.md, CLAUDE.md (when present)
  *

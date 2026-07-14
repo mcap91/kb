@@ -12,7 +12,7 @@
  * lint and other tools can identify and skip generated views.
  *
  * Scope:
- *   - Reads only manifest-driven record directories (WK, IN, DEC, SRC, AREA, PLN)
+ *   - Reads only manifest-driven record directories (WK, IN, DEC, SRC, AREA, PLN, VAL)
  *   - Excludes wiki/handoffs/
  *   - Includes PLN in catalog only; work-tracking views exclude plans
  */

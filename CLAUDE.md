@@ -38,6 +38,12 @@ the initial retrieval pass.
 
 ### Value reports (value-report-recipe-v1)
 
+**What VAL is.** An append-only ROI closeout over a commit-watermark span: what a span of agent work cost (tokens/$) vs. what surviving, classified output it produced. Not a work-log, not a milestone gate; never edit a VAL — append the next one. Operator-initiated: agents run the recipe when asked, never self-initiate. Design: one deploy surface (this managed block; deliberately no skill — rationale in kb WK-0033).
+
+**Cadence is the operator's.** Each VAL auto-advances the watermark from the prior VAL's `head_commit` to HEAD; the chain tiles commits with no gap or overlap. Daily and weekly both work; a VAL today never blocks tomorrow's. With no prior VAL, the first report covers repo history from the first commit — scope with `--since`.
+
+**Scope is a commit range, not a feature.** The report sweeps every commit in the span and every surviving file; WK ids are scraped from commit messages as references only. Cost is time-windowed per repo — tokens cannot be split between interleaved features after the fact. For a clean per-feature ROI, finish the feature and cut the VAL at its boundary (`--untilRef`) before the next feature's commits land; interleaved features report together as one span.
+
 When the operator asks for a value report:
 
 0. Refresh the graph: `npm run graph -- --dir <repo>` (regenerates `wiki/.graph.json`).
