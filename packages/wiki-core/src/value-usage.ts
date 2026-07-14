@@ -16,6 +16,11 @@
  *    codex usage to the repo. Codex dollars-at-API-rates come from joining the
  *    repo-matched sessions to `ccusage codex session --json` on the session UUID.
  *
+ * Worktree-agnostic attribution: sessions run in a git worktree of the repo are
+ * attributed via `git worktree list --porcelain` roots (UsageDeps.listWorktreeRoots).
+ * A worktree REMOVED before the scrape drops its tokens (cut the VAL while worktrees
+ * exist) — deterministic, stated limitation.
+ *
  * Dual cost fields (operator decision 2026-07-10):
  *  - cost_usd      real/marginal out-of-pocket: OR → authoritative API $; local → 0;
  *                  subscription (incl. codex-on-subscription) → null (flat fee).
@@ -130,6 +135,15 @@ export interface UsageDeps {
    * MUST NEVER log or expose the key.
    */
   fetchOpenRouterCredits(): Promise<{ total_credits: number; total_usage: number } | null>;
+
+  /**
+   * Lists additional worktree root paths of the target repo via
+   * `git worktree list --porcelain`. Returns [] when git is unavailable or
+   * there are no linked worktrees. Must never throw.
+   * Optional: when absent from a caller-provided deps object, treated as no
+   * extra roots ([]) so existing hermetic tests retain today's exact behavior.
+   */
+  listWorktreeRoots?(dir: string): string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -329,11 +343,45 @@ const defaultFetchOpenRouterCredits: UsageDeps['fetchOpenRouterCredits'] = async
   // apiKey intentionally not returned, logged, or included in any output
 };
 
+/**
+ * Default worktree-root lister: parses `git worktree list --porcelain` and
+ * returns EVERY worktree root the repo knows, including the main checkout —
+ * no positional assumption about which stanza is `dir` (works when `dir` is
+ * itself a linked worktree). The caller dedupes against `targetDir`. Returns
+ * [] on any failure (git absent, not a git repo).
+ *
+ * NOTE: git is a real .exe on Windows — no cmd.exe shim needed (unlike npx.cmd).
+ * See execNpx above for why that routing exists only for the npx.cmd shim.
+ */
+export const defaultListWorktreeRoots: NonNullable<UsageDeps['listWorktreeRoots']> = (dir) => {
+  let raw: string;
+  try {
+    raw = execFileSync('git', ['-C', dir, 'worktree', 'list', '--porcelain'], {
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+      windowsHide: true,
+    });
+  } catch {
+    return [];
+  }
+
+  // Porcelain format: each stanza starts with `worktree <path>`.
+  const roots: string[] = [];
+  for (const line of raw.split('\n')) {
+    if (line.startsWith('worktree ')) {
+      const p = line.slice('worktree '.length).trim();
+      if (p) roots.push(p);
+    }
+  }
+  return roots;
+};
+
 const DEFAULT_DEPS: UsageDeps = {
   runClaudeCcusage: defaultRunClaudeCcusage,
   readCodexSessions: defaultReadCodexSessions,
   runCodexCcusageSessions: defaultRunCodexCcusageSessions,
   fetchOpenRouterCredits: defaultFetchOpenRouterCredits,
+  listWorktreeRoots: defaultListWorktreeRoots,
 };
 
 // ---------------------------------------------------------------------------
@@ -507,10 +555,11 @@ interface CcusageClaudeOutput {
 
 /**
  * Parse `ccusage claude daily --json --instances` and extract per-model rows
- * for the target dir (matched on the encoded-cwd project key).
- * Returns null if the shape is unrecognizable; [] if the dir has no entry.
+ * for the target repo (matched on encoded-cwd project key against any root in
+ * `roots`). `roots` is the deduped list [targetDir, ...worktreeRoots].
+ * Returns null if the shape is unrecognizable; [] if no root has an entry.
  */
-function parseClaudeInstances(raw: string, targetDir: string): UsageRow[] | null {
+function parseClaudeInstances(raw: string, roots: string[]): UsageRow[] | null {
   let parsed: CcusageClaudeOutput;
   try {
     parsed = JSON.parse(raw) as CcusageClaudeOutput;
@@ -521,7 +570,7 @@ function parseClaudeInstances(raw: string, targetDir: string): UsageRow[] | null
 
   const rows: UsageRow[] = [];
   for (const [projectKey, dayEntries] of Object.entries(parsed.projects)) {
-    if (!encodedMatches(projectKey, targetDir)) continue;
+    if (!roots.some((r) => encodedMatches(projectKey, r))) continue;
     if (!Array.isArray(dayEntries)) continue;
     for (const day of dayEntries) {
       const breakdowns = day?.modelBreakdowns;
@@ -657,6 +706,23 @@ export async function computeValueUsage(
   const version = opts.ccusageVersion ?? CCUSAGE_VERSION;
   const targetDir = path.resolve(opts.dir);
 
+  // Compute all repo roots: main checkout + any linked worktrees.
+  // deps.listWorktreeRoots is optional: absent on a caller-provided deps object
+  // → no extra roots ([] ) so existing hermetic tests keep today's behavior.
+  // When deps is wholly absent (real runs), DEFAULT_DEPS includes it.
+  const wtRoots: string[] = deps.listWorktreeRoots ? deps.listWorktreeRoots(targetDir) : [];
+  // Dedupe by resolved path, case-insensitive on win32 (mirrors isUnderDir normalization).
+  const seenRoots = new Set<string>();
+  const roots: string[] = [];
+  for (const r of [targetDir, ...wtRoots]) {
+    const resolved = path.resolve(r);
+    const key = process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+    if (!seenRoots.has(key)) {
+      seenRoots.add(key);
+      roots.push(resolved);
+    }
+  }
+
   // Load model_patterns: opts.config overrides > file > default [].
   // opts.config.model_patterns = [] is a valid override (clears file patterns).
   const modelPatterns: ModelPatternEntry[] =
@@ -670,7 +736,7 @@ export async function computeValueUsage(
   let claudeError: string | undefined;
   try {
     const raw = deps.runClaudeCcusage(version, opts.since, opts.until);
-    claudeRows = parseClaudeInstances(raw, targetDir);
+    claudeRows = parseClaudeInstances(raw, roots);
     if (claudeRows === null) {
       claudeError = 'ccusage claude output malformed or unparseable';
     }
@@ -683,7 +749,7 @@ export async function computeValueUsage(
   let codexRows: UsageRow[] = [];
   try {
     const sessions = deps.readCodexSessions(opts.since, opts.until);
-    const repoSessions = sessions.filter((s) => isUnderDir(s.cwd, targetDir));
+    const repoSessions = sessions.filter((s) => roots.some((r) => isUnderDir(s.cwd, r)));
 
     // Price the repo-matched sessions by sessionId join against
     // `ccusage codex session --json` (cost_usd_est only — best-effort; tokens
