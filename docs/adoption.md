@@ -88,7 +88,7 @@ npm run wiki -- create --dir ../my-project --prefix SRC --title "OAuth 2.0 RFC 6
 npm run wiki -- create --dir ../my-project --prefix AREA --title "Authentication" --slug auth
 ```
 
-Available prefixes: `WK` (work item), `IN` (initiative), `DEC` (decision), `SRC` (source), `AREA` (area).
+Available prefixes: `WK` (work item), `IN` (initiative), `DEC` (decision), `SRC` (source), `AREA` (area), `PLN` (plan), `VAL` (value report).
 
 `HO` is not a valid `wiki create` target. Handoffs are dispatch-owned and live in `wiki/handoffs/`.
 

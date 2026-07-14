@@ -1,7 +1,7 @@
 /**
  * Record creation module.
  *
- * Creates new wiki records for all manifest-driven types (WK, IN, DEC, SRC, AREA).
+ * Creates new wiki records for all manifest-driven types (WK, IN, DEC, SRC, AREA, PLN, VAL).
  * Rejects HO prefix with INVALID_PREFIX error.
  * Allocates IDs via allocate(), loads templates, fills frontmatter, writes files.
  */

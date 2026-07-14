@@ -38,6 +38,12 @@ the initial retrieval pass.
 
 ### Value reports (value-report-recipe-v1)
 
+**What VAL is.** An append-only ROI closeout over a commit-watermark span: what a span of agent work cost (tokens/$) vs. what surviving, classified output it produced. Not a work-log, not a milestone gate; never edit a VAL — append the next one. Operator-initiated: agents run the recipe when asked, never self-initiate. Design: one deploy surface (this managed block; deliberately no skill — rationale in kb WK-0033).
+
+**Cadence is the operator's.** Each VAL auto-advances the watermark from the prior VAL's `head_commit` to HEAD; the chain tiles commits with no gap or overlap. Daily and weekly both work; a VAL today never blocks tomorrow's. With no prior VAL, the first report covers repo history from the first commit — scope with `--since`.
+
+**Scope is a commit range, not a feature.** The report sweeps every commit in the span and every surviving file; WK ids are scraped from commit messages as references only. Cost is time-windowed per repo — tokens cannot be split between interleaved features after the fact. For a clean per-feature ROI, finish the feature and cut the VAL at its boundary (`--untilRef`) before the next feature's commits land; interleaved features report together as one span.
+
 When the operator asks for a value report:
 
 0. Refresh the graph: `npm run graph -- --dir <repo>` (regenerates `wiki/.graph.json`).
@@ -59,7 +65,7 @@ This document is the primary reference for any agent session working in the `kb`
 
 `kb` is a TypeScript monorepo toolkit providing three subsystems:
 
-1. **Wiki** -- Structured repo-local wiki with manifest-driven record types (WK, IN, DEC, SRC, AREA, PLN). Operations: bootstrap, sync-contract, allocate-id, create, lint, generate, build-search-index, search, import-plan, validate-plan, archive-plan. Interfaces: CLI and MCP server.
+1. **Wiki** -- Structured repo-local wiki with manifest-driven record types (WK, IN, DEC, SRC, AREA, PLN, VAL). Operations: bootstrap, sync-contract, allocate-id, create, lint, generate, build-search-index, search, import-plan, validate-plan, archive-plan. Interfaces: CLI and MCP server.
 2. **Dispatch Protocol** -- Reviewed multi-agent handoff workflow using HO-\* documents. Token-based state machine (review then launch). Platform-aware config. Deterministic fake-agent for testing.
 3. **Graph Explore** -- Deterministic code-first graph extraction at file/module level. Wiki overlay from frontmatter. Produces JSON and markdown summary.
 
@@ -196,7 +202,7 @@ kb/
 
 The `contract/manifest.json` file is the source of truth for wiki record types. It defines:
 
-- Which prefixes exist (WK, IN, DEC, SRC, AREA, PLN)
+- Which prefixes exist (WK, IN, DEC, SRC, AREA, PLN, VAL)
 - Which prefixes are excluded (HO)
 - Required and optional frontmatter fields per type
 - Enum values for status, priority, type fields
@@ -448,7 +454,7 @@ Both must pass.
 - **Do not add HO to the manifest.** HO-\* is dispatch-owned, not manifest-driven.
 - **Do not include `wiki/handoffs/` in wiki operations.** Lint, generate, search, and graph all exclude it.
 - **Do not add semantic or heuristic graph features.** Graph is deterministic, code-first, file/module level only.
-- **Do not modify `contract/manifest.json` to add new record types without a design decision.** The six types (WK, IN, DEC, SRC, AREA, PLN) are the current set.
+- **Do not modify `contract/manifest.json` to add new record types without a design decision.** The seven types (WK, IN, DEC, SRC, AREA, PLN, VAL) are the current set.
 - **Do not throw from public API functions.** Use the Result type pattern.
 - **Do not import across subsystem boundaries.** wiki-cli uses wiki-core. dispatch-cli uses dispatch-core. graph-explore is standalone.
 - **Do not describe features that do not exist.** No semantic search, no embeddings, no function-level graphs.
