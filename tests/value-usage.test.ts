@@ -26,9 +26,13 @@
  * }
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { execSync } from 'node:child_process';
 import type { UsageDeps, CodexSessionUsage } from '../packages/wiki-core/src/value-usage.js';
-import { computeValueUsage } from '../packages/wiki-core/src/value-usage.js';
+import { computeValueUsage, defaultListWorktreeRoots } from '../packages/wiki-core/src/value-usage.js';
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -1214,6 +1218,246 @@ describe('WK-0036: model_patterns config overrides heuristics', () => {
     const m = result.data.by_model.find((bm) => bm.model === model);
     expect(m?.arm).toBe('subscription'); // first match wins
   });
+});
+
+// ---------------------------------------------------------------------------
+// Worktree-agnostic attribution (listWorktreeRoots)
+// ---------------------------------------------------------------------------
+
+/**
+ * Encode a cwd path the way Claude Code does (: \ / → -) so tests can build
+ * project keys for worktree paths without importing the internal helper.
+ */
+function encodeWorktreePath(p: string): string {
+  return p.replace(/[:\\/]/g, '-');
+}
+
+const WORKTREE_PATH = 'C:\\Users\\mcap9\\projects\\kb-wt\\main';
+const WORKTREE_ENCODED = encodeWorktreePath(WORKTREE_PATH);
+
+describe('worktree-agnostic — Claude inclusion via listWorktreeRoots', () => {
+  it(
+    // WHY: sessions run in a git worktree of the repo log usage under the
+    // worktree path, not the main checkout path. Without listWorktreeRoots
+    // those tokens are silently dropped. This test confirms they ARE counted.
+    'ccusage project keyed by a worktree-encoded path is attributed to the repo when listWorktreeRoots returns that path',
+    async () => {
+      const claudeJson = makeClaudeMultiProject({
+        [WORKTREE_ENCODED]: [
+          {
+            modelName: 'claude-sonnet-4-6',
+            inputTokens: 2000,
+            cacheCreationTokens: 0,
+            cacheReadTokens: 0,
+            outputTokens: 800,
+            cost: 0.1,
+          },
+        ],
+      });
+
+      const deps: UsageDeps = {
+        runClaudeCcusage: () => claudeJson,
+        readCodexSessions: noCodex(),
+        fetchOpenRouterCredits: async () => null,
+        listWorktreeRoots: () => [WORKTREE_PATH],
+      };
+
+      const result = await computeValueUsage({ dir: DIR, since: SINCE, until: UNTIL }, deps);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      const d = result.data;
+      // Worktree project must be counted, not dropped
+      expect(d.input_tokens).toBe(2000);
+      expect(d.output_tokens).toBe(800);
+      expect(d.total_tokens).toBe(2800);
+      expect(d.cost_provenance).toBe('subscription-covered');
+    },
+  );
+});
+
+describe('worktree-agnostic — Codex inclusion via listWorktreeRoots', () => {
+  it(
+    // WHY: a codex session launched inside a worktree (or its subdirectory)
+    // has a cwd under the worktree root. The isUnderDir check against the main
+    // repo dir alone misses it. This test confirms worktree-cwd sessions ARE
+    // attributed, and unrelated paths are still excluded.
+    'codex session under a worktree root is attributed; unrelated cwd is excluded',
+    async () => {
+      const wtSubdir = WORKTREE_PATH + '\\src\\subdir';
+      const unrelatedCwd = 'C:\\Users\\mcap9\\projects\\totally-other';
+
+      const deps: UsageDeps = {
+        runClaudeCcusage: () => emptyClaudeJson(),
+        readCodexSessions: () => [
+          codexSession(wtSubdir, 'gpt-5.5', 500, 0, 200),   // under worktree → count
+          codexSession(unrelatedCwd, 'gpt-5.5', 9999, 0, 9999), // unrelated → exclude
+        ],
+        fetchOpenRouterCredits: async () => null,
+        listWorktreeRoots: () => [WORKTREE_PATH],
+      };
+
+      const result = await computeValueUsage({ dir: DIR, since: SINCE, until: UNTIL }, deps);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      const d = result.data;
+      // Only the worktree session (500 + 200 = 700 tokens)
+      expect(d.input_tokens).toBe(500);
+      expect(d.output_tokens).toBe(200);
+      expect(d.total_tokens).toBe(700);
+    },
+  );
+});
+
+describe('worktree-agnostic — regression: partial deps without listWorktreeRoots', () => {
+  it(
+    // WHY: callers providing a custom deps object without listWorktreeRoots must
+    // retain today's behavior — worktree-keyed projects are NOT counted. The
+    // optional member must degrade to [] (no extra roots) when absent from a
+    // CALLER-PROVIDED deps object, so existing hermetic tests are unaffected.
+    'worktree-keyed project is NOT counted when deps has no listWorktreeRoots (existing hermetic behavior preserved)',
+    async () => {
+      const claudeJson = makeClaudeMultiProject({
+        [WORKTREE_ENCODED]: [
+          {
+            modelName: 'claude-sonnet-4-6',
+            inputTokens: 5000,
+            cacheCreationTokens: 0,
+            cacheReadTokens: 0,
+            outputTokens: 2000,
+            cost: 0.3,
+          },
+        ],
+      });
+
+      // deps object WITHOUT listWorktreeRoots → no extra roots → worktree project excluded
+      const deps: UsageDeps = {
+        runClaudeCcusage: () => claudeJson,
+        readCodexSessions: noCodex(),
+        fetchOpenRouterCredits: async () => null,
+      };
+
+      const result = await computeValueUsage({ dir: DIR, since: SINCE, until: UNTIL }, deps);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      // Nothing matched — unavailable
+      expect(result.data.cost_provenance).toBe('unavailable');
+      expect(result.data.total_tokens).toBe(0);
+    },
+  );
+});
+
+describe('worktree-agnostic — no double-count when listWorktreeRoots echoes main dir', () => {
+  it(
+    // WHY: `git worktree list --porcelain` always includes the main checkout as
+    // the first entry. If listWorktreeRoots returns the main dir itself (or
+    // duplicates), the same project should be counted exactly once, not twice.
+    'main dir returned by listWorktreeRoots + duplicate entries → each project counted once',
+    async () => {
+      // A project keyed by the main dir (already matched by direct check)
+      const claudeJson = makeClaudeMultiProject({
+        [ENCODED_DIR]: [
+          {
+            modelName: 'claude-sonnet-4-6',
+            inputTokens: 1000,
+            cacheCreationTokens: 0,
+            cacheReadTokens: 0,
+            outputTokens: 400,
+            cost: 0.05,
+          },
+        ],
+      });
+
+      const deps: UsageDeps = {
+        runClaudeCcusage: () => claudeJson,
+        readCodexSessions: noCodex(),
+        fetchOpenRouterCredits: async () => null,
+        // Returns main dir + a duplicate — typical git worktree list output
+        listWorktreeRoots: () => [DIR, DIR, WORKTREE_PATH],
+      };
+
+      const result = await computeValueUsage({ dir: DIR, since: SINCE, until: UNTIL }, deps);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      const d = result.data;
+      // Exactly 1 model row (no duplicates from multiple root matches)
+      expect(d.by_model).toHaveLength(1);
+      // Tokens counted once only
+      expect(d.input_tokens).toBe(1000);
+      expect(d.output_tokens).toBe(400);
+      expect(d.total_tokens).toBe(1400);
+    },
+  );
+});
+
+describe('defaultListWorktreeRoots — integration with real git worktree', () => {
+  let tmpDir: string;
+  let wtDir: string;
+
+  afterEach(() => {
+    // Remove worktree then clean up tmp dirs
+    if (wtDir && fs.existsSync(wtDir)) {
+      try {
+        execSync(`git -C "${tmpDir}" worktree remove --force "${wtDir}"`, { stdio: 'pipe' });
+      } catch {
+        // Best-effort
+      }
+    }
+    for (const d of [tmpDir, wtDir]) {
+      if (d) {
+        try { fs.rmSync(d, { recursive: true, force: true }); } catch { /* ignore */ }
+      }
+    }
+  });
+
+  it(
+    // WHY: defaultListWorktreeRoots must return EVERY worktree root — main
+    // checkout AND linked worktrees, no positional assumptions (dir may itself
+    // be a linked worktree). Dedup against targetDir is the caller's job,
+    // encoded in the no-double-count test above. Real git repo + worktree.
+    'returns both the main checkout and the linked worktree path',
+    async () => {
+      // Create a real git repo
+      tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-wt-test-'));
+      execSync('git init', { cwd: tmpDir, stdio: 'pipe' });
+      execSync('git config user.email "test@test.com"', { cwd: tmpDir, stdio: 'pipe' });
+      execSync('git config user.name "Test"', { cwd: tmpDir, stdio: 'pipe' });
+      // Need a commit before adding a worktree
+      fs.writeFileSync(path.join(tmpDir, 'README'), 'init', 'utf-8');
+      execSync('git add README', { cwd: tmpDir, stdio: 'pipe' });
+      execSync('git commit -m "init"', { cwd: tmpDir, stdio: 'pipe' });
+
+      // Create a linked worktree on a new branch
+      wtDir = path.join(os.tmpdir(), `kb-wt-branch-${Date.now()}`);
+      execSync(`git worktree add "${wtDir}" -b wt-test-branch`, { cwd: tmpDir, stdio: 'pipe' });
+
+      const roots = defaultListWorktreeRoots(tmpDir);
+      const normalizedRoots = roots.map((r) => path.resolve(r).toLowerCase());
+
+      // Linked worktree AND main checkout both present (caller dedupes)
+      expect(normalizedRoots).toContain(path.resolve(wtDir).toLowerCase());
+      expect(normalizedRoots).toContain(path.resolve(tmpDir).toLowerCase());
+    },
+  );
+
+  it(
+    // WHY: when git is unavailable or the dir is not a git repo, the function
+    // must return [] and never throw — ensuring the whole scrape degrades
+    // gracefully to main-dir-only attribution.
+    'returns [] and never throws when dir is not a git repo',
+    () => {
+      const nonGitDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-nogit-'));
+      tmpDir = nonGitDir; // cleaned up in afterEach
+      expect(() => {
+        const result = defaultListWorktreeRoots(nonGitDir);
+        expect(Array.isArray(result)).toBe(true);
+        expect(result).toHaveLength(0);
+      }).not.toThrow();
+    },
+  );
 });
 
 describe('WK-0036: contract preserved — pre-existing arm heuristics unchanged', () => {
