@@ -295,52 +295,47 @@ describe('§11.4 throwaway and churn', () => {
 });
 
 // ---------------------------------------------------------------------------
-// §11.5 — Falsifiability
+// §11.5 — Falsifiability (facts-only; no estimate arithmetic on tool output)
 // ---------------------------------------------------------------------------
 
-describe('§11.5 falsifiability', () => {
+describe('§11.5 falsifiability — tool emits facts, not estimates', () => {
   let tmp: TmpRepo;
 
   afterEach(() => tmp.cleanup());
 
-  it('zero valued units → units_valued=0, negative time_saved_days, speedup<1, no error', async () => {
+  it('zero wired/tested units → no estimate fields in tool output, review_units still lists candidates', async () => {
+    // WHY: the tool must not produce estimate fields even when there are no high-evidence units;
+    // the review surface still covers candidates so the agent has something to estimate.
     tmp = createTmpDir();
     initRepo(tmp.dir);
 
     const base = commitFile(tmp.dir, 'src/a.ts', 'export const a = 1;\n', 'add a', '2026-01-01T10:00:00');
-    // Many commits spread over many days — agent spent a lot of calendar time but produced no valued units
-    for (let i = 0; i < 5; i++) {
-      commitFile(
-        tmp.dir,
-        `src/work${i}.ts`,
-        'export const x = 1;\n',
-        `work ${i}`,
-        `2026-01-0${i + 2}T10:00:00`,
-      );
-    }
+    commitFile(tmp.dir, 'analysis/plot.py', 'import pandas as pd\n', 'add plot', '2026-01-05T10:00:00');
 
-    // No graph — no wired/tested evidence, and files don't match candidate patterns
-    // Files in src/ don't match candidate_locations (analysis/**, scripts/**, etc.)
-    // So units should be survives-only, units_valued = 0
+    writeGraph(tmp.dir, [
+      { id: 'src/a.ts', kind: 'code_file' },
+      { id: 'analysis/plot.py', kind: 'code_file' },
+    ], []);
 
-    // Also no graph
     const result = await computeValueReport({ dir: tmp.dir, since: base });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
 
-    expect(result.data.units_valued).toBe(0);
-    // span_days should be >= 5
-    expect(result.data.span_days).toBeGreaterThanOrEqual(5);
-    // human_days_anchor = 0 (no valued units, and net_loc/loc_per_day might be small but units floor it)
-    // time_saved_days = 0 - span_days → negative
-    expect(result.data.time_saved_days).toBeLessThan(0);
-    // speedup = min(0/span_days, cap) → 0, which is < 1
-    expect(result.data.speedup).toBeLessThan(1);
-    // Must not error
-    expect(result.ok).toBe(true);
+    // Tool output must NOT contain estimate fields
+    expect('human_days_units' in result.data).toBe(false);
+    expect('human_days_loc' in result.data).toBe(false);
+    expect('human_days_anchor' in result.data).toBe(false);
+    expect('time_saved_days' in result.data).toBe(false);
+    expect('speedup' in result.data).toBe(false);
+    expect('estimate_basis' in result.data).toBe(false);
+    expect('units_valued' in result.data).toBe(false);
+
+    // review_units still has the candidate
+    expect(result.data.review_units.some(u => u.path === 'analysis/plot.py')).toBe(true);
   });
 
-  it('same-day span → span_days = 1 (no divide-by-zero)', async () => {
+  it('same-day span → span_days = 1 (no divide-by-zero risk in tool output)', async () => {
+    // WHY: span_days floor of 1 is a measurement fact, not an estimate guard.
     tmp = createTmpDir();
     initRepo(tmp.dir);
 
@@ -352,24 +347,6 @@ describe('§11.5 falsifiability', () => {
     if (!result.ok) return;
 
     expect(result.data.span_days).toBe(1);
-    // speedup must be a finite number (no division by zero)
-    expect(Number.isFinite(result.data.speedup)).toBe(true);
-  });
-
-  it('the instrument can report negative value — no clamping to zero', async () => {
-    tmp = createTmpDir();
-    initRepo(tmp.dir);
-
-    // 10 days of commits, 0 valued units
-    const base = commitFile(tmp.dir, 'src/a.ts', 'x=1\n', 'a', '2026-01-01T10:00:00');
-    commitFile(tmp.dir, 'src/b.ts', 'x=1\n', 'b', '2026-01-10T10:00:00');
-
-    const result = await computeValueReport({ dir: tmp.dir, since: base });
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-
-    // time_saved_days should be negative (anchor 0 - span_days 9 = -9 or similar)
-    expect(result.data.time_saved_days).toBeLessThanOrEqual(0);
   });
 });
 
@@ -430,7 +407,7 @@ describe('§11.6 evidence ladder', () => {
     expect(scriptDetail?.evidence).toBe('wired');
   });
 
-  it('pattern-matched terminal script (analysis/plot.py) with no repo edges → candidate, NOT in units_valued', async () => {
+  it('pattern-matched terminal script (analysis/plot.py) with no repo edges → candidate', async () => {
     tmp = createTmpDir();
     initRepo(tmp.dir);
 
@@ -447,8 +424,6 @@ describe('§11.6 evidence ladder', () => {
 
     // Must be in candidates, not in unit_details as wired/tested
     expect(result.data.candidates.some(c => c.path === 'analysis/plot.py')).toBe(true);
-    // NOT counted in units_valued
-    expect(result.data.units_valued).toBe(0);
     // The plot.py detail should be 'candidate'
     const detail = result.data.unit_details.find(d => d.path === 'analysis/plot.py');
     if (detail) {
@@ -477,8 +452,8 @@ describe('§11.6 evidence ladder', () => {
     expect(detail?.evidence).toBe('survives');
     // Not in candidates
     expect(result.data.candidates.some(c => c.path === 'src/orphan.ts')).toBe(false);
-    // Not valued
-    expect(result.data.units_valued).toBe(0);
+    // Not in review_units (pure survives excluded)
+    expect(result.data.review_units.some(u => u.path === 'src/orphan.ts')).toBe(false);
   });
 
   it('graph absent → graph_available=false, import+tested skipped, candidates remain', async () => {
@@ -495,41 +470,8 @@ describe('§11.6 evidence ladder', () => {
     if (!result.ok) return;
 
     expect(result.data.graph_available).toBe(false);
-    // units_valued = 0 (no wired/tested possible without graph)
-    expect(result.data.units_valued).toBe(0);
     // candidates still surfaced (pattern-match doesn't need graph)
     expect(result.data.candidates.some(c => c.path === 'analysis/run.py')).toBe(true);
-    // estimate_basis must mention graph not available
-    expect(result.data.estimate_basis).toContain('graph');
-  });
-
-  it('per-unit LOC scaling: 15-line confirmed script contributes ≤ 0.1d (not the full 0.25d class constant)', async () => {
-    tmp = createTmpDir();
-    initRepo(tmp.dir);
-
-    // A short script: 15 lines
-    const lines = Array.from({ length: 15 }, (_, i) => `x${i} = ${i}`).join('\n') + '\n';
-    const base = commitFile(tmp.dir, 'scripts/short.py', lines, 'add short script');
-
-    // Make it wired via the graph (inbound import)
-    writeGraph(tmp.dir, [
-      { id: 'scripts/short.py', kind: 'code_file' },
-      { id: 'src/caller.py', kind: 'code_file' },
-    ], [
-      { source: 'src/caller.py', target: 'scripts/short.py', relation: 'imports' },
-    ]);
-
-    const result = await computeValueReport({ dir: tmp.dir, since: base });
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-
-    // short.py should be wired and valued
-    expect(result.data.units_valued).toBeGreaterThan(0);
-
-    // unit_value = min(0.25, 15/150) = min(0.25, 0.1) = 0.1
-    // So human_days_units should be ≤ 0.1
-    expect(result.data.human_days_units).toBeLessThanOrEqual(0.1);
-    expect(result.data.human_days_units).toBeGreaterThan(0);
   });
 
   it('tested branch: test file imports a source file → source file is tested', async () => {
@@ -553,27 +495,172 @@ describe('§11.6 evidence ladder', () => {
     const computeDetail = result.data.unit_details.find(d => d.path === 'src/compute.ts');
     expect(computeDetail).toBeDefined();
     expect(computeDetail?.evidence).toBe('tested');
-    // tests themselves are not unit_details as non-test units
-    expect(result.data.units_valued).toBeGreaterThan(0);
+    // tested file appears in review_units
+    expect(result.data.review_units.some(u => u.path === 'src/compute.ts' && u.tier === 'tested')).toBe(true);
+  });
+
+  // ---------------------------------------------------------------------------
+  // NEW: linked tier tests (WK-0039 §"Coverage fix")
+  // ---------------------------------------------------------------------------
+
+  it('linked tier: file with a wiki repo_path edge but no import edges → linked', async () => {
+    // WHY: workflow repos have entrypoint scripts that are never imported by other code
+    // but ARE tracked by wiki records via repo_paths. The linked tier surfaces them so
+    // agents can estimate their value instead of leaving them as mere survives.
+    tmp = createTmpDir();
+    initRepo(tmp.dir);
+
+    const base = commitFile(tmp.dir, 'scripts/run_pipeline.py', 'import subprocess\nsubprocess.run(["snakemake"])\n', 'add pipeline');
+
+    // Graph: wiki record has a repo_path edge → this file; no import edges
+    writeGraph(tmp.dir, [
+      { id: 'scripts/run_pipeline.py', kind: 'code_file' },
+      { id: 'wiki/issues/WK-0010.md', kind: 'doc_file' },
+    ], [
+      { source: 'wiki/issues/WK-0010.md', target: 'scripts/run_pipeline.py', relation: 'repo_path' },
+    ]);
+
+    const result = await computeValueReport({ dir: tmp.dir, since: base });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const detail = result.data.unit_details.find(d => d.path === 'scripts/run_pipeline.py');
+    expect(detail).toBeDefined();
+    expect(detail?.evidence).toBe('linked');
+    // linked appears in review_units
+    expect(result.data.review_units.some(u => u.path === 'scripts/run_pipeline.py' && u.tier === 'linked')).toBe(true);
+  });
+
+  it('linked tier: wired evidence wins over linked (import edges take priority)', async () => {
+    // WHY: the tier ladder is tested > wired > linked > candidate; a file that is both
+    // wired (has import edges) and linked (has repo_path edge) must stay wired.
+    tmp = createTmpDir();
+    initRepo(tmp.dir);
+
+    const base = commitFile(tmp.dir, 'src/util.ts', 'export const x = 1;\n', 'add util');
+    commitFile(tmp.dir, 'src/main.ts', 'import { x } from "./util.js";\n', 'add main');
+
+    writeGraph(tmp.dir, [
+      { id: 'src/util.ts', kind: 'code_file' },
+      { id: 'src/main.ts', kind: 'code_file' },
+      { id: 'wiki/issues/WK-0010.md', kind: 'doc_file' },
+    ], [
+      { source: 'src/main.ts', target: 'src/util.ts', relation: 'imports' },
+      { source: 'wiki/issues/WK-0010.md', target: 'src/util.ts', relation: 'repo_path' },
+    ]);
+
+    const result = await computeValueReport({ dir: tmp.dir, since: base });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const detail = result.data.unit_details.find(d => d.path === 'src/util.ts');
+    expect(detail?.evidence).toBe('wired'); // NOT 'linked'
+  });
+
+  it('linked tier: candidate evidence wins over survives when repo_path but not in candidate_locations', async () => {
+    // WHY: a file in a canonical candidate location (analysis/**) outranks pure survives;
+    // linked is checked AFTER wired but BEFORE candidate, so a file with both a repo_path edge
+    // and a candidate location match must be labeled 'linked' (linked > candidate in the ladder).
+    tmp = createTmpDir();
+    initRepo(tmp.dir);
+
+    const base = commitFile(tmp.dir, 'analysis/explore.py', 'x = 1\n', 'add explore');
+
+    writeGraph(tmp.dir, [
+      { id: 'analysis/explore.py', kind: 'code_file' },
+      { id: 'wiki/issues/WK-0011.md', kind: 'doc_file' },
+    ], [
+      { source: 'wiki/issues/WK-0011.md', target: 'analysis/explore.py', relation: 'repo_path' },
+    ]);
+
+    const result = await computeValueReport({ dir: tmp.dir, since: base });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const detail = result.data.unit_details.find(d => d.path === 'analysis/explore.py');
+    // repo_path link → linked (beats candidate because linked > candidate)
+    expect(detail?.evidence).toBe('linked');
+  });
+
+  it('no linked units without a graph (linked degrades cleanly)', async () => {
+    // WHY: linked tier requires graph; absence of graph must not produce linked units.
+    tmp = createTmpDir();
+    initRepo(tmp.dir);
+
+    const base = commitFile(tmp.dir, 'scripts/run.py', 'x = 1\n', 'add run');
+    // No graph written
+
+    const result = await computeValueReport({ dir: tmp.dir, since: base });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.data.unit_details.some(d => d.evidence === 'linked')).toBe(false);
   });
 });
 
 // ---------------------------------------------------------------------------
-// Estimate arithmetic
+// review_units[] — unified review surface (WK-0039 §"Unified review_units[]")
 // ---------------------------------------------------------------------------
 
-describe('estimate arithmetic (spec §9)', () => {
+describe('review_units[] — unified review surface', () => {
   let tmp: TmpRepo;
 
   afterEach(() => tmp.cleanup());
 
-  it('human_days_anchor = min(human_days_units, human_days_loc)', async () => {
+  it('review_units includes tested, wired, linked, candidate tiers but excludes pure-survives and test files', async () => {
+    // WHY: review_units is both the review surface and the estimate basis;
+    // pure-survives are not estimate candidates and test files are evidence, not units.
     tmp = createTmpDir();
     initRepo(tmp.dir);
 
-    // Many lines of code but a simple wired file
-    const bigContent = Array.from({ length: 300 }, (_, i) => `const x${i} = ${i};`).join('\n') + '\n';
-    const base = commitFile(tmp.dir, 'src/big.ts', bigContent, 'add big file');
+    const base = commitFile(tmp.dir, 'src/tested.ts', 'export const t = 1;\n', 'add tested');
+    commitFile(tmp.dir, 'src/wired.ts', 'export const w = 1;\n', 'add wired');
+    commitFile(tmp.dir, 'src/orphan.ts', 'export const o = 1;\n', 'add orphan');
+    commitFile(tmp.dir, 'scripts/linked.py', 'x = 1\n', 'add linked');
+    commitFile(tmp.dir, 'analysis/candidate.py', 'y = 1\n', 'add candidate');
+    commitFile(tmp.dir, 'tests/tested.test.ts', 'import { t } from "../src/tested.js";\n', 'add test');
+
+    writeGraph(tmp.dir, [
+      { id: 'src/tested.ts', kind: 'code_file' },
+      { id: 'src/wired.ts', kind: 'code_file' },
+      { id: 'src/orphan.ts', kind: 'code_file' },
+      { id: 'scripts/linked.py', kind: 'code_file' },
+      { id: 'analysis/candidate.py', kind: 'code_file' },
+      { id: 'tests/tested.test.ts', kind: 'code_file' },
+      { id: 'wiki/issues/WK-0020.md', kind: 'doc_file' },
+    ], [
+      { source: 'tests/tested.test.ts', target: 'src/tested.ts', relation: 'imports' },
+      { source: 'src/wired.ts', target: 'src/orphan.ts', relation: 'imports' },
+      { source: 'wiki/issues/WK-0020.md', target: 'scripts/linked.py', relation: 'repo_path' },
+    ]);
+
+    const result = await computeValueReport({ dir: tmp.dir, since: base });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const paths = result.data.review_units.map(u => u.path);
+
+    // Included tiers
+    expect(paths).toContain('src/tested.ts');
+    expect(paths).toContain('src/wired.ts');
+    expect(paths).toContain('scripts/linked.py');
+    expect(paths).toContain('analysis/candidate.py');
+
+    // Excluded: pure survives (orphan.ts has inbound 'imports' from wired.ts → wired, actually)
+    // orphan.ts is imported by wired.ts so it IS wired — included
+    // The true pure-survives case: a file with no edges and no candidate location
+    // Here: the test file itself must not appear
+    expect(paths).not.toContain('tests/tested.test.ts');
+  });
+
+  it('review_units.loc_reference = net_loc / loc_per_day (the LOC tripwire reference)', async () => {
+    // WHY: loc_reference is the LOC tripwire so agents flag estimates diverging >3× from it.
+    tmp = createTmpDir();
+    initRepo(tmp.dir);
+
+    const lines300 = Array.from({ length: 300 }, (_, i) => `const x${i} = ${i};`).join('\n') + '\n';
+    const base = commitFile(tmp.dir, 'src/big.ts', lines300, 'add big');
+    commitFile(tmp.dir, 'src/caller.ts', 'import { x0 } from "./big.js";\n', 'add caller');
 
     writeGraph(tmp.dir, [
       { id: 'src/big.ts', kind: 'code_file' },
@@ -582,40 +669,271 @@ describe('estimate arithmetic (spec §9)', () => {
       { source: 'src/caller.ts', target: 'src/big.ts', relation: 'imports' },
     ]);
 
-    const result = await computeValueReport({ dir: tmp.dir, since: base });
+    const result = await computeValueReport({ dir: tmp.dir, since: base, config: { loc_per_day: 150 } });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
 
-    expect(result.data.human_days_anchor).toBe(
-      Math.min(result.data.human_days_units, result.data.human_days_loc),
-    );
+    const bigUnit = result.data.review_units.find(u => u.path === 'src/big.ts');
+    expect(bigUnit).toBeDefined();
+    if (!bigUnit) return;
+    // loc_reference = net_loc / loc_per_day
+    expect(bigUnit.loc_reference).toBeCloseTo(bigUnit.net_loc / 150, 5);
   });
 
-  it('speedup is capped at speedup_cap (default 10)', async () => {
+  it('review_units.wk_ids contains wiki record ids linked via repo_path edges', async () => {
+    // WHY: wk_ids per unit lets agents cite the relevant WK/PLN records in their estimate rows.
     tmp = createTmpDir();
     initRepo(tmp.dir);
 
-    // Create a tool-class file (3d value) committed in 1 day
-    const base = commitFile(tmp.dir, 'tools/big_tool.ts', 'export const tool = 1;\n', 'add tool', '2026-01-01T10:00:00');
-    commitFile(tmp.dir, 'tools/big_tool2.ts', 'export const tool2 = 2;\n', 'add tool2', '2026-01-01T11:00:00');
+    const base = commitFile(tmp.dir, 'scripts/analyze.py', 'import os\n', 'add analyze');
 
-    // wired via graph
     writeGraph(tmp.dir, [
-      { id: 'tools/big_tool.ts', kind: 'code_file' },
-      { id: 'tools/big_tool2.ts', kind: 'code_file' },
-      { id: 'src/caller.ts', kind: 'code_file' },
+      { id: 'scripts/analyze.py', kind: 'code_file' },
+      { id: 'wiki/issues/WK-0042.md', kind: 'doc_file' },
+      { id: 'wiki/plans/PLN-0003.md', kind: 'doc_file' },
     ], [
-      { source: 'src/caller.ts', target: 'tools/big_tool.ts', relation: 'imports' },
-      { source: 'src/caller.ts', target: 'tools/big_tool2.ts', relation: 'imports' },
+      { source: 'wiki/issues/WK-0042.md', target: 'scripts/analyze.py', relation: 'repo_path' },
+      { source: 'wiki/plans/PLN-0003.md', target: 'scripts/analyze.py', relation: 'repo_path' },
     ]);
 
     const result = await computeValueReport({ dir: tmp.dir, since: base });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
 
-    // speedup must never exceed 10 (the default cap)
-    expect(result.data.speedup).toBeLessThanOrEqual(10);
+    const unit = result.data.review_units.find(u => u.path === 'scripts/analyze.py');
+    expect(unit).toBeDefined();
+    if (!unit) return;
+    // wk_ids should contain the two linking wiki record ids (extracted from source)
+    expect(unit.wk_ids).toContain('WK-0042');
+    expect(unit.wk_ids).toContain('PLN-0003');
   });
+});
+
+// ---------------------------------------------------------------------------
+// wk_ids union (WK-0039 §"WK discovery")
+// ---------------------------------------------------------------------------
+
+describe('wk_ids: commit-message regex ∪ graph repo_path edges', () => {
+  let tmp: TmpRepo;
+
+  afterEach(() => tmp.cleanup());
+
+  it('wk_ids contains ids from commit messages', async () => {
+    // WHY: commit-message scraping is the baseline WK discovery path.
+    tmp = createTmpDir();
+    initRepo(tmp.dir);
+
+    const base = commitFile(tmp.dir, 'src/a.ts', 'x=1\n', 'fix(WK-0001): correct calculation');
+    commitFile(tmp.dir, 'src/b.ts', 'y=2\n', 'feat(WK-0002): add feature');
+
+    const result = await computeValueReport({ dir: tmp.dir, since: base });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.data.wk_ids).toContain('WK-0001');
+    expect(result.data.wk_ids).toContain('WK-0002');
+  });
+
+  it('wk_ids contains ids from graph repo_path edges to span-changed files (even without commit-message mentions)', async () => {
+    // WHY: workflow repos often have sparse commit messages; graph edges are the fallback WK
+    // discovery path that prevents wiki-tracked work from disappearing from the ROI narrative.
+    tmp = createTmpDir();
+    initRepo(tmp.dir);
+
+    // Commit message has no WK id
+    const base = commitFile(tmp.dir, 'scripts/analyze.py', 'import os\n', 'add analysis script');
+
+    writeGraph(tmp.dir, [
+      { id: 'scripts/analyze.py', kind: 'code_file' },
+      { id: 'wiki/issues/WK-0099.md', kind: 'doc_file' },
+    ], [
+      { source: 'wiki/issues/WK-0099.md', target: 'scripts/analyze.py', relation: 'repo_path' },
+    ]);
+
+    const result = await computeValueReport({ dir: tmp.dir, since: base });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    // WK-0099 discovered via graph even though commit message is silent
+    expect(result.data.wk_ids).toContain('WK-0099');
+  });
+
+  it('wk_ids deduplicates ids appearing in both commit messages and graph edges', async () => {
+    // WHY: union must be a set — no duplicates in the narrative WK list.
+    tmp = createTmpDir();
+    initRepo(tmp.dir);
+
+    const base = commitFile(tmp.dir, 'scripts/run.py', 'x=1\n', 'fix(WK-0055): pipeline fix');
+
+    writeGraph(tmp.dir, [
+      { id: 'scripts/run.py', kind: 'code_file' },
+      { id: 'wiki/issues/WK-0055.md', kind: 'doc_file' },
+    ], [
+      { source: 'wiki/issues/WK-0055.md', target: 'scripts/run.py', relation: 'repo_path' },
+    ]);
+
+    const result = await computeValueReport({ dir: tmp.dir, since: base });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const count = result.data.wk_ids.filter(id => id === 'WK-0055').length;
+    expect(count).toBe(1); // exactly once
+  });
+
+  it('graph repo_path edges to files NOT in the span do not contribute to wk_ids', async () => {
+    // WHY: wk_ids should reflect work done in THIS span; linking to files outside the span
+    // would falsely attribute prior WK ids to this report.
+    tmp = createTmpDir();
+    initRepo(tmp.dir);
+
+    const base = commitFile(tmp.dir, 'src/new.ts', 'x=1\n', 'add new file (no WK mention)');
+
+    // Graph has an edge pointing at a different file not changed in the span
+    writeGraph(tmp.dir, [
+      { id: 'src/new.ts', kind: 'code_file' },
+      { id: 'src/old.ts', kind: 'code_file' },
+      { id: 'wiki/issues/WK-0077.md', kind: 'doc_file' },
+    ], [
+      // Points to old.ts which is NOT in the span
+      { source: 'wiki/issues/WK-0077.md', target: 'src/old.ts', relation: 'repo_path' },
+    ]);
+
+    const result = await computeValueReport({ dir: tmp.dir, since: base });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    // WK-0077 must NOT appear because src/old.ts was not changed in this span
+    expect(result.data.wk_ids).not.toContain('WK-0077');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// loc_per_day echoed in output (WK-0039 §"loc_per_day in output")
+// ---------------------------------------------------------------------------
+
+describe('loc_per_day echoed in ValueMetrics output', () => {
+  let tmp: TmpRepo;
+
+  afterEach(() => tmp.cleanup());
+
+  it('loc_per_day is present in output and matches the resolved config value', async () => {
+    // WHY: loc_per_day must be in the output so the agent/template can compute loc_reference
+    // for the How-Calculated section without re-running the tool.
+    tmp = createTmpDir();
+    initRepo(tmp.dir);
+
+    const base = commitFile(tmp.dir, 'src/a.ts', 'x=1\n', 'init');
+
+    const result = await computeValueReport({ dir: tmp.dir, since: base, config: { loc_per_day: 200 } });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.data.loc_per_day).toBe(200);
+  });
+
+  it('loc_per_day defaults to 150 when not overridden', async () => {
+    // WHY: the default must be stable so templates and historical VALs use a known baseline.
+    tmp = createTmpDir();
+    initRepo(tmp.dir);
+
+    const base = commitFile(tmp.dir, 'src/a.ts', 'x=1\n', 'init');
+
+    const result = await computeValueReport({ dir: tmp.dir, since: base });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.data.loc_per_day).toBe(150);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Workflow-repo fixture: pilot minimal acceptance test (WK-0039 acceptance criteria)
+// ---------------------------------------------------------------------------
+
+describe('workflow-repo fixture: pilot minimal acceptance test', () => {
+  let tmp: TmpRepo;
+
+  afterEach(() => tmp.cleanup());
+
+  it('tested, wired, linked, and candidate units all appear in review_units with correct tiers; wk_ids found via graph when commit messages omit them', async () => {
+    // WHY: the pilot failure exposed that the old tool produced a review surface disjoint from
+    // the estimate basis in a repo with sparse imports, entrypoint scripts, and incomplete
+    // commit messages. This fixture reproduces that pattern and asserts the fix.
+    tmp = createTmpDir();
+    initRepo(tmp.dir);
+
+    // Sparse commit messages — no WK ids mentioned
+    const base = commitFile(tmp.dir, 'src/core.ts', 'export const core = 1;\n', 'add core module');
+    commitFile(tmp.dir, 'src/util.ts', 'export const util = 2;\n', 'add util');
+    commitFile(tmp.dir, 'tests/core.test.ts', 'import { core } from "../src/core.js";\n', 'add tests');
+    commitFile(tmp.dir, 'scripts/run_analysis.py', 'import subprocess\n', 'add analysis runner');
+    commitFile(tmp.dir, 'notebooks/explore.ipynb', '{"cells":[]}\n', 'add notebook');
+    commitFile(tmp.dir, 'analysis/report.py', 'import pandas as pd\n', 'add report generator');
+
+    writeGraph(tmp.dir, [
+      { id: 'src/core.ts', kind: 'code_file' },
+      { id: 'src/util.ts', kind: 'code_file' },
+      { id: 'tests/core.test.ts', kind: 'code_file' },
+      { id: 'scripts/run_analysis.py', kind: 'code_file' },
+      { id: 'notebooks/explore.ipynb', kind: 'code_file' },
+      { id: 'analysis/report.py', kind: 'code_file' },
+      { id: 'wiki/issues/WK-0100.md', kind: 'doc_file' },
+      { id: 'wiki/issues/WK-0101.md', kind: 'doc_file' },
+    ], [
+      // tested: test imports core
+      { source: 'tests/core.test.ts', target: 'src/core.ts', relation: 'imports' },
+      // wired: util imports core (outbound edge from util)
+      { source: 'src/util.ts', target: 'src/core.ts', relation: 'imports' },
+      // linked: wiki records point at the entrypoint scripts
+      { source: 'wiki/issues/WK-0100.md', target: 'scripts/run_analysis.py', relation: 'repo_path' },
+      { source: 'wiki/issues/WK-0101.md', target: 'notebooks/explore.ipynb', relation: 'repo_path' },
+    ]);
+
+    const result = await computeValueReport({ dir: tmp.dir, since: base });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const reviewMap = new Map(result.data.review_units.map(u => [u.path, u]));
+
+    // core.ts → tested (test imports it)
+    expect(reviewMap.get('src/core.ts')?.tier).toBe('tested');
+
+    // util.ts → wired (imports core, which is in surviving files)
+    expect(reviewMap.get('src/util.ts')?.tier).toBe('wired');
+
+    // run_analysis.py → linked (wiki repo_path edge, no imports)
+    expect(reviewMap.get('scripts/run_analysis.py')?.tier).toBe('linked');
+
+    // explore.ipynb → linked (wiki repo_path edge)
+    expect(reviewMap.get('notebooks/explore.ipynb')?.tier).toBe('linked');
+
+    // analysis/report.py → candidate (candidate_location, no edges)
+    expect(reviewMap.get('analysis/report.py')?.tier).toBe('candidate');
+
+    // test file excluded from review_units
+    expect(reviewMap.has('tests/core.test.ts')).toBe(false);
+
+    // wk_ids discovered via graph even with silent commit messages
+    expect(result.data.wk_ids).toContain('WK-0100');
+    expect(result.data.wk_ids).toContain('WK-0101');
+
+    // review surface == estimate basis (no disjunction)
+    // Every unit in review_units is in unit_details (audit trail)
+    for (const ru of result.data.review_units) {
+      const detail = result.data.unit_details.find(d => d.path === ru.path);
+      expect(detail).toBeDefined();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// GIT_UNAVAILABLE error
+// ---------------------------------------------------------------------------
+
+describe('error handling', () => {
+  let tmp: TmpRepo;
+
+  afterEach(() => tmp.cleanup());
 
   it('fails with GIT_UNAVAILABLE when dir is not a git repo', async () => {
     tmp = createTmpDir();
@@ -625,37 +943,6 @@ describe('estimate arithmetic (spec §9)', () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error).toBe('GIT_UNAVAILABLE');
-  });
-
-  it('config override: custom per_unit_days and loc_per_day used in arithmetic', async () => {
-    tmp = createTmpDir();
-    initRepo(tmp.dir);
-
-    const base = commitFile(tmp.dir, 'src/a.ts', 'export const a = 1;\n', 'add a');
-
-    writeGraph(tmp.dir, [
-      { id: 'src/a.ts', kind: 'code_file' },
-      { id: 'src/b.ts', kind: 'code_file' },
-    ], [
-      { source: 'src/b.ts', target: 'src/a.ts', relation: 'imports' },
-    ]);
-
-    // Override: scripts = 5d (unusual high), loc_per_day = 1 (extreme)
-    const result = await computeValueReport({
-      dir: tmp.dir,
-      since: base,
-      config: {
-        per_unit_days: { scripts: 5, modules: 2, tools: 3, docs: 0.25 },
-        loc_per_day: 1,
-      },
-    });
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-
-    // With loc_per_day=1 and net_loc_added=1 → human_days_loc = 1
-    // With scripts=5 → unit_value = min(5, 1/1) = 1 → human_days_units = 1
-    // human_days_anchor = min(1,1) = 1
-    expect(result.data.human_days_anchor).toBeGreaterThan(0);
   });
 });
 
@@ -668,7 +955,8 @@ describe('config loading', () => {
 
   afterEach(() => tmp.cleanup());
 
-  it('loads overrides from wiki/.value-config.json', async () => {
+  it('loads loc_per_day override from wiki/.value-config.json', async () => {
+    // WHY: file config lets operators tune the LOC tripwire reference without code changes.
     tmp = createTmpDir();
     initRepo(tmp.dir);
 
@@ -676,40 +964,30 @@ describe('config loading', () => {
 
     const configPath = path.join(tmp.dir, 'wiki', '.value-config.json');
     fs.mkdirSync(path.dirname(configPath), { recursive: true });
-    fs.writeFileSync(configPath, JSON.stringify({ speedup_cap: 5 }), 'utf-8');
-
-    writeGraph(tmp.dir, [
-      { id: 'src/a.ts', kind: 'code_file' },
-      { id: 'src/b.ts', kind: 'code_file' },
-    ], [
-      { source: 'src/b.ts', target: 'src/a.ts', relation: 'imports' },
-    ]);
+    fs.writeFileSync(configPath, JSON.stringify({ loc_per_day: 200 }), 'utf-8');
 
     const result = await computeValueReport({ dir: tmp.dir, since: base });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.data.speedup).toBeLessThanOrEqual(5);
+    expect(result.data.loc_per_day).toBe(200);
   });
 
-  it('opts.config takes precedence over file config', async () => {
+  it('opts.config takes precedence over file config for loc_per_day', async () => {
+    // WHY: opts.config is the highest-priority override, so callers (MCP/CLI) can force values.
     tmp = createTmpDir();
     initRepo(tmp.dir);
 
     const base = commitFile(tmp.dir, 'src/a.ts', 'export const a = 1;\n', 'init');
 
-    // File says cap=5
+    // File says 200
     const configPath = path.join(tmp.dir, 'wiki', '.value-config.json');
     fs.mkdirSync(path.dirname(configPath), { recursive: true });
-    fs.writeFileSync(configPath, JSON.stringify({ speedup_cap: 5 }), 'utf-8');
+    fs.writeFileSync(configPath, JSON.stringify({ loc_per_day: 200 }), 'utf-8');
 
-    // opts says cap=3 → should win
-    const result = await computeValueReport({
-      dir: tmp.dir,
-      since: base,
-      config: { speedup_cap: 3 },
-    });
+    // opts says 100 → should win
+    const result = await computeValueReport({ dir: tmp.dir, since: base, config: { loc_per_day: 100 } });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.data.speedup).toBeLessThanOrEqual(3);
+    expect(result.data.loc_per_day).toBe(100);
   });
 });

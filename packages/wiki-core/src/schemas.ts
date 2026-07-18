@@ -89,6 +89,32 @@ export const operatorAssessmentSchema = z.enum([
   'not_reviewed',
 ]);
 
+/** Evidence tier ladder: tested > wired > linked > candidate > survives. */
+export const unitEvidenceSchema = z.enum([
+  'tested',
+  'wired',
+  'linked',
+  'candidate',
+  'survives',
+]);
+
+/** Unit class for the working-shipped-units capture model (spec §5.1). */
+export const unitClassSchema = z.enum(['scripts', 'modules', 'tools', 'docs']);
+
+/**
+ * One row in the unified review surface emitted by value-report.
+ * Covers tested / wired / linked / candidate tiers; excludes pure-survives and test files.
+ */
+export const valueReviewUnitSchema = z.object({
+  path: z.string(),
+  unitClass: unitClassSchema,
+  tier: unitEvidenceSchema,
+  wk_ids: z.array(z.string()),
+  net_loc: z.number(),
+  /** Reference floor: net_loc / loc_per_day. Printed for the agent tripwire check. */
+  loc_reference: z.number(),
+});
+
 // ---------------------------------------------------------------------------
 // Frontmatter Zod schemas for manifest-driven wiki record types
 // ---------------------------------------------------------------------------
@@ -299,7 +325,7 @@ export const valueFrontmatterSchema = z.object({
   units_valued: z.coerce.number().optional(),
   operator_assessment: operatorAssessmentSchema.optional(),
   operator_notes: z.string().optional(),
-  // Estimate (tool-computed; downward-only agent adjustment)
+  // Estimate (agent-proposed via anchor table, operator-ratified; agent adjusts downward only)
   human_days_units: z.coerce.number().optional(),
   human_days_loc: z.coerce.number().optional(),
   human_days_anchor: z.coerce.number().optional(),

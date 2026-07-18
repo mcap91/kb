@@ -3,9 +3,9 @@
  *
  * Reads git history + wiki/.graph.json and computes:
  * - Commit-watermark scope and chain status
- * - Unit classification with evidence ladder (wired / tested / candidate / survives)
+ * - Unit classification with evidence ladder (tested / wired / linked / candidate / survives)
  * - Churn calculation
- * - Conservative human-time estimate anchors
+ * - LOC reference per unit (net_loc / loc_per_day — tripwire for agent estimation)
  *
  * Public API: computeValueReport(opts) → Result<ValueMetrics>
  *
@@ -14,6 +14,7 @@
  * - Offline only: node:child_process git + node:fs (no network)
  * - NEVER import graph-explore (cross-subsystem import is forbidden)
  * - Use execFileSync with arg arrays to avoid Windows shell pipe-parsing issues
+ * - Tool measures facts only; estimation arithmetic lives in the template/agent layer
  */
 
 import * as fs from 'node:fs';
@@ -26,6 +27,7 @@ import type {
   ValueConfig,
   ValueCandidate,
   ValueUnitDetail,
+  ValueReviewUnit,
   UnitClass,
   UnitClassCounts,
   ChainStatus,
@@ -49,13 +51,11 @@ interface GraphExport {
 }
 
 // ---------------------------------------------------------------------------
-// Config defaults (spec §9)
+// Config defaults (measurement knobs only — no estimator constants)
 // ---------------------------------------------------------------------------
 
 const DEFAULT_CONFIG: ValueConfig = {
-  per_unit_days: { scripts: 0.25, modules: 2, tools: 3, docs: 0.25 },
   loc_per_day: 150,
-  speedup_cap: 10,
   ccusage_version: '20.0.17',
   exclude_globs: [
     'scratch_space/**',
@@ -458,10 +458,13 @@ function inclusiveDaysBetween(startDate: string, endDate: string): number {
 }
 
 // ---------------------------------------------------------------------------
-// WK id gathering (commit message scan)
+// WK id gathering (commit message scan ∪ graph repo_path edges)
 // ---------------------------------------------------------------------------
 
-function gatherWkIds(dir: string, baseSha: string, headSha: string, inclusive: boolean): string[] {
+/**
+ * Extract WK ids from commit messages in the given range.
+ */
+function gatherWkIdsFromCommits(dir: string, baseSha: string, headSha: string, inclusive: boolean): string[] {
   let rangeArg: string;
   if (inclusive) {
     if (isRootCommit(dir, baseSha)) {
@@ -474,8 +477,41 @@ function gatherWkIds(dir: string, baseSha: string, headSha: string, inclusive: b
   }
   const out = git(dir, 'log', rangeArg, '--format=%s %b');
   if (!out) return [];
-  const matches = out.match(/WK-\d{4}/g) ?? [];
+  const matches = out.match(/(?:WK|PLN|IN|DEC|SRC|AREA|VAL)-\d{4}/g) ?? [];
   return [...new Set(matches)];
+}
+
+/**
+ * Gather WK ids: commit-message regex ∪ graph-derived ids (wiki records with
+ * repo_path edges to any file in the span-changed set).
+ *
+ * Per-unit wk_ids (the record ids whose repo_path edges point at that unit's file)
+ * are built separately in the main function using repoPathEdges.
+ */
+function gatherWkIds(
+  dir: string,
+  baseSha: string,
+  headSha: string,
+  inclusive: boolean,
+  spanFiles: Set<string>,
+  repoPathEdges: Map<string, Set<string>>,
+): string[] {
+  const commitIds = gatherWkIdsFromCommits(dir, baseSha, headSha, inclusive);
+
+  // Graph-derived: for each file in the span, find wiki records that link to it
+  const graphIds: string[] = [];
+  for (const filePath of spanFiles) {
+    const recordPaths = repoPathEdges.get(filePath);
+    if (!recordPaths) continue;
+    for (const recordPath of recordPaths) {
+      // Extract the id-like prefix from the filename: "wiki/issues/WK-0099.md" → "WK-0099"
+      const basename = path.basename(recordPath, '.md');
+      const m = basename.match(/^((?:WK|PLN|IN|DEC|SRC|AREA|VAL)-\d{4})$/);
+      if (m) graphIds.push(m[1]);
+    }
+  }
+
+  return [...new Set([...commitIds, ...graphIds])];
 }
 
 // ---------------------------------------------------------------------------
@@ -483,7 +519,7 @@ function gatherWkIds(dir: string, baseSha: string, headSha: string, inclusive: b
 // ---------------------------------------------------------------------------
 
 function loadConfig(dir: string, optsConfig?: Partial<ValueConfig>): ValueConfig {
-  let merged: ValueConfig = { ...DEFAULT_CONFIG, per_unit_days: { ...DEFAULT_CONFIG.per_unit_days } };
+  let merged: ValueConfig = { ...DEFAULT_CONFIG };
 
   const filePath = path.join(dir, 'wiki', '.value-config.json');
   if (fs.existsSync(filePath)) {
@@ -503,15 +539,14 @@ function loadConfig(dir: string, optsConfig?: Partial<ValueConfig>): ValueConfig
 }
 
 function deepMergeConfig(base: ValueConfig, over: Partial<ValueConfig>): ValueConfig {
-  const result: ValueConfig = { ...base, per_unit_days: { ...base.per_unit_days } };
-  if (over.per_unit_days) result.per_unit_days = { ...base.per_unit_days, ...over.per_unit_days };
+  const result: ValueConfig = { ...base };
   if (over.loc_per_day !== undefined) result.loc_per_day = over.loc_per_day;
-  if (over.speedup_cap !== undefined) result.speedup_cap = over.speedup_cap;
   if (over.ccusage_version !== undefined) result.ccusage_version = over.ccusage_version;
   if (over.exclude_globs) result.exclude_globs = over.exclude_globs;
   if (over.classification_patterns) {
     result.classification_patterns = { ...base.classification_patterns, ...over.classification_patterns };
   }
+  if (over.model_patterns !== undefined) result.model_patterns = over.model_patterns;
   return result;
 }
 
@@ -535,6 +570,7 @@ function loadGraph(dir: string): GraphExport | null {
 
 /**
  * Compute deterministic, offline value-report metrics for a git repo.
+ * Tool measures facts only — estimation arithmetic lives in the template/agent layer.
  */
 export async function computeValueReport(opts: ValueReportOpts): Promise<Result<ValueMetrics>> {
   const dir = path.resolve(opts.dir);
@@ -642,21 +678,30 @@ export async function computeValueReport(opts: ValueReportOpts): Promise<Result<
     windowEnd = today;
   }
 
-  // Load graph
+  // Load graph (single load; both edge maps share this)
   const graph = loadGraph(dir);
   const graphAvailable = graph !== null;
 
-  // Build edge lookup maps (imports only)
-  const inboundEdges = new Map<string, Set<string>>(); // target → set of sources
-  const outboundEdges = new Map<string, Set<string>>(); // source → set of targets
+  // Build imports edge maps
+  const inboundEdges = new Map<string, Set<string>>(); // target → set of sources (imports relation)
+  const outboundEdges = new Map<string, Set<string>>(); // source → set of targets (imports relation)
+
+  // Build repo_path edge map: filePath → Set of wiki record paths (source = wiki record, target = file path)
+  const repoPathEdges = new Map<string, Set<string>>(); // filePath → Set<wikiRecordPath>
 
   if (graph) {
     for (const edge of graph.edges) {
-      if (edge.relation !== 'imports') continue;
-      if (!inboundEdges.has(edge.target)) inboundEdges.set(edge.target, new Set());
-      inboundEdges.get(edge.target)!.add(edge.source);
-      if (!outboundEdges.has(edge.source)) outboundEdges.set(edge.source, new Set());
-      outboundEdges.get(edge.source)!.add(edge.target);
+      if (edge.relation === 'imports') {
+        if (!inboundEdges.has(edge.target)) inboundEdges.set(edge.target, new Set());
+        inboundEdges.get(edge.target)!.add(edge.source);
+        if (!outboundEdges.has(edge.source)) outboundEdges.set(edge.source, new Set());
+        outboundEdges.get(edge.source)!.add(edge.target);
+      } else if (edge.relation === 'repo_path') {
+        // source = wiki record id (e.g. "wiki/issues/WK-0039.md")
+        // target = file path (e.g. "packages/wiki-core/src/value-report.ts")
+        if (!repoPathEdges.has(edge.target)) repoPathEdges.set(edge.target, new Set());
+        repoPathEdges.get(edge.target)!.add(edge.source);
+      }
     }
   }
 
@@ -673,7 +718,7 @@ export async function computeValueReport(opts: ValueReportOpts): Promise<Result<
     if (isTestFile(fp, config)) testFileSet.add(fp);
   }
 
-  // Classify units and assign evidence
+  // Classify units and assign evidence (tested > wired > linked > candidate > survives)
   const unitCounts: Record<UnitClass, UnitClassCounts> = {
     scripts: { survives: 0, wired: 0, tested: 0 },
     modules: { survives: 0, wired: 0, tested: 0 },
@@ -704,16 +749,22 @@ export async function computeValueReport(opts: ValueReportOpts): Promise<Result<
       const hasNonTestInbound = inboundSources.some(src => !testFileSet.has(src));
       const hasOutboundToRepo = [...outboundTargets].some(t => survivingFiles.has(t));
 
+      // Linked: a wiki record has a repo_path edge pointing at this file, but no import evidence
+      const hasRepoPathEdge = repoPathEdges.has(fp);
+
       if (importedByTest) {
-        // Tested takes priority — it's more specific evidence than generic wired
+        // Tested takes priority — most specific evidence
         evidence = 'tested';
       } else if (hasNonTestInbound || hasOutboundToRepo) {
         evidence = 'wired';
+      } else if (hasRepoPathEdge) {
+        // Linked: wiki-tracked but not import-connected (e.g. entrypoint scripts)
+        evidence = 'linked';
       } else if (isCandidateLocation(fp, config)) {
         evidence = 'candidate';
       }
     } else {
-      // No graph available
+      // No graph available: no linked tier possible
       if (isCandidateLocation(fp, config)) {
         evidence = 'candidate';
       }
@@ -736,48 +787,44 @@ export async function computeValueReport(opts: ValueReportOpts): Promise<Result<
     }
   }
 
-  // units_valued = wired ∪ tested (attested added by operator later — NOT here)
-  const valuedUnits = unitDetails.filter(u => u.evidence === 'wired' || u.evidence === 'tested');
-  const unitsValued = valuedUnits.length;
-
-  // Estimate arithmetic (spec §9)
-  const humanDaysUnits = valuedUnits.reduce((sum, u) => {
-    const classConst = config.per_unit_days[u.unitClass];
-    const locValue = u.netLoc / config.loc_per_day;
-    return sum + Math.min(classConst, locValue);
-  }, 0);
-
-  const humanDaysLoc = netLocAdded / config.loc_per_day;
-  const humanDaysAnchor = Math.min(humanDaysUnits, humanDaysLoc);
-  const timeSavedDays = humanDaysAnchor - spanDays; // NO clamp
-  const speedup = Math.min(humanDaysAnchor / spanDays, config.speedup_cap); // may be < 1
-
-  // Estimate basis string
-  const graphNote = graphAvailable ? 'graph fresh' : 'graph absent (wired/tested skipped)';
-  const unitSummary = valuedUnits.length > 0
-    ? valuedUnits.map(u => `${u.unitClass}(${u.evidence})`).join(', ')
-    : 'no valued units';
-  const estimateBasis = [
-    `units: ${unitSummary}`,
-    `loc floor ${netLocAdded}/${config.loc_per_day}`,
-    `anchor=${humanDaysAnchor.toFixed(3)}`,
-    `cap ${config.speedup_cap}`,
-    graphNote,
-    `chain ${chainStatus}`,
-  ].join('; ');
-
   // Reverted commits
   const revertedCommits = commits.filter(c => {
     const msg = git(dir, 'log', '-1', '--format=%s', c.sha) ?? '';
     return /^revert\b/i.test(msg);
   }).length;
 
-  // WK ids from commit messages
-  const wkIds = gatherWkIds(dir, baseSha, resolvedHead, inclusive);
+  // WK ids: commit-message regex ∪ graph repo_path edges to span files
+  const wkIds = gatherWkIds(dir, baseSha, resolvedHead, inclusive, survivingFiles, repoPathEdges);
 
   // Tests added = test files in surviving set
   const testsAdded = [...survivingFiles].filter(f => testFileSet.has(f)).length;
   const filesChanged = includedFiles.length;
+
+  // Build review_units[]: tested/wired/linked/candidate tiers; exclude pure-survives and test files
+  const reviewUnits: ValueReviewUnit[] = [];
+  for (const detail of unitDetails) {
+    if (detail.evidence === 'survives') continue; // pure-survives excluded
+
+    // Per-unit wk_ids: wiki record ids whose repo_path edges point at this file
+    const unitWkIds: string[] = [];
+    const recordPaths = repoPathEdges.get(detail.path);
+    if (recordPaths) {
+      for (const recordPath of recordPaths) {
+        const basename = path.basename(recordPath, '.md');
+        const m = basename.match(/^((?:WK|PLN|IN|DEC|SRC|AREA|VAL)-\d{4})$/);
+        if (m) unitWkIds.push(m[1]);
+      }
+    }
+
+    reviewUnits.push({
+      path: detail.path,
+      unitClass: detail.unitClass,
+      tier: detail.evidence,
+      wk_ids: unitWkIds,
+      net_loc: detail.netLoc,
+      loc_reference: detail.netLoc / config.loc_per_day,
+    });
+  }
 
   return ok({
     window_start: windowStart,
@@ -794,7 +841,6 @@ export async function computeValueReport(opts: ValueReportOpts): Promise<Result<
     tests_added: testsAdded,
     units: unitCounts,
     units_candidates: candidates.length,
-    units_valued: unitsValued,
     churn_loc: churnLoc,
     excluded_files: excludedFilesCount,
     excluded_loc: excludedLocCount,
@@ -803,12 +849,8 @@ export async function computeValueReport(opts: ValueReportOpts): Promise<Result<
     wk_closed: 0,
     wk_ids: wkIds,
     graph_available: graphAvailable,
-    human_days_units: humanDaysUnits,
-    human_days_loc: humanDaysLoc,
-    human_days_anchor: humanDaysAnchor,
-    time_saved_days: timeSavedDays,
-    speedup,
-    estimate_basis: estimateBasis,
+    loc_per_day: config.loc_per_day,
+    review_units: reviewUnits,
     candidates,
     unit_details: unitDetails,
   });

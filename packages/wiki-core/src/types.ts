@@ -269,7 +269,7 @@ export interface ValueFrontmatter {
   units_valued?: number;
   operator_assessment?: OperatorAssessment;
   operator_notes?: string;
-  // Estimate (tool-computed anchors; agent may adjust downward only)
+  // Estimate (agent-proposed via anchor table, operator-ratified; agent adjusts downward only)
   human_days_units?: number;
   human_days_loc?: number;
   human_days_anchor?: number;
@@ -329,13 +329,14 @@ export interface ModelPatternEntry {
 }
 
 /**
- * Tunable estimate/classification config, loaded from `wiki/.value-config.json`.
- * Precedence: tool args > file > code defaults (spec §9).
+ * Measurement config, loaded from `wiki/.value-config.json`.
+ * Controls what the tool measures; estimation arithmetic lives in the template/agent layer.
+ * Precedence: tool args > file > code defaults.
  */
 export interface ValueConfig {
-  per_unit_days: Record<UnitClass, number>;
+  /** LOC-per-day reference divisor (default 150). Used for loc_reference per unit and the
+   *  loc-floor tripwire printed in the review surface. Not a value ceiling. */
   loc_per_day: number;
-  speedup_cap: number;
   ccusage_version: string;
   exclude_globs: string[];
   classification_patterns: {
@@ -378,8 +379,24 @@ export interface ValueCandidate {
 export interface ValueUnitDetail {
   path: string;
   unitClass: UnitClass;
-  evidence: 'wired' | 'tested' | 'survives' | 'candidate';
+  /** Tier ladder: tested > wired > linked > candidate > survives. */
+  evidence: 'tested' | 'wired' | 'linked' | 'candidate' | 'survives';
   netLoc: number;
+}
+
+/**
+ * One row in the unified review surface emitted by value-report.
+ * Covers tested / wired / linked / candidate tiers; excludes pure-survives and test files.
+ * This list IS the estimate basis — agent proposes human_days per row, operator ratifies.
+ */
+export interface ValueReviewUnit {
+  path: string;
+  unitClass: UnitClass;
+  tier: 'tested' | 'wired' | 'linked' | 'candidate' | 'survives';
+  wk_ids: string[];
+  net_loc: number;
+  /** Reference floor: net_loc / loc_per_day. Printed for the agent tripwire check. */
+  loc_reference: number;
 }
 
 /** Per-class survives/wired/tested counts. */
@@ -389,39 +406,41 @@ export interface UnitClassCounts {
   tested: number;
 }
 
-/** Deterministic metrics computed by value-report. */
+/** Deterministic metrics computed by value-report. Facts and references only — no estimates. */
 export interface ValueMetrics {
+  // Watermark / chain
   window_start: string;
   window_end: string;
   base_commit: string;
   head_commit: string;
   prior_val: string;
   chain_status: ChainStatus;
+  // Commit metrics
   span_days: number;
   commits: number;
   files_changed: number;
   net_loc_added: number;
   net_loc_removed: number;
   tests_added: number;
+  // Unit classification counts
   units: Record<UnitClass, UnitClassCounts>;
   units_candidates: number;
-  /** wired ∪ tested (attested is added by the operator at authoring). */
-  units_valued: number;
+  // Churn / exclusions
   churn_loc: number;
   excluded_files: number;
   excluded_loc: number;
   reverted_commits: number;
+  // WK tracking
   wk_created: number;
   wk_closed: number;
-  /** In-scope WK ids gathered for the narrative (spec §5.2). */
+  /** In-scope WK ids gathered for the narrative (commit-message regex ∪ graph repo_path edges). */
   wk_ids: string[];
   graph_available: boolean;
-  human_days_units: number;
-  human_days_loc: number;
-  human_days_anchor: number;
-  time_saved_days: number;
-  speedup: number;
-  estimate_basis: string;
+  // LOC reference (measurement knob, not an estimate)
+  loc_per_day: number;
+  // Unified review surface: tested/wired/linked/candidate units; the estimate basis.
+  review_units: ValueReviewUnit[];
+  // Full audit trail
   candidates: ValueCandidate[];
   unit_details: ValueUnitDetail[];
 }
