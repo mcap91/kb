@@ -79,7 +79,7 @@ FIELD SOURCES — every field is one of four kinds. Do not blur them.
   [tool]     value-report filled it (git + graph, deterministic, offline). Trust as observed.
   [scraped]  value-usage filled it (ccusage + OpenRouter). Point-in-time; freeze it here.
   [operator] ONLY the human sets it. The agent must never write these.
-  [agent]    the conversing agent supplies it (narrative + optional research counts).
+  [agent]    the conversing agent supplies it (narrative + anchor-pinned estimate proposals).
 
 Identity / scope:
   status            draft | published                                              [operator]
@@ -108,38 +108,67 @@ Output — observed (all from value-report):                                    
     survives = present at HEAD (necessary, valued at ZERO alone)
     wired    = import-wired in wiki/.graph.json (py/ts/js only)
     tested   = a surviving test file imports it (py/ts/js only)
-  units_candidates  pattern-only units with NO import/test evidence — see ## Candidates
+  units_candidates  pattern-only units with NO import/test/wiki evidence — see ## Candidates
   churn_loc, excluded_files, excluded_loc, reverted_commits, wk_created, wk_closed
-  graph_available   false ⇒ wired/tested branches were skipped (note it in estimate_basis)
+  graph_available   false ⇒ wired/tested/linked branches were skipped (note it in estimate_basis)
 
 Operator-filled at authoring:                                                      [operator]
   units_attested    confirmed candidates + any other operator-attested units
-  units_valued      wired ∪ tested ∪ attested (deduplicated total)
+  units_valued      ratified row count (= number of rows the operator approved in ## How This Was Calculated)
   operator_assessment  agree | too_high | too_low | unclear | not_reviewed
                        your INDEPENDENT calibration verdict — the standing check on the instrument
   operator_notes    calibration observations
 
-Estimate — value-report computes the anchors; the agent may ONLY adjust DOWNWARD, with a
-justification recorded in estimate_basis. Never raise an estimate.                 [tool/agent]
-  human_days_units  Σ per-unit min(class_constant, unit_loc / loc_per_day) over valued units
-  human_days_loc    net_loc_added / loc_per_day  (the conservative LOC floor)
+Estimate — agent-proposed via anchor table, operator-ratified in one pass. Agent adjusts
+downward only, with justification in estimate_basis. NOTHING unratified reaches published
+frontmatter. The operator's baseline: "what this would have taken a competent human in my
+seat, working solo" — same yardstick every span for series comparability.    [agent/operator]
+  human_days_units  Σ operator-ratified rows (agent proposes per review_units[], operator ratifies)
+  human_days_loc    net_loc_added / loc_per_day  (tool-emitted LOC floor reference)
   human_days_anchor min(human_days_units, human_days_loc)
   time_saved_days   human_days_anchor − span_days   — MAY BE NEGATIVE. Never clamp.
-  speedup           human_days_anchor / span_days   — MAY BE < 1. Never clamp.
-  estimate_basis    the arithmetic in words (constants, per-unit scaling, graph/chain caveats)
+  speedup           min(human_days_anchor / span_days, 10)   — MAY BE < 1. Never clamp.
+  estimate_basis    anchor citations, LOC-reference tripwire notes, graph/chain caveats
 
 Research — observed, agent-supplied, optional (labeled non-empirical):             [agent]
   files_read, papers_read, items_parsed, outputs_organized
 
-CANDIDATES ARE OPERATOR-GATED. value-report lists pattern-matched units (analysis/**, scripts/**,
-notebooks/**, workflows/**, pipelines/**, bin/**, tools/**) that have no import/test evidence.
-They are valued at ZERO until the OPERATOR confirms them. The agent must NEVER confirm a candidate
-or self-attest a unit — this is the unfakeable gate that keeps value from auto-inflating. R,
-bash, notebooks, and pipeline DSLs reach value ONLY through this path (the graph can't wire them).
+ANCHOR TABLE — operator-set values; universal (describe artifact shapes, not repos).
+Agents MUST cite ≥1 anchor per estimate row. Ratified rows in past VALs are also citable
+anchors — the growing anchor registry requires no new file or surface.
+
+  | anchor                    | profile                                             | days |
+  |---------------------------|-----------------------------------------------------|------|
+  | glue script               | <100 LOC, untested, single purpose                  | 0.25 |
+  | workflow step             | 200–400 LOC, wired into a pipeline, moderate logic  | 1    |
+  | builder/substantial script| 500–1000 LOC, tested or multi-format I/O            | 3    |
+  | library module            | typed, tested, imported by ≥2 files                 | 2.5  |
+  | focused CLI/tool          | few hundred LOC, standalone                         | 1.5  |
+  | notebook/analysis         | exploratory, produces a figure/result               | 0.5  |
+  | durable doc/guide         | substantive                                         | 0.5  |
+
+CITATION RULE. Every estimate row must cite ≥1 anchor + delta reasoning explaining the
+adjustment (e.g. "workflow step (1d) − 0.2d: single-format, no error handling"). A row
+with no anchor citation is invalid and must not appear in published frontmatter.
+
+LOC-REFERENCE TRIPWIRE. The tool prints loc_reference (net_loc / loc_per_day, default 150)
+per unit in review_units[]. Any estimate diverging more than 3× from loc_reference — in
+either direction — must state explicitly why (anchor-shape mismatch, atypical density,
+boilerplate, etc.). Silence on a >3× divergence is invalid.
+
+NO-CLOSE-ANCHOR FLOW. When a unit matches no anchor well, flag it `no-close-anchor` in
+the estimate row. The agent still proposes a value by interpolating the two nearest anchors
+and explaining the interpolation. The operator overrides with their counterfactual. The
+ratified row becomes a new anchor for future spans (cited by path + VAL id).
 
 NULL RESULTS ARE THE POINT. If cost bought little or nothing, say so plainly in ## Agent Value
 ("cost $X / N tokens; 0 working units this span; value not demonstrated"). Do NOT narrate around
 a negative or zero result. A series that can only say "win" is a broken instrument.
+
+RECONCILIATION RULE. Negative or sub-1× result (time_saved_days < 0 or speedup < 1) ⇒
+MANDATORY operator reconciliation note in operator_notes before publishing. Two cases:
+  instrument misfit → identify which anchors to revise for future spans;
+  true loss → state it plainly. The result is never clamped.
 
 ROI LINE (print at the end of ## Agent Value, verbatim shape — keeps the series comparable):
   shipped <units_valued> working units; agents cost $<cost_usd> (est. $<cost_usd_est> at API
@@ -165,32 +194,47 @@ Do NOT read other VAL files for examples. This template is self-contained.
 
 ## Candidates
 
-<!-- value-report lists pattern-only units here. Operator records confirm/reject per unit; a
-short evidence note ("produced fig 2") is encouraged. Rejected candidates stay survives-only. -->
+<!-- value-report lists pattern-only units here (tier = candidate). Operator records
+confirm/reject per unit; a short evidence note ("produced fig 2") is encouraged.
+Rejected candidates stay survives-only and are excluded from the estimate.
+Confirmed candidates are included in the review_units[] estimate table below. -->
 
 ## How This Was Calculated
 
 <!-- Glance-readable provenance: every estimate number above must be reproducible from this
-section alone. Fill all four parts; pull constants from wiki/.value-config.json and state
-overrides explicitly (config precedence: tool args > wiki/.value-config.json > code defaults).
+section alone — ratified rows + stated arithmetic. Fill all four parts.
 
-1. Constants in effect: per_unit_days (scripts/modules/tools/docs), loc_per_day, speedup_cap,
-   ccusage_version, plus any classification_patterns override that changed unit classes this
-   span (e.g. module_patterns).
+1. Anchor table in effect (version / date, and any per-span additions from ratified past VALs
+   that were cited this span):
 
-2. The equations (spec §9), stated plainly:
-     unit_value(u)     = min( per_unit_days[class(u)], unit_net_loc(u) / loc_per_day )
-     human_days_units  = Σ unit_value(u) over valued units
-     human_days_loc    = net_loc_added / loc_per_day        (the conservative LOC floor)
+   | anchor                     | profile                                            | days |
+   |----------------------------|----------------------------------------------------|------|
+   | glue script                | <100 LOC, untested, single purpose                 | 0.25 |
+   | workflow step              | 200–400 LOC, wired into a pipeline, moderate logic | 1    |
+   | builder/substantial script | 500–1000 LOC, tested or multi-format I/O           | 3    |
+   | library module             | typed, tested, imported by ≥2 files                | 2.5  |
+   | focused CLI/tool           | few hundred LOC, standalone                        | 1.5  |
+   | notebook/analysis          | exploratory, produces a figure/result              | 0.5  |
+   | durable doc/guide          | substantive                                        | 0.5  |
+   | <any ratified past-VAL row cited this span — add below>                       |      |
+
+2. Per-unit estimate rows — one row per ratified unit (candidates excluded until confirmed).
+   Each row MUST cite ≥1 anchor + delta reasoning. Rows diverging >3× from loc_reference
+   MUST explain why.
+
+   | unit | tier | net_loc | loc_reference | anchor cited | delta reasoning | proposed_days | ratified_days |
+   |------|------|---------|---------------|--------------|-----------------|---------------|---------------|
+   |      |      |         |               |              |                 |               |               |
+
+3. Estimate arithmetic:
+     human_days_units  = Σ ratified_days above
+     human_days_loc    = net_loc_added / loc_per_day        (LOC floor reference, loc_per_day default 150)
      human_days_anchor = min(human_days_units, human_days_loc)
      time_saved_days   = human_days_anchor − span_days      (may be negative; never clamp)
-     speedup           = min(human_days_anchor / span_days, speedup_cap)   (may be < 1)
+     speedup           = min(human_days_anchor / span_days, 10)   (may be < 1; never clamp)
 
-3. Per-unit breakdown — one row per valued unit (candidates excluded until operator-attested):
-
-| unit | class | net_loc | min(class_const, net_loc/loc_per_day) |
-|------|-------|---------|---------------------------------------|
-|      |       |         |                                       |
+   Note: human_days_anchor takes the floor of units_sum and loc_floor as a deterministic
+   conservatism guard for tiny-LOC spans. Both sides are printed above so the choice is auditable.
 
 4. Cost side: total tokens and BOTH dollar figures — cost_usd (real/marginal out-of-pocket)
    and cost_usd_est (ccusage at-API-rates, every arm incl. subscription + codex) — with
