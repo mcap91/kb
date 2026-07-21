@@ -52,7 +52,7 @@ Commands:
                          --adopt <surface>  Overwrite one bootstrap surface with the seed
                                             (schema.md | conventions.md | index.md;
                                              bare name or wiki/<name> form accepted)
-  allocate-id          Allocate a sequential ID for a record type
+  allocate-id          Peek/reserve the next id (idempotent until create claims it)
   create               Create a new wiki record
   lint                 Lint wiki records for frontmatter issues
   generate             Generate standard wiki views

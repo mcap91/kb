@@ -25,6 +25,9 @@ the initial retrieval pass.
 
 - Wiki: prefer the `kb-wiki` MCP tools (`search`, `generate`, `lint`, `create`, `allocate-id`,
   `build-search-index`, `sync-contract`, `bootstrap`); CLI fallback `npm run wiki -- … --dir <this repo>`.
+- `allocate-id` is an idempotent **peek/reserve**, not a counter: repeat calls return the same id until
+  `create` writes the record that claims it. Do not loop it expecting increments — call `create` to claim
+  an id (it allocates and writes the record atomically). Repeated identical ids are correct, not a bug.
 - Dispatch: prefer the `kb-dispatch` MCP tools or the kb CLI.
 - Graph: kb CLI (`npm run graph -- --dir <this repo>`).
 - Always pass `dir` pointing at this repository; run kb from its own checkout, not this repo root.
