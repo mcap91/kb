@@ -57,7 +57,8 @@ export const tools: ToolDef[] = [
   },
   {
     name: 'allocate-id',
-    description: 'Allocate the next sequential ID for a given prefix',
+    description:
+      'Peek/reserve the next unclaimed sequential id for a prefix. Idempotent reservation, not a counter: repeat calls return the same id until create() writes the record that claims it. Use create to actually claim an id.',
     inputSchema: dirSchema.extend({
       prefix: z.string().describe('Record prefix (WK, IN, DEC, SRC, AREA, PLN, VAL)'),
     }),

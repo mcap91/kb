@@ -94,7 +94,8 @@ Available prefixes: `WK` (work item), `IN` (initiative), `DEC` (decision), `SRC`
 
 ### Allocate IDs
 
-Allocate the next sequential ID without creating a file:
+Peek the next sequential ID without creating a file. This is an idempotent reservation — repeat calls
+return the same ID until `create` claims it (peeking never burns an ID); use `create` to actually claim one:
 
 ```
 npm run wiki -- allocate-id --dir ../my-project --prefix WK
