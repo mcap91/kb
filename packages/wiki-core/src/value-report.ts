@@ -879,13 +879,19 @@ export async function computeValueReport(opts: ValueReportOpts): Promise<Result<
     }
   }
 
-  // COCOMO II nominal ceiling (WK-0041): code-only net LOC (included files minus docs-classified units)
-  // Test files ARE included (delivered code); only markdown/config docs are excluded per Boehm 2000 SLOC definition.
-  // Use netLocAdded − docsNetLoc so test-file LOC (absent from unitDetails) is counted via netLocAdded.
-  const docsNetLoc = unitDetails
-    .filter(d => d.unitClass === 'docs')
+  // COCOMO II nominal ceiling (WK-0041): code-only net LOC = classifier-recognized code units
+  // (unitClass scripts/modules/tools, NOT docs) + test files. Config, data, and unclassified text
+  // are NOT SLOC (COCOMO II / SEI counting checklist: source statements only; data & docs excluded).
+  // unitDetails already excludes docs, test files, and unclassified files (classifyUnit -> null ->
+  // skipped), so filtering it to non-docs is exactly the code-unit surface; test-file LOC is added
+  // back from testFileSet via fileNetLoc. Positive definition via classification patterns, not an
+  // extension blocklist (CWL is YAML -> a blocklist would drop real workflow code). Residual error
+  // direction is undercount (a DSL missing from patterns shrinks the ceiling) -- conservative.
+  const codeUnitNetLoc = unitDetails
+    .filter(d => d.unitClass !== 'docs')
     .reduce((sum, d) => sum + d.netLoc, 0);
-  const codeOnlyNetLoc = Math.max(0, netLocAdded - docsNetLoc);
+  const testNetLoc = [...testFileSet].reduce((sum, fp) => sum + (fileNetLoc.get(fp) ?? 0), 0);
+  const codeOnlyNetLoc = codeUnitNetLoc + testNetLoc;
   const { cocomo_kloc, cocomo_pm_nominal } = computeCocomo(codeOnlyNetLoc);
 
   // Reverted commits

@@ -226,6 +226,8 @@ FLOOR / CEILING GUIDANCE — why the large gap (~30×) is expected, not an error
   SLIM/Putnam, SEER-SEM, story-points, Wideband Delphi, analogy/ANGEL were each rejected — a menu of
   disagreeing models invites "which number is real?" (See WK-0041 for the full rationale.)
 
+  cocomo_kloc counts classifier-recognized source units (scripts/modules/tools) + test files; config, data, and unclassified text are not SLOC (per the COCOMO II / SEI SLOC definition).
+
   External framing sentence (use verbatim when summarizing the estimate):
   rubric-anchored estimate, operator-ratified downward-only, min-floored, ~N× under the citable industry parametric model.
 
