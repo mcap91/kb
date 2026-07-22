@@ -166,8 +166,8 @@ function getCommitsInRange(
   baseSha: string,
   headSha: string,
   inclusive: boolean,
-): Array<{ sha: string; authorDate: string }> {
-  // git log format: SHA tab AUTHOR_DATE
+): Array<{ sha: string; authorDate: string; authorTimestampMs: number }> {
+  // git log format: SHA tab AUTHOR_DATE (ISO 8601 with timezone: "2026-01-01 10:00:00 +0000")
   // Use %x09 (tab) as separator — safe on Windows
   const format = '%H%x09%ai';
 
@@ -192,9 +192,14 @@ function getCommitsInRange(
     .map(line => {
       const tabIdx = line.indexOf('\t');
       const sha = tabIdx > -1 ? line.slice(0, tabIdx) : line;
-      // Author date: "2026-01-01 10:00:00 +0000" → take first 10 chars
-      const dateStr = (tabIdx > -1 ? line.slice(tabIdx + 1) : '').trim().slice(0, 10);
-      return { sha, authorDate: dateStr };
+      // Author date: "2026-01-01 10:00:00 +0000"
+      const fullDateStr = (tabIdx > -1 ? line.slice(tabIdx + 1) : '').trim();
+      const dateStr = fullDateStr.slice(0, 10);
+      // Parse ISO datetime to ms; normalize to a form Date.parse accepts reliably
+      // "%ai" format: "2026-01-01 10:00:00 +0000" → replace space with 'T' and space before tz
+      const normalized = fullDateStr.replace(/^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2}) /, '$1T$2');
+      const timestampMs = Date.parse(normalized);
+      return { sha, authorDate: dateStr, authorTimestampMs: isNaN(timestampMs) ? 0 : timestampMs };
     })
     .filter(c => c.sha.length === 40);
 }
@@ -457,6 +462,67 @@ function inclusiveDaysBetween(startDate: string, endDate: string): number {
   return Math.max(1, diffDays + 1);
 }
 
+/**
+ * Anchor table's nominal work-day length (hours). Frozen constant — not operator-tunable.
+ * Used for work_hours ↔ days conversion, keeping the work_hours-derived alternative
+ * denominator unit-consistent with the human-day numerator (anchor table's day).
+ */
+const HOURS_PER_WORK_DAY = 8;
+
+/**
+ * Per-active-day floor for work_hours: applied when a day's intra-day span is below this
+ * value (including single-commit days whose span = 0).
+ */
+const WORK_HOURS_DAY_FLOOR = 0.5;
+
+/**
+ * Compute git-derived work time from the in-span commit set.
+ *
+ * - work_days: count of distinct calendar dates (YYYY-MM-DD from git author date) carrying ≥1 commit.
+ * - work_hours: Σ over each active day of (last − first author-timestamp that day, in hours),
+ *   floored at WORK_HOURS_DAY_FLOOR per day (handles single-commit days whose span = 0).
+ *
+ * No clamping of work_days; falsifiability is the point.
+ */
+function computeWorkTime(
+  commits: Array<{ authorDate: string; authorTimestampMs: number }>,
+): { work_days: number; work_hours: number } {
+  if (commits.length === 0) {
+    return { work_days: 0, work_hours: 0 };
+  }
+
+  // Group commits by their calendar date (YYYY-MM-DD, git author date)
+  const byDate = new Map<string, number[]>();
+  for (const c of commits) {
+    if (!c.authorDate) continue;
+    const existing = byDate.get(c.authorDate);
+    if (existing) {
+      existing.push(c.authorTimestampMs);
+    } else {
+      byDate.set(c.authorDate, [c.authorTimestampMs]);
+    }
+  }
+
+  const work_days = byDate.size;
+  let work_hours = 0;
+
+  for (const timestamps of byDate.values()) {
+    const validTs = timestamps.filter(t => t > 0);
+    if (validTs.length <= 1) {
+      // Single commit (or no valid timestamps) → apply floor
+      work_hours += WORK_HOURS_DAY_FLOOR;
+    } else {
+      const minTs = Math.min(...validTs);
+      const maxTs = Math.max(...validTs);
+      const spanHours = (maxTs - minTs) / 3_600_000;
+      // Apply floor if span is below floor (e.g. two commits in the same second)
+      work_hours += spanHours < WORK_HOURS_DAY_FLOOR ? WORK_HOURS_DAY_FLOOR : spanHours;
+    }
+  }
+
+  return { work_days, work_hours };
+}
+
 // ---------------------------------------------------------------------------
 // WK id gathering (commit message scan ∪ graph repo_path edges)
 // ---------------------------------------------------------------------------
@@ -654,7 +720,7 @@ export async function computeValueReport(opts: ValueReportOpts): Promise<Result<
   const includedTotalAdds = Math.max(0, totalAdditions - excludedTotalAdds);
   const churnLoc = Math.max(0, includedTotalAdds - netLocAdded);
 
-  // Span days (max 1, spec §9)
+  // Span days (max 1, spec §9) — calendar span; secondary context field
   let spanDays = 1;
   if (commits.length >= 2) {
     const dates = commits.map(c => c.authorDate).filter(Boolean).sort();
@@ -664,6 +730,10 @@ export async function computeValueReport(opts: ValueReportOpts): Promise<Result<
       spanDays = inclusiveDaysBetween(first, last);
     }
   }
+
+  // Git-derived work time (WK-0040): work_days / work_hours / hours_per_work_day
+  // Computed over the SAME in-span commit set (commits array). No re-derivation of watermark.
+  const { work_days, work_hours } = computeWorkTime(commits);
 
   // Window dates
   let windowStart = '';
@@ -834,6 +904,9 @@ export async function computeValueReport(opts: ValueReportOpts): Promise<Result<
     prior_val: priorVal,
     chain_status: chainStatus,
     span_days: spanDays,
+    work_days,
+    work_hours,
+    hours_per_work_day: HOURS_PER_WORK_DAY,
     commits: commitCount,
     files_changed: filesChanged,
     net_loc_added: netLocAdded,

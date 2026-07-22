@@ -21,6 +21,9 @@ cost_usd_est:
 cost_provenance:
 agents: []
 span_days:
+work_days:
+work_hours:
+hours_per_work_day:
 commits:
 files_changed:
 net_loc_added:
@@ -103,7 +106,29 @@ Cost — the ROI cost side (leave blank if value-usage returned unavailable; bla
   Per-model token detail goes in the ## Token Detail table below, NOT in frontmatter.
 
 Output — observed (all from value-report):                                         [tool]
-  span_days, commits, files_changed, net_loc_added/removed, tests_added
+  span_days         calendar span (inclusive: first→last in-span commit date).
+                    SECONDARY context field — not the leverage denominator. Keep for cadence/chain.
+  work_days         count of distinct calendar dates carrying ≥1 in-span commit (git author dates).
+                    PRIMARY denominator for leverage. Excludes idle days entirely.
+                    Deliberate unit-mixing: numerator = human-equivalent days (anchor-table day);
+                    denominator = operator-active days. The asymmetry IS the leverage definition
+                    ("output in human-days per day of operator engagement") — not a bug to fix.
+  work_hours        Σ per-day (last − first author-commit timestamp, in hours); per-active-day
+                    floor of 0.5h (applied when span = 0 including single-commit days).
+                    Finer proxy than work_days; its errors INFLATE leverage, so it never leads.
+                    Alternative denominator: work_hours / hours_per_work_day.
+  hours_per_work_day  Frozen constant = 8. The anchor table's nominal day (not the operator's
+                    session length). Keeps the work_hours-derived alternative denominator
+                    unit-consistent with the human-day numerator.
+  Git-proxy limits (state these, do not paper over):
+    • Misses work before the day's first commit and after its last.
+    • Single-commit day collapses to the 0.5h floor.
+    • A large intra-day idle gap over-counts work_hours.
+    • Squash-merges collapse multi-day work onto one author date — understates work_days,
+      inflates leverage. Name it if suspected.
+    • All in-span commits count regardless of author (single-operator assumption).
+      Multi-committer repos conflate contributors.
+  commits, files_changed, net_loc_added/removed, tests_added
   units_<class>_survives/wired/tested   (classes: scripts, modules, tools, docs)
     survives = present at HEAD (necessary, valued at ZERO alone)
     wired    = import-wired in wiki/.graph.json (py/ts/js only)
@@ -126,9 +151,13 @@ seat, working solo" — same yardstick every span for series comparability.    [
   human_days_units  Σ operator-ratified rows (agent proposes per review_units[], operator ratifies)
   human_days_loc    net_loc_added / loc_per_day  (tool-emitted LOC floor reference)
   human_days_anchor min(human_days_units, human_days_loc)
-  time_saved_days   human_days_anchor − span_days   — MAY BE NEGATIVE. Never clamp.
-  speedup           min(human_days_anchor / span_days, 10)   — MAY BE < 1. Never clamp.
-  estimate_basis    anchor citations, LOC-reference tripwire notes, graph/chain caveats
+  time_saved_days   human_days_anchor − work_days   — MAY BE NEGATIVE. Never clamp.
+                    (Finer alternative: human_days_anchor − work_hours / hours_per_work_day;
+                    print alongside, never leading — its errors inflate leverage.)
+  speedup           min(human_days_anchor / work_days, 10)   — MAY BE < 1. Never clamp.
+                    Keep span_days in Notes as secondary cadence context.
+  estimate_basis    anchor citations, LOC-reference tripwire notes, graph/chain caveats,
+                    and any git-proxy caveats (squash-merge, multi-committer, etc.) if relevant
 
 Research — observed, agent-supplied, optional (labeled non-empirical):             [agent]
   files_read, papers_read, items_parsed, outputs_organized
@@ -230,8 +259,19 @@ section alone — ratified rows + stated arithmetic. Fill all four parts.
      human_days_units  = Σ ratified_days above
      human_days_loc    = net_loc_added / loc_per_day        (LOC floor reference, loc_per_day default 150)
      human_days_anchor = min(human_days_units, human_days_loc)
-     time_saved_days   = human_days_anchor − span_days      (may be negative; never clamp)
-     speedup           = min(human_days_anchor / span_days, 10)   (may be < 1; never clamp)
+     time_saved_days   = human_days_anchor − work_days      (may be negative; never clamp)
+     speedup           = min(human_days_anchor / work_days, 10)   (may be < 1; never clamp)
+
+   Denominator is work_days (git-derived active calendar days; excludes idle days).
+   Finer alternative: work_hours / hours_per_work_day — print alongside, never leading
+   (its errors inflate leverage). span_days is the secondary calendar context field.
+
+   Deliberate unit-mixing: numerator = human-equivalent days (anchor-table day, 8h/day);
+   denominator = operator-active days (git-derived). The asymmetry IS the leverage definition
+   ("output in human-days per day of operator engagement") — do not resolve it into matching units.
+
+   Git-proxy caveats to state in estimate_basis when relevant: squash-merges understate
+   work_days (inflates leverage); multi-committer repos conflate contributors.
 
    Note: human_days_anchor takes the floor of units_sum and loc_floor as a deterministic
    conservatism guard for tiny-LOC spans. Both sides are printed above so the choice is auditable.

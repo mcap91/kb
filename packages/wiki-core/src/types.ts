@@ -239,6 +239,12 @@ export interface ValueFrontmatter {
   agents?: string[];
   // Output — observed (tool-filled by value-report)
   span_days?: number;
+  /** Count of distinct calendar dates carrying ≥1 in-span commit. Primary leverage denominator. */
+  work_days?: number;
+  /** Σ per-day (last − first) author-commit span in hours; 0.5h floor per single-commit day. */
+  work_hours?: number;
+  /** Frozen constant = 8; the anchor table's nominal day for hour↔day conversion. */
+  hours_per_work_day?: number;
   commits?: number;
   files_changed?: number;
   net_loc_added?: number;
@@ -416,7 +422,24 @@ export interface ValueMetrics {
   prior_val: string;
   chain_status: ChainStatus;
   // Commit metrics
+  /** Calendar span (inclusive: first→last in-span commit date). Secondary context field. */
   span_days: number;
+  /**
+   * Count of distinct calendar dates carrying ≥1 in-span commit (git author dates).
+   * Primary work-time denominator for leverage. Excludes idle days entirely.
+   */
+  work_days: number;
+  /**
+   * Σ over each active day of (last − first author-commit timestamp that day), in hours.
+   * Days whose span is below 0.5h (including single-commit days, span = 0) use the 0.5h floor.
+   * Finer proxy than work_days; its errors inflate leverage, so it never leads.
+   */
+  work_hours: number;
+  /**
+   * Anchor table's nominal day (8h). Used for work_hours ↔ days conversion,
+   * keeping the work_hours-derived alternative denominator unit-consistent with the numerator.
+   */
+  hours_per_work_day: number;
   commits: number;
   files_changed: number;
   net_loc_added: number;

@@ -947,6 +947,158 @@ describe('error handling', () => {
 });
 
 // ---------------------------------------------------------------------------
+// §WK-0040 — work_days / work_hours / hours_per_work_day (git-derived work time)
+// ---------------------------------------------------------------------------
+
+describe('§WK-0040 work_days, work_hours, hours_per_work_day — git-derived work time', () => {
+  let tmp: TmpRepo;
+
+  afterEach(() => tmp.cleanup());
+
+  it('idle-day exclusion: commits on 3 distinct author-dates separated by idle days → work_days === 3 (not calendar span)', async () => {
+    // WHY: the denominator for leverage is operator-active days, not calendar days;
+    // idle days must not inflate the denominator and produce false-null leverage.
+    tmp = createTmpDir();
+    initRepo(tmp.dir);
+
+    const base = commitFile(tmp.dir, 'src/a.ts', 'export const a = 1;\n', 'day 1 commit',
+      '2026-01-01T10:00:00');
+    // idle day: 2026-01-02
+    commitFile(tmp.dir, 'src/b.ts', 'export const b = 2;\n', 'day 3 commit',
+      '2026-01-03T10:00:00');
+    // idle day: 2026-01-04
+    commitFile(tmp.dir, 'src/c.ts', 'export const c = 3;\n', 'day 5 commit',
+      '2026-01-05T10:00:00');
+
+    const result = await computeValueReport({ dir: tmp.dir, since: base });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    // Calendar span: Jan 1 → Jan 5 = 5 days; work_days must be 3 (active dates only)
+    expect(result.data.span_days).toBe(5);
+    expect(result.data.work_days).toBe(3);
+    // work_hours >= 0 (each single-commit day → 0.5h floor)
+    expect(result.data.work_hours).toBeGreaterThanOrEqual(0);
+    // hours_per_work_day is the frozen constant 8
+    expect(result.data.hours_per_work_day).toBe(8);
+  });
+
+  it('intra-day hour span: a day with commits at two different times contributes (last − first) hours', async () => {
+    // WHY: work_hours is the finer-grained proxy; on a multi-commit day the span between
+    // the first and last author-timestamp on that day is the estimated active window.
+    tmp = createTmpDir();
+    initRepo(tmp.dir);
+
+    const base = commitFile(tmp.dir, 'src/a.ts', 'export const a = 1;\n', 'morning commit',
+      '2026-01-01T09:00:00 +0000');
+    commitFile(tmp.dir, 'src/b.ts', 'export const b = 2;\n', 'afternoon commit',
+      '2026-01-01T11:00:00 +0000');
+
+    const result = await computeValueReport({ dir: tmp.dir, since: base });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    // Single active day with 2h span: work_days = 1, work_hours = 2
+    expect(result.data.work_days).toBe(1);
+    // The two commits span 2 hours (09:00 to 11:00)
+    expect(result.data.work_hours).toBeCloseTo(2, 0);
+    expect(result.data.hours_per_work_day).toBe(8);
+  });
+
+  it('single-commit-day floor: a day with exactly one commit contributes 0.5h (the floor)', async () => {
+    // WHY: a single commit has no intra-day span (first = last → span = 0);
+    // the 0.5h floor prevents single-commit days from contributing 0 to work_hours,
+    // which would make the total misleadingly low.
+    tmp = createTmpDir();
+    initRepo(tmp.dir);
+
+    // One commit only — intra-day span is 0, so the floor should apply
+    const base = commitFile(tmp.dir, 'src/a.ts', 'export const a = 1;\n', 'sole commit on day',
+      '2026-01-01T10:00:00');
+
+    const result = await computeValueReport({ dir: tmp.dir, since: base });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.data.work_days).toBe(1);
+    // Single-commit day → 0.5h floor
+    expect(result.data.work_hours).toBeCloseTo(0.5, 1);
+    expect(result.data.hours_per_work_day).toBe(8);
+  });
+
+  it('falsifiability / no clamp: work_days reflects true distinct-date count with no lower bound inflating leverage', async () => {
+    // WHY: falsifiability is the credibility spine — a genuinely low-leverage span must report
+    // honestly. No artificial minimum on work_days may shrink the denominator.
+    // Here: only ONE active day → work_days = 1, no clamping to something smaller.
+    tmp = createTmpDir();
+    initRepo(tmp.dir);
+
+    const base = commitFile(tmp.dir, 'src/a.ts', 'export const a = 1;\n', 'only commit',
+      '2026-05-01T14:00:00');
+
+    const result = await computeValueReport({ dir: tmp.dir, since: base });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    // work_days must be exactly 1 — the true count; no clamping to a lower value
+    // (i.e. it is not 0 from an artificial clamp, and not inflated by idle days)
+    expect(result.data.work_days).toBe(1);
+    // Also verify: work_days is a non-negative integer, never artificially minimized
+    expect(result.data.work_days).toBeGreaterThanOrEqual(1);
+  });
+
+  it('span_days is still emitted and equals the inclusive calendar span (regression: existing behavior retained)', async () => {
+    // WHY: span_days is the secondary context field (cadence/chain); it must be preserved
+    // alongside the new work_days field, not replaced by it.
+    tmp = createTmpDir();
+    initRepo(tmp.dir);
+
+    const base = commitFile(tmp.dir, 'src/a.ts', 'export const a = 1;\n', 'first commit',
+      '2026-01-01T09:00:00');
+    // Idle days in between
+    commitFile(tmp.dir, 'src/b.ts', 'export const b = 2;\n', 'last commit',
+      '2026-01-10T09:00:00');
+
+    const result = await computeValueReport({ dir: tmp.dir, since: base });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    // Calendar span: Jan 1 → Jan 10 = 10 inclusive days
+    expect(result.data.span_days).toBe(10);
+    // work_days must be less than span_days (only 2 active days, 8 idle)
+    expect(result.data.work_days).toBe(2);
+    expect(result.data.work_days).toBeLessThan(result.data.span_days);
+  });
+
+  it('multi-day span with multiple commits per day: work_hours sums per-day spans correctly', async () => {
+    // WHY: work_hours must be the SUM over each active day's (last − first) span;
+    // a day with a 2h spread and another day with a 3h spread → total 5h.
+    tmp = createTmpDir();
+    initRepo(tmp.dir);
+
+    // Day 1: 09:00 and 11:00 → 2h span
+    const base = commitFile(tmp.dir, 'src/a.ts', 'x=1\n', 'day1 morning',
+      '2026-02-01T09:00:00 +0000');
+    commitFile(tmp.dir, 'src/b.ts', 'x=2\n', 'day1 afternoon',
+      '2026-02-01T11:00:00 +0000');
+    // Day 2: 10:00 and 13:00 → 3h span
+    commitFile(tmp.dir, 'src/c.ts', 'x=3\n', 'day2 morning',
+      '2026-02-02T10:00:00 +0000');
+    commitFile(tmp.dir, 'src/d.ts', 'x=4\n', 'day2 afternoon',
+      '2026-02-02T13:00:00 +0000');
+
+    const result = await computeValueReport({ dir: tmp.dir, since: base });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.data.work_days).toBe(2);
+    // Total work_hours: day1=2h + day2=3h = 5h
+    expect(result.data.work_hours).toBeCloseTo(5, 0);
+    expect(result.data.hours_per_work_day).toBe(8);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Config loading
 // ---------------------------------------------------------------------------
 
