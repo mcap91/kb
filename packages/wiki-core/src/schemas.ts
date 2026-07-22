@@ -295,6 +295,9 @@ export const valueFrontmatterSchema = z.object({
   agents: z.array(z.string()).optional(),
   // Output — observed (tool-filled)
   span_days: z.coerce.number().optional(),
+  work_days: z.coerce.number().optional(),
+  work_hours: z.coerce.number().optional(),
+  hours_per_work_day: z.coerce.number().optional(),
   commits: z.coerce.number().optional(),
   files_changed: z.coerce.number().optional(),
   net_loc_added: z.coerce.number().optional(),
