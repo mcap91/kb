@@ -298,6 +298,10 @@ export const valueFrontmatterSchema = z.object({
   work_days: z.coerce.number().optional(),
   work_hours: z.coerce.number().optional(),
   hours_per_work_day: z.coerce.number().optional(),
+  /** COCOMO II nominal reference ceiling: code-only KSLOC. Display-only, Boehm 2000. */
+  cocomo_kloc: z.coerce.number().optional(),
+  /** COCOMO II nominal effort PM = 2.94 × KSLOC^1.0997. Display-only, Boehm 2000. */
+  cocomo_pm_nominal: z.coerce.number().optional(),
   commits: z.coerce.number().optional(),
   files_changed: z.coerce.number().optional(),
   net_loc_added: z.coerce.number().optional(),

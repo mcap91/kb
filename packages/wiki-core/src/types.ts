@@ -245,6 +245,17 @@ export interface ValueFrontmatter {
   work_hours?: number;
   /** Frozen constant = 8; the anchor table's nominal day for hour↔day conversion. */
   hours_per_work_day?: number;
+  /**
+   * COCOMO II nominal reference ceiling: code-only net added LOC / 1000.
+   * Code-only = included net LOC minus docs-classified units (markdown/config not SLOC per Boehm 2000).
+   * Test files ARE included (delivered code). Display-only — never enters estimate arithmetic.
+   */
+  cocomo_kloc?: number;
+  /**
+   * COCOMO II.2000 post-architecture nominal effort: PM = 2.94 × KSLOC^1.0997.
+   * Frozen constants, Boehm et al. 2000. Rounded to 2 decimals. Display-only reference ceiling.
+   */
+  cocomo_pm_nominal?: number;
   commits?: number;
   files_changed?: number;
   net_loc_added?: number;
@@ -440,6 +451,17 @@ export interface ValueMetrics {
    * keeping the work_hours-derived alternative denominator unit-consistent with the numerator.
    */
   hours_per_work_day: number;
+  /**
+   * COCOMO II nominal reference ceiling: code-only net added LOC / 1000.
+   * Code-only = included net LOC minus docs-classified units (markdown/config not SLOC per Boehm 2000).
+   * Test files ARE included (delivered code). Display-only — never enters estimate arithmetic.
+   */
+  cocomo_kloc: number;
+  /**
+   * COCOMO II.2000 post-architecture nominal effort: PM = 2.94 × KSLOC^1.0997.
+   * Frozen constants, Boehm et al. 2000. Rounded to 2 decimals. Display-only reference ceiling.
+   */
+  cocomo_pm_nominal: number;
   commits: number;
   files_changed: number;
   net_loc_added: number;

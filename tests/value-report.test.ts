@@ -1143,3 +1143,144 @@ describe('config loading', () => {
     expect(result.data.loc_per_day).toBe(100);
   });
 });
+
+// ---------------------------------------------------------------------------
+// §WK-0041 — COCOMO II nominal ceiling (cocomo_kloc + cocomo_pm_nominal)
+// ---------------------------------------------------------------------------
+
+describe('§WK-0041 COCOMO II nominal ceiling — cocomo_kloc and cocomo_pm_nominal', () => {
+  let tmp: TmpRepo;
+
+  afterEach(() => tmp.cleanup());
+
+  it('1 KSLOC code-only → cocomo_kloc === 1.00, cocomo_pm_nominal === 2.94 (tests A constant)', async () => {
+    // WHY: the COCOMO II nominal formula is PM = A * KSLOC^E. At KSLOC=1, KSLOC^E = 1,
+    // so PM = A = 2.94 exactly. This pins the A constant (2.94, Boehm 2000 post-arch nominal).
+    // A drift in A would change this. The ceiling must be a frozen, citable, reproducible value.
+    tmp = createTmpDir();
+    initRepo(tmp.dir);
+
+    // Generate exactly 1000 non-blank lines of TypeScript (1 KSLOC)
+    const lines = Array.from({ length: 1000 }, (_, i) => `export const v${i} = ${i};`).join('\n') + '\n';
+    const base = commitFile(tmp.dir, 'src/generated.ts', lines, 'add 1000-line source');
+
+    const result = await computeValueReport({ dir: tmp.dir, since: base });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.data.cocomo_kloc).toBeCloseTo(1, 2);
+    // PM = 2.94 * 1^1.0997 = 2.94
+    expect(result.data.cocomo_pm_nominal).toBe(2.94);
+  });
+
+  it('2 KSLOC code-only → cocomo_kloc === 2.00, cocomo_pm_nominal === 6.30 (tests E exponent)', async () => {
+    // WHY: PM = 2.94 * 2^1.0997 = 6.30. A linear model (E=1) would give 5.88, so this test
+    // specifically pins the E exponent = 1.0997 (B=0.91 + 0.01*18.97 from COCOMO nominal SF).
+    // A wrong exponent would produce a different value and fail this test.
+    tmp = createTmpDir();
+    initRepo(tmp.dir);
+
+    const lines2k = Array.from({ length: 2000 }, (_, i) => `export const v${i} = ${i};`).join('\n') + '\n';
+    const base = commitFile(tmp.dir, 'src/generated.ts', lines2k, 'add 2000-line source');
+
+    const result = await computeValueReport({ dir: tmp.dir, since: base });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.data.cocomo_kloc).toBeCloseTo(2, 2);
+    // PM = 2.94 * 2^1.0997 ≈ 6.30 (rounded to 2 decimals)
+    expect(result.data.cocomo_pm_nominal).toBe(6.30);
+  });
+
+  it('docs LOC excluded from cocomo_kloc: 1000 TS lines + 500 markdown lines → cocomo_kloc ≈ 1.00, NOT 1.50', async () => {
+    // WHY: COCOMO II measures SLOC (source lines of code), not documentation.
+    // Markdown/rst/html are not executable source; including them would inflate the ceiling
+    // beyond its citable basis. The classifier already marks .md files as 'docs'; this test
+    // enforces that docs LOC is subtracted before computing cocomo_kloc.
+    tmp = createTmpDir();
+    initRepo(tmp.dir);
+
+    const codeLines = Array.from({ length: 1000 }, (_, i) => `export const v${i} = ${i};`).join('\n') + '\n';
+    const docLines = Array.from({ length: 500 }, (_, i) => `# Section ${i}`).join('\n') + '\n';
+
+    const base = commitFile(tmp.dir, 'src/generated.ts', codeLines, 'add code');
+    commitFile(tmp.dir, 'docs/guide.md', docLines, 'add docs');
+
+    const result = await computeValueReport({ dir: tmp.dir, since: base });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    // cocomo_kloc must be ~1.0 (code only), NOT ~1.5 (code + docs)
+    expect(result.data.cocomo_kloc).toBeCloseTo(1, 2);
+    expect(result.data.cocomo_kloc).toBeLessThan(1.1); // strict upper bound: docs not included
+  });
+
+  it('zero code-only LOC (docs-only span) → cocomo_kloc === 0, cocomo_pm_nominal === 0 (no NaN)', async () => {
+    // WHY: a span containing only documentation (no executable SLOC) must produce 0, not NaN.
+    // 0^E would produce 0 which is correct, but guard must be explicit to prevent any future
+    // rounding or log-based reformulation from producing NaN or Infinity.
+    tmp = createTmpDir();
+    initRepo(tmp.dir);
+
+    const docLines = Array.from({ length: 500 }, (_, i) => `# Section ${i}`).join('\n') + '\n';
+    const base = commitFile(tmp.dir, 'docs/guide.md', docLines, 'add docs only');
+
+    const result = await computeValueReport({ dir: tmp.dir, since: base });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.data.cocomo_kloc).toBe(0);
+    expect(result.data.cocomo_pm_nominal).toBe(0);
+    // Explicitly verify not NaN or Infinity
+    expect(Number.isFinite(result.data.cocomo_kloc)).toBe(true);
+    expect(Number.isFinite(result.data.cocomo_pm_nominal)).toBe(true);
+  });
+
+  it('display-only: tool output exposes cocomo fields but NOT human_days_anchor/speedup/time_saved_days', async () => {
+    // WHY: the COCOMO ceiling is a display-only reference — it must never enter the headline
+    // arithmetic (human_days_anchor, speedup, time_saved_days). These estimate fields belong
+    // exclusively to the operator-ratified floor. The ceiling must be computable from the tool
+    // output but must not contaminate the estimate chain. This is a regression guard.
+    tmp = createTmpDir();
+    initRepo(tmp.dir);
+
+    const lines = Array.from({ length: 500 }, (_, i) => `export const v${i} = ${i};`).join('\n') + '\n';
+    const base = commitFile(tmp.dir, 'src/generated.ts', lines, 'add code');
+
+    const result = await computeValueReport({ dir: tmp.dir, since: base });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    // COCOMO fields must be present
+    expect('cocomo_kloc' in result.data).toBe(true);
+    expect('cocomo_pm_nominal' in result.data).toBe(true);
+
+    // Estimate-arithmetic fields must be absent (tool measures only)
+    expect('human_days_anchor' in result.data).toBe(false);
+    expect('speedup' in result.data).toBe(false);
+    expect('time_saved_days' in result.data).toBe(false);
+  });
+
+  it('test-file-only span: 1000 added lines in a test file → cocomo_kloc === 1, cocomo_pm_nominal === 2.94 (test files are delivered code per WK-0041)', async () => {
+    // WHY: the COCOMO II ceiling must price delivered code including test files.
+    // WK-0041 "Ceiling mechanics" states: "test files included (delivered code)".
+    // The defect was that cocomo_kloc was computed from unitDetails, which excludes test
+    // files entirely (the file loop does `if (testFileSet.has(fp)) continue;`).
+    // The fix: use netLocAdded − docsNetLoc so test-file LOC is captured via netLocAdded.
+    // This test proves the defect (gives 0 before fix) and guards the fix (gives 1 after).
+    tmp = createTmpDir();
+    initRepo(tmp.dir);
+
+    // Exactly 1000 lines in a test file only — no other code or docs
+    const testLines = Array.from({ length: 1000 }, (_, i) => `expect(${i}).toBe(${i});`).join('\n') + '\n';
+    const base = commitFile(tmp.dir, 'src/sample.test.ts', testLines, 'add 1000-line test file');
+
+    const result = await computeValueReport({ dir: tmp.dir, since: base });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    // 1000 lines / 1000 = 1.0 KSLOC; PM = 2.94 * 1^1.0997 = 2.94
+    expect(result.data.cocomo_kloc).toBeCloseTo(1, 2);
+    expect(result.data.cocomo_pm_nominal).toBe(2.94);
+  });
+});
