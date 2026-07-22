@@ -24,6 +24,8 @@ span_days:
 work_days:
 work_hours:
 hours_per_work_day:
+cocomo_kloc:
+cocomo_pm_nominal:
 commits:
 files_changed:
 net_loc_added:
@@ -206,6 +208,27 @@ ROI LINE (print at the end of ## Agent Value, verbatim shape — keeps the serie
 If cost_usd is null (pure subscription-covered), render it as $0 out-of-pocket and let the
 at-API-rates estimate carry the interpretable figure. Never invent a real-dollar number.
 
+CEILING REFERENCE LINE (print immediately after the ROI line — display-only, never enters headline arithmetic):
+  reference ceiling: COCOMO II nominal ≈ <pm> person-months for <kloc> KSLOC (frozen nominal constants, Boehm 2000)
+(where <pm> = cocomo_pm_nominal, <kloc> = cocomo_kloc — both emitted by value-report.)
+
+FLOOR / CEILING GUIDANCE — why the large gap (~30×) is expected, not an error:
+  • COCOMO prices *organizational delivery* (requirements, reviews, integration, PM — embedded productivity
+    ~15–25 LOC/day), while loc_per_day=150 already assumes a human 6–10× faster than the citable industry
+    rate; nominal multipliers model an average team member, not the "competent human in my seat" baseline.
+  • The E>1 exponent prices team coordination a solo developer never pays.
+  • Physical net-LOC ≠ COCOMO logical SLOC.
+  • Floor = solo-expert marginal effort. Ceiling = fully-loaded organizational delivery. Both answer real VP
+    questions ("vs. my time" / "vs. contracting it out"). The gap is the story, not a calibration error.
+
+  Why one ceiling (killed alternatives): COCOMO II nominal is the only reference model passing all four
+  requirements: deterministic-from-git, citable frozen constants, free, zero per-span input. FPA,
+  SLIM/Putnam, SEER-SEM, story-points, Wideband Delphi, analogy/ANGEL were each rejected — a menu of
+  disagreeing models invites "which number is real?" (See WK-0041 for the full rationale.)
+
+  External framing sentence (use verbatim when summarizing the estimate):
+  rubric-anchored estimate, operator-ratified downward-only, min-floored, ~N× under the citable industry parametric model.
+
 Do NOT read other VAL files for examples. This template is self-contained.
 -->
 
@@ -282,5 +305,30 @@ section alone — ratified rows + stated arithmetic. Fill all four parts.
 -->
 
 ## Agent Value
+
+## Methods
+
+Two numbers bracket this report's value estimate. They answer different questions and are
+never averaged.
+
+- **Floor (claimed):** what this span's surviving output would have taken one competent
+  human working alone with full context of this repo. Estimated per unit against a fixed
+  anchor table, ratified by the operator (downward adjustments only), floored by a
+  LOC-based conservatism guard. Every headline figure uses this number.
+- **Ceiling (reference only):** what the same delivered code would cost as a traditional
+  organizational software project, per COCOMO II (nominal constants, Boehm 2000). It
+  embeds ~15–25 LOC/day because it prices requirements, reviews, integration, and
+  management — not just writing code. It never enters the headline arithmetic.
+
+The large gap between floor and ceiling is expected: it is the distance between a solo
+expert's marginal effort and fully-loaded organizational delivery. We claim the floor and
+display the ceiling — even the most conservative accounting sits far below the citable
+industry model.
+
+Why precision does not decide the conclusion: agent cost for a span is dollars to a few
+hundred dollars (see cost fields), while either end of the bracket prices the equivalent
+human work orders of magnitude higher. The estimate can be off severalfold without
+changing the cost-to-value verdict. The instrument reports losses when they occur —
+negative results are never clamped (see the series).
 
 ## Notes
