@@ -139,7 +139,7 @@ export const tools: ToolDef[] = [
   {
     name: 'value-report',
     description:
-      'Compute deterministic git + graph metrics for a VAL value report: watermark, chain status, unit evidence (tested/wired/linked/candidate), and the review_units surface. Measures facts only — no estimation (human-day estimates are agent-proposed against the template anchor table and operator-ratified). Offline and reproducible. Returns ValueMetrics as JSON.',
+      'Compute deterministic git + graph metrics for a VAL value report: watermark, chain status, unit evidence (tested/wired/linked/candidate), the review_units surface, and COCOMO II nominal reference-ceiling fields (cocomo_kloc, cocomo_pm_nominal). Measures facts only — no estimation (human-day estimates are agent-proposed against the template anchor table and operator-ratified). COCOMO fields are display-only and never enter estimate arithmetic. Offline and reproducible. Returns ValueMetrics as JSON.',
     inputSchema: dirSchema.extend({
       since: z.string().optional().describe('Base ref override (default: prior VAL head_commit, else repo first commit)'),
       untilRef: z.string().optional().describe('Head ref override (default: HEAD)'),

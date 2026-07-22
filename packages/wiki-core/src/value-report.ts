@@ -469,6 +469,28 @@ function inclusiveDaysBetween(startDate: string, endDate: string): number {
  */
 const HOURS_PER_WORK_DAY = 8;
 
+// COCOMO II.2000 post-architecture, NOMINAL. Boehm et al. 2000,
+// "Software Cost Estimation with COCOMO II" (Prentice Hall).
+// PM = A * KSLOC^E ; A = 2.94 ; E = B + 0.01*ΣSF, B = 0.91, nominal ΣSF = 18.97 => E = 1.0997 ;
+// all 17 effort multipliers = 1.0 (nominal). Frozen — not operator-tunable.
+const COCOMO_A = 2.94;
+const COCOMO_E = 1.0997; // 0.91 + 0.01 * 18.97
+
+/**
+ * Compute COCOMO II nominal ceiling from code-only KSLOC.
+ * Guard: cocomo_kloc === 0 → cocomo_pm_nominal = 0 (no NaN).
+ * Display-only — never referenced by estimate arithmetic.
+ */
+function computeCocomo(codeOnlyNetLoc: number): { cocomo_kloc: number; cocomo_pm_nominal: number } {
+  const cocomo_kloc = Math.round((codeOnlyNetLoc / 1000) * 1000) / 1000;
+  if (cocomo_kloc === 0) {
+    return { cocomo_kloc: 0, cocomo_pm_nominal: 0 };
+  }
+  const pm = COCOMO_A * Math.pow(cocomo_kloc, COCOMO_E);
+  const cocomo_pm_nominal = Math.round(pm * 100) / 100;
+  return { cocomo_kloc, cocomo_pm_nominal };
+}
+
 /**
  * Per-active-day floor for work_hours: applied when a day's intra-day span is below this
  * value (including single-commit days whose span = 0).
@@ -857,6 +879,15 @@ export async function computeValueReport(opts: ValueReportOpts): Promise<Result<
     }
   }
 
+  // COCOMO II nominal ceiling (WK-0041): code-only net LOC (included files minus docs-classified units)
+  // Test files ARE included (delivered code); only markdown/config docs are excluded per Boehm 2000 SLOC definition.
+  // Use netLocAdded − docsNetLoc so test-file LOC (absent from unitDetails) is counted via netLocAdded.
+  const docsNetLoc = unitDetails
+    .filter(d => d.unitClass === 'docs')
+    .reduce((sum, d) => sum + d.netLoc, 0);
+  const codeOnlyNetLoc = Math.max(0, netLocAdded - docsNetLoc);
+  const { cocomo_kloc, cocomo_pm_nominal } = computeCocomo(codeOnlyNetLoc);
+
   // Reverted commits
   const revertedCommits = commits.filter(c => {
     const msg = git(dir, 'log', '-1', '--format=%s', c.sha) ?? '';
@@ -907,6 +938,8 @@ export async function computeValueReport(opts: ValueReportOpts): Promise<Result<
     work_days,
     work_hours,
     hours_per_work_day: HOURS_PER_WORK_DAY,
+    cocomo_kloc,
+    cocomo_pm_nominal,
     commits: commitCount,
     files_changed: filesChanged,
     net_loc_added: netLocAdded,

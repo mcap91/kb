@@ -61,7 +61,7 @@ Commands:
   import-plan          Import artifacts into a PLN bundle
   validate-plan        Validate a PLN record and bundle
   archive-plan         Mark a PLN record done
-  value-report         Compute git + graph metrics for a VAL value report (JSON)
+  value-report         Compute git + graph metrics for a VAL value report, including COCOMO II nominal ceiling (cocomo_kloc, cocomo_pm_nominal) (JSON)
   value-usage          Scrape token/cost data from ccusage + OpenRouter (JSON)
 
 Global options:
