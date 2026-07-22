@@ -1283,4 +1283,65 @@ describe('§WK-0041 COCOMO II nominal ceiling — cocomo_kloc and cocomo_pm_nomi
     expect(result.data.cocomo_kloc).toBeCloseTo(1, 2);
     expect(result.data.cocomo_pm_nominal).toBe(2.94);
   });
+
+  it('config/data files excluded from cocomo_kloc: only .yaml, .json, .csv changes → cocomo_kloc === 0, cocomo_pm_nominal === 0 (WK-0041 positive-whitelist rule)', async () => {
+    // WHY: COCOMO II / SEI SLOC definition counts source statements only; data files and
+    // configuration are explicitly excluded. The old code used netLocAdded − docsNetLoc,
+    // which counted YAML/JSON/CSV because they land in netLocAdded (included files) but are
+    // NOT in unitDetails (classifyUnit returns null for them). The fix switches to a positive
+    // whitelist: code-unit net LOC = classifier-recognized code units (scripts/modules/tools,
+    // not docs) + test files. A span with only config/data and no recognizable source should
+    // produce cocomo_kloc === 0 and cocomo_pm_nominal === 0. Counting them inflates the ceiling
+    // in the attackable direction — conservative residual error is undercount, not overcount.
+    tmp = createTmpDir();
+    initRepo(tmp.dir);
+
+    // ~300 lines of YAML (config), ~200 lines of JSON (data), ~500 lines of CSV (data)
+    // None of these extensions are in script_extensions; classifyUnit returns null for all.
+    const yamlLines = Array.from({ length: 300 }, (_, i) => `key_${i}: value_${i}`).join('\n') + '\n';
+    const jsonLines = '{\n' + Array.from({ length: 198 }, (_, i) => `  "field_${i}": ${i}`).join(',\n') + '\n}\n';
+    const csvLines = 'col1,col2,col3\n' + Array.from({ length: 499 }, (_, i) => `${i},${i * 2},${i * 3}`).join('\n') + '\n';
+
+    const base = commitFile(tmp.dir, 'config/pipeline.yaml', yamlLines, 'add pipeline config');
+    commitFile(tmp.dir, 'config/params.json', jsonLines, 'add params');
+    commitFile(tmp.dir, 'data/samples.csv', csvLines, 'add sample data');
+
+    const result = await computeValueReport({ dir: tmp.dir, since: base });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    // No classifier-recognized source → cocomo_kloc must be 0 and cocomo_pm_nominal must be 0.
+    // Before the fix: netLocAdded − docsNetLoc counts all ~1000 lines → cocomo_kloc ≈ 1.0 (RED).
+    // After the fix: whitelist via unitDetails (non-docs) + testFileSet → 0 lines (GREEN).
+    expect(result.data.cocomo_kloc).toBe(0);
+    expect(result.data.cocomo_pm_nominal).toBe(0);
+  });
+
+  it('workflow DSL (.cwl) counted in cocomo_kloc: 1000-line CWL file in scripts/ → cocomo_kloc === 1 (WK-0041 positive-whitelist, not extension-blocklist)', async () => {
+    // WHY: .cwl (Common Workflow Language) is YAML-syntax but IS executable workflow source code.
+    // The fix must use the classification patterns (which list .cwl in script_extensions) as the
+    // positive whitelist — NOT a YAML extension blocklist. A blocklist on .yaml would silently
+    // drop CWL workflow files and undercount real delivered source. This test guards against that
+    // mistake: a .cwl file that classifies as 'scripts' must contribute to cocomo_kloc.
+    // Confirms .cwl is in script_extensions and classifies correctly as a code unit.
+    tmp = createTmpDir();
+    initRepo(tmp.dir);
+
+    // Place the CWL file in scripts/ so classifyUnit classifies it as 'scripts' (script_extensions includes .cwl).
+    const cwlLines = Array.from({ length: 1000 }, (_, i) =>
+      i === 0 ? 'class: Workflow' : i === 1 ? 'cwlVersion: v1.0' : `  step_${i}: { run: tool_${i}.cwl }`
+    ).join('\n') + '\n';
+
+    const base = commitFile(tmp.dir, 'scripts/pipeline.cwl', cwlLines, 'add CWL workflow');
+
+    const result = await computeValueReport({ dir: tmp.dir, since: base });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    // 1000 lines / 1000 = 1.0 KSLOC; PM = 2.94 * 1^1.0997 = 2.94
+    // The .cwl extension is in script_extensions → classifyUnit returns 'scripts' → counted.
+    // If the fix had used an extension blocklist on .yaml, this would fail (CWL uses YAML syntax).
+    expect(result.data.cocomo_kloc).toBeCloseTo(1, 2);
+    expect(result.data.cocomo_pm_nominal).toBe(2.94);
+  });
 });
