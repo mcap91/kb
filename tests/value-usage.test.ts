@@ -38,12 +38,21 @@ import { computeValueUsage, defaultListWorktreeRoots } from '../packages/wiki-co
 // Fixtures
 // ---------------------------------------------------------------------------
 
-const DIR = 'C:\\Users\\mcap9\\projects\\kb';
+// Host-native synthetic fixture root. The impl calls path.resolve(opts.dir),
+// which is host-OS dependent — a hardcoded Windows path resolves wrong on Linux
+// (WK-0043). Derive DIR per platform so it is already absolute for the host
+// running the suite, making path.resolve a no-op and the fixtures symmetric on
+// both OSes. The synthetic paths need not physically exist.
+const IS_WIN = process.platform === 'win32';
+const SEP = IS_WIN ? '\\' : '/';
+const HOME_ROOT = IS_WIN ? 'C:\\Users\\test\\projects' : '/home/test/projects';
+const DIR = `${HOME_ROOT}${SEP}kb`;
 const SINCE = '2026-07-01';
 const UNTIL = '2026-07-10';
 
 // The encoded-cwd project key ccusage emits for DIR (: \ / -> -).
-const ENCODED_DIR = DIR.replace(/[:\\/]/g, '-'); // C--Users-mcap9-projects-kb
+// e.g. win32: C--Users-test-projects-kb ; linux: -home-test-projects-kb
+const ENCODED_DIR = DIR.replace(/[:\\/]/g, '-');
 
 interface ModelBreakdown {
   modelName: string;
@@ -338,7 +347,7 @@ describe('ccusage returns empty-for-span (no matching project, no codex)', () =>
           cost: 0.01,
         },
       ],
-      'C--Users-mcap9-projects-other-project',
+      (HOME_ROOT + SEP + 'other-project').replace(/[:\\/]/g, '-'),
     );
 
     const deps: UsageDeps = {
@@ -371,7 +380,7 @@ describe('instance filtering — only target dir entries are counted', () => {
           cost: 0.05,
         },
       ],
-      'C--Users-mcap9-projects-other': [
+      [(HOME_ROOT + SEP + 'other').replace(/[:\\/]/g, '-')]: [
         {
           modelName: 'claude-sonnet-4-6',
           inputTokens: 9999,
@@ -437,16 +446,16 @@ describe('codex — dispatch run under repo subdir is attributed; other repos ex
       readCodexSessions: () => [
         // dispatch run under kb → attributed
         codexSession(
-          'C:\\Users\\mcap9\\projects\\kb\\.agent-runs\\runs\\HO-0003\\RUN-x\\agent-visible',
+          DIR + SEP + '.agent-runs' + SEP + 'runs' + SEP + 'HO-0003' + SEP + 'RUN-x' + SEP + 'agent-visible',
           'gpt-5.5',
           100,
           200,
           50,
         ),
         // different repo → must be excluded
-        codexSession('C:\\Users\\mcap9\\projects\\other-repo', 'gpt-5.5', 99999, 0, 99999),
+        codexSession(HOME_ROOT + SEP + 'other-repo', 'gpt-5.5', 99999, 0, 99999),
         // sibling repo with shared prefix "kb" — must NOT match (separator guard)
-        codexSession('C:\\Users\\mcap9\\projects\\kb-sandbox', 'gpt-5.5', 88888, 0, 88888),
+        codexSession(HOME_ROOT + SEP + 'kb-sandbox', 'gpt-5.5', 88888, 0, 88888),
       ],
       fetchOpenRouterCredits: async () => null,
     };
@@ -1232,7 +1241,7 @@ function encodeWorktreePath(p: string): string {
   return p.replace(/[:\\/]/g, '-');
 }
 
-const WORKTREE_PATH = 'C:\\Users\\mcap9\\projects\\kb-wt\\main';
+const WORKTREE_PATH = HOME_ROOT + SEP + 'kb-wt' + SEP + 'main';
 const WORKTREE_ENCODED = encodeWorktreePath(WORKTREE_PATH);
 
 describe('worktree-agnostic — Claude inclusion via listWorktreeRoots', () => {
@@ -1284,8 +1293,8 @@ describe('worktree-agnostic — Codex inclusion via listWorktreeRoots', () => {
     // attributed, and unrelated paths are still excluded.
     'codex session under a worktree root is attributed; unrelated cwd is excluded',
     async () => {
-      const wtSubdir = WORKTREE_PATH + '\\src\\subdir';
-      const unrelatedCwd = 'C:\\Users\\mcap9\\projects\\totally-other';
+      const wtSubdir = WORKTREE_PATH + SEP + 'src' + SEP + 'subdir';
+      const unrelatedCwd = HOME_ROOT + SEP + 'totally-other';
 
       const deps: UsageDeps = {
         runClaudeCcusage: () => emptyClaudeJson(),

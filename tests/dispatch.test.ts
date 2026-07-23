@@ -2140,10 +2140,25 @@ describe('dispatch', () => {
         return;
       }
 
+      // WK-0043 repoint. The old assertion expected launchBackground to hard-fail a
+      // non-redteam write_scope launch with 'additional-directory sandbox mounts'.
+      // WK-0034 deliberately made that path proceed-with-warning (covered by the
+      // '...app-level warning...' integration test and the 'launch environment gate'
+      // unit matrix), and that message string no longer exists in source — so the
+      // test asserted a contract that was intentionally removed and failed on Linux.
+      // The invariant still worth an integration test is "a gate failure surfaces
+      // through launchBackground AND leaks no run directory". Redteam still fails
+      // closed when the kernel sandbox cannot start (environment.ts capabilityFailure),
+      // so repoint there. claude_linux_sandbox (the redteam gate input) is set from
+      // the *basic* bwrap probe, which runs under the CODEX agent env — so a codex
+      // entry is configured, and every agent env points PATH at a bwrap-less dir.
+      // Both probes then resolve `unsupported` on a bwrap-less Linux host (the
+      // operator's pod and WSL verification lanes) — the same host assumption the
+      // sibling '...app-level warning...' test relies on. resolveExecutableCommand
+      // also probes /usr/bin etc., so a bwrap-capable host would need a failing
+      // bwrap shim for full determinism; the target hosts here carry no bwrap.
       await setupBootstrappedRepo(repoRoot);
-      await mkdir(join(repoRoot, 'src'), { recursive: true });
-      await writeFile(join(repoRoot, 'src', 'main.ts'), 'export const value = 1;\n');
-      const binDir = join(tempDir, 'claude-background-no-bwrap-bin');
+      const binDir = join(tempDir, 'claude-redteam-no-bwrap-bin');
       await writeStdoutAgentLauncher(binDir, 'claude');
       await setupFullConfig({
         version: 1,
@@ -2164,6 +2179,23 @@ describe('dispatch', () => {
               PATHEXT: '.CMD;.EXE',
             },
           },
+          codex: {
+            base_argv: ['codex', 'exec'],
+            noninteractive_argv: [],
+            instruction_transport: { kind: 'stdin' },
+            response_transport: { kind: 'file' },
+            response_arg: ['-o', '{response_path}'],
+            timeout_seconds: 30,
+            read_only: {
+              supported: true,
+              argv_suffix: ['--sandbox', 'read-only'],
+              response_writable: true,
+            },
+            env: {
+              PATH: binDir,
+              PATHEXT: '.CMD;.EXE',
+            },
+          },
         },
       });
       const { review, launchBackground } = await import('@kb/dispatch-core');
@@ -2172,7 +2204,7 @@ describe('dispatch', () => {
         join(repoRoot, 'wiki', 'handoffs', 'HO-0001.md'),
         makeManualHandoff({
           allowed_agents: ['claude'],
-          write_scope: ['src/main.ts'],
+          mode: 'redteam',
         }),
       );
 
@@ -2190,11 +2222,28 @@ describe('dispatch', () => {
         dir: repoRoot,
         startupTimeoutMs: 15_000,
       });
+      // Redteam fails closed on a host that cannot start the kernel sandbox. The
+      // background path wraps the gate failure as BACKGROUND_LAUNCH_FAILED but
+      // preserves the gate's reason in the message (exactly how the pre-WK-0034
+      // test matched its old message). Assert the message so the failure is tied to
+      // the redteam sandbox gate specifically, not to any background-launch failure.
       expect(result.ok).toBe(false);
       if (!result.ok) {
         expect(result.error).toBe('BACKGROUND_LAUNCH_FAILED');
-        expect(result.message).toContain('additional-directory sandbox mounts');
+        expect(result.message).toContain(
+          'Claude launch is blocked because this host cannot start the required Linux sandbox.',
+        );
       }
+
+      // Invariant: the gate returns before the run directory is created
+      // (launch.ts returns the gate failure prior to mkdir), so nothing leaks.
+      let runDirLeaked = true;
+      try {
+        await stat(join(repoRoot, '.agent-runs', 'runs', 'HO-0001'));
+      } catch {
+        runDirLeaked = false;
+      }
+      expect(runDirLeaked).toBe(false);
     }, 20_000);
 
     it('concurrent background runs for independent HOs', async () => {
@@ -2410,7 +2459,7 @@ describe('dispatch', () => {
         cgroup_hint: null,
       },
       writability: {
-        home: { path: '/home/jovyan', writable: options.homeWritable ?? true, detail: 'synthetic' },
+        home: { path: '/home/user', writable: options.homeWritable ?? true, detail: 'synthetic' },
         config_dir: {
           path: '/work/.kbconfig/kb-dispatch',
           writable: options.configWritable ?? true,
@@ -2423,20 +2472,20 @@ describe('dispatch', () => {
   describe('config dir resolution (XDG)', () => {
     it('honors a set, non-empty XDG_CONFIG_HOME on POSIX', async () => {
       const { resolveConfigDir } = await import('@kb/dispatch-core');
-      expect(resolveConfigDir('linux', { XDG_CONFIG_HOME: '/work/.kbconfig', HOME: '/home/jovyan' }))
+      expect(resolveConfigDir('linux', { XDG_CONFIG_HOME: '/work/.kbconfig', HOME: '/home/user' }))
         .toBe(join('/work/.kbconfig', 'kb-dispatch'));
     });
 
     it('falls back to ~/.config when XDG_CONFIG_HOME is unset on POSIX', async () => {
       const { resolveConfigDir } = await import('@kb/dispatch-core');
-      expect(resolveConfigDir('linux', { HOME: '/home/jovyan' }))
-        .toBe(join('/home/jovyan', '.config', 'kb-dispatch'));
+      expect(resolveConfigDir('linux', { HOME: '/home/user' }))
+        .toBe(join('/home/user', '.config', 'kb-dispatch'));
     });
 
     it('falls back to ~/.config when XDG_CONFIG_HOME is set but empty on POSIX', async () => {
       const { resolveConfigDir } = await import('@kb/dispatch-core');
-      expect(resolveConfigDir('linux', { XDG_CONFIG_HOME: '', HOME: '/home/jovyan' }))
-        .toBe(join('/home/jovyan', '.config', 'kb-dispatch'));
+      expect(resolveConfigDir('linux', { XDG_CONFIG_HOME: '', HOME: '/home/user' }))
+        .toBe(join('/home/user', '.config', 'kb-dispatch'));
     });
 
     it('throws on POSIX when neither XDG_CONFIG_HOME nor HOME is set', async () => {
