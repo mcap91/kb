@@ -150,9 +150,12 @@ Estimate — agent-proposed via anchor table, operator-ratified in one pass. Age
 downward only, with justification in estimate_basis. NOTHING unratified reaches published
 frontmatter. The operator's baseline: "what this would have taken a competent human in my
 seat, working solo" — same yardstick every span for series comparability.    [agent/operator]
-  human_days_units  Σ operator-ratified rows (agent proposes per review_units[], operator ratifies)
-  human_days_loc    net_loc_added / loc_per_day  (tool-emitted LOC floor reference)
-  human_days_anchor min(human_days_units, human_days_loc)
+  human_days_units  Σ operator-ratified rows; each row's proposed_days = net_loc / its tier rate
+                    (150 structured / 300 script-analysis; 260 fallback). Operator ratifies.
+  human_days_loc    net_loc_added / 150  (LOC floor at the slowest/structured tier — the aggregate
+                    conservatism guard; binds only if a row is estimated below structured throughput)
+  human_days_anchor min(human_days_units, human_days_loc)  (= human_days_units in practice, since
+                    every tier rate ≥ 150)
   time_saved_days   human_days_anchor − work_days   — MAY BE NEGATIVE. Never clamp.
                     (Finer alternative: human_days_anchor − work_hours / hours_per_work_day;
                     print alongside, never leading — its errors inflate leverage.)
@@ -164,33 +167,42 @@ seat, working solo" — same yardstick every span for series comparability.    [
 Research — observed, agent-supplied, optional (labeled non-empirical):             [agent]
   files_read, papers_read, items_parsed, outputs_organized
 
-ANCHOR TABLE — operator-set values; universal (describe artifact shapes, not repos).
-Agents MUST cite ≥1 anchor per estimate row. Ratified rows in past VALs are also citable
-anchors — the growing anchor registry requires no new file or surface.
+ANCHOR TABLE — corpus-calibrated per-class LOC/day floor rates (SRC-0002). Universal: classify
+the unit, estimate = net_loc / its tier rate. Two tiers only — the operator's git-dated R corpus
+(661 units, 2022-12-01→2026-06-24) clusters into exactly two throughput bands (a clean gap at
+~200 LOC/active-day); finer per-class rates sit inside the confound noise, so freezing more than
+two is false precision. These are FLOORS: git active-days lower-bound real effort, so real human
+time ≥ the estimate (conservative). Ratified rows in past VALs remain citable anchors.
 
-  | anchor                    | profile                                             | days |
-  |---------------------------|-----------------------------------------------------|------|
-  | glue script               | <100 LOC, untested, single purpose                  | 0.25 |
-  | workflow step             | 200–400 LOC, wired into a pipeline, moderate logic  | 1    |
-  | builder/substantial script| 500–1000 LOC, tested or multi-format I/O            | 3    |
-  | library module            | typed, tested, imported by ≥2 files                 | 2.5  |
-  | focused CLI/tool          | few hundred LOC, standalone                         | 1.5  |
-  | notebook/analysis         | exploratory, produces a figure/result               | 0.5  |
-  | durable doc/guide         | substantive                                         | 0.5  |
+  | class                 | tier            | LOC/day |
+  |-----------------------|-----------------|---------|
+  | module                | structured      | 150 |
+  | function              | structured      | 150 |
+  | tool                  | structured      | 150 |
+  | ad hoc method test    | structured      | 150 |
+  | analysis script       | script/analysis | 300 |
+  | processing script     | script/analysis | 300 |
+  | data wrangling script | script/analysis | 300 |
+  | production script     | script/analysis | 300 |
 
-CITATION RULE. Every estimate row must cite ≥1 anchor + delta reasoning explaining the
-adjustment (e.g. "workflow step (1d) − 0.2d: single-format, no error handling"). A row
-with no anchor citation is invalid and must not appear in published frontmatter.
+  structured (150) = reusable / tested / carefully designed — more human-time per line, higher value.
+  script/analysis (300) = write-once, run-it work — fewer human-days per line.
+  Unclassified or genuinely mixed unit → fall back to the global 260 LOC/day (the corpus-wide rate).
+  Language-independent (R / Python / TypeScript / bash — a line is a line).
 
-LOC-REFERENCE TRIPWIRE. The tool prints loc_reference (net_loc / loc_per_day, default 150)
-per unit in review_units[]. Any estimate diverging more than 3× from loc_reference — in
-either direction — must state explicitly why (anchor-shape mismatch, atypical density,
-boilerplate, etc.). Silence on a >3× divergence is invalid.
+CITATION RULE. Every estimate row must name the unit's class + tier rate, and its proposed_days
+must equal net_loc / tier_rate. A row whose proposed_days deviates from net_loc / tier_rate must
+state why (atypical density, boilerplate, genuine design overhead git can't see, etc.). A row with
+no class citation is invalid and must not appear in published frontmatter.
 
-NO-CLOSE-ANCHOR FLOW. When a unit matches no anchor well, flag it `no-close-anchor` in
-the estimate row. The agent still proposes a value by interpolating the two nearest anchors
-and explaining the interpolation. The operator overrides with their counterfactual. The
-ratified row becomes a new anchor for future spans (cited by path + VAL id).
+LOC-REFERENCE TRIPWIRE. The tool prints loc_reference (net_loc / loc_per_day, default 260 — the
+corpus-wide rate) per unit in review_units[]. Any estimate diverging more than 3× from
+loc_reference — in either direction — must state explicitly why (class-rate vs corpus-average
+mismatch, atypical density, boilerplate, etc.). Silence on a >3× divergence is invalid.
+
+NO-CLOSE-ANCHOR FLOW. When a unit fits neither tier cleanly, flag it `no-close-anchor` and use
+the global 260 LOC/day fallback, explaining the call. The operator overrides with their
+counterfactual. The ratified row becomes a citable anchor for future spans (by path + VAL id).
 
 NULL RESULTS ARE THE POINT. If cost bought little or nothing, say so plainly in ## Agent Value
 ("cost $X / N tokens; 0 working units this span; value not demonstrated"). Do NOT narrate around
@@ -214,8 +226,9 @@ CEILING REFERENCE LINE (print immediately after the ROI line — display-only, n
 
 FLOOR / CEILING GUIDANCE — why the large gap (~30×) is expected, not an error:
   • COCOMO prices *organizational delivery* (requirements, reviews, integration, PM — embedded productivity
-    ~15–25 LOC/day), while loc_per_day=150 already assumes a human 6–10× faster than the citable industry
-    rate; nominal multipliers model an average team member, not the "competent human in my seat" baseline.
+    ~15–25 LOC/day), while the floor's tier rates (150–300 LOC/day, calibrated from the operator's own
+    corpus, SRC-0002) reflect measured solo throughput; nominal multipliers model an average team member,
+    not the "competent human in my seat" baseline.
   • The E>1 exponent prices team coordination a solo developer never pays.
   • Physical net-LOC ≠ COCOMO logical SLOC.
   • Floor = solo-expert marginal effort. Ceiling = fully-loaded organizational delivery. Both answer real VP
@@ -258,31 +271,27 @@ Confirmed candidates are included in the review_units[] estimate table below. --
 <!-- Glance-readable provenance: every estimate number above must be reproducible from this
 section alone — ratified rows + stated arithmetic. Fill all four parts.
 
-1. Anchor table in effect (version / date, and any per-span additions from ratified past VALs
-   that were cited this span):
+1. Anchor table in effect — corpus-calibrated tier rates (SRC-0002), plus any ratified past-VAL
+   rows cited this span:
 
-   | anchor                     | profile                                            | days |
-   |----------------------------|----------------------------------------------------|------|
-   | glue script                | <100 LOC, untested, single purpose                 | 0.25 |
-   | workflow step              | 200–400 LOC, wired into a pipeline, moderate logic | 1    |
-   | builder/substantial script | 500–1000 LOC, tested or multi-format I/O           | 3    |
-   | library module             | typed, tested, imported by ≥2 files                | 2.5  |
-   | focused CLI/tool           | few hundred LOC, standalone                        | 1.5  |
-   | notebook/analysis          | exploratory, produces a figure/result              | 0.5  |
-   | durable doc/guide          | substantive                                        | 0.5  |
-   | <any ratified past-VAL row cited this span — add below>                       |      |
+   | class                 | tier            | LOC/day |
+   |-----------------------|-----------------|---------|
+   | module / function / tool / ad hoc method test | structured | 150 |
+   | analysis / processing / data-wrangling / production script | script/analysis | 300 |
+   | unclassified or mixed                          | fallback   | 260 |
+   | <any ratified past-VAL row cited this span — add below>            |            |     |
 
 2. Per-unit estimate rows — one row per ratified unit (candidates excluded until confirmed).
-   Each row MUST cite ≥1 anchor + delta reasoning. Rows diverging >3× from loc_reference
-   MUST explain why.
+   Each row names its class + tier rate; proposed_days = net_loc / tier_rate. Rows deviating from
+   net_loc / tier_rate, or diverging >3× from loc_reference, MUST explain why.
 
-   | unit | tier | net_loc | loc_reference | anchor cited | delta reasoning | proposed_days | ratified_days |
-   |------|------|---------|---------------|--------------|-----------------|---------------|---------------|
-   |      |      |         |               |              |                 |               |               |
+   | unit | evidence tier | net_loc | loc_reference | class | tier_rate | proposed_days | ratified_days |
+   |------|---------------|---------|---------------|-------|-----------|---------------|---------------|
+   |      |               |         |               |       |           |               |               |
 
 3. Estimate arithmetic:
-     human_days_units  = Σ ratified_days above
-     human_days_loc    = net_loc_added / loc_per_day        (LOC floor reference, loc_per_day default 150)
+     human_days_units  = Σ ratified_days above  (each = net_loc / tier_rate: 150 structured / 300 script-analysis / 260 fallback)
+     human_days_loc    = net_loc_added / 150    (LOC floor at the slowest/structured tier; conservatism guard, rarely binds)
      human_days_anchor = min(human_days_units, human_days_loc)
      time_saved_days   = human_days_anchor − work_days      (may be negative; never clamp)
      speedup           = min(human_days_anchor / work_days, 10)   (may be < 1; never clamp)
@@ -314,9 +323,12 @@ Two numbers bracket this report's value estimate. They answer different question
 never averaged.
 
 - **Floor (claimed):** what this span's surviving output would have taken one competent
-  human working alone with full context of this repo. Estimated per unit against a fixed
-  anchor table, ratified by the operator (downward adjustments only), floored by a
-  LOC-based conservatism guard. Every headline figure uses this number.
+  human working alone with full context of this repo. Estimated per unit as net_loc ÷ a
+  per-class tier rate (150 structured / 300 script-analysis) calibrated from the operator's own
+  git-dated, hand-written R corpus (SRC-0002; 661 units over 3.5 yr), cross-validated
+  leave-one-section-out to within 2× (median 0.92) and biased conservative — git active-days
+  lower-bound real effort. Operator-ratified; floored by a LOC conservatism guard. Every headline
+  figure uses this number.
 - **Ceiling (reference only):** what the same delivered code would cost as a traditional
   organizational software project, per COCOMO II (nominal constants, Boehm 2000). It
   embeds ~15–25 LOC/day because it prices requirements, reviews, integration, and

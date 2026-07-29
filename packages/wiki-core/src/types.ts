@@ -351,8 +351,10 @@ export interface ModelPatternEntry {
  * Precedence: tool args > file > code defaults.
  */
 export interface ValueConfig {
-  /** LOC-per-day reference divisor (default 150). Used for loc_reference per unit and the
-   *  loc-floor tripwire printed in the review surface. Not a value ceiling. */
+  /** LOC-per-day reference divisor (default 260, calibrated from SRC-0002 — the operator's
+   *  corpus-wide throughput). Drives loc_reference per unit = the >3× estimation tripwire.
+   *  Not the human-day estimator (that uses per-class tier rates in the template) and not a
+   *  value ceiling. */
   loc_per_day: number;
   ccusage_version: string;
   exclude_globs: string[];

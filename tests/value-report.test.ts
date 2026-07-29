@@ -831,8 +831,11 @@ describe('loc_per_day echoed in ValueMetrics output', () => {
     expect(result.data.loc_per_day).toBe(200);
   });
 
-  it('loc_per_day defaults to 150 when not overridden', async () => {
-    // WHY: the default must be stable so templates and historical VALs use a known baseline.
+  it('loc_per_day defaults to 260 (calibrated from SRC-0002 operator R corpus)', async () => {
+    // WHY: the default is the floor's provenance. 260 = the operator's git-dated corpus-wide
+    // throughput (SRC-0002: 129,447 net LOC ÷ 498 distinct active-days), replacing the asserted
+    // 150. Cross-validated leave-one-section-out to within 2× (median 0.92), conservative-biased.
+    // This value IS the calibration — if it silently reverts to 150 the floor is un-cited again.
     tmp = createTmpDir();
     initRepo(tmp.dir);
 
@@ -842,7 +845,7 @@ describe('loc_per_day echoed in ValueMetrics output', () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
 
-    expect(result.data.loc_per_day).toBe(150);
+    expect(result.data.loc_per_day).toBe(260);
   });
 });
 
