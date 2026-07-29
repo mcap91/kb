@@ -55,7 +55,13 @@ interface GraphExport {
 // ---------------------------------------------------------------------------
 
 const DEFAULT_CONFIG: ValueConfig = {
-  loc_per_day: 150,
+  // Corpus-wide throughput floor / per-unit loc_reference tripwire.
+  // calibrated from SRC-0002, 661 included units, git-dated 2022-12-01→2026-06-24, poll 2026-07-29
+  // = 129,447 net LOC ÷ 498 distinct operator active-days = 259.9 → 260. Replaces the asserted 150
+  // (WK-0041 flagged 150 as un-cited). Cross-validated leave-one-section-out to within 2× (median
+  // 0.92), conservative-biased. Drives loc_reference only (the >3× per-unit tripwire) — the human-day
+  // estimate uses the per-class tier rates in the template anchor table, not this constant.
+  loc_per_day: 260,
   ccusage_version: '20.0.17',
   exclude_globs: [
     'scratch_space/**',
