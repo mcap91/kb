@@ -1348,3 +1348,63 @@ describe('§WK-0041 COCOMO II nominal ceiling — cocomo_kloc and cocomo_pm_nomi
     expect(result.data.cocomo_pm_nominal).toBe(2.94);
   });
 });
+
+// ---------------------------------------------------------------------------
+// WK-0053 — ref resolution fails loud (silent HEAD fallback bit PF038)
+// ---------------------------------------------------------------------------
+
+describe('ref resolution fails loud (WK-0053)', () => {
+  let tmp: TmpRepo;
+
+  afterEach(() => tmp.cleanup());
+
+  it('returns a failed Result when untilRef does not resolve', async () => {
+    // WHY: a mistyped/unresolvable untilRef must abort, not silently fall back to HEAD and
+    // report the wrong span (the defect that produced a wrong-span PF038 report).
+    tmp = createTmpDir();
+    initRepo(tmp.dir);
+    commitFile(tmp.dir, 'a.py', 'x = 1\n', 'init', '2026-01-01T10:00:00');
+
+    const result = await computeValueReport({ dir: tmp.dir, untilRef: 'no-such-ref' });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.message).toContain('no-such-ref');
+  });
+
+  it('returns a failed Result when since does not resolve', async () => {
+    // WHY: same fail-loud contract for the since ref — no silent fallback to a wrong base.
+    tmp = createTmpDir();
+    initRepo(tmp.dir);
+    commitFile(tmp.dir, 'a.py', 'x = 1\n', 'init', '2026-01-01T10:00:00');
+
+    const result = await computeValueReport({ dir: tmp.dir, since: 'no-such-ref' });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.message).toContain('no-such-ref');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// WK-0053 — generated artifacts excluded from net LOC (35.6k-LOC graph-summary polluted it)
+// ---------------------------------------------------------------------------
+
+describe('generated artifacts excluded from net LOC (WK-0053)', () => {
+  let tmp: TmpRepo;
+
+  afterEach(() => tmp.cleanup());
+
+  it('excludes graph-summary.md and wiki generated views', async () => {
+    // WHY: generated views (graph-summary.md, wiki/catalog.md, etc.) are not authored output;
+    // counting them inflates net LOC and every downstream replication estimate.
+    tmp = createTmpDir();
+    initRepo(tmp.dir);
+    commitFile(tmp.dir, 'a.py', 'x = 1\ny = 2\n', 'code', '2026-01-01T10:00:00');
+    commitFile(tmp.dir, 'graph-summary.md', 'line\n'.repeat(100), 'generated', '2026-01-01T11:00:00');
+    commitFile(tmp.dir, 'wiki/catalog.md', 'line\n'.repeat(50), 'generated view', '2026-01-01T12:00:00');
+
+    const result = await computeValueReport({ dir: tmp.dir });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.data.net_loc_added).toBe(2); // only a.py counts
+      expect(result.data.excluded_files).toBeGreaterThanOrEqual(2);
+    }
+  });
+});

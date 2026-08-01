@@ -423,6 +423,17 @@ export async function cmdValueReport(args: string[]): Promise<void> {
   const untilRef = parseValue(args, '--until-ref');
   const verbose = parseFlag(args, '--verbose');
 
+  // Reject unknown/mistyped flags — a silently-dropped --untilRef (vs --until-ref) let the
+  // report fall back to HEAD and cover the wrong span (WK-0053). No value token starts with
+  // '--', so filtering '--'-prefixed args catches exactly the flags.
+  const KNOWN_FLAGS = ['--dir', '--since', '--until-ref', '--verbose'];
+  const unknown = args.filter(a => a.startsWith('--') && !KNOWN_FLAGS.includes(a));
+  if (unknown.length > 0) {
+    console.error(`Error: unknown flag(s) for value-report: ${unknown.join(', ')}. Known: ${KNOWN_FLAGS.join(', ')}`);
+    process.exitCode = 1;
+    return;
+  }
+
   const result = await computeValueReport({ dir, since, untilRef, verbose });
 
   if (!result.ok) {

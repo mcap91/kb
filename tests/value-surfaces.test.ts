@@ -258,4 +258,19 @@ describe('CLI surface smoke — value commands', () => {
     const { exitCode } = runCli('value-usage');
     expect(exitCode).not.toBe(0);
   });
+
+  it('value-report rejects an unknown/mistyped flag (--untilRef) instead of silently running', () => {
+    // WHY: a silently-dropped mistyped flag (--untilRef vs --until-ref) let value-report fall back
+    // to HEAD and report the wrong span (WK-0053). Unknown flags must fail loud, naming the flag —
+    // the message (not just a non-zero exit) is what distinguishes this from a GIT_UNAVAILABLE run.
+    const tmp = createTmpDir();
+    try {
+      const { stdout, exitCode } = runCli(`value-report --dir "${tmp.dir}" --untilRef xyz`);
+      expect(exitCode).not.toBe(0);
+      expect(stdout).toContain('unknown flag');
+      expect(stdout).toContain('--untilRef');
+    } finally {
+      tmp.cleanup();
+    }
+  });
 });
