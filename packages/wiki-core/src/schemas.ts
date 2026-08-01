@@ -338,6 +338,9 @@ export const valueFrontmatterSchema = z.object({
   human_days_anchor: z.coerce.number().optional(),
   time_saved_days: z.coerce.number().optional(),
   speedup: z.coerce.number().optional(),
+  replication_days: z.coerce.number().optional(),
+  saved_floor_days: z.coerce.number().optional(),
+  leverage: z.coerce.number().optional(),
   estimate_basis: z.string().optional(),
   // Research — observed, agent-supplied (optional)
   files_read: z.coerce.number().optional(),
