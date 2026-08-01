@@ -12,7 +12,7 @@
  *   8. CLI dispatch recognises value-report and value-usage commands
  *
  * Stable marker string used in recipe assertions (grep for this):
- *   "value-report-recipe-v2"
+ *   "value-report-recipe-v3"
  */
 
 import { describe, it, expect, afterEach } from 'vitest';
@@ -38,7 +38,7 @@ import {
 
 /** Stable marker string embedded in the recipe text (spec §7).
  *  Both AGENTS.md and CLAUDE.md must contain this after bootstrap/sync. */
-const RECIPE_MARKER = 'value-report-recipe-v2';
+const RECIPE_MARKER = 'value-report-recipe-v3';
 
 const ROOT = resolve(process.cwd());
 const TSX = process.platform === 'win32'
