@@ -55,12 +55,12 @@ interface GraphExport {
 // ---------------------------------------------------------------------------
 
 const DEFAULT_CONFIG: ValueConfig = {
-  // Corpus-wide throughput floor / per-unit loc_reference tripwire.
+  // Corpus-wide throughput rate — the per-unit estimator proposal AND tripwire (DEC-0003).
   // calibrated from SRC-0002, 661 included units, git-dated 2022-12-01→2026-06-24, poll 2026-07-29
-  // = 129,447 net LOC ÷ 498 distinct operator active-days = 259.9 → 260. Replaces the asserted 150
-  // (WK-0041 flagged 150 as un-cited). Cross-validated leave-one-section-out to within 2× (median
-  // 0.92), conservative-biased. Drives loc_reference only (the >3× per-unit tripwire) — the human-day
-  // estimate uses the per-class tier rates in the template anchor table, not this constant.
+  // = 129,447 net LOC ÷ 498 distinct operator active-days = 259.9 → 260. Cross-validated
+  // leave-one-section-out to within 2× (median 0.92), conservative-biased. Drives loc_reference;
+  // proposed_days per review unit = loc_reference. Estimate arithmetic stays in the
+  // template/agent layer — the tool only measures.
   loc_per_day: 260,
   ccusage_version: '20.0.17',
   exclude_globs: [
@@ -69,6 +69,16 @@ const DEFAULT_CONFIG: ValueConfig = {
     'sandbox/**',
     '**/*_adhoc*',
     '**/pilot_*',
+    // Generated artifacts (WK-0053: a 35.6k-LOC generated graph-summary.md polluted net LOC)
+    '**/graph-summary.md',
+    'wiki/catalog.md',
+    'wiki/now.md',
+    'wiki/inbox.md',
+    'wiki/backlog.md',
+    'wiki/archive.md',
+    'wiki/generated/**',
+    'wiki/.graph.json',
+    'wiki/.search-index.json',
   ],
   classification_patterns: {
     script_extensions: [
@@ -680,10 +690,16 @@ export async function computeValueReport(opts: ValueReportOpts): Promise<Result<
 
   const config = loadConfig(dir, opts.config);
 
-  // Resolve head ref
-  const resolvedHead = opts.untilRef
-    ? (git(dir, 'rev-parse', opts.untilRef) ?? headSha)
-    : headSha;
+  // Resolve head ref — fail loud on an unresolvable ref (WK-0053: the silent fallback to
+  // HEAD produced a wrong-span report)
+  let resolvedHead = headSha;
+  if (opts.untilRef) {
+    const untilSha = git(dir, 'rev-parse', opts.untilRef);
+    if (!untilSha) {
+      return fail('GIT_UNAVAILABLE', `untilRef did not resolve: ${opts.untilRef}`);
+    }
+    resolvedHead = untilSha;
+  }
 
   // Resolve base commit and determine if it's "inclusive" (since= explicitly provided)
   let baseSha: string;
@@ -691,8 +707,14 @@ export async function computeValueReport(opts: ValueReportOpts): Promise<Result<
   let priorValInfo: PriorValInfo | null = null;
 
   if (opts.since) {
-    // Caller explicitly says "start from this commit" — inclusive
-    baseSha = git(dir, 'rev-parse', opts.since) ?? opts.since;
+    // Caller explicitly says "start from this commit" — inclusive.
+    // Fail loud on an unresolvable ref (WK-0053: the silent fallback to the raw string
+    // produced a wrong-span report).
+    const sinceSha = git(dir, 'rev-parse', opts.since);
+    if (!sinceSha) {
+      return fail('GIT_UNAVAILABLE', `since did not resolve: ${opts.since}`);
+    }
+    baseSha = sinceSha;
     inclusive = true;
     // Still scan for prior VAL for chain status
     priorValInfo = findPriorVal(dir, resolvedHead);
