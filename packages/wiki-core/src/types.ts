@@ -292,6 +292,11 @@ export interface ValueFrontmatter {
   human_days_anchor?: number;
   time_saved_days?: number; // may be negative — never clamped
   speedup?: number; // may be < 1 — never clamped
+  // DEC-0003 flat-rate fields (human_days_*/time_saved_days/speedup above are legacy —
+  // kept so VAL-0001/0002 stay valid; new records emit these instead)
+  replication_days?: number;
+  saved_floor_days?: number; // may be negative — never clamped
+  leverage?: number; // uncapped; may be < 1 — never clamped
   estimate_basis?: string;
   // Research — observed, agent-supplied (optional)
   files_read?: number;
