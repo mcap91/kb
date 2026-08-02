@@ -216,7 +216,8 @@ Confirmed candidates are included in the estimate table below. -->
 <!-- Reproducible from this section alone. Four parts.
 
 1. Rate in effect: 260 LOC/operator-active-day (SRC-0002; LOSO median 0.92, all sections
-   within 2×). Docs-class rows: operator hand-set (no calibrated rate; WK-0052).
+   within 2×; Rung 1: project-level within ~1.25× at ≥2 KLOC). Docs-class rows: operator
+   hand-set (no calibrated rate; WK-0052).
 
 2. Per-unit rows — one per ratified unit (candidates excluded until confirmed):
 
@@ -224,7 +225,8 @@ Confirmed candidates are included in the estimate table below. -->
    |------|---------------|---------|-------------------------------|---------------|------|
    |      |               |         |                               |               |      |
 
-   Rows diverging >3× from proposed_days MUST explain why.
+   Rows diverging >3× from proposed_days MUST explain why; upward explanations state
+   replication reasoning, not agent toil.
 
 3. Arithmetic:
      replication_days = Σ ratified_days
@@ -252,6 +254,12 @@ One number prices this span's output; one measures its time; their ratio is the 
   prices reconstruction of the artifact, as insurance prices rebuilding a house — it does not
   claim the operator would have built the same thing without AI; that counterfactual is not
   estimable and is not claimed.
+- **Rate validity (SRC-0002 Rung 1):** the flat 260 LOC/day amortizes design insight at
+  corpus-average density; project-level back-test reconstructs active-days within ~1.25× at
+  material scale (≥ ~2 KLOC per group), sign floor-consistent (predicted < actual in 3/4).
+  Below that grain, per-unit day-attribution is unreliable (passing-touch artifact — a
+  back-test slicing limit that does not arise in production leverage); small-row figures are
+  floor-only and rely on operator upward ratification for insight-dense edits.
 - **Days worked (measured):** distinct commit dates (work_days) — the same instrument the rate
   was calibrated with. Design/reading time invisible to git is missing from both sides equally
   and cancels in the ratio.
