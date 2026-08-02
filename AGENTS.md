@@ -81,6 +81,16 @@ npm run wiki -- bootstrap --dir ../my-project --repo org/name
 npm run graph -- --dir ../my-project
 ```
 
+### Nested Wiki Repo
+
+`wiki/` is a **separate private git repository** (`kb-wiki`, remote `github.com/mcap91/kb-wiki`) nested inside this checkout — not a subtree or subdirectory of `kb`. The parent `.gitignore` lists `wiki/` so `kb` does not embed it.
+
+Consequences when committing:
+
+- Wiki content — records (`WK/IN/DEC/SRC/AREA/PLN/VAL`), templates, generated views, search index — is version-controlled in `kb-wiki` and committed from inside `wiki/` (`git -C wiki …`). It never appears in `kb`'s `git status`, and a `kb`-root `git add` cannot stage it.
+- `contract/templates/*.md` are the source of truth in `kb`; `sync-contract` / `bootstrap` copy them into `wiki/templates/`, which is a downstream artifact committed in `kb-wiki`.
+- Work that touches both sides is two commits in two repos: the code/contract change in `kb`, the wiki record/template change in `kb-wiki`.
+
 ### Agent-Native MCP Setup
 
 If you are wiring `kb` into a native MCP client, use direct `node` launch commands rather than `npm run ...:mcp`.
