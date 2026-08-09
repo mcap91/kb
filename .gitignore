@@ -12,3 +12,4 @@ kb.code-workspace
 .mcp.json
 .env*
 docs/scratch_space/
+tmp_scripts/
