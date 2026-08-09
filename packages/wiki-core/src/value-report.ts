@@ -87,8 +87,11 @@ const DEFAULT_CONFIG: ValueConfig = {
   classification_patterns: {
     script_extensions: [
       '.py', '.R', '.r', '.Rmd', '.qmd', '.ipynb',
-      '.sh', '.bash', '.zsh', '.pl',
-      '.ts', '.js', '.java', '.sql',
+      '.sh', '.bash', '.zsh', '.ksh', '.pl',
+      // JS/TS module family + TS/JSX variants (WK-0056 Rung 4: a .mjs entrypoint surfaced as an
+      // unclassified candidate — these are universally code). .ksh added for parity with the
+      // shell-wrapper rate_flag set (computeRateFlag SHELL_EXTS).
+      '.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs', '.java', '.sql',
       '.nf', '.smk', '.wdl', '.cwl',
     ],
     candidate_locations: [
