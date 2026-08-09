@@ -132,6 +132,26 @@ Output — observed (all from value-report):                                    
   churn_loc, excluded_files, excluded_loc, reverted_commits, wk_created, wk_closed
   graph_available   false ⇒ wired/tested/linked branches were skipped (note it in estimate_basis)
 
+Widened surface (WK-0059) — no committed file is silently dropped:
+  data_traces       data assets — priced 0, detection/traceability only; NOT floor rows. Every
+                    data file is priced 0 and its in-repo generator (counted once as the code it
+                    is) carries the value — no fixture↔generator ownership is inferred. orphan_data
+                    (operator-ruled curated data, no in-repo generator) and vendored/external
+                    data stay unpriced; an operator note is documentation only, never a floor number.
+  unclassified      unknown committed types (unknown extension / extensionless-no-shebang) surface
+                    as candidates, NEVER a silent null. Operator rules each ext+path group
+                    code | data | doc → persisted to wiki/.value-config.json (agent proposes,
+                    operator ratifies — the agent can never promote a type to countable). Valued 0
+                    until ruled code.
+  rate_flag         per review row: test-code | fixture-generator | workflow-dsl | shell-wrapper —
+                    classes where the 260 rate transfers unevenly (error direction NOT uniformly
+                    conservative). Narrate flagged rows as ratification candidates; narration only,
+                    never changes arithmetic. Common flagging ⇒ the surface changed enough to
+                    re-validate (WK-0056 Rung 4).
+  resolved_config / config_hash   freeze into the published VAL so its figures reproduce under a
+                    later wiki/.value-config.json edit (re-render passes the frozen config back).
+  (Rendering the data/orphan/unclassified rows into the VAL body is WK-0058.)
+
 Operator-filled at authoring:                                                      [operator]
   units_attested    confirmed candidates + any other operator-attested units
   units_valued      ratified row count in ## How This Was Calculated
@@ -209,7 +229,11 @@ Do NOT read other VAL files for examples. This template is self-contained.
 <!-- value-report lists pattern-only units here (tier = candidate). Operator records
 confirm/reject per unit; a short evidence note ("produced fig 2") is encouraged.
 Rejected candidates stay survives-only and are excluded from the estimate.
-Confirmed candidates are included in the estimate table below. -->
+Confirmed candidates are included in the estimate table below.
+WK-0059: candidates with unitClass = unclassified are unknown committed types — rule each
+code | data | doc and persist the ruling to wiki/.value-config.json (only code rulings become
+priced floor units; data is priced 0; a data glob with no in-repo generator may be ruled
+orphan_data, note-only). -->
 
 ## How This Was Calculated
 

@@ -20,6 +20,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { ok, fail, type Result } from './errors.js';
 import type {
   ValueReportOpts,
@@ -28,7 +29,10 @@ import type {
   ValueCandidate,
   ValueUnitDetail,
   ValueReviewUnit,
-  UnitClass,
+  ValueDataTrace,
+  CodeUnitClass,
+  DataUnitClass,
+  RateFlag,
   UnitClassCounts,
   ChainStatus,
 } from './types.js';
@@ -96,12 +100,17 @@ const DEFAULT_CONFIG: ValueConfig = {
       'bin/**',
       'tools/**',
     ],
+    // Real test-CODE filename patterns only (WK-0059). The blanket '**/tests/**' was removed:
+    // it nulled fixture generators and shipped code under tests/. Test code now classifies as a
+    // code unit AND still marks its target 'tested' + counts in tests_added (isTestFile).
     test_patterns: [
       '**/test_*.py',
       '**/*_test.py',
+      '**/*_test.go',
       '**/*.test.*',
-      '**/tests/**',
+      '**/*.spec.*',
       '**/testthat/**',
+      '**/test-*.R',
     ],
     module_patterns: [
       '**/__init__.py',
@@ -113,7 +122,32 @@ const DEFAULT_CONFIG: ValueConfig = {
       '**/*.rst',
       '**/*.html',
     ],
+    // Data-asset extensions (WK-0059): detection/traceability only, priced 0. Positive list —
+    // unknown extensions become `unclassified` candidates (operator ratifies), never silent null.
+    // Deliberately excludes code-as-data-syntax types (.cwl/.nf/.smk/.wdl stay in script_extensions).
+    // Dual-use structured formats (.json/.xml — package.json, tsconfig.json, etc.) are intentionally
+    // classified data (priced 0, per the spec's example list) rather than flooding the operator gate
+    // with an unclassified ruling for every config file; an operator who ships data JSON can still
+    // rule specific globs orphan_data. NOTE: like the other classification_patterns sub-keys (and
+    // unlike exclude_globs), config REPLACES this list — but a dropped default surfaces as an
+    // `unclassified` candidate, not a silent drop, so the no-silent-drop guarantee still holds.
+    data_extensions: [
+      '.csv', '.tsv', '.psv', '.parquet', '.feather', '.arrow', '.orc',
+      '.json', '.jsonl', '.ndjson', '.xml',
+      '.h5', '.h5ad', '.hdf5', '.loom', '.zarr', '.mtx',
+      '.rds', '.rda', '.rdata',
+      '.npy', '.npz', '.pkl', '.pickle', '.joblib', '.mat', '.nc',
+      '.xlsx', '.xls', '.ods',
+      '.tar', '.gz', '.tgz', '.bz2', '.xz', '.zip', '.7z',
+      '.vcf', '.bam', '.sam', '.cram', '.bed', '.gff', '.gff3', '.gtf',
+      '.fasta', '.fa', '.fastq', '.fq', '.fai', '.bai',
+      '.db', '.sqlite', '.duckdb',
+      '.png', '.jpg', '.jpeg', '.gif', '.svg', '.pdf', '.tiff',
+    ],
   },
+  // Extensionless-executable path overrides + orphan-data operator rulings default empty (WK-0059).
+  script_path_overrides: [],
+  orphan_data_globs: [],
 };
 
 // Empty git tree SHA — used as the "before everything" ref for root commits
@@ -265,6 +299,42 @@ function getEndpointNumstat(
 }
 
 /**
+ * All files surviving at headSha (relative to baseSha), INCLUDING binary assets that
+ * `--numstat` drops (WK-0059 no-silent-drop). Deleted paths are excluded (not surviving);
+ * rename/copy targets use the new path. Mirrors getEndpointNumstat's diff-base resolution.
+ */
+function getEndpointFileList(
+  dir: string,
+  baseSha: string,
+  headSha: string,
+  inclusive: boolean,
+): string[] {
+  let diffBase: string;
+  if (inclusive && isRootCommit(dir, baseSha)) {
+    diffBase = EMPTY_TREE_SHA;
+  } else if (inclusive) {
+    const parentSha = git(dir, 'rev-parse', `${baseSha}^`);
+    diffBase = parentSha ?? EMPTY_TREE_SHA;
+  } else {
+    diffBase = baseSha;
+  }
+
+  const out = git(dir, 'diff', '--name-status', diffBase, headSha);
+  if (!out) return [];
+  const files: string[] = [];
+  for (const line of out.split('\n')) {
+    if (!line.trim()) continue;
+    const parts = line.split('\t');
+    const status = parts[0] ?? '';
+    if (status.startsWith('D')) continue; // deleted → not surviving
+    // Rename (Rxxx) / copy (Cxxx): the new path is the last field; otherwise it's field 1.
+    const p = status.startsWith('R') || status.startsWith('C') ? parts[parts.length - 1] : parts[1];
+    if (p) files.push(p.trim());
+  }
+  return files;
+}
+
+/**
  * Total additions across all commits in range (for churn calculation).
  */
 function getTotalAdditionsInRange(
@@ -342,44 +412,84 @@ function matchesAnyGlob(filePath: string, patterns: string[]): boolean {
 // ---------------------------------------------------------------------------
 
 /**
- * Classify a file as a unit class, or null if not classifiable.
- * Order: docs → modules → test (null) → scripts by extension
+ * The classification of a committed/linked file (WK-0059). Every file resolves to exactly one
+ * of these — the tool NEVER silently drops a file to `null`:
+ *  - `unit`         → a code/doc floor unit (enters the evidence ladder + unit_details)
+ *  - `data`         → a data asset, priced 0 (enters data_traces)
+ *  - `unclassified` → an unknown type surfaced for operator ratification (enters candidates)
  */
-function classifyUnit(filePath: string, config: ValueConfig): UnitClass | null {
+type FileClassification =
+  | { kind: 'unit'; unitClass: CodeUnitClass }
+  | { kind: 'data'; unitClass: DataUnitClass; reason: string }
+  | { kind: 'unclassified'; reason: string };
+
+/** True if the file's committed content starts with a `#!` shebang (portable exec signal). */
+function hasShebang(dir: string, sha: string, filePath: string): boolean {
+  const out = git(dir, 'show', `${sha}:${filePath}`);
+  return out !== null && out.startsWith('#!');
+}
+
+/**
+ * Classify a file. Precedence (WK-0059):
+ *   docs → modules → explicit script override → known code extension → named pipeline file →
+ *   data extension → extensionless-with-shebang → unclassified.
+ * Extensionless-executable detection follows override → shebang → (candidate-location handled by
+ * the caller's evidence ladder). A shebang-less extensionless blob stays `unclassified` — never
+ * auto-swept as a script.
+ */
+function classifyFile(filePath: string, config: ValueConfig, shebang: boolean): FileClassification {
   const normalized = filePath.replace(/\\/g, '/');
   const ext = path.extname(normalized).toLowerCase();
   const basename = path.basename(normalized);
   const patterns = config.classification_patterns;
+  const codeClass = (): CodeUnitClass =>
+    matchesAnyGlob(normalized, ['tools/**', 'bin/**']) ? 'tools' : 'scripts';
 
-  // Doc class: markdown, rst, html
-  if (matchesAnyGlob(normalized, patterns.doc_patterns)) {
-    return 'docs';
+  // Docs first — precedes tests so markdown under tests/ stays docs (WK-0052 owns its pricing).
+  if (matchesAnyGlob(normalized, patterns.doc_patterns)) return { kind: 'unit', unitClass: 'docs' };
+
+  // Module entrypoints (__init__.py, index.ts, config-mapped library modules).
+  if (matchesAnyGlob(normalized, patterns.module_patterns)) return { kind: 'unit', unitClass: 'modules' };
+
+  // Explicit path/glob override — highest-precedence extensionless tier; also forces odd names.
+  if (config.script_path_overrides && matchesAnyGlob(normalized, config.script_path_overrides)) {
+    return { kind: 'unit', unitClass: codeClass() };
   }
 
-  // Module class: __init__.py, index.ts, index.js
-  if (matchesAnyGlob(normalized, patterns.module_patterns)) {
-    return 'modules';
+  // Known code extension — includes test code (.py/.ts/.R…) and workflow DSLs (.cwl/.nf/.smk/.wdl).
+  if (ext && patterns.script_extensions.includes(ext)) return { kind: 'unit', unitClass: codeClass() };
+
+  // Named pipeline files.
+  if (basename === 'Snakefile' || basename === 'nextflow.config') return { kind: 'unit', unitClass: 'scripts' };
+
+  // Data assets — detection/traceability only, priced 0. `orphan_data_globs` is an operator ruling
+  // (curated data, no in-repo generator); the tool never infers fixture↔generator ownership.
+  if (ext && patterns.data_extensions.includes(ext)) {
+    const isOrphan = !!config.orphan_data_globs && matchesAnyGlob(normalized, config.orphan_data_globs);
+    return { kind: 'data', unitClass: isOrphan ? 'orphan_data' : 'data', reason: `data-extension:${ext}` };
   }
 
-  // Test class: skip (provides evidence, not a unit)
-  if (matchesAnyGlob(normalized, patterns.test_patterns)) {
-    return null;
-  }
+  // Extensionless executable, evidenced by a shebang.
+  if (ext === '' && shebang) return { kind: 'unit', unitClass: codeClass() };
 
-  // Script/tool class: script extensions
-  if (patterns.script_extensions.includes(ext)) {
-    // Files in tools/ candidate location get the 'tools' class
-    if (matchesAnyGlob(normalized, ['tools/**', 'bin/**'])) {
-      return 'tools';
-    }
-    return 'scripts';
-  }
+  // Unknown → operator ratifies (never a silent null).
+  return { kind: 'unclassified', reason: ext ? `unknown-extension:${ext}` : 'extensionless-no-shebang' };
+}
 
-  // Named pipeline files
-  if (basename === 'Snakefile' || basename === 'nextflow.config') {
-    return 'scripts';
-  }
-
+/**
+ * Rate-applicability narration flag (WK-0059) for a code unit, or null when the SRC-0002 260
+ * rate applies cleanly. Narration only — never changes arithmetic.
+ */
+const WORKFLOW_DSL_EXTS = new Set(['.cwl', '.nf', '.smk', '.wdl']);
+const SHELL_EXTS = new Set(['.sh', '.bash', '.zsh', '.ksh']);
+function computeRateFlag(filePath: string, isTest: boolean): RateFlag | null {
+  const normalized = filePath.replace(/\\/g, '/');
+  const ext = path.extname(normalized).toLowerCase();
+  const basename = path.basename(normalized);
+  if (isTest) return 'test-code';
+  if (WORKFLOW_DSL_EXTS.has(ext) || basename === 'Snakefile' || basename === 'nextflow.config') return 'workflow-dsl';
+  if (SHELL_EXTS.has(ext)) return 'shell-wrapper';
+  if (matchesAnyGlob(normalized, ['**/tests/**', '**/fixtures/**'])) return 'fixture-generator';
   return null;
 }
 
@@ -622,7 +732,15 @@ function gatherWkIds(
 // Config loading
 // ---------------------------------------------------------------------------
 
-function loadConfig(dir: string, optsConfig?: Partial<ValueConfig>): ValueConfig {
+function loadConfig(
+  dir: string,
+  optsConfig?: Partial<ValueConfig>,
+  frozenConfig?: ValueConfig,
+): ValueConfig {
+  // Freeze (WK-0059): a published VAL's resolved config is used verbatim — file + defaults are
+  // bypassed — so re-render reproduces the figures regardless of later `.value-config.json` edits.
+  if (frozenConfig) return frozenConfig;
+
   let merged: ValueConfig = { ...DEFAULT_CONFIG };
 
   const filePath = path.join(dir, 'wiki', '.value-config.json');
@@ -646,12 +764,42 @@ function deepMergeConfig(base: ValueConfig, over: Partial<ValueConfig>): ValueCo
   const result: ValueConfig = { ...base };
   if (over.loc_per_day !== undefined) result.loc_per_day = over.loc_per_day;
   if (over.ccusage_version !== undefined) result.ccusage_version = over.ccusage_version;
-  if (over.exclude_globs) result.exclude_globs = over.exclude_globs;
+  // Excludes are ADD-ONLY (WK-0059): union with the frozen defaults so local config can add
+  // excludes but can never negate the WK-0055 generated-file excludes (test-enforced).
+  if (over.exclude_globs) {
+    result.exclude_globs = [...new Set([...base.exclude_globs, ...over.exclude_globs])];
+  }
   if (over.classification_patterns) {
     result.classification_patterns = { ...base.classification_patterns, ...over.classification_patterns };
   }
+  if (over.script_path_overrides !== undefined) result.script_path_overrides = over.script_path_overrides;
+  if (over.orphan_data_globs !== undefined) result.orphan_data_globs = over.orphan_data_globs;
   if (over.model_patterns !== undefined) result.model_patterns = over.model_patterns;
   return result;
+}
+
+/**
+ * Canonical JSON with recursively sorted object keys — so the serialization (and any hash of it)
+ * is invariant to property order (e.g. a config that round-tripped through a published VAL).
+ */
+function canonicalize(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalize);
+  if (value && typeof value === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const key of Object.keys(value as Record<string, unknown>).sort()) {
+      out[key] = canonicalize((value as Record<string, unknown>)[key]);
+    }
+    return out;
+  }
+  return value;
+}
+
+/**
+ * Stable fingerprint of a resolved config (WK-0059). Recorded alongside a published VAL as its
+ * config provenance; invariant to key order so a frozen round-tripped config hashes identically.
+ */
+function hashConfig(config: ValueConfig): string {
+  return createHash('sha256').update(JSON.stringify(canonicalize(config))).digest('hex').slice(0, 16);
 }
 
 // ---------------------------------------------------------------------------
@@ -688,7 +836,7 @@ export async function computeValueReport(opts: ValueReportOpts): Promise<Result<
     return fail('GIT_UNAVAILABLE', `Could not resolve HEAD in: ${dir}`);
   }
 
-  const config = loadConfig(dir, opts.config);
+  const config = loadConfig(dir, opts.config, opts.frozenConfig);
 
   // Resolve head ref — fail loud on an unresolvable ref (WK-0053: the silent fallback to
   // HEAD produced a wrong-span report)
@@ -745,6 +893,10 @@ export async function computeValueReport(opts: ValueReportOpts): Promise<Result<
 
   // Endpoint diff (net LOC per surviving file)
   const endpointNumstat = getEndpointNumstat(dir, baseSha, resolvedHead, inclusive);
+
+  // Full surviving-file list (WK-0059) — includes binary data assets that numstat drops. This is
+  // the no-silent-drop classification universe; numstat still supplies net LOC for text files.
+  const endpointFileList = getEndpointFileList(dir, baseSha, resolvedHead, inclusive);
 
   // Total additions across all commits (for churn)
   const totalAdditions = getTotalAdditionsInRange(dir, baseSha, resolvedHead, inclusive);
@@ -825,12 +977,17 @@ export async function computeValueReport(opts: ValueReportOpts): Promise<Result<
     }
   }
 
-  // Surviving files set and per-file LOC map
-  const survivingFiles = new Set(includedFiles.map(f => f.file));
+  // Per-file net LOC (numstat text; binary/absent → 0). Classification universe = the full
+  // surviving-file list minus excluded globs, unioned with the (already non-excluded) numstat
+  // text files — so binary data assets are classified but no text file is ever missed (WK-0059).
   const fileNetLoc = new Map<string, number>();
   for (const f of includedFiles) {
     fileNetLoc.set(f.file, f.added);
   }
+  const survivingFiles = new Set<string>([
+    ...includedFiles.map(f => f.file),
+    ...endpointFileList.filter(f => !matchesAnyGlob(f, config.exclude_globs)),
+  ]);
 
   // Identify test files
   const testFileSet = new Set<string>();
@@ -839,7 +996,7 @@ export async function computeValueReport(opts: ValueReportOpts): Promise<Result<
   }
 
   // Classify units and assign evidence (tested > wired > linked > candidate > survives)
-  const unitCounts: Record<UnitClass, UnitClassCounts> = {
+  const unitCounts: Record<CodeUnitClass, UnitClassCounts> = {
     scripts: { survives: 0, wired: 0, tested: 0 },
     modules: { survives: 0, wired: 0, tested: 0 },
     tools: { survives: 0, wired: 0, tested: 0 },
@@ -848,13 +1005,29 @@ export async function computeValueReport(opts: ValueReportOpts): Promise<Result<
 
   const unitDetails: ValueUnitDetail[] = [];
   const candidates: ValueCandidate[] = [];
+  const dataTraces: ValueDataTrace[] = [];
 
   for (const fp of survivingFiles) {
-    if (testFileSet.has(fp)) continue;
+    const ext = path.extname(fp).toLowerCase();
+    // Shebang read is bounded to extensionless files (rare); the reliable exec signal on
+    // git-for-Windows, where the exec bit is not preserved (WK-0059 precedence note).
+    const shebang = ext === '' ? hasShebang(dir, resolvedHead, fp) : false;
+    const cls = classifyFile(fp, config, shebang);
 
-    const unitClass = classifyUnit(fp, config);
-    if (!unitClass) continue;
+    // Data assets — priced 0, detection/traceability only. Never a review (estimate) unit.
+    if (cls.kind === 'data') {
+      dataTraces.push({ path: fp, unitClass: cls.unitClass, net_loc: fileNetLoc.get(fp) ?? 0, reason: cls.reason });
+      continue;
+    }
+    // Unknown types — surfaced for operator ratification (the no-silent-drop spine). Valued 0.
+    if (cls.kind === 'unclassified') {
+      candidates.push({ path: fp, unitClass: 'unclassified', reason: cls.reason });
+      continue;
+    }
 
+    // Code/doc floor unit — evidence ladder. Test code is NO LONGER skipped: it is its own floor
+    // unit AND still marks its target 'tested' (testFileSet, below) with no numeric double-count.
+    const unitClass = cls.unitClass;
     const netLoc = fileNetLoc.get(fp) ?? 0;
     let evidence: ValueUnitDetail['evidence'] = 'survives';
 
@@ -908,18 +1081,15 @@ export async function computeValueReport(opts: ValueReportOpts): Promise<Result<
   }
 
   // COCOMO II nominal ceiling (WK-0041): code-only net LOC = classifier-recognized code units
-  // (unitClass scripts/modules/tools, NOT docs) + test files. Config, data, and unclassified text
-  // are NOT SLOC (COCOMO II / SEI counting checklist: source statements only; data & docs excluded).
-  // unitDetails already excludes docs, test files, and unclassified files (classifyUnit -> null ->
-  // skipped), so filtering it to non-docs is exactly the code-unit surface; test-file LOC is added
-  // back from testFileSet via fileNetLoc. Positive definition via classification patterns, not an
-  // extension blocklist (CWL is YAML -> a blocklist would drop real workflow code). Residual error
-  // direction is undercount (a DSL missing from patterns shrinks the ceiling) -- conservative.
-  const codeUnitNetLoc = unitDetails
+  // (unitClass scripts/modules/tools, NOT docs). Data assets and unclassified files are NOT SLOC
+  // (COCOMO II / SEI counting checklist: source statements only; data & docs excluded). Positive
+  // definition via classification patterns, not an extension blocklist (CWL is YAML -> a blocklist
+  // would drop real workflow code); a DSL missing from patterns shrinks the ceiling -- conservative.
+  // Since WK-0059, test code is a first-class unit in unitDetails, so it is captured here directly;
+  // the old `+ testNetLoc` add-back is gone (it would double-count now that test code is a unit).
+  const codeOnlyNetLoc = unitDetails
     .filter(d => d.unitClass !== 'docs')
     .reduce((sum, d) => sum + d.netLoc, 0);
-  const testNetLoc = [...testFileSet].reduce((sum, fp) => sum + (fileNetLoc.get(fp) ?? 0), 0);
-  const codeOnlyNetLoc = codeUnitNetLoc + testNetLoc;
   const { cocomo_kloc, cocomo_pm_nominal } = computeCocomo(codeOnlyNetLoc);
 
   // Reverted commits
@@ -935,7 +1105,9 @@ export async function computeValueReport(opts: ValueReportOpts): Promise<Result<
   const testsAdded = [...survivingFiles].filter(f => testFileSet.has(f)).length;
   const filesChanged = includedFiles.length;
 
-  // Build review_units[]: tested/wired/linked/candidate tiers; exclude pure-survives and test files
+  // Build review_units[]: tested/wired/linked/candidate tiers; exclude pure-survives only.
+  // Test code IS a review unit since WK-0059 (the test-file skip was removed) — it is both its
+  // own floor unit and still marks its target 'tested'.
   const reviewUnits: ValueReviewUnit[] = [];
   for (const detail of unitDetails) {
     if (detail.evidence === 'survives') continue; // pure-survives excluded
@@ -958,6 +1130,7 @@ export async function computeValueReport(opts: ValueReportOpts): Promise<Result<
       wk_ids: unitWkIds,
       net_loc: detail.netLoc,
       loc_reference: detail.netLoc / config.loc_per_day,
+      rate_flag: computeRateFlag(detail.path, testFileSet.has(detail.path)),
     });
   }
 
@@ -991,7 +1164,10 @@ export async function computeValueReport(opts: ValueReportOpts): Promise<Result<
     graph_available: graphAvailable,
     loc_per_day: config.loc_per_day,
     review_units: reviewUnits,
+    data_traces: dataTraces,
     candidates,
     unit_details: unitDetails,
+    resolved_config: config,
+    config_hash: hashConfig(config),
   });
 }

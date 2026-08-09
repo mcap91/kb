@@ -98,21 +98,46 @@ export const unitEvidenceSchema = z.enum([
   'survives',
 ]);
 
-/** Unit class for the working-shipped-units capture model (spec §5.1). */
-export const unitClassSchema = z.enum(['scripts', 'modules', 'tools', 'docs']);
+/** Code/doc unit classes — the calibrated-rate estimate surface (spec §5.1). */
+export const codeUnitClassSchema = z.enum(['scripts', 'modules', 'tools', 'docs']);
+
+/**
+ * Unit class for the working-shipped-units capture model (spec §5.1; widened by WK-0059).
+ * Code/doc classes are the estimate surface; `data`/`orphan_data` are priced-0 traces;
+ * `unclassified` is an unknown type awaiting operator ratification.
+ */
+export const unitClassSchema = z.enum([
+  'scripts', 'modules', 'tools', 'docs', 'data', 'orphan_data', 'unclassified',
+]);
+
+/** Rate-applicability narration flag (WK-0059). Narration only — never changes arithmetic. */
+export const rateFlagSchema = z.enum(['test-code', 'fixture-generator', 'workflow-dsl', 'shell-wrapper']);
 
 /**
  * One row in the unified review surface emitted by value-report.
- * Covers tested / wired / linked / candidate tiers; excludes pure-survives and test files.
+ * Covers tested / wired / linked / candidate tiers; excludes pure-survives.
+ * Code units only; data assets live in `data_traces` (WK-0059).
  */
 export const valueReviewUnitSchema = z.object({
   path: z.string(),
-  unitClass: unitClassSchema,
+  unitClass: codeUnitClassSchema,
   tier: unitEvidenceSchema,
   wk_ids: z.array(z.string()),
   net_loc: z.number(),
   /** Reference floor: net_loc / loc_per_day. Printed for the agent tripwire check. */
   loc_reference: z.number(),
+  /** Rate-applicability narration flag, or null when the calibrated rate applies cleanly. */
+  rate_flag: rateFlagSchema.nullable(),
+});
+
+/**
+ * A committed/linked data asset (WK-0059) — detection/traceability only, always priced 0.
+ */
+export const valueDataTraceSchema = z.object({
+  path: z.string(),
+  unitClass: z.enum(['data', 'orphan_data']),
+  net_loc: z.number(),
+  reason: z.string(),
 });
 
 // ---------------------------------------------------------------------------
