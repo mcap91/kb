@@ -335,8 +335,26 @@ export type WikiFrontmatter =
 // Value report / usage operation types (value-report + value-usage tools)
 // ---------------------------------------------------------------------------
 
-/** Unit classes for the working-shipped-units capture model (spec §5.1). */
-export type UnitClass = 'scripts' | 'modules' | 'tools' | 'docs';
+/** Code/doc unit classes — the calibrated-rate estimate surface (spec §5.1). */
+export type CodeUnitClass = 'scripts' | 'modules' | 'tools' | 'docs';
+
+/** Data-asset classes — detection/traceability only, always priced 0 (WK-0059). */
+export type DataUnitClass = 'data' | 'orphan_data';
+
+/**
+ * Unit classes for the working-shipped-units capture model (spec §5.1; widened by WK-0059).
+ * Code/doc classes are the estimate surface; `data`/`orphan_data` are priced-0 traces;
+ * `unclassified` marks an unknown committed/linked type surfaced for operator ratification
+ * (the tool never silently drops a file to `null`).
+ */
+export type UnitClass = CodeUnitClass | DataUnitClass | 'unclassified';
+
+/**
+ * Rate-applicability narration flag (WK-0059): classes where the SRC-0002 260 LOC/day rate
+ * transfers unevenly and whose error direction is not uniformly conservative. Narration only —
+ * never changes arithmetic; flagged rows are operator-ratification candidates.
+ */
+export type RateFlag = 'test-code' | 'fixture-generator' | 'workflow-dsl' | 'shell-wrapper';
 
 /**
  * One config-driven arm mapping rule.
@@ -369,7 +387,25 @@ export interface ValueConfig {
     test_patterns: string[];
     module_patterns: string[];
     doc_patterns: string[];
+    /**
+     * Data-asset extensions (WK-0059). Detection/traceability only — files whose final
+     * extension matches classify as `data` and are priced 0. Positive list; unknown
+     * extensions become `unclassified` candidates for operator ratification (never `null`).
+     */
+    data_extensions: string[];
   };
+  /**
+   * Exact-path / glob overrides that force a file to the script/tool class (WK-0059).
+   * Highest-precedence tier of extensionless-executable detection (override → shebang →
+   * candidate-location). Optional; default []. Absent means no forced classifications.
+   */
+  script_path_overrides?: string[];
+  /**
+   * Globs an operator has ruled as curated data with no in-repo generator (WK-0059).
+   * Matching data files classify as `orphan_data` (unpriced/flagged) instead of `data`.
+   * Operator ruling — the tool never infers generator ownership. Optional; default [].
+   */
+  orphan_data_globs?: string[];
   /**
    * Ordered list of pattern → arm rules consulted BEFORE the built-in heuristics.
    * Use to map gateway-rewritten or enterprise model ids (Bedrock, Vertex) to
@@ -388,21 +424,32 @@ export interface ValueReportOpts {
   /** Head ref override; default = HEAD. */
   untilRef?: string;
   config?: Partial<ValueConfig>;
+  /**
+   * Fully-resolved frozen config from a published VAL (WK-0059). When present it is used
+   * verbatim — `wiki/.value-config.json` and code defaults are bypassed — so a re-render
+   * reproduces the published figures regardless of later config edits. Takes precedence
+   * over `config`. Emitted as `resolved_config` (+ `config_hash`) for the operator to freeze.
+   */
+  frozenConfig?: ValueConfig;
   verbose?: boolean;
 }
 
-/** A pattern-only unit surfaced for OPERATOR confirmation (valued at zero until then). */
+/**
+ * A unit surfaced for OPERATOR confirmation (valued at zero until then).
+ * Two kinds (WK-0059): a code file in a runnable candidate location (`unitClass` = a code class),
+ * or an unknown committed/linked type the tool cannot classify (`unitClass` = 'unclassified').
+ */
 export interface ValueCandidate {
   path: string;
   unitClass: UnitClass;
-  /** The runnable-location pattern that matched (audit trail). */
+  /** The candidate-location pattern or discovery reason that matched (audit trail). */
   reason: string;
 }
 
-/** Per-unit evidence detail (verbose audit trail; which branch fired). */
+/** Per-unit evidence detail (verbose audit trail; which branch fired). Code/doc units only. */
 export interface ValueUnitDetail {
   path: string;
-  unitClass: UnitClass;
+  unitClass: CodeUnitClass;
   /** Tier ladder: tested > wired > linked > candidate > survives. */
   evidence: 'tested' | 'wired' | 'linked' | 'candidate' | 'survives';
   netLoc: number;
@@ -410,17 +457,39 @@ export interface ValueUnitDetail {
 
 /**
  * One row in the unified review surface emitted by value-report.
- * Covers tested / wired / linked / candidate tiers; excludes pure-survives and test files.
+ * Covers tested / wired / linked / candidate tiers; excludes pure-survives.
  * This list IS the estimate basis — agent proposes human_days per row, operator ratifies.
+ * Code units only; data assets live in `data_traces` (priced 0), never here (WK-0059).
  */
 export interface ValueReviewUnit {
   path: string;
-  unitClass: UnitClass;
+  unitClass: CodeUnitClass;
   tier: 'tested' | 'wired' | 'linked' | 'candidate' | 'survives';
   wk_ids: string[];
   net_loc: number;
   /** Reference floor: net_loc / loc_per_day. Printed for the agent tripwire check. */
   loc_reference: number;
+  /**
+   * Rate-applicability narration flag (WK-0059), or null when the calibrated rate applies
+   * cleanly. Narration only — never changes arithmetic; a set flag marks the row as an
+   * operator-ratification candidate whose replication cost the 260 rate may mis-price.
+   */
+  rate_flag: RateFlag | null;
+}
+
+/**
+ * A committed/linked data asset (WK-0059). Detection/traceability only — always priced 0.
+ * The tool attempts no fixture↔generator ownership mapping: every data file is priced 0 and
+ * the in-repo generator (if any) carries value as the code it is, counted once.
+ */
+export interface ValueDataTrace {
+  path: string;
+  /** `data` (detected) or `orphan_data` (operator-ruled curated data, no in-repo generator). */
+  unitClass: DataUnitClass;
+  /** Net added LOC (informational; 0 for binary assets). Never priced. */
+  net_loc: number;
+  /** Why it classified as data (e.g. `data-extension:.csv`, `orphan_data_glob`). */
+  reason: string;
 }
 
 /** Per-class survives/wired/tested counts. */
@@ -474,8 +543,8 @@ export interface ValueMetrics {
   net_loc_added: number;
   net_loc_removed: number;
   tests_added: number;
-  // Unit classification counts
-  units: Record<UnitClass, UnitClassCounts>;
+  // Unit classification counts (code/doc classes only; data & unclassified are separate surfaces)
+  units: Record<CodeUnitClass, UnitClassCounts>;
   units_candidates: number;
   // Churn / exclusions
   churn_loc: number;
@@ -492,9 +561,19 @@ export interface ValueMetrics {
   loc_per_day: number;
   // Unified review surface: tested/wired/linked/candidate units; the estimate basis.
   review_units: ValueReviewUnit[];
+  // Data assets (WK-0059): detection/traceability only, always priced 0.
+  data_traces: ValueDataTrace[];
   // Full audit trail
   candidates: ValueCandidate[];
   unit_details: ValueUnitDetail[];
+  /**
+   * The fully-resolved config used for this run (WK-0059). Freeze this into the published
+   * VAL (or a sidecar) so a re-render reproduces the figures via `frozenConfig`, invariant
+   * under later `wiki/.value-config.json` edits.
+   */
+  resolved_config: ValueConfig;
+  /** Stable hash of `resolved_config` — the config fingerprint recorded alongside a published VAL. */
+  config_hash: string;
 }
 
 /** Options for computeValueUsage (the one network/exec-touching tool). */

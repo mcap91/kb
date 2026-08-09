@@ -62,6 +62,23 @@ function deleteFile(dir: string, relPath: string, message: string, authorDate?: 
 }
 
 /**
+ * Write a file with a NUL byte so git records it as binary (real .parquet/.h5ad/.npy),
+ * then commit. Binary files are dropped by `git diff --numstat`, so the classifier must
+ * discover them via the name-status file list — the WK-0059 no-silent-drop guarantee.
+ */
+function commitBinaryFile(dir: string, relPath: string, message: string, authorDate?: string): string {
+  const abs = path.join(dir, relPath);
+  fs.mkdirSync(path.dirname(abs), { recursive: true });
+  fs.writeFileSync(abs, Buffer.from([0x50, 0x41, 0x52, 0x31, 0x00, 0x01, 0x02, 0x00, 0xff, 0xfe]));
+  execSync(`git add "${relPath}"`, { cwd: dir, stdio: 'pipe' });
+  const dateEnv = authorDate
+    ? { ...process.env, GIT_AUTHOR_DATE: authorDate, GIT_COMMITTER_DATE: authorDate }
+    : process.env;
+  execSync(`git commit -m "${message}"`, { cwd: dir, stdio: 'pipe', env: dateEnv });
+  return execSync('git rev-parse HEAD', { cwd: dir, encoding: 'utf-8', stdio: 'pipe' }).trim();
+}
+
+/**
  * Get the first commit SHA in the repo.
  */
 function firstCommit(dir: string): string {
@@ -607,9 +624,10 @@ describe('review_units[] — unified review surface', () => {
 
   afterEach(() => tmp.cleanup());
 
-  it('review_units includes tested, wired, linked, candidate tiers but excludes pure-survives and test files', async () => {
-    // WHY: review_units is both the review surface and the estimate basis;
-    // pure-survives are not estimate candidates and test files are evidence, not units.
+  it('review_units includes tested, wired, linked, candidate tiers and test code as a floor unit; excludes pure-survives', async () => {
+    // WHY: review_units is both the review surface and the estimate basis; pure-survives are not
+    // estimate candidates. Since WK-0059 test code is a floor unit too (it both provides 'tested'
+    // evidence to its target AND counts as its own unit — additive, no numeric double-count).
     tmp = createTmpDir();
     initRepo(tmp.dir);
 
@@ -646,11 +664,11 @@ describe('review_units[] — unified review surface', () => {
     expect(paths).toContain('scripts/linked.py');
     expect(paths).toContain('analysis/candidate.py');
 
-    // Excluded: pure survives (orphan.ts has inbound 'imports' from wired.ts → wired, actually)
-    // orphan.ts is imported by wired.ts so it IS wired — included
-    // The true pure-survives case: a file with no edges and no candidate location
-    // Here: the test file itself must not appear
-    expect(paths).not.toContain('tests/tested.test.ts');
+    // orphan.ts is imported by wired.ts so it IS wired — included (the true pure-survives
+    // exclusion is covered by the §11.6 orphan-file test). WK-0059: test code is now a floor unit
+    // too — tested.test.ts imports src/tested.ts (outbound edge) so it appears as 'wired'.
+    expect(paths).toContain('tests/tested.test.ts');
+    expect(result.data.review_units.find(u => u.path === 'tests/tested.test.ts')?.tier).toBe('wired');
   });
 
   it('review_units.loc_reference = net_loc / loc_per_day (the LOC tripwire reference)', async () => {
@@ -913,8 +931,8 @@ describe('workflow-repo fixture: pilot minimal acceptance test', () => {
     // analysis/report.py → candidate (candidate_location, no edges)
     expect(reviewMap.get('analysis/report.py')?.tier).toBe('candidate');
 
-    // test file excluded from review_units
-    expect(reviewMap.has('tests/core.test.ts')).toBe(false);
+    // WK-0059: test code is a floor unit — core.test.ts imports src/core.ts (outbound) → wired
+    expect(reviewMap.get('tests/core.test.ts')?.tier).toBe('wired');
 
     // wk_ids discovered via graph even with silent commit messages
     expect(result.data.wk_ids).toContain('WK-0100');
@@ -1406,5 +1424,301 @@ describe('generated artifacts excluded from net LOC (WK-0053)', () => {
       expect(result.data.net_loc_added).toBe(2); // only a.py counts
       expect(result.data.excluded_files).toBeGreaterThanOrEqual(2);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// WK-0059 — no silent drop: extensionless execs, data-asset detection, tests/**
+// code as floor units, unknown-type discovery; per-VAL config freeze; the
+// WK-0055 generated-excludes stay non-negotiable.
+// ---------------------------------------------------------------------------
+
+describe('WK-0059 no-silent-drop classifier + config freeze', () => {
+  let tmp: TmpRepo;
+
+  afterEach(() => tmp.cleanup());
+
+  /**
+   * The WK-0059 minimal-reproduction repo: an extensionless CLI (shebang), a fixture generator
+   * and real test code under tests/, generated/curated/vendored data assets (text + binary),
+   * a workflow-DSL file, and an unknown extension. The four code files are wiki-linked so they
+   * reach review_units as priced floor units. Returns the base (first) commit.
+   */
+  function buildReproRepo(t: TmpRepo): string {
+    initRepo(t.dir);
+    const base = commitFile(t.dir, 'scripts/my-cli',
+      '#!/usr/bin/env python3\nimport sys\nprint("run", sys.argv)\n', 'add extensionless cli');
+    commitFile(t.dir, 'tests/fixtures/make_sample.py',
+      'import anndata\n# builds the fixture below\nanndata.AnnData().write("sample.h5ad")\n', 'add fixture generator');
+    commitBinaryFile(t.dir, 'tests/fixtures/sample.h5ad', 'add generated fixture');
+    commitFile(t.dir, 'registry/datasets.csv', 'id,name\n1,alpha\n2,beta\n', 'add dataset registry');
+    commitFile(t.dir, 'data/curated_panel.csv', 'gene,panel\nTP53,onco\nEGFR,onco\n', 'add curated panel');
+    commitBinaryFile(t.dir, 'data/vendored.parquet', 'add vendored parquet');
+    commitFile(t.dir, 'pipeline/step.cwl',
+      'class: Workflow\ncwlVersion: v1.2\ninputs: {}\nsteps: {}\n', 'add cwl workflow');
+    commitFile(t.dir, 'data/molecule.sdf', 'header\n  fake sdf\nM  END\n', 'add unknown-type asset');
+    commitFile(t.dir, 'tests/test_smoke.py', 'def test_smoke():\n    assert True\n', 'add test code');
+
+    writeGraph(t.dir, [
+      { id: 'scripts/my-cli', kind: 'code_file' },
+      { id: 'tests/fixtures/make_sample.py', kind: 'code_file' },
+      { id: 'tests/test_smoke.py', kind: 'code_file' },
+      { id: 'pipeline/step.cwl', kind: 'code_file' },
+      { id: 'wiki/issues/WK-0059.md', kind: 'doc_file' },
+    ], [
+      { source: 'wiki/issues/WK-0059.md', target: 'scripts/my-cli', relation: 'repo_path' },
+      { source: 'wiki/issues/WK-0059.md', target: 'tests/fixtures/make_sample.py', relation: 'repo_path' },
+      { source: 'wiki/issues/WK-0059.md', target: 'tests/test_smoke.py', relation: 'repo_path' },
+      { source: 'wiki/issues/WK-0059.md', target: 'pipeline/step.cwl', relation: 'repo_path' },
+    ]);
+    return base;
+  }
+
+  it('no committed non-excluded file is absent from all surfaces (the measurable no-silent-drop AC)', async () => {
+    // WHY: the core bug — classifyUnit returned null for extensionless execs, non-test code under
+    // tests/, and unknown types, dropping them from every surface. Every committed/linked file must
+    // now appear as a review unit, a data trace, or an unclassified candidate.
+    tmp = createTmpDir();
+    const base = buildReproRepo(tmp);
+
+    const result = await computeValueReport({ dir: tmp.dir, since: base });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const committed = [
+      'scripts/my-cli', 'tests/fixtures/make_sample.py', 'tests/fixtures/sample.h5ad',
+      'registry/datasets.csv', 'data/curated_panel.csv', 'data/vendored.parquet',
+      'pipeline/step.cwl', 'data/molecule.sdf', 'tests/test_smoke.py',
+    ];
+    const surfaced = new Set<string>([
+      ...result.data.review_units.map(u => u.path),
+      ...result.data.data_traces.map(d => d.path),
+      ...result.data.candidates.map(c => c.path),
+      ...result.data.unit_details.map(d => d.path),
+    ]);
+    for (const f of committed) {
+      expect(surfaced.has(f), `${f} was silently dropped`).toBe(true);
+    }
+  });
+
+  it('extensionless CLI, fixture generator, test code, and workflow DSL are priced code review_units', async () => {
+    // WHY: AC — these shipped surfaces must be counted floor units at the code rate, not dropped.
+    tmp = createTmpDir();
+    const base = buildReproRepo(tmp);
+
+    const result = await computeValueReport({ dir: tmp.dir, since: base });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const byPath = new Map(result.data.review_units.map(u => [u.path, u]));
+    for (const p of ['scripts/my-cli', 'tests/fixtures/make_sample.py', 'tests/test_smoke.py', 'pipeline/step.cwl']) {
+      expect(byPath.has(p), `${p} missing from review_units`).toBe(true);
+      expect(byPath.get(p)!.loc_reference).toBeGreaterThan(0); // priced at the code rate
+    }
+    // the extensionless CLI classified as code via its shebang
+    expect(['scripts', 'tools']).toContain(byPath.get('scripts/my-cli')!.unitClass);
+  });
+
+  it('every data file is a priced-0 data trace, absent from review_units; a generator is counted once', async () => {
+    // WHY: AC — fixtures are valued through code with NO ownership mapping; every data file priced 0,
+    // every generator counted once even though it emits many outputs (no size/anchor blob pricing).
+    tmp = createTmpDir();
+    const base = buildReproRepo(tmp);
+
+    const result = await computeValueReport({ dir: tmp.dir, since: base });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const dataPaths = result.data.data_traces.map(d => d.path);
+    for (const d of ['tests/fixtures/sample.h5ad', 'registry/datasets.csv', 'data/curated_panel.csv', 'data/vendored.parquet']) {
+      expect(dataPaths, `${d} missing from data_traces`).toContain(d);
+    }
+    const reviewPaths = result.data.review_units.map(u => u.path);
+    for (const d of dataPaths) {
+      expect(reviewPaths, `${d} must not be priced`).not.toContain(d);
+    }
+    // the generator is counted exactly once; its output (sample.h5ad) adds no priced unit
+    expect(reviewPaths.filter(p => p === 'tests/fixtures/make_sample.py').length).toBe(1);
+    expect(reviewPaths).not.toContain('tests/fixtures/sample.h5ad');
+  });
+
+  it('unknown extension surfaces as an unclassified candidate — never priced or auto-counted (operator gate)', async () => {
+    // WHY: AC — the tool cannot promote an unknown type to countable; unknown types are surfaced
+    // for operator ratification, valued 0 until then.
+    tmp = createTmpDir();
+    const base = buildReproRepo(tmp);
+
+    const result = await computeValueReport({ dir: tmp.dir, since: base });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const sdf = result.data.candidates.find(c => c.path === 'data/molecule.sdf');
+    expect(sdf, 'unknown .sdf missing from candidates').toBeDefined();
+    expect(sdf?.unitClass).toBe('unclassified');
+    // never counted as code
+    expect(result.data.review_units.some(u => u.path === 'data/molecule.sdf')).toBe(false);
+    expect(result.data.unit_details.some(d => d.path === 'data/molecule.sdf')).toBe(false);
+  });
+
+  it('rate-applicability flags fire on test code, fixture generators, and workflow DSLs', async () => {
+    // WHY: AC — the 260 rate transfers unevenly to these classes; each flagged row is an
+    // operator-ratification candidate. Narration only — never changes arithmetic.
+    tmp = createTmpDir();
+    const base = buildReproRepo(tmp);
+
+    const result = await computeValueReport({ dir: tmp.dir, since: base });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const byPath = new Map(result.data.review_units.map(u => [u.path, u]));
+    expect(byPath.get('tests/test_smoke.py')?.rate_flag).toBe('test-code');
+    expect(byPath.get('tests/fixtures/make_sample.py')?.rate_flag).toBe('fixture-generator');
+    expect(byPath.get('pipeline/step.cwl')?.rate_flag).toBe('workflow-dsl');
+    // a plain code CLI carries no flag (calibrated rate applies)
+    expect(byPath.get('scripts/my-cli')?.rate_flag).toBeNull();
+  });
+
+  it('shell-wrapper units are rate-flagged', async () => {
+    // WHY: shell wrappers are the fourth uneven-rate class in the AC.
+    tmp = createTmpDir();
+    initRepo(tmp.dir);
+    const base = commitFile(tmp.dir, 'bin/run.sh', '#!/bin/bash\nsnakemake --cores 4\n', 'add wrapper');
+    writeGraph(tmp.dir, [
+      { id: 'bin/run.sh', kind: 'code_file' },
+      { id: 'wiki/issues/WK-0059.md', kind: 'doc_file' },
+    ], [
+      { source: 'wiki/issues/WK-0059.md', target: 'bin/run.sh', relation: 'repo_path' },
+    ]);
+
+    const result = await computeValueReport({ dir: tmp.dir, since: base });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const unit = result.data.review_units.find(u => u.path === 'bin/run.sh');
+    expect(unit?.rate_flag).toBe('shell-wrapper');
+  });
+
+  it('extensionless file without a shebang is an unclassified candidate, not an auto-swept script', async () => {
+    // WHY: precedence is override → shebang → candidate-location. A plain blob in scripts/ with no
+    // shebang and no override must NOT be silently counted as a script (attention-DoS / inflation).
+    tmp = createTmpDir();
+    initRepo(tmp.dir);
+    const base = commitFile(tmp.dir, 'scripts/blob', 'just some data\nno shebang here\n', 'add blob');
+
+    const result = await computeValueReport({ dir: tmp.dir, since: base });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.data.review_units.some(u => u.path === 'scripts/blob')).toBe(false);
+    const cand = result.data.candidates.find(c => c.path === 'scripts/blob');
+    expect(cand?.unitClass).toBe('unclassified');
+  });
+
+  it('operator can rule a data glob as orphan_data via config; still priced 0', async () => {
+    // WHY: orphan_curated_data (committed data, no in-repo generator) is unpriced + flagged. The
+    // ruling is operator config — the tool never infers generator ownership.
+    tmp = createTmpDir();
+    initRepo(tmp.dir);
+    const base = commitFile(tmp.dir, 'data/curated.csv', 'a,b\n1,2\n', 'add curated');
+
+    const cfgPath = path.join(tmp.dir, 'wiki', '.value-config.json');
+    fs.mkdirSync(path.dirname(cfgPath), { recursive: true });
+    fs.writeFileSync(cfgPath, JSON.stringify({ orphan_data_globs: ['data/**'] }), 'utf-8');
+
+    const result = await computeValueReport({ dir: tmp.dir, since: base });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const trace = result.data.data_traces.find(d => d.path === 'data/curated.csv');
+    expect(trace?.unitClass).toBe('orphan_data');
+    expect(result.data.review_units.some(u => u.path === 'data/curated.csv')).toBe(false);
+  });
+
+  it('code-only span: no data traces, no unclassified candidates, code figures intact (regression)', async () => {
+    // WHY: AC — widening the surface must not perturb a plain code span's numbers.
+    tmp = createTmpDir();
+    initRepo(tmp.dir);
+    const base = commitFile(tmp.dir, 'src/a.ts', 'export const a = 1;\n', 'add a');
+    commitFile(tmp.dir, 'src/b.ts', 'import { a } from "./a.js";\nexport const b = a + 1;\n', 'add b');
+    writeGraph(tmp.dir, [
+      { id: 'src/a.ts', kind: 'code_file' },
+      { id: 'src/b.ts', kind: 'code_file' },
+    ], [
+      { source: 'src/b.ts', target: 'src/a.ts', relation: 'imports' },
+    ]);
+
+    const result = await computeValueReport({ dir: tmp.dir, since: base });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.data.data_traces).toEqual([]);
+    expect(result.data.candidates.filter(c => c.unitClass === 'unclassified')).toEqual([]);
+    // a.ts imported by b.ts → wired; b.ts imports a.ts → wired
+    const byPath = new Map(result.data.review_units.map(u => [u.path, u]));
+    expect(byPath.get('src/a.ts')?.tier).toBe('wired');
+    expect(byPath.get('src/b.ts')?.tier).toBe('wired');
+  });
+
+  it('published figures are invariant under a later .value-config.json edit when re-run with the frozen config', async () => {
+    // WHY: AC — a published VAL must reproduce its figures from the frozen rulings + config hash,
+    // regardless of subsequent config edits. The fresh re-run proves the edit WOULD have moved the
+    // number, so the invariance is non-vacuous.
+    tmp = createTmpDir();
+    initRepo(tmp.dir);
+    const lines = Array.from({ length: 1000 }, (_, i) => `record ${i} in a custom source format`).join('\n') + '\n';
+    const base = commitFile(tmp.dir, 'pipeline/step.xyz', lines, 'add custom-format source');
+
+    // Published run — default config: .xyz is unknown → unclassified → not code → cocomo 0.
+    const published = await computeValueReport({ dir: tmp.dir, since: base });
+    expect(published.ok).toBe(true);
+    if (!published.ok) return;
+    const frozen = published.data.resolved_config;
+    expect(published.data.config_hash).toBeTruthy();
+    expect(published.data.cocomo_kloc).toBe(0);
+
+    // Operator later edits config to treat .xyz as code.
+    const cfgPath = path.join(tmp.dir, 'wiki', '.value-config.json');
+    fs.mkdirSync(path.dirname(cfgPath), { recursive: true });
+    fs.writeFileSync(cfgPath, JSON.stringify({
+      classification_patterns: { script_extensions: ['.py', '.ts', '.xyz'] },
+    }), 'utf-8');
+
+    // Re-render with the FROZEN config → figures pinned, invariant to the edit.
+    const reRender = await computeValueReport({ dir: tmp.dir, since: base, frozenConfig: frozen });
+    expect(reRender.ok).toBe(true);
+    if (!reRender.ok) return;
+    expect(reRender.data.cocomo_kloc).toBe(0);
+    expect(reRender.data.config_hash).toBe(published.data.config_hash);
+
+    // A FRESH run reads the edited file → the number moves, proving the edit mattered.
+    const fresh = await computeValueReport({ dir: tmp.dir, since: base });
+    expect(fresh.ok).toBe(true);
+    if (!fresh.ok) return;
+    expect(fresh.data.cocomo_kloc).toBeGreaterThan(0);
+  });
+
+  it('.value-config.json cannot negate the WK-0055 generated-excludes; it can only add excludes', async () => {
+    // WHY: AC — inclusion widening must not let local config silently re-admit generated files.
+    // A config that sets exclude_globs must union with the frozen defaults, never replace them.
+    tmp = createTmpDir();
+    initRepo(tmp.dir);
+    const base = commitFile(tmp.dir, 'a.py', 'x = 1\ny = 2\n', 'code');
+    commitFile(tmp.dir, 'graph-summary.md', 'g\n'.repeat(100), 'generated');
+    commitFile(tmp.dir, 'notes.foo', 'noise\n'.repeat(50), 'add foo');
+
+    // Attempt to wipe excludes and add a new one.
+    const cfgPath = path.join(tmp.dir, 'wiki', '.value-config.json');
+    fs.mkdirSync(path.dirname(cfgPath), { recursive: true });
+    fs.writeFileSync(cfgPath, JSON.stringify({ exclude_globs: ['**/*.foo'] }), 'utf-8');
+
+    const result = await computeValueReport({ dir: tmp.dir, since: base });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    // graph-summary.md STILL excluded (the frozen default survived the union) → only a.py counts.
+    expect(result.data.net_loc_added).toBe(2);
+    expect(result.data.resolved_config.exclude_globs).toContain('**/graph-summary.md');
+    // the operator's added exclude also took effect.
+    expect(result.data.resolved_config.exclude_globs).toContain('**/*.foo');
   });
 });
