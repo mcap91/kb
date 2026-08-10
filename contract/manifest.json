@@ -351,11 +351,6 @@
         "units_valued",
         "operator_assessment",
         "operator_notes",
-        "human_days_units",
-        "human_days_loc",
-        "human_days_anchor",
-        "time_saved_days",
-        "speedup",
         "replication_days",
         "saved_floor_days",
         "leverage",
@@ -425,7 +420,7 @@
   "excludedPrefixes": ["HO"],
   "generatedViews": {
     "canonical": false,
-    "defaultDirectory": "wiki/generated",
+    "defaultDirectory": "wiki",
     "standardFiles": [
       "wiki/catalog.md",
       "wiki/now.md",

@@ -273,17 +273,10 @@ One number prices this span's output; one measures its time; their ratio is the 
 
 - **Replication cost (claimed):** what the span's surviving units would take the operator to
   reproduce by hand, estimated as net LOC ÷ 260 — the operator's own rate measured over
-  129,447 net LOC / 498 active-days of pre-AI hand-written work (SRC-0002), cross-validated
-  leave-one-section-out (median 0.92, all sections within 2×), operator-ratified per unit. It
+  129,447 net LOC / 498 active-days of pre-AI hand-written work, operator-ratified per unit. It
   prices reconstruction of the artifact, as insurance prices rebuilding a house — it does not
   claim the operator would have built the same thing without AI; that counterfactual is not
   estimable and is not claimed.
-- **Rate validity (SRC-0002 Rung 1):** the flat 260 LOC/day amortizes design insight at
-  corpus-average density; project-level back-test reconstructs active-days within ~1.25× at
-  material scale (≥ ~2 KLOC per group), sign floor-consistent (predicted < actual in 3/4).
-  Below that grain, per-unit day-attribution is unreliable (passing-touch artifact — a
-  back-test slicing limit that does not arise in production leverage); small-row figures are
-  floor-only and rely on operator upward ratification for insight-dense edits.
 - **Days worked (measured):** distinct commit dates (work_days) — the same instrument the rate
   was calibrated with. Design/reading time invisible to git is missing from both sides equally
   and cancels in the ratio.

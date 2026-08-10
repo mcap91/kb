@@ -1470,59 +1470,9 @@ describe('defaultListWorktreeRoots — integration with real git worktree', () =
 });
 
 describe('WK-0036: contract preserved — pre-existing arm heuristics unchanged', () => {
-  it(
-    // WHY (WK-0036): fix must not regress the three plain heuristics.
-    'plain local colon form (qwen3-coder:30b) → still local/$0 with no config',
-    async () => {
-      const claudeJson = makeClaudeJson([
-        {
-          modelName: 'qwen3-coder:30b',
-          inputTokens: 500,
-          cacheCreationTokens: 0,
-          cacheReadTokens: 0,
-          outputTokens: 200,
-          cost: 0.001,
-        },
-      ]);
-      const deps: UsageDeps = {
-        runClaudeCcusage: () => claudeJson,
-        readCodexSessions: noCodex(),
-        fetchOpenRouterCredits: async () => null,
-      };
-      const result = await computeValueUsage({ dir: DIR, since: SINCE, until: UNTIL }, deps);
-      expect(result.ok).toBe(true);
-      if (!result.ok) return;
-
-      const m = result.data.by_model[0];
-      expect(m?.arm).toBe('local'); // contract: plain name:tag → local
-      expect(m?.cost_usd).toBe(0); // contract: local → $0
-    },
-  );
-
-  it('claude-* → subscription/null unchanged', async () => {
-    // WHY (WK-0036): subscription heuristic must still fire first.
-    const claudeJson = makeClaudeJson([
-      {
-        modelName: 'claude-sonnet-4-6',
-        inputTokens: 100,
-        cacheCreationTokens: 0,
-        cacheReadTokens: 0,
-        outputTokens: 50,
-        cost: 0.005,
-      },
-    ]);
-    const deps: UsageDeps = {
-      runClaudeCcusage: () => claudeJson,
-      readCodexSessions: noCodex(),
-      fetchOpenRouterCredits: async () => null,
-    };
-    const result = await computeValueUsage({ dir: DIR, since: SINCE, until: UNTIL }, deps);
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.data.by_model[0]?.arm).toBe('subscription');
-    expect(result.data.by_model[0]?.cost_usd).toBeNull();
-  });
-
+  // Plain-heuristic contract (claude-* → subscription, name:tag → local) is covered by the
+  // dedicated subscription-arm and local-arm describes above; only the slash-namespaced heuristic
+  // is guarded here to avoid duplicating those.
   it('slash-namespaced → openrouter unchanged', async () => {
     // WHY (WK-0036): openrouter heuristic must still fire.
     const claudeJson = makeClaudeJson([

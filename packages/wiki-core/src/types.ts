@@ -243,7 +243,7 @@ export interface ValueFrontmatter {
   work_days?: number;
   /** Σ per-day (last − first) author-commit span in hours; 0.5h floor per single-commit day. */
   work_hours?: number;
-  /** Frozen constant = 8; the anchor table's nominal day for hour↔day conversion. */
+  /** Frozen constant = 8; nominal work-day length for the display-only hour↔day conversion. */
   hours_per_work_day?: number;
   /**
    * COCOMO II nominal reference ceiling: code-only net added LOC / 1000.
@@ -286,14 +286,7 @@ export interface ValueFrontmatter {
   units_valued?: number;
   operator_assessment?: OperatorAssessment;
   operator_notes?: string;
-  // Estimate (agent-proposed via anchor table, operator-ratified; agent adjusts downward only)
-  human_days_units?: number;
-  human_days_loc?: number;
-  human_days_anchor?: number;
-  time_saved_days?: number; // may be negative — never clamped
-  speedup?: number; // may be < 1 — never clamped
-  // DEC-0003 flat-rate fields (human_days_*/time_saved_days/speedup above are legacy —
-  // kept so VAL-0001/0002 stay valid; new records emit these instead)
+  // Estimate (DEC-0003 flat-rate replication cost; operator-ratified per unit)
   replication_days?: number;
   saved_floor_days?: number; // may be negative — never clamped
   leverage?: number; // uncapped; may be < 1 — never clamped
@@ -379,7 +372,6 @@ export interface ValueConfig {
    *  Not the human-day estimator (that uses per-class tier rates in the template) and not a
    *  value ceiling. */
   loc_per_day: number;
-  ccusage_version: string;
   exclude_globs: string[];
   classification_patterns: {
     script_extensions: string[];
@@ -431,7 +423,6 @@ export interface ValueReportOpts {
    * over `config`. Emitted as `resolved_config` (+ `config_hash`) for the operator to freeze.
    */
   frozenConfig?: ValueConfig;
-  verbose?: boolean;
 }
 
 /**
@@ -458,7 +449,7 @@ export interface ValueUnitDetail {
 /**
  * One row in the unified review surface emitted by value-report.
  * Covers tested / wired / linked / candidate tiers; excludes pure-survives.
- * This list IS the estimate basis — agent proposes human_days per row, operator ratifies.
+ * This list IS the estimate basis — agent proposes replication days per row, operator ratifies.
  * Code units only; data assets live in `data_traces` (priced 0), never here (WK-0059).
  */
 export interface ValueReviewUnit {
@@ -523,8 +514,8 @@ export interface ValueMetrics {
    */
   work_hours: number;
   /**
-   * Anchor table's nominal day (8h). Used for work_hours ↔ days conversion,
-   * keeping the work_hours-derived alternative denominator unit-consistent with the numerator.
+   * Nominal work-day length (8h). Used only for the display-only work_hours ↔ days conversion;
+   * never enters estimate arithmetic (DEC-0003).
    */
   hours_per_work_day: number;
   /**
@@ -582,7 +573,6 @@ export interface ValueUsageOpts {
   since: string;
   until: string;
   ccusageVersion?: string;
-  verbose?: boolean;
   /**
    * Inline config overrides — primarily for tests (hermetic, no disk I/O).
    * `model_patterns` here take precedence over `wiki/.value-config.json`.

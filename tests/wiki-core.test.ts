@@ -2108,8 +2108,8 @@ describe('VAL value-report record type', () => {
 
   it('a hand-filled flat, numeric VAL record lints clean (z.coerce.number path)', async () => {
     // WHY: the frontmatter parser yields every scalar as a string, so VAL's schema must
-    // coerce numbers. A full numeric record — including a NEGATIVE time_saved_days and a
-    // speedup < 1 — must lint clean: the schema never clamps or rejects "no value" (spec §8.1).
+    // coerce numbers. A full numeric record — including a NEGATIVE saved_floor_days and a
+    // leverage < 1 — must lint clean: the schema never clamps or rejects "no value" (spec §8.1).
     tmp = await createBootstrappedRepo();
     writeRecord(
       tmp.dir,
@@ -2152,13 +2152,11 @@ describe('VAL value-report record type', () => {
         wk_created: 1,
         wk_closed: 0,
         graph_available: true,
-        human_days_units: 0,
-        human_days_loc: 2.67,
-        human_days_anchor: 0,
-        time_saved_days: -9,
-        speedup: 0,
+        replication_days: 0,
+        saved_floor_days: -9,
+        leverage: 0,
         operator_assessment: 'too_low',
-        estimate_basis: '0 valued units; loc floor 400/150; min->units=0; span 9',
+        estimate_basis: '0 valued units; flat 260 replication floor; span 9',
       },
       '## Summary\n\nNo working units this span.\n',
     );

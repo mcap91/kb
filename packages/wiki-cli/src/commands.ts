@@ -421,12 +421,11 @@ export async function cmdValueReport(args: string[]): Promise<void> {
 
   const since = parseValue(args, '--since');
   const untilRef = parseValue(args, '--until-ref');
-  const verbose = parseFlag(args, '--verbose');
 
   // Reject unknown/mistyped flags — a silently-dropped --untilRef (vs --until-ref) let the
   // report fall back to HEAD and cover the wrong span (WK-0053). No value token starts with
   // '--', so filtering '--'-prefixed args catches exactly the flags.
-  const KNOWN_FLAGS = ['--dir', '--since', '--until-ref', '--verbose'];
+  const KNOWN_FLAGS = ['--dir', '--since', '--until-ref'];
   const unknown = args.filter(a => a.startsWith('--') && !KNOWN_FLAGS.includes(a));
   if (unknown.length > 0) {
     console.error(`Error: unknown flag(s) for value-report: ${unknown.join(', ')}. Known: ${KNOWN_FLAGS.join(', ')}`);
@@ -434,7 +433,7 @@ export async function cmdValueReport(args: string[]): Promise<void> {
     return;
   }
 
-  const result = await computeValueReport({ dir, since, untilRef, verbose });
+  const result = await computeValueReport({ dir, since, untilRef });
 
   if (!result.ok) {
     console.error(`Error [${result.error}]: ${result.message}`);
@@ -460,9 +459,8 @@ export async function cmdValueUsage(args: string[]): Promise<void> {
   if (!until) return;
 
   const ccusageVersion = parseValue(args, '--ccusage-version');
-  const verbose = parseFlag(args, '--verbose');
 
-  const result = await computeValueUsage({ dir, since, until, ccusageVersion, verbose });
+  const result = await computeValueUsage({ dir, since, until, ccusageVersion });
 
   if (!result.ok) {
     console.error(`Error [${result.error}]: ${result.message}`);
