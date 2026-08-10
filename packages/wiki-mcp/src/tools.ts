@@ -149,7 +149,6 @@ export const tools: ToolDef[] = [
         dir: input.dir as string,
         since: input.since as string | undefined,
         untilRef: input.untilRef as string | undefined,
-        verbose: input.verbose as boolean | undefined,
       }),
   },
   {
@@ -167,7 +166,6 @@ export const tools: ToolDef[] = [
         since: input.since as string,
         until: input.until as string,
         ccusageVersion: input.ccusageVersion as string | undefined,
-        verbose: input.verbose as boolean | undefined,
       }),
   },
 ];

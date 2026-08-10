@@ -291,8 +291,8 @@ export const areaFrontmatterSchema = z.object({
  *
  * FLAT scalars + string arrays only (the parser is line-oriented and yields every
  * scalar as a string). Numeric fields use `z.coerce.number()` so string values from
- * the parser coerce cleanly; they are NOT clamped — a negative `time_saved_days` or a
- * `speedup` below 1 is valid and must lint clean (spec §8.1 falsifiability).
+ * the parser coerce cleanly; they are NOT clamped — a negative `saved_floor_days` or a
+ * `leverage` below 1 is valid and must lint clean (spec §8.1 falsifiability).
  */
 export const valueFrontmatterSchema = z.object({
   // Identity / scope (required)
@@ -357,12 +357,7 @@ export const valueFrontmatterSchema = z.object({
   units_valued: z.coerce.number().optional(),
   operator_assessment: operatorAssessmentSchema.optional(),
   operator_notes: z.string().optional(),
-  // Estimate (agent-proposed via anchor table, operator-ratified; agent adjusts downward only)
-  human_days_units: z.coerce.number().optional(),
-  human_days_loc: z.coerce.number().optional(),
-  human_days_anchor: z.coerce.number().optional(),
-  time_saved_days: z.coerce.number().optional(),
-  speedup: z.coerce.number().optional(),
+  // Estimate (DEC-0003 flat-rate replication cost; operator-ratified per unit)
   replication_days: z.coerce.number().optional(),
   saved_floor_days: z.coerce.number().optional(),
   leverage: z.coerce.number().optional(),

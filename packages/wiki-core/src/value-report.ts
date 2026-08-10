@@ -4,8 +4,12 @@
  * Reads git history + wiki/.graph.json and computes:
  * - Commit-watermark scope and chain status
  * - Unit classification with evidence ladder (tested / wired / linked / candidate / survives)
+ * - Data-asset traces (priced 0) + unclassified candidates — no committed/linked file is ever
+ *   silently dropped to null (WK-0059)
  * - Churn calculation
  * - LOC reference per unit (net_loc / loc_per_day — tripwire for agent estimation)
+ * - A resolved_config + config_hash so a published VAL freezes its config and re-renders
+ *   identical figures under later wiki/.value-config.json edits (WK-0059)
  *
  * Public API: computeValueReport(opts) → Result<ValueMetrics>
  *
@@ -66,7 +70,6 @@ const DEFAULT_CONFIG: ValueConfig = {
   // proposed_days per review unit = loc_reference. Estimate arithmetic stays in the
   // template/agent layer — the tool only measures.
   loc_per_day: 260,
-  ccusage_version: '20.0.17',
   exclude_globs: [
     'scratch_space/**',
     'experiments/**',
@@ -80,7 +83,6 @@ const DEFAULT_CONFIG: ValueConfig = {
     'wiki/inbox.md',
     'wiki/backlog.md',
     'wiki/archive.md',
-    'wiki/generated/**',
     'wiki/.graph.json',
     'wiki/.search-index.json',
   ],
@@ -206,6 +208,35 @@ function isRootCommit(dir: string, sha: string): boolean {
 }
 
 /**
+ * Resolve the `git log` range argument for a commit span.
+ *  - inclusive: include baseSha itself (baseSha^..head, or EMPTY_TREE..head for a root commit)
+ *  - exclusive: commits strictly after baseSha (base..head) — the prior-VAL watermark range
+ */
+function resolveLogRangeArg(dir: string, baseSha: string, headSha: string, inclusive: boolean): string {
+  if (inclusive) {
+    return isRootCommit(dir, baseSha)
+      ? `${EMPTY_TREE_SHA}..${headSha}`
+      : `${baseSha}^..${headSha}`;
+  }
+  return `${baseSha}..${headSha}`;
+}
+
+/**
+ * Resolve the diff base for an endpoint diff (files/net LOC surviving at headSha):
+ *  - inclusive + root commit → empty tree
+ *  - inclusive + non-root    → baseSha's parent (empty tree if unresolvable)
+ *  - exclusive               → baseSha itself
+ */
+function resolveDiffBase(dir: string, baseSha: string, inclusive: boolean): string {
+  if (inclusive && isRootCommit(dir, baseSha)) return EMPTY_TREE_SHA;
+  if (inclusive) {
+    const parentSha = git(dir, 'rev-parse', `${baseSha}^`);
+    return parentSha ?? EMPTY_TREE_SHA;
+  }
+  return baseSha;
+}
+
+/**
  * Get commits in a range, returning {sha, authorDate} pairs.
  *
  * range semantics:
@@ -224,18 +255,7 @@ function getCommitsInRange(
   // Use %x09 (tab) as separator — safe on Windows
   const format = '%H%x09%ai';
 
-  let rangeArg: string;
-  if (inclusive) {
-    // Include baseSha itself: use baseSha^..headSha, but fall back to EMPTY_TREE if root
-    if (isRootCommit(dir, baseSha)) {
-      rangeArg = `${EMPTY_TREE_SHA}..${headSha}`;
-    } else {
-      rangeArg = `${baseSha}^..${headSha}`;
-    }
-  } else {
-    // Exclusive: baseSha..headSha (does not include baseSha)
-    rangeArg = `${baseSha}..${headSha}`;
-  }
+  const rangeArg = resolveLogRangeArg(dir, baseSha, headSha, inclusive);
 
   const out = git(dir, 'log', rangeArg, `--format=${format}`, '--no-merges');
   if (!out) return [];
@@ -285,16 +305,7 @@ function getEndpointNumstat(
   headSha: string,
   inclusive: boolean,
 ): Array<{ added: number; removed: number; file: string }> {
-  let diffBase: string;
-  if (inclusive && isRootCommit(dir, baseSha)) {
-    diffBase = EMPTY_TREE_SHA;
-  } else if (inclusive) {
-    // diff baseSha^ to headSha
-    const parentSha = git(dir, 'rev-parse', `${baseSha}^`);
-    diffBase = parentSha ?? EMPTY_TREE_SHA;
-  } else {
-    diffBase = baseSha;
-  }
+  const diffBase = resolveDiffBase(dir, baseSha, inclusive);
 
   const out = git(dir, 'diff', '--numstat', diffBase, headSha);
   if (!out) return [];
@@ -312,15 +323,7 @@ function getEndpointFileList(
   headSha: string,
   inclusive: boolean,
 ): string[] {
-  let diffBase: string;
-  if (inclusive && isRootCommit(dir, baseSha)) {
-    diffBase = EMPTY_TREE_SHA;
-  } else if (inclusive) {
-    const parentSha = git(dir, 'rev-parse', `${baseSha}^`);
-    diffBase = parentSha ?? EMPTY_TREE_SHA;
-  } else {
-    diffBase = baseSha;
-  }
+  const diffBase = resolveDiffBase(dir, baseSha, inclusive);
 
   const out = git(dir, 'diff', '--name-status', diffBase, headSha);
   if (!out) return [];
@@ -346,16 +349,7 @@ function getTotalAdditionsInRange(
   headSha: string,
   inclusive: boolean,
 ): number {
-  let rangeArg: string;
-  if (inclusive) {
-    if (isRootCommit(dir, baseSha)) {
-      rangeArg = `${EMPTY_TREE_SHA}..${headSha}`;
-    } else {
-      rangeArg = `${baseSha}^..${headSha}`;
-    }
-  } else {
-    rangeArg = `${baseSha}..${headSha}`;
-  }
+  const rangeArg = resolveLogRangeArg(dir, baseSha, headSha, inclusive);
 
   // Use --numstat with empty format to get only numstat lines
   const out = git(dir, 'log', rangeArg, '--numstat', '--format=');
@@ -592,9 +586,8 @@ function inclusiveDaysBetween(startDate: string, endDate: string): number {
 }
 
 /**
- * Anchor table's nominal work-day length (hours). Frozen constant — not operator-tunable.
- * Used for work_hours ↔ days conversion, keeping the work_hours-derived alternative
- * denominator unit-consistent with the human-day numerator (anchor table's day).
+ * Nominal work-day length (hours). Frozen constant — not operator-tunable. Used only for the
+ * display-only work_hours ↔ days conversion; never enters estimate arithmetic (DEC-0003).
  */
 const HOURS_PER_WORK_DAY = 8;
 
@@ -679,19 +672,25 @@ function computeWorkTime(
 // ---------------------------------------------------------------------------
 
 /**
+ * Extract wiki record ids (WK/PLN/IN/DEC/SRC/AREA/VAL-dddd) from a set of record file paths
+ * ("wiki/issues/WK-0099.md" → "WK-0099"). Basename-matched; non-matching paths are skipped.
+ */
+function extractWkIdsFromRecordPaths(recordPaths: Iterable<string> | undefined): string[] {
+  if (!recordPaths) return [];
+  const ids: string[] = [];
+  for (const recordPath of recordPaths) {
+    const basename = path.basename(recordPath, '.md');
+    const m = basename.match(/^((?:WK|PLN|IN|DEC|SRC|AREA|VAL)-\d{4})$/);
+    if (m) ids.push(m[1]);
+  }
+  return ids;
+}
+
+/**
  * Extract WK ids from commit messages in the given range.
  */
 function gatherWkIdsFromCommits(dir: string, baseSha: string, headSha: string, inclusive: boolean): string[] {
-  let rangeArg: string;
-  if (inclusive) {
-    if (isRootCommit(dir, baseSha)) {
-      rangeArg = `${EMPTY_TREE_SHA}..${headSha}`;
-    } else {
-      rangeArg = `${baseSha}^..${headSha}`;
-    }
-  } else {
-    rangeArg = `${baseSha}..${headSha}`;
-  }
+  const rangeArg = resolveLogRangeArg(dir, baseSha, headSha, inclusive);
   const out = git(dir, 'log', rangeArg, '--format=%s %b');
   if (!out) return [];
   const matches = out.match(/(?:WK|PLN|IN|DEC|SRC|AREA|VAL)-\d{4}/g) ?? [];
@@ -718,14 +717,7 @@ function gatherWkIds(
   // Graph-derived: for each file in the span, find wiki records that link to it
   const graphIds: string[] = [];
   for (const filePath of spanFiles) {
-    const recordPaths = repoPathEdges.get(filePath);
-    if (!recordPaths) continue;
-    for (const recordPath of recordPaths) {
-      // Extract the id-like prefix from the filename: "wiki/issues/WK-0099.md" → "WK-0099"
-      const basename = path.basename(recordPath, '.md');
-      const m = basename.match(/^((?:WK|PLN|IN|DEC|SRC|AREA|VAL)-\d{4})$/);
-      if (m) graphIds.push(m[1]);
-    }
+    graphIds.push(...extractWkIdsFromRecordPaths(repoPathEdges.get(filePath)));
   }
 
   return [...new Set([...commitIds, ...graphIds])];
@@ -766,7 +758,6 @@ function loadConfig(
 function deepMergeConfig(base: ValueConfig, over: Partial<ValueConfig>): ValueConfig {
   const result: ValueConfig = { ...base };
   if (over.loc_per_day !== undefined) result.loc_per_day = over.loc_per_day;
-  if (over.ccusage_version !== undefined) result.ccusage_version = over.ccusage_version;
   // Excludes are ADD-ONLY (WK-0059): union with the frozen defaults so local config can add
   // excludes but can never negate the WK-0055 generated-file excludes (test-enforced).
   if (over.exclude_globs) {
@@ -1116,15 +1107,7 @@ export async function computeValueReport(opts: ValueReportOpts): Promise<Result<
     if (detail.evidence === 'survives') continue; // pure-survives excluded
 
     // Per-unit wk_ids: wiki record ids whose repo_path edges point at this file
-    const unitWkIds: string[] = [];
-    const recordPaths = repoPathEdges.get(detail.path);
-    if (recordPaths) {
-      for (const recordPath of recordPaths) {
-        const basename = path.basename(recordPath, '.md');
-        const m = basename.match(/^((?:WK|PLN|IN|DEC|SRC|AREA|VAL)-\d{4})$/);
-        if (m) unitWkIds.push(m[1]);
-      }
-    }
+    const unitWkIds = extractWkIdsFromRecordPaths(repoPathEdges.get(detail.path));
 
     reviewUnits.push({
       path: detail.path,

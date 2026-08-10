@@ -15,7 +15,7 @@
  *   "value-report-recipe-v3"
  */
 
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { execSync } from 'node:child_process';
@@ -73,32 +73,28 @@ function runCli(args: string): { stdout: string; exitCode: number } {
 describe('VAL propagation — bootstrap', () => {
   let tmp: TmpRepo;
 
+  beforeEach(async () => { tmp = await createBootstrappedRepo(); });
   afterEach(() => { tmp?.cleanup(); });
 
-  it('bootstrap: AGENTS.md contains the value-report recipe marker', async () => {
-    tmp = await createBootstrappedRepo();
+  it('bootstrap: AGENTS.md contains the value-report recipe marker', () => {
     const agents = readText(tmp.dir, 'AGENTS.md');
     expect(agents).toContain(RECIPE_MARKER);
   });
 
-  it('bootstrap: CLAUDE.md contains the value-report recipe marker', async () => {
-    tmp = await createBootstrappedRepo();
+  it('bootstrap: CLAUDE.md contains the value-report recipe marker', () => {
     const claude = readText(tmp.dir, 'CLAUDE.md');
     expect(claude).toContain(RECIPE_MARKER);
   });
 
-  it('bootstrap: wiki/value-reports/ directory exists', async () => {
-    tmp = await createBootstrappedRepo();
+  it('bootstrap: wiki/value-reports/ directory exists', () => {
     expect(fs.existsSync(path.join(tmp.dir, 'wiki/value-reports'))).toBe(true);
   });
 
-  it('bootstrap: wiki/templates/value.md exists', async () => {
-    tmp = await createBootstrappedRepo();
+  it('bootstrap: wiki/templates/value.md exists', () => {
     expect(fileExists(tmp.dir, 'wiki/templates/value.md')).toBe(true);
   });
 
   it('bootstrap: allocate --prefix VAL returns VAL-0001', async () => {
-    tmp = await createBootstrappedRepo();
     const result = await allocate({ dir: tmp.dir, prefix: 'VAL' });
     expect(result.ok).toBe(true);
     if (result.ok) {
@@ -237,15 +233,10 @@ describe('MCP surface smoke — value tools', () => {
 // ---------------------------------------------------------------------------
 
 describe('CLI surface smoke — value commands', () => {
-  it('--help output mentions value-report', () => {
+  it('--help output mentions value-report and value-usage', () => {
     const { stdout, exitCode } = runCli('--help');
     expect(exitCode).toBe(0);
     expect(stdout).toContain('value-report');
-  });
-
-  it('--help output mentions value-usage', () => {
-    const { stdout, exitCode } = runCli('--help');
-    expect(exitCode).toBe(0);
     expect(stdout).toContain('value-usage');
   });
 

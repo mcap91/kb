@@ -6,7 +6,7 @@
  * Real git fixture repos, hand-authored wiki/.graph.json, no network.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { execSync } from 'node:child_process';
@@ -876,7 +876,7 @@ describe('workflow-repo fixture: pilot minimal acceptance test', () => {
 
   afterEach(() => tmp.cleanup());
 
-  it('tested, wired, linked, and candidate units all appear in review_units with correct tiers; wk_ids found via graph when commit messages omit them', async () => {
+  it('review surface == estimate basis: every review_unit has a unit_details row; wk_ids found via graph when commit messages omit them', async () => {
     // WHY: the pilot failure exposed that the old tool produced a review surface disjoint from
     // the estimate basis in a repo with sparse imports, entrypoint scripts, and incomplete
     // commit messages. This fixture reproduces that pattern and asserts the fix.
@@ -914,32 +914,13 @@ describe('workflow-repo fixture: pilot minimal acceptance test', () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
 
-    const reviewMap = new Map(result.data.review_units.map(u => [u.path, u]));
-
-    // core.ts → tested (test imports it)
-    expect(reviewMap.get('src/core.ts')?.tier).toBe('tested');
-
-    // util.ts → wired (imports core, which is in surviving files)
-    expect(reviewMap.get('src/util.ts')?.tier).toBe('wired');
-
-    // run_analysis.py → linked (wiki repo_path edge, no imports)
-    expect(reviewMap.get('scripts/run_analysis.py')?.tier).toBe('linked');
-
-    // explore.ipynb → linked (wiki repo_path edge)
-    expect(reviewMap.get('notebooks/explore.ipynb')?.tier).toBe('linked');
-
-    // analysis/report.py → candidate (candidate_location, no edges)
-    expect(reviewMap.get('analysis/report.py')?.tier).toBe('candidate');
-
-    // WK-0059: test code is a floor unit — core.test.ts imports src/core.ts (outbound) → wired
-    expect(reviewMap.get('tests/core.test.ts')?.tier).toBe('wired');
-
-    // wk_ids discovered via graph even with silent commit messages
+    // wk_ids discovered via graph even with silent commit messages (the fixture's sparse-message
+    // design). Per-tier tier assertions are covered by the review_units[] and §11.6 ladder blocks;
+    // this test guards only the pilot's unique invariant below.
     expect(result.data.wk_ids).toContain('WK-0100');
     expect(result.data.wk_ids).toContain('WK-0101');
 
-    // review surface == estimate basis (no disjunction)
-    // Every unit in review_units is in unit_details (audit trail)
+    // review surface == estimate basis (no disjunction): every review_unit has a unit_details row
     for (const ru of result.data.review_units) {
       const detail = result.data.unit_details.find(d => d.path === ru.path);
       expect(detail).toBeDefined();
@@ -1255,31 +1236,6 @@ describe('§WK-0041 COCOMO II nominal ceiling — cocomo_kloc and cocomo_pm_nomi
     // Explicitly verify not NaN or Infinity
     expect(Number.isFinite(result.data.cocomo_kloc)).toBe(true);
     expect(Number.isFinite(result.data.cocomo_pm_nominal)).toBe(true);
-  });
-
-  it('display-only: tool output exposes cocomo fields but NOT human_days_anchor/speedup/time_saved_days', async () => {
-    // WHY: the COCOMO ceiling is a display-only reference — it must never enter the headline
-    // arithmetic (human_days_anchor, speedup, time_saved_days). These estimate fields belong
-    // exclusively to the operator-ratified floor. The ceiling must be computable from the tool
-    // output but must not contaminate the estimate chain. This is a regression guard.
-    tmp = createTmpDir();
-    initRepo(tmp.dir);
-
-    const lines = Array.from({ length: 500 }, (_, i) => `export const v${i} = ${i};`).join('\n') + '\n';
-    const base = commitFile(tmp.dir, 'src/generated.ts', lines, 'add code');
-
-    const result = await computeValueReport({ dir: tmp.dir, since: base });
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-
-    // COCOMO fields must be present
-    expect('cocomo_kloc' in result.data).toBe(true);
-    expect('cocomo_pm_nominal' in result.data).toBe(true);
-
-    // Estimate-arithmetic fields must be absent (tool measures only)
-    expect('human_days_anchor' in result.data).toBe(false);
-    expect('speedup' in result.data).toBe(false);
-    expect('time_saved_days' in result.data).toBe(false);
   });
 
   it('test-file-only span: 1000 added lines in a test file → cocomo_kloc === 1, cocomo_pm_nominal === 2.94 (test files are delivered code per WK-0041)', async () => {
