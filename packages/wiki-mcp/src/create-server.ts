@@ -1,6 +1,39 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { tools } from './tools.js';
 
+/**
+ * Shape an unexpected handler throw into a parseable error envelope.
+ *
+ * Mirrors the `{ ok: false, error, message }` shape wiki-core returns for handled
+ * failures, so MCP callers parse expected and unexpected errors the same way instead
+ * of receiving a raw `Error: <internal>` string that leaks implementation detail.
+ */
+export function toErrorEnvelope(err: unknown) {
+  const message = err instanceof Error ? err.message : String(err);
+  return {
+    content: [
+      {
+        type: 'text' as const,
+        text: JSON.stringify({ ok: false, error: 'INTERNAL_ERROR', message }, null, 2),
+      },
+    ],
+    isError: true as const,
+  };
+}
+
+// WK-0046 T15: advertise side-effects and audience so an agent can distinguish routine
+// read tools from operator-setup tools. Kept name-keyed here so the declarations in
+// tools.ts stay lean; update these sets when adding a tool.
+const READ_ONLY = new Set([
+  'search',
+  'lint',
+  'validate-plan',
+  'value-report',
+  'value-usage',
+  'allocate-id',
+]);
+const OPERATOR_ONLY = new Set(['bootstrap', 'sync-contract']);
+
 export function createServer(): McpServer {
   const server = new McpServer({
     name: 'kb-wiki',
@@ -13,6 +46,8 @@ export function createServer(): McpServer {
       {
         description: tool.description,
         inputSchema: tool.inputSchema,
+        annotations: { readOnlyHint: READ_ONLY.has(tool.name) },
+        ...(OPERATOR_ONLY.has(tool.name) ? { _meta: { 'io.kb/audience': 'operator' } } : {}),
       },
       async (args) => {
         try {
@@ -21,10 +56,7 @@ export function createServer(): McpServer {
             content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
           };
         } catch (err) {
-          return {
-            content: [{ type: 'text' as const, text: `Error: ${String(err)}` }],
-            isError: true,
-          };
+          return toErrorEnvelope(err);
         }
       },
     );

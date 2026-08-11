@@ -148,7 +148,7 @@ export const tools: ToolDef[] = [
   },
   {
     name: 'wait-for-run',
-    description: 'Wait for a dispatch run to reach terminal status, returning current state on timeout.',
+    description: 'Wait for a dispatch run to reach terminal status, returning current state on timeout. Requires at least one of reviewId or runId.',
     inputSchema: requireRunIdentifier(runIdentifierSchema.extend({
       timeoutSeconds: z.number().optional(),
       pollIntervalMs: z.number().optional(),
@@ -157,7 +157,7 @@ export const tools: ToolDef[] = [
   },
   {
     name: 'get-response',
-    description: 'Retrieve response content and metadata for an active or completed dispatch run.',
+    description: 'Retrieve response content and metadata for an active or completed dispatch run. Requires at least one of reviewId or runId.',
     inputSchema: requireRunIdentifier(runIdentifierSchema.extend({
       includeMeta: z.boolean().optional(),
       includeLogs: z.boolean().optional(),

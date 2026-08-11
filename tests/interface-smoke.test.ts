@@ -103,6 +103,13 @@ describe('MCP smoke tests', () => {
     expect(lintTool?.inputSchema.properties?.dir).toBeTruthy();
     expect(lintTool?.inputSchema.required).toContain('dir');
 
+    // WK-0046 T15: tool-authority annotations are advertised on tools/list so an agent
+    // can tell routine read tools from operator-setup tools without out-of-band knowledge.
+    expect(lintTool?.annotations?.readOnlyHint).toBe(true);
+    const bootstrapTool = toolsResult.tools.find(tool => tool.name === 'bootstrap');
+    expect(bootstrapTool?.annotations?.readOnlyHint).toBe(false);
+    expect((bootstrapTool?._meta as Record<string, unknown> | undefined)?.['io.kb/audience']).toBe('operator');
+
     const lintResult = await client.callTool({
       name: 'lint',
       arguments: {
@@ -122,6 +129,29 @@ describe('MCP smoke tests', () => {
       client.close(),
       server.close(),
     ]);
+  });
+
+  it('formats unexpected handler errors as a parseable envelope, not raw Error text', async () => {
+    // WK-0046 T4: an unexpected throw inside a tool handler must surface as the same
+    // { ok: false, error, message } envelope that core returns for handled failures,
+    // so an agent can parse the failure instead of scraping a raw "Error: ..." string.
+    const wiki = await import('@kb/wiki-mcp');
+    const dispatch = await import('@kb/dispatch-mcp');
+
+    for (const mod of [wiki, dispatch]) {
+      const envelope = (mod as {
+        toErrorEnvelope: (e: unknown) => { content: Array<{ type: string; text: string }>; isError: boolean };
+      }).toErrorEnvelope(new Error('boom'));
+
+      expect(envelope.isError).toBe(true);
+      expect(envelope.content[0]?.type).toBe('text');
+      expect(envelope.content[0]?.text).not.toMatch(/^Error: /);
+      expect(JSON.parse(envelope.content[0]!.text)).toMatchObject({
+        ok: false,
+        error: 'INTERNAL_ERROR',
+        message: 'boom',
+      });
+    }
   });
 
   it('dispatch MCP tools are available from the dispatch-mcp package', async () => {
