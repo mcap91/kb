@@ -502,7 +502,7 @@ function isCandidateLocation(filePath: string, config: ValueConfig): boolean {
 // Frontmatter reader for prior VAL records (minimal, line-oriented)
 // ---------------------------------------------------------------------------
 
-function readValFrontmatter(absPath: string): Record<string, string> | null {
+export function readValFrontmatter(absPath: string): Record<string, string> | null {
   try {
     const raw = fs.readFileSync(absPath, 'utf-8').replace(/\r\n/g, '\n');
     if (!raw.startsWith('---')) return null;
@@ -532,8 +532,10 @@ interface PriorValInfo {
 }
 
 /**
- * Scan wiki/value-reports/ for VAL records and find the most recent one
- * whose head_commit is an ancestor of (or equals) HEAD.
+ * Scan wiki/value-reports/ for PUBLISHED VAL records and find the most recent one whose
+ * head_commit is an ancestor of (or equals) HEAD. WK-0058: the watermark advances only on publish,
+ * so a `status: draft` record (a resumable span claim) is NOT a chain link and is skipped here —
+ * the resume-first guard (`findUnpublishedDraft`) is a separate concern that runs before minting.
  */
 function findPriorVal(dir: string, currentHead: string): PriorValInfo | null {
   const valDir = path.join(dir, 'wiki', 'value-reports');
@@ -547,11 +549,59 @@ function findPriorVal(dir: string, currentHead: string): PriorValInfo | null {
   for (const file of files) {
     const fm = readValFrontmatter(path.join(valDir, file));
     if (!fm?.head_commit || !fm?.id) continue;
+    if (fm.status !== 'published') continue; // WK-0058: drafts never advance the watermark
     if (isAncestorOrEqual(dir, fm.head_commit, currentHead)) {
       return { id: fm.id, headCommit: fm.head_commit };
     }
   }
   return null;
+}
+
+/** A resumable draft VAL: an unpublished record claiming a span (WK-0058 resume-first guard). */
+export interface DraftValInfo {
+  id: string;
+  /** Absolute path to the draft record. */
+  path: string;
+  base_commit: string;
+  head_commit: string;
+}
+
+/**
+ * Find the single unpublished (draft) VAL, if any — the resume-first guard (WK-0058). The finalize
+ * flow calls this BEFORE minting a new id: an existing draft IS the span claim and must be resumed
+ * (its frozen JSON reused), never bypassed by minting VAL-N+1. Enforces the one-draft invariant —
+ * more than one unpublished draft is a fail-loud error (publish or discard down to one first).
+ * Pure file scan; returns a Result, never throws.
+ */
+export function findUnpublishedDraft(dir: string): Result<DraftValInfo | null> {
+  const valDir = path.join(dir, 'wiki', 'value-reports');
+  if (!fs.existsSync(valDir)) return ok(null);
+
+  const files = fs.readdirSync(valDir)
+    .filter(f => f.endsWith('.md') && /^VAL-\d+\.md$/.test(f))
+    .sort();
+
+  const drafts: DraftValInfo[] = [];
+  for (const file of files) {
+    const fm = readValFrontmatter(path.join(valDir, file));
+    if (!fm?.id) continue;
+    if (fm.status === 'published') continue; // only unpublished records are span claims
+    drafts.push({
+      id: fm.id,
+      path: path.join(valDir, file),
+      base_commit: fm.base_commit ?? '',
+      head_commit: fm.head_commit ?? '',
+    });
+  }
+
+  if (drafts.length > 1) {
+    return fail(
+      'INVALID_FIELD',
+      `more than one unpublished VAL draft (${drafts.map(d => d.id).join(', ')}); the one-draft ` +
+        `invariant is violated — publish or discard drafts before minting a new VAL`,
+    );
+  }
+  return ok(drafts.length === 1 ? drafts[0] : null);
 }
 
 function computeChainStatus(
@@ -585,12 +635,6 @@ function inclusiveDaysBetween(startDate: string, endDate: string): number {
   return Math.max(1, diffDays + 1);
 }
 
-/**
- * Nominal work-day length (hours). Frozen constant — not operator-tunable. Used only for the
- * display-only work_hours ↔ days conversion; never enters estimate arithmetic (DEC-0003).
- */
-const HOURS_PER_WORK_DAY = 8;
-
 // COCOMO II.2000 post-architecture, NOMINAL. Boehm et al. 2000,
 // "Software Cost Estimation with COCOMO II" (Prentice Hall).
 // PM = A * KSLOC^E ; A = 2.94 ; E = B + 0.01*ΣSF, B = 0.91, nominal ΣSF = 18.97 => E = 1.0997 ;
@@ -614,57 +658,20 @@ function computeCocomo(codeOnlyNetLoc: number): { cocomo_kloc: number; cocomo_pm
 }
 
 /**
- * Per-active-day floor for work_hours: applied when a day's intra-day span is below this
- * value (including single-commit days whose span = 0).
- */
-const WORK_HOURS_DAY_FLOOR = 0.5;
-
-/**
  * Compute git-derived work time from the in-span commit set.
  *
  * - work_days: count of distinct calendar dates (YYYY-MM-DD from git author date) carrying ≥1 commit.
- * - work_hours: Σ over each active day of (last − first author-timestamp that day, in hours),
- *   floored at WORK_HOURS_DAY_FLOOR per day (handles single-commit days whose span = 0).
  *
- * No clamping of work_days; falsifiability is the point.
+ * No clamping; falsifiability is the point. (WK-0058 dropped the work_hours proxy — it never
+ * entered the estimate arithmetic; DEC-0003 §3 amendment.)
  */
-function computeWorkTime(
-  commits: Array<{ authorDate: string; authorTimestampMs: number }>,
-): { work_days: number; work_hours: number } {
-  if (commits.length === 0) {
-    return { work_days: 0, work_hours: 0 };
-  }
-
-  // Group commits by their calendar date (YYYY-MM-DD, git author date)
-  const byDate = new Map<string, number[]>();
+function computeWorkTime(commits: Array<{ authorDate: string }>): { work_days: number } {
+  const byDate = new Set<string>();
   for (const c of commits) {
     if (!c.authorDate) continue;
-    const existing = byDate.get(c.authorDate);
-    if (existing) {
-      existing.push(c.authorTimestampMs);
-    } else {
-      byDate.set(c.authorDate, [c.authorTimestampMs]);
-    }
+    byDate.add(c.authorDate);
   }
-
-  const work_days = byDate.size;
-  let work_hours = 0;
-
-  for (const timestamps of byDate.values()) {
-    const validTs = timestamps.filter(t => t > 0);
-    if (validTs.length <= 1) {
-      // Single commit (or no valid timestamps) → apply floor
-      work_hours += WORK_HOURS_DAY_FLOOR;
-    } else {
-      const minTs = Math.min(...validTs);
-      const maxTs = Math.max(...validTs);
-      const spanHours = (maxTs - minTs) / 3_600_000;
-      // Apply floor if span is below floor (e.g. two commits in the same second)
-      work_hours += spanHours < WORK_HOURS_DAY_FLOOR ? WORK_HOURS_DAY_FLOOR : spanHours;
-    }
-  }
-
-  return { work_days, work_hours };
+  return { work_days: byDate.size };
 }
 
 // ---------------------------------------------------------------------------
@@ -927,9 +934,9 @@ export async function computeValueReport(opts: ValueReportOpts): Promise<Result<
     }
   }
 
-  // Git-derived work time (WK-0040): work_days / work_hours / hours_per_work_day
-  // Computed over the SAME in-span commit set (commits array). No re-derivation of watermark.
-  const { work_days, work_hours } = computeWorkTime(commits);
+  // Git-derived work time (WK-0040): work_days. Computed over the SAME in-span commit set
+  // (commits array). No re-derivation of watermark. (WK-0058 dropped work_hours/hours_per_work_day.)
+  const { work_days } = computeWorkTime(commits);
 
   // Window dates
   let windowStart = '';
@@ -1129,8 +1136,6 @@ export async function computeValueReport(opts: ValueReportOpts): Promise<Result<
     chain_status: chainStatus,
     span_days: spanDays,
     work_days,
-    work_hours,
-    hours_per_work_day: HOURS_PER_WORK_DAY,
     cocomo_kloc,
     cocomo_pm_nominal,
     commits: commitCount,

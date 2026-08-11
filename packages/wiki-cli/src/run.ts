@@ -21,6 +21,7 @@ import {
   cmdArchivePlan,
   cmdValueReport,
   cmdValueUsage,
+  cmdValueFinalize,
 } from './commands.js';
 
 // ---------------------------------------------------------------------------
@@ -63,6 +64,7 @@ Commands:
   archive-plan         Mark a PLN record done
   value-report         Compute git + graph metrics for a VAL value report, including COCOMO II nominal ceiling (cocomo_kloc, cocomo_pm_nominal) (JSON)
   value-usage          Scrape token/cost data from ccusage + OpenRouter (JSON)
+  value-finalize       Render the deterministic VAL body from frozen report+usage JSON + ratified rows (JSON)
 
 Global options:
   --help               Show this help text
@@ -88,6 +90,7 @@ const COMMANDS: Record<string, (args: string[]) => Promise<void>> = {
   'archive-plan': cmdArchivePlan,
   'value-report': cmdValueReport,
   'value-usage': cmdValueUsage,
+  'value-finalize': cmdValueFinalize,
 };
 
 // ---------------------------------------------------------------------------

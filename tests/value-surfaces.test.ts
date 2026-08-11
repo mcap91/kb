@@ -202,6 +202,7 @@ describe('MCP surface smoke — value tools', () => {
     const names = tools.map((t: { name: string }) => t.name);
     expect(names).toContain('value-report');
     expect(names).toContain('value-usage');
+    expect(names).toContain('value-finalize');
   });
 
   it('value-report tool has required fields', async () => {
@@ -222,9 +223,18 @@ describe('MCP surface smoke — value tools', () => {
     expect(tool?.inputSchema).toBeDefined();
   });
 
-  it('total tool count is now 13 (11 original + 2 value tools)', async () => {
+  it('value-finalize tool has required fields', async () => {
     const { tools } = await import('@kb/wiki-mcp');
-    expect(tools.length).toBe(13);
+    const tool = tools.find((t: { name: string }) => t.name === 'value-finalize');
+    expect(tool).toBeDefined();
+    expect(tool?.description).toBeTruthy();
+    expect(typeof tool?.handler).toBe('function');
+    expect(tool?.inputSchema).toBeDefined();
+  });
+
+  it('total tool count is now 14 (11 original + 3 value tools)', async () => {
+    const { tools } = await import('@kb/wiki-mcp');
+    expect(tools.length).toBe(14);
   });
 });
 

@@ -19,8 +19,13 @@ import {
   archivePlan,
   computeValueReport,
   computeValueUsage,
+  finalizeValueReport,
   type WikiPrefix,
+  type ValueMetrics,
+  type UsageMetrics,
+  type RatifiedRow,
 } from '@kb/wiki-core';
+import * as fs from 'node:fs';
 import { parseFlag, parseValue } from './run.js';
 
 // ---------------------------------------------------------------------------
@@ -461,6 +466,45 @@ export async function cmdValueUsage(args: string[]): Promise<void> {
   const ccusageVersion = parseValue(args, '--ccusage-version');
 
   const result = await computeValueUsage({ dir, since, until, ccusageVersion });
+
+  if (!result.ok) {
+    console.error(`Error [${result.error}]: ${result.message}`);
+    process.exitCode = 1;
+    return;
+  }
+
+  console.log(JSON.stringify(result.data, null, 2));
+}
+
+// ---------------------------------------------------------------------------
+// value-finalize (WK-0058: render the deterministic VAL body from frozen JSON + ratified rows)
+// ---------------------------------------------------------------------------
+
+export async function cmdValueFinalize(args: string[]): Promise<void> {
+  let dir: string;
+  try { dir = requireDir(args); } catch { return; }
+
+  const reportPath = requireValue(args, '--report', 'path to value-report JSON');
+  if (!reportPath) return;
+  const usagePath = requireValue(args, '--usage', 'path to value-usage JSON');
+  if (!usagePath) return;
+  const ratifiedPath = requireValue(args, '--ratified', 'path to ratified-rows JSON');
+  if (!ratifiedPath) return;
+
+  let metrics: ValueMetrics;
+  let usage: UsageMetrics;
+  let ratified: RatifiedRow[];
+  try {
+    metrics = JSON.parse(fs.readFileSync(reportPath, 'utf-8')) as ValueMetrics;
+    usage = JSON.parse(fs.readFileSync(usagePath, 'utf-8')) as UsageMetrics;
+    ratified = JSON.parse(fs.readFileSync(ratifiedPath, 'utf-8')) as RatifiedRow[];
+  } catch (e) {
+    console.error(`Error: failed to read/parse input JSON: ${String(e)}`);
+    process.exitCode = 1;
+    return;
+  }
+
+  const result = finalizeValueReport({ dir, metrics, usage, ratified });
 
   if (!result.ok) {
     console.error(`Error [${result.error}]: ${result.message}`);

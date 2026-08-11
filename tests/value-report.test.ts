@@ -10,7 +10,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { execSync } from 'node:child_process';
-import { computeValueReport } from '../packages/wiki-core/src/value-report.js';
+import { computeValueReport, findUnpublishedDraft } from '../packages/wiki-core/src/value-report.js';
 import { createTmpDir, writeRecord } from './helpers/tmp-repo.js';
 import type { TmpRepo } from './helpers/tmp-repo.js';
 
@@ -244,6 +244,75 @@ describe('§11.3 watermark and chain status', () => {
     expect(result.data.chain_status).toBe('overlap');
 
     void shaB;
+  });
+
+  it('WK-0058 resume guard: a draft VAL is skipped — the watermark chains only from the published prior', async () => {
+    // WHY: the watermark advances only on publish. A lingering draft (a resumable span claim) with a
+    // real head_commit must NOT be a chain link, or a fresh report would chain past published work
+    // into an unpublished claim and mis-scope the span.
+    tmp = createTmpDir();
+    initRepo(tmp.dir);
+
+    const shaA = commitFile(tmp.dir, 'src/a.ts', 'export const a = 1;\n', 'add a', '2026-01-01T10:00:00');
+    const shaB = commitFile(tmp.dir, 'src/b.ts', 'export const b = 2;\n', 'add b', '2026-01-02T10:00:00');
+    const shaC = commitFile(tmp.dir, 'src/c.ts', 'export const c = 3;\n', 'add c', '2026-01-03T10:00:00');
+
+    // Published watermark at shaA; a later DRAFT (status: draft) claims up to shaB and must be ignored.
+    writePriorVal(tmp.dir, 'VAL-0001', shaA, { prior_val: 'none', chain_status: 'first' });
+    writePriorVal(tmp.dir, 'VAL-0002', shaB, { status: 'draft' });
+
+    const result = await computeValueReport({ dir: tmp.dir });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    // Chains from the PUBLISHED VAL-0001 (base shaA), never the draft VAL-0002 (shaB).
+    expect(result.data.prior_val).toBe('VAL-0001');
+    expect(result.data.base_commit).toBe(shaA);
+
+    void shaC;
+  });
+});
+
+// ---------------------------------------------------------------------------
+// WK-0058 — resume-first guard (one unpublished draft = the span claim)
+// ---------------------------------------------------------------------------
+
+describe('findUnpublishedDraft — resume-first guard / one-draft invariant (WK-0058)', () => {
+  let tmp: TmpRepo;
+
+  afterEach(() => tmp.cleanup());
+
+  it('returns null when there is no unpublished draft (only published VALs)', () => {
+    tmp = createTmpDir();
+    writePriorVal(tmp.dir, 'VAL-0001', 'aaaa', {}); // published by default
+    const res = findUnpublishedDraft(tmp.dir);
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.data).toBeNull();
+  });
+
+  it('returns the single draft (a resumable span claim) when one exists', () => {
+    tmp = createTmpDir();
+    writePriorVal(tmp.dir, 'VAL-0001', 'aaaa', {}); // published
+    writePriorVal(tmp.dir, 'VAL-0002', 'bbbb', { status: 'draft', base_commit: 'aaaa' });
+    const res = findUnpublishedDraft(tmp.dir);
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.data?.id).toBe('VAL-0002');
+    expect(res.data?.head_commit).toBe('bbbb');
+  });
+
+  it('fails loud when more than one unpublished draft exists (invariant violated)', () => {
+    // WHY: the draft IS the span claim; two drafts mean two VAL ids racing for the same watermark.
+    // The finalize must refuse to proceed until the operator publishes or discards down to one.
+    tmp = createTmpDir();
+    writePriorVal(tmp.dir, 'VAL-0002', 'bbbb', { status: 'draft' });
+    writePriorVal(tmp.dir, 'VAL-0003', 'cccc', { status: 'draft' });
+    const res = findUnpublishedDraft(tmp.dir);
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.message).toContain('VAL-0002');
+    expect(res.message).toContain('VAL-0003');
   });
 });
 
@@ -949,10 +1018,10 @@ describe('error handling', () => {
 });
 
 // ---------------------------------------------------------------------------
-// §WK-0040 — work_days / work_hours / hours_per_work_day (git-derived work time)
+// §WK-0040 — work_days (git-derived work time). WK-0058 dropped work_hours/hours_per_work_day.
 // ---------------------------------------------------------------------------
 
-describe('§WK-0040 work_days, work_hours, hours_per_work_day — git-derived work time', () => {
+describe('§WK-0040 work_days — git-derived work time (WK-0058 dropped work_hours/hours_per_work_day)', () => {
   let tmp: TmpRepo;
 
   afterEach(() => tmp.cleanup());
@@ -979,53 +1048,9 @@ describe('§WK-0040 work_days, work_hours, hours_per_work_day — git-derived wo
     // Calendar span: Jan 1 → Jan 5 = 5 days; work_days must be 3 (active dates only)
     expect(result.data.span_days).toBe(5);
     expect(result.data.work_days).toBe(3);
-    // work_hours >= 0 (each single-commit day → 0.5h floor)
-    expect(result.data.work_hours).toBeGreaterThanOrEqual(0);
-    // hours_per_work_day is the frozen constant 8
-    expect(result.data.hours_per_work_day).toBe(8);
-  });
-
-  it('intra-day hour span: a day with commits at two different times contributes (last − first) hours', async () => {
-    // WHY: work_hours is the finer-grained proxy; on a multi-commit day the span between
-    // the first and last author-timestamp on that day is the estimated active window.
-    tmp = createTmpDir();
-    initRepo(tmp.dir);
-
-    const base = commitFile(tmp.dir, 'src/a.ts', 'export const a = 1;\n', 'morning commit',
-      '2026-01-01T09:00:00 +0000');
-    commitFile(tmp.dir, 'src/b.ts', 'export const b = 2;\n', 'afternoon commit',
-      '2026-01-01T11:00:00 +0000');
-
-    const result = await computeValueReport({ dir: tmp.dir, since: base });
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-
-    // Single active day with 2h span: work_days = 1, work_hours = 2
-    expect(result.data.work_days).toBe(1);
-    // The two commits span 2 hours (09:00 to 11:00)
-    expect(result.data.work_hours).toBeCloseTo(2, 0);
-    expect(result.data.hours_per_work_day).toBe(8);
-  });
-
-  it('single-commit-day floor: a day with exactly one commit contributes 0.5h (the floor)', async () => {
-    // WHY: a single commit has no intra-day span (first = last → span = 0);
-    // the 0.5h floor prevents single-commit days from contributing 0 to work_hours,
-    // which would make the total misleadingly low.
-    tmp = createTmpDir();
-    initRepo(tmp.dir);
-
-    // One commit only — intra-day span is 0, so the floor should apply
-    const base = commitFile(tmp.dir, 'src/a.ts', 'export const a = 1;\n', 'sole commit on day',
-      '2026-01-01T10:00:00');
-
-    const result = await computeValueReport({ dir: tmp.dir, since: base });
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-
-    expect(result.data.work_days).toBe(1);
-    // Single-commit day → 0.5h floor
-    expect(result.data.work_hours).toBeCloseTo(0.5, 1);
-    expect(result.data.hours_per_work_day).toBe(8);
+    // WK-0058: work_hours / hours_per_work_day are dropped — never emitted (DEC-0003 §3 amendment).
+    expect(result.data).not.toHaveProperty('work_hours');
+    expect(result.data).not.toHaveProperty('hours_per_work_day');
   });
 
   it('falsifiability / no clamp: work_days reflects true distinct-date count with no lower bound inflating leverage', async () => {
@@ -1070,33 +1095,6 @@ describe('§WK-0040 work_days, work_hours, hours_per_work_day — git-derived wo
     // work_days must be less than span_days (only 2 active days, 8 idle)
     expect(result.data.work_days).toBe(2);
     expect(result.data.work_days).toBeLessThan(result.data.span_days);
-  });
-
-  it('multi-day span with multiple commits per day: work_hours sums per-day spans correctly', async () => {
-    // WHY: work_hours must be the SUM over each active day's (last − first) span;
-    // a day with a 2h spread and another day with a 3h spread → total 5h.
-    tmp = createTmpDir();
-    initRepo(tmp.dir);
-
-    // Day 1: 09:00 and 11:00 → 2h span
-    const base = commitFile(tmp.dir, 'src/a.ts', 'x=1\n', 'day1 morning',
-      '2026-02-01T09:00:00 +0000');
-    commitFile(tmp.dir, 'src/b.ts', 'x=2\n', 'day1 afternoon',
-      '2026-02-01T11:00:00 +0000');
-    // Day 2: 10:00 and 13:00 → 3h span
-    commitFile(tmp.dir, 'src/c.ts', 'x=3\n', 'day2 morning',
-      '2026-02-02T10:00:00 +0000');
-    commitFile(tmp.dir, 'src/d.ts', 'x=4\n', 'day2 afternoon',
-      '2026-02-02T13:00:00 +0000');
-
-    const result = await computeValueReport({ dir: tmp.dir, since: base });
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-
-    expect(result.data.work_days).toBe(2);
-    // Total work_hours: day1=2h + day2=3h = 5h
-    expect(result.data.work_hours).toBeCloseTo(5, 0);
-    expect(result.data.hours_per_work_day).toBe(8);
   });
 });
 
