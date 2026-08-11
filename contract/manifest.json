@@ -318,8 +318,6 @@
         "agents",
         "span_days",
         "work_days",
-        "work_hours",
-        "hours_per_work_day",
         "cocomo_kloc",
         "cocomo_pm_nominal",
         "commits",

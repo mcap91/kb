@@ -22,8 +22,6 @@ cost_provenance:
 agents: []
 span_days:
 work_days:
-work_hours:
-hours_per_work_day:
 cocomo_kloc:
 cocomo_pm_nominal:
 commits:
@@ -109,11 +107,6 @@ Output — observed (all from value-report):                                    
                     dates). THE leverage denominator — the same instrument the 260 rate was
                     calibrated with, so numerator and denominator share one unit
                     (operator-active-days) and git-invisible time cancels in the ratio.
-  work_hours        Σ per-day (last − first author-commit timestamp), 0.5h/day floor.
-                    Printed CONTEXT ONLY — an elapsed wall-clock envelope, a different measure
-                    from effort (PF038: 79.6 h envelope vs 38 h billable). NEVER enters the
-                    leverage arithmetic.
-  hours_per_work_day  Frozen constant = 8. Context for reading work_hours only.
   cocomo_kloc, cocomo_pm_nominal  COCOMO II nominal ceiling (frozen constants, Boehm 2000).
                     Display-only external reference (DEC-0003) — NEVER enters any estimate
                     arithmetic; printed as the ceiling reference line after the ROI line.
@@ -220,6 +213,9 @@ Do NOT read other VAL files for examples. This template is self-contained.
 
 ## Token Detail
 
+<!-- Filled by value-finalize from value-usage by_model[] (2-dp $, thousands separators). Splice
+its output; do not hand-format. -->
+
 | model | arm | input | output | cache_read | cache_write | total | cost_usd | cost_usd_est |
 |-------|-----|-------|--------|------------|-------------|-------|----------|--------------|
 |       |     |       |        |            |             |       |          |              |
@@ -237,7 +233,11 @@ orphan_data, note-only). -->
 
 ## How This Was Calculated
 
-<!-- Reproducible from this section alone. Four parts.
+<!-- value-finalize (WK-0058) fills this section deterministically: the review table, the arithmetic
+below, the ## Token Detail table, and the data/orphan/unclassified surfaces — plus the ROI + ceiling
+lines in ## Agent Value. The operator ratifies rows; the agent SPLICES the tool output verbatim and
+NEVER hand-computes the arithmetic (SRC-0003). The four parts below document what the tool emits, so
+the record stays reproducible from this section alone.
 
 1. Rate in effect: 260 LOC/operator-active-day (SRC-0002; LOSO median 0.92, all sections
    within 2×; Rung 1: project-level within ~1.25× at ≥2 KLOC). Docs-class rows: operator
@@ -245,12 +245,13 @@ orphan_data, note-only). -->
 
 2. Per-unit rows — one per ratified unit (candidates excluded until confirmed):
 
-   | unit | evidence tier | net_loc | proposed_days (= net_loc/260) | ratified_days | note |
-   |------|---------------|---------|-------------------------------|---------------|------|
-   |      |               |         |                               |               |      |
+   | path | class | tier | wk_ids | net_loc | proposed_days (= net_loc/260) | ratified_days | rate_flag |
+   |------|-------|------|--------|---------|-------------------------------|---------------|-----------|
+   |      |       |      |        |         |                               |               |           |
 
    Rows diverging >3× from proposed_days MUST explain why; upward explanations state
-   replication reasoning, not agent toil.
+   replication reasoning, not agent toil. rate_flag (test-code / fixture-generator / workflow-dsl /
+   shell-wrapper) marks rows where the 260 rate transfers unevenly — narrate them for ratification.
 
 3. Arithmetic:
      replication_days = Σ ratified_days
@@ -258,7 +259,7 @@ orphan_data, note-only). -->
      leverage         = replication_days / work_days     (uncapped; may be < 1)
      cum_leverage     = Σ replication_days / Σ work_days over published flat-formula VALs + this
    Denominator is work_days (distinct in-span commit dates — the calibration instrument).
-   work_hours / span_days are printed context only and never enter the arithmetic.
+   span_days is printed context only and never enters the arithmetic.
 
 4. Cost side: total tokens and BOTH dollar figures — cost_usd (real/marginal out-of-pocket)
    and cost_usd_est (ccusage at-API-rates, every arm incl. subscription + codex) — with

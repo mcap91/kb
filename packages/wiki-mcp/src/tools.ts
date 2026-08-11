@@ -13,8 +13,9 @@ import {
   archivePlan,
   computeValueReport,
   computeValueUsage,
+  finalizeValueReport,
 } from '@kb/wiki-core';
-import type { WikiPrefix } from '@kb/wiki-core';
+import type { WikiPrefix, ValueMetrics, UsageMetrics, RatifiedRow } from '@kb/wiki-core';
 
 export interface ToolDef {
   name: string;
@@ -166,6 +167,25 @@ export const tools: ToolDef[] = [
         since: input.since as string,
         until: input.until as string,
         ccusageVersion: input.ccusageVersion as string | undefined,
+      }),
+  },
+  {
+    name: 'value-finalize',
+    description:
+      'Render the deterministic VAL body (WK-0058): the ## How This Was Calculated review table + arithmetic, ## Token Detail, the data/orphan/unclassified surfaces, and the ROI + COCOMO ceiling lines — plus the raw full-precision frontmatter numerics (replication_days, saved_floor_days, leverage, units_valued) and the body-only cum_leverage. Consumes the frozen value-report + value-usage JSON and the operator-ratified per-row days (keyed by review_units[].path; untouched rows default to proposed). Reads the published chain from wiki/value-reports/ for cum_leverage (null-degrades if a prior link predates the flat formula). Numbers come from code, never the model. Returns Result<RenderedVal>; a ratified path absent from review_units fails loud.',
+    inputSchema: dirSchema.extend({
+      report: z.record(z.string(), z.unknown()).describe('value-report JSON (ValueMetrics) — the frozen measurement output'),
+      usage: z.record(z.string(), z.unknown()).describe('value-usage JSON (UsageMetrics) — the frozen token/cost scrape'),
+      ratified: z
+        .array(z.object({ path: z.string(), ratified_days: z.number() }))
+        .describe('operator-ratified per-row days, keyed by the exact review_units[].path (untouched rows omitted → proposed)'),
+    }),
+    handler: async (input) =>
+      finalizeValueReport({
+        dir: input.dir as string,
+        metrics: input.report as unknown as ValueMetrics,
+        usage: input.usage as unknown as UsageMetrics,
+        ratified: input.ratified as RatifiedRow[],
       }),
   },
 ];

@@ -241,10 +241,6 @@ export interface ValueFrontmatter {
   span_days?: number;
   /** Count of distinct calendar dates carrying ≥1 in-span commit. Primary leverage denominator. */
   work_days?: number;
-  /** Σ per-day (last − first) author-commit span in hours; 0.5h floor per single-commit day. */
-  work_hours?: number;
-  /** Frozen constant = 8; nominal work-day length for the display-only hour↔day conversion. */
-  hours_per_work_day?: number;
   /**
    * COCOMO II nominal reference ceiling: code-only net added LOC / 1000.
    * Code-only = included net LOC minus docs-classified units (markdown/config not SLOC per Boehm 2000).
@@ -507,17 +503,6 @@ export interface ValueMetrics {
    * Primary work-time denominator for leverage. Excludes idle days entirely.
    */
   work_days: number;
-  /**
-   * Σ over each active day of (last − first author-commit timestamp that day), in hours.
-   * Days whose span is below 0.5h (including single-commit days, span = 0) use the 0.5h floor.
-   * Finer proxy than work_days; its errors inflate leverage, so it never leads.
-   */
-  work_hours: number;
-  /**
-   * Nominal work-day length (8h). Used only for the display-only work_hours ↔ days conversion;
-   * never enters estimate arithmetic (DEC-0003).
-   */
-  hours_per_work_day: number;
   /**
    * COCOMO II nominal reference ceiling: code-only net added LOC / 1000.
    * Code-only = included net LOC minus docs-classified units (markdown/config not SLOC per Boehm 2000).

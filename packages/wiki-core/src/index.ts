@@ -177,8 +177,40 @@ export { generate } from './generate.js';
 export { buildSearchIndex, search } from './search.js';
 
 // Value report (deterministic, offline)
-export { computeValueReport } from './value-report.js';
+export { computeValueReport, findUnpublishedDraft } from './value-report.js';
+export type { DraftValInfo } from './value-report.js';
+
+// Value finalize (WK-0058: gather the published chain from disk, then render the VAL body)
+export { readPublishedPriors, finalizeValueReport } from './value-finalize.js';
+export type { FinalizeValueReportOpts } from './value-finalize.js';
 
 // Value usage (token/cost scraper — the one kb module that shells npx and makes a network call)
 export { computeValueUsage } from './value-usage.js';
 export type { UsageDeps } from './value-usage.js';
+
+// Value render/finalize (deterministic VAL body fill — WK-0058)
+export {
+  fmtInt,
+  fmtNum,
+  computeArithmetic,
+  resolveReviewRows,
+  renderReviewTable,
+  renderTokenDetail,
+  renderDataTraces,
+  groupUnclassified,
+  renderUnclassifiedGroups,
+  renderRoiLine,
+  renderCeilingLine,
+  renderValueReport,
+} from './value-render.js';
+export type {
+  RatifiedRow,
+  PriorValNumbers,
+  ValArithmetic,
+  ResolvedRow,
+  UnclassifiedGroup,
+  RoiLineInput,
+  CeilingLineInput,
+  RenderValueReportInput,
+  RenderedVal,
+} from './value-render.js';

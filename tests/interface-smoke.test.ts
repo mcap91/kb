@@ -76,7 +76,7 @@ describe('MCP smoke tests', () => {
 
   it('tool count matches expected operations', async () => {
     const { tools } = await import('@kb/wiki-mcp');
-    expect(tools.length).toBe(13);
+    expect(tools.length).toBe(14);
   });
 
   it('registers real tool schemas and passes tool arguments through MCP', async () => {
