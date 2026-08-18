@@ -20,6 +20,7 @@ import type {
   CodeUnitClass,
   RateFlag,
   UsageMetrics,
+  UsageProviderDetail,
   ValueMetrics,
   ValueDataTrace,
   ValueCandidate,
@@ -218,10 +219,11 @@ export function renderReviewTable(rows: ResolvedRow[]): string {
 // Token Detail table (## Token Detail — per-model tokens + cost split, scraped)
 // ---------------------------------------------------------------------------
 
-/** Column headers for the Token Detail table, in render order. */
+/** Column headers for the per-model Token Detail table, in render order. */
 const TOKEN_HEADERS = [
   'model',
-  'arm',
+  'provider',
+  'effort',
   'input',
   'output',
   'cache_read',
@@ -231,17 +233,59 @@ const TOKEN_HEADERS = [
   'cost_usd_est',
 ];
 
+/** Column headers for the by-provider subtotal table. */
+const PROVIDER_HEADERS = [
+  'provider',
+  'input',
+  'output',
+  'cache_read',
+  'cache_write',
+  'total',
+  'cost_usd_est',
+];
+
 /** A per-row/aggregate $ cell: null → em dash; a number → `$X.XX`. */
 function fmtCost(v: number | null): string {
   return v === null ? '—' : `$${fmtNum(v)}`;
 }
 
+/** The by-provider subtotal (DEC-0005 provider dimension; provider = litellm_provider). */
+function renderProviderSubtotal(rows: UsageProviderDetail[]): string {
+  if (rows.length === 0) return '_No provider breakdown._';
+  const header = mdRow(PROVIDER_HEADERS);
+  const sep = mdRow(PROVIDER_HEADERS.map(() => '---'));
+  const body = rows.map((p) =>
+    mdRow([
+      p.provider,
+      fmtInt(p.input_tokens),
+      fmtInt(p.output_tokens),
+      fmtInt(p.cache_read_tokens),
+      fmtInt(p.cache_write_tokens),
+      fmtInt(p.total_tokens),
+      fmtCost(p.cost_usd_est),
+    ]),
+  );
+  return ['**By provider:**', '', header, sep, ...body].join('\n');
+}
+
+/** The provenance line: which pinned table priced this, and whether an actual reconciled it. */
+function renderProvenanceLine(usage: UsageMetrics): string {
+  const actual =
+    usage.cost_usd === null
+      ? usage.actual_reason
+        ? `actual: none (${usage.actual_reason})`
+        : 'actual: none'
+      : `actual: $${fmtNum(usage.cost_usd)} (${usage.cost_provenance})`;
+  return `Priced via LiteLLM table ${usage.pricing_table_version}. ${actual}`;
+}
+
 /**
- * Render the `## Token Detail` per-model table from scraped usage (display: separators + 2-dp $).
- * The two cost columns stay distinct: `cost_usd` (real/marginal out-of-pocket, null on
- * subscription/codex arms) and `cost_usd_est` (ccusage at-API-rates). The bold total row uses the
- * frozen top-level aggregates; a null aggregate `cost_usd` reads `$0 (null)` so a subscription
- * span is not misread as unpriced. Deterministic — the model never writes this table.
+ * Render the `## Token Detail` section from scraped usage (display: separators + 2-dp $): a
+ * per-model table (with provider + optional effort), a by-provider subtotal, and a provenance
+ * line naming the pinned LiteLLM table. The two cost columns stay distinct: `cost_usd` (the
+ * OPTIONAL actual out-of-pocket, null unless an OpenRouter/operator source exists) and
+ * `cost_usd_est` (tokens × table at list rates). A null aggregate `cost_usd` reads `$0 (null)`
+ * so an estimate-only span is not misread as unpriced. Deterministic — the model never writes this.
  */
 export function renderTokenDetail(usage: UsageMetrics): string {
   const header = mdRow(TOKEN_HEADERS);
@@ -249,7 +293,8 @@ export function renderTokenDetail(usage: UsageMetrics): string {
   const body = usage.by_model.map((m) =>
     mdRow([
       m.model,
-      m.arm,
+      m.provider,
+      m.effort ?? '—',
       fmtInt(m.input_tokens),
       fmtInt(m.output_tokens),
       fmtInt(m.cache_read_tokens),
@@ -263,6 +308,7 @@ export function renderTokenDetail(usage: UsageMetrics): string {
   const total = mdRow([
     '**total**',
     '',
+    '',
     `**${fmtInt(usage.input_tokens)}**`,
     `**${fmtInt(usage.output_tokens)}**`,
     `**${fmtInt(usage.cache_read_tokens)}**`,
@@ -271,7 +317,8 @@ export function renderTokenDetail(usage: UsageMetrics): string {
     `**${totalCostUsd}**`,
     `**${fmtCost(usage.cost_usd_est)}**`,
   ]);
-  return [header, sep, ...body, total].join('\n');
+  const modelTable = [header, sep, ...body, total].join('\n');
+  return [modelTable, '', renderProviderSubtotal(usage.by_provider), '', renderProvenanceLine(usage)].join('\n');
 }
 
 // ---------------------------------------------------------------------------
@@ -375,7 +422,7 @@ export interface RoiLineInput {
   units_valued: number;
   /** Real/marginal out-of-pocket $, or null for a pure subscription-covered span. */
   cost_usd: number | null;
-  /** ccusage at-API-rates estimate, or null when nothing could be priced. */
+  /** LiteLLM list-rate estimate (tokens × table), or null when nothing could be priced. */
   cost_usd_est: number | null;
   total_tokens: number;
   replication_days: number;

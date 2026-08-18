@@ -66,14 +66,15 @@ export type Priority = 'critical' | 'high' | 'medium' | 'low';
 /** VAL-* value report status. */
 export type ValueStatus = 'draft' | 'published';
 
-/** Provenance of scraped token/cost data (assigned in code by value-usage). */
+/**
+ * Provenance of the reported cost (assigned in code by value-usage — WK-0064). These three are the
+ * only values ever EMITTED. The record-validation surface (costProvenanceSchema + manifest enum)
+ * additionally tolerates the pre-DEC-0005 legacy values so immutable historical VALs still lint clean.
+ */
 export type CostProvenance =
-  | 'openrouter-api'
-  | 'ccusage-priced'
-  | 'subscription-covered'
-  | 'local-free'
-  | 'unavailable'
-  | 'mixed';
+  | 'litellm-estimate' // priced by the vendored table; no external actual on this host
+  | 'openrouter-actual' // an OpenRouter /credits actual reconciled the estimate
+  | 'unavailable'; // no token data for the span
 
 /** Watermark chain status across the VAL series. */
 export type ChainStatus = 'complete' | 'first' | 'gap' | 'overlap' | 'unknown';
@@ -225,17 +226,19 @@ export interface ValueFrontmatter {
   head_commit: string;
   prior_val: string; // prior VAL id, or "none"
   chain_status: ChainStatus;
-  // Cost — observed (scraped by value-usage)
+  // Cost — observed (scraped by value-usage; DEC-0005 owned read + LiteLLM table)
   input_tokens?: number;
   output_tokens?: number;
   cache_read_tokens?: number;
   cache_write_tokens?: number;
   total_tokens?: number;
-  /** Real/marginal out-of-pocket $ (OR authoritative; local 0; subscription blank). */
+  /** Actual out-of-pocket $ — OpenRouter /credits or operator-supplied; blank when none. */
   cost_usd?: number;
-  /** ccusage (LiteLLM) at-API-rates estimate, populated for every arm. */
+  /** `tokens × vendored LiteLLM table` list-rate estimate; blank when nothing could be priced. */
   cost_usd_est?: number;
   cost_provenance?: CostProvenance;
+  /** Pinned LiteLLM table version that priced this span (provenance, WK-0064). */
+  pricing_table_version?: string;
   agents?: string[];
   // Output — observed (tool-filled by value-report)
   span_days?: number;
@@ -346,15 +349,17 @@ export type UnitClass = CodeUnitClass | DataUnitClass | 'unclassified';
 export type RateFlag = 'test-code' | 'fixture-generator' | 'workflow-dsl' | 'shell-wrapper';
 
 /**
- * One config-driven arm mapping rule.
- * Match rule: case-insensitive substring — the model string is lowercased and
- * tested against the lowercased `pattern`. First matching entry wins.
+ * One config-driven model-id → table-key alias (repurposed for pricing — WK-0064).
+ * Match rule: case-insensitive substring — the model id is lowercased and tested against
+ * the lowercased `pattern`. The first matching entry maps the id to `table_key`, the
+ * canonical LiteLLM row used to price it. Handles gateway-rewritten / dated /
+ * provider-prefixed ids (`us.anthropic.claude-…`, `claude-…-<date>`, `anthropic/…`).
  */
 export interface ModelPatternEntry {
   /** Substring to search for in the model id (case-insensitive). */
   pattern: string;
-  /** The arm to assign when the pattern matches. */
-  arm: UsageArm;
+  /** The canonical LiteLLM table key to price the matched model against. */
+  table_key: string;
 }
 
 /**
@@ -395,13 +400,20 @@ export interface ValueConfig {
    */
   orphan_data_globs?: string[];
   /**
-   * Ordered list of pattern → arm rules consulted BEFORE the built-in heuristics.
-   * Use to map gateway-rewritten or enterprise model ids (Bedrock, Vertex) to
-   * the correct arm. First match wins. Default: [] (no overrides).
-   * Optional so existing ValueConfig literals (value-report.ts DEFAULT_CONFIG) do
-   * not require a migration — absent means [].
+   * Ordered list of model-id → table-key aliases consulted when an exact table key is
+   * absent (WK-0064). Use to map gateway-rewritten / dated / provider-prefixed ids
+   * (Bedrock, Vertex, `anthropic/…`) onto a canonical LiteLLM price row. First match wins.
+   * Default: [] (no aliases). Optional so existing ValueConfig literals (value-report.ts
+   * DEFAULT_CONFIG) do not require a migration — absent means [].
    */
   model_patterns?: ModelPatternEntry[];
+  /**
+   * Pinned LiteLLM pricing-table version, frozen into a published VAL's resolved_config for
+   * provenance (WK-0064 / DEC-0005). Freeze slot: the runtime value is the pricing module's
+   * LITELLM_TABLE_VERSION constant; recorded here so a published report names the table it
+   * priced against. Optional; default absent.
+   */
+  pricing_table_version?: string;
 }
 
 /** Options for computeValueReport (deterministic, offline). */
@@ -552,57 +564,80 @@ export interface ValueMetrics {
   config_hash: string;
 }
 
-/** Options for computeValueUsage (the one network/exec-touching tool). */
+/** Options for computeValueUsage (offline core path; optional OpenRouter actual only). */
 export interface ValueUsageOpts {
   dir: string;
   since: string;
   until: string;
-  ccusageVersion?: string;
   /**
    * Inline config overrides — primarily for tests (hermetic, no disk I/O).
-   * `model_patterns` here take precedence over `wiki/.value-config.json`.
+   * `model_patterns` (table-key aliases) here take precedence over `wiki/.value-config.json`.
    */
   config?: { model_patterns?: ModelPatternEntry[] };
 }
 
-/**
- * Which arm a model/tool belongs to (spec §2.3).
- * `codex` is a separate CLI (its own ~/.codex logs); tokens are captured and
- * repo-attributed by cwd. Its marginal cost_usd stays null (subscription-
- * covered), but cost_usd_est is priced by joining `ccusage codex session`
- * on the session UUID.
- */
-export type UsageArm = 'subscription' | 'local' | 'openrouter' | 'codex' | 'unknown';
-
 /** Per-model token/cost detail (goes to the record body table, not frontmatter). */
 export interface UsageModelDetail {
   model: string;
-  arm: UsageArm;
+  /** LiteLLM `litellm_provider` of the resolved price row; `'unknown'` when unmatched. */
+  provider: string;
+  /** Reasoning effort where the provider logs it (Codex `turn_context.effort`); null for Claude. */
+  effort: string | null;
   input_tokens: number;
   output_tokens: number;
   cache_read_tokens: number;
   cache_write_tokens: number;
   total_tokens: number;
-  /** Real/marginal out-of-pocket $; null when the arm has no marginal charge figure (subscription/codex). */
+  /**
+   * Real/marginal out-of-pocket $ for this model row. Always null under DEC-0005: the only
+   * in-band actual (OpenRouter /credits) is account-scoped, surfaced at the top level, never
+   * split per model. Kept so the render can show it beside the estimate if a future per-row
+   * actual source appears.
+   */
   cost_usd: number | null;
-  /** ccusage (LiteLLM) at-API-rates estimate; null only when unpriceable (codex join failed). */
+  /** `tokens × vendored LiteLLM table` at list rates; null when the model has no price row. */
+  cost_usd_est: number | null;
+  /** Why cost_usd_est is null (unknown model); null when priced. Never a silent $0. */
+  est_reason: string | null;
+}
+
+/** Per-provider token/cost aggregate (provider = LiteLLM `litellm_provider`). */
+export interface UsageProviderDetail {
+  provider: string;
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  cache_write_tokens: number;
+  total_tokens: number;
+  /** Actual out-of-pocket $ for the provider; null (actual is top-level only under DEC-0005). */
+  cost_usd: number | null;
+  /** Σ list-rate estimate over the provider's models; null when none could be priced. */
   cost_usd_est: number | null;
 }
 
-/** Scraped token/cost metrics from value-usage. */
+/** Scraped token/cost metrics from value-usage (owned read + LiteLLM table — WK-0064). */
 export interface UsageMetrics {
   input_tokens: number;
   output_tokens: number;
   cache_read_tokens: number;
   cache_write_tokens: number;
   total_tokens: number;
-  /** Real/marginal out-of-pocket $ summed across arms; null when every arm is tokens-only. */
+  /**
+   * Actual out-of-pocket $ — populated ONLY from a real source (OpenRouter /credits or an
+   * operator-supplied figure), else null. Never derived from the estimate.
+   */
   cost_usd: number | null;
-  /** At-API-rates estimate summed across arms; null when nothing could be priced. */
+  /** Σ `tokens × table` list-rate estimate across models; null when nothing could be priced. */
   cost_usd_est: number | null;
   cost_provenance: CostProvenance;
+  /** The pinned LiteLLM table version that priced this scrape (provenance). */
+  pricing_table_version: string;
+  /** Why cost_usd (actual) is null — no in-band actual source on this host. Absent when actual is set. */
+  actual_reason?: string;
   agents: string[];
   by_model: UsageModelDetail[];
+  /** Aggregate by provider (litellm_provider) — the DEC-0005 provider dimension. */
+  by_provider: UsageProviderDetail[];
   /** Always "date-window-approx" — adjacent non-committed work may bleed in (spec §6.4). */
   attribution: string;
   /** Machine-readable reason when cost_provenance is "unavailable". */
