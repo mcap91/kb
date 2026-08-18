@@ -2134,7 +2134,7 @@ describe('VAL value-report record type', () => {
         total_tokens: 3750,
         cost_usd: 1.23,
         cost_usd_est: 4.56,
-        cost_provenance: 'openrouter-api',
+        cost_provenance: 'openrouter-actual',
         agents: ['claude', 'codex'],
         span_days: 9,
         commits: 12,

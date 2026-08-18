@@ -63,7 +63,7 @@ Commands:
   validate-plan        Validate a PLN record and bundle
   archive-plan         Mark a PLN record done
   value-report         Compute git + graph metrics for a VAL value report, including COCOMO II nominal ceiling (cocomo_kloc, cocomo_pm_nominal) (JSON)
-  value-usage          Scrape token/cost data from ccusage + OpenRouter (JSON)
+  value-usage          Own the Claude+Codex JSONL read, price via vendored LiteLLM table (JSON)
   value-finalize       Render the deterministic VAL body from frozen report+usage JSON + ratified rows (JSON)
 
 Global options:

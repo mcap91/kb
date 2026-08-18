@@ -315,6 +315,7 @@
         "cost_usd",
         "cost_usd_est",
         "cost_provenance",
+        "pricing_table_version",
         "agents",
         "span_days",
         "work_days",
@@ -368,11 +369,13 @@
       "enumFrontMatter": {
         "status": ["draft", "published"],
         "cost_provenance": [
-          "openrouter-api",
-          "ccusage-priced",
-          "subscription-covered",
-          "local-free",
+          "litellm-estimate",
+          "openrouter-actual",
           "unavailable",
+          "subscription-covered",
+          "ccusage-priced",
+          "openrouter-api",
+          "local-free",
           "mixed"
         ],
         "chain_status": ["complete", "first", "gap", "overlap", "unknown"],

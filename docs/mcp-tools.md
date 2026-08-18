@@ -32,7 +32,7 @@ using the SDK's high-level `McpServer` + `registerTool` API.
 | `validate-plan` | Validate a PLN record and companion bundle | `dir`, `plan` | — | read-only |
 | `archive-plan` | Mark a PLN done without moving its bundle | `dir`, `plan` | — | |
 | `value-report` | Compute deterministic git+graph metrics for a VAL | `dir` | `since`, `untilRef` | read-only |
-| `value-usage` | Scrape token/cost data for a date window | `dir`, `since`, `until` | `ccusageVersion` | read-only |
+| `value-usage` | Own the Claude+Codex JSONL read, price via a vendored LiteLLM table (by model+provider) for a date window | `dir`, `since`, `until` | — | read-only |
 
 ## kb-dispatch (10 tools)
 

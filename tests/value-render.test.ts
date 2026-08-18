@@ -30,7 +30,8 @@ import type {
   ValueDataTrace,
   ValueCandidate,
 } from '../packages/wiki-core/src/types.js';
-import { makeMetrics, makeUsage, GOLDEN_UNITS } from './helpers/value-fixtures.js';
+import { makeMetrics, makeUsage, GOLDEN_UNITS, USAGE_ACTUAL_REASON } from './helpers/value-fixtures.js';
+import { LITELLM_TABLE_VERSION } from '../packages/wiki-core/src/pricing.js';
 
 describe('fmtInt — thousands-separated integers (display only)', () => {
   it('separates a long integer (token/LOC counts) into thousands groups', () => {
@@ -112,7 +113,7 @@ describe('computeArithmetic — cum_leverage over the published chain (body-only
 });
 
 describe('renderRoiLine — the printed ROI headline (2-dp + separators)', () => {
-  it('renders a subscription-covered span as $0 out-of-pocket, est carries the figure', () => {
+  it('renders an estimate-only span (no actual) as $0 out-of-pocket, est carries the figure', () => {
     const line = renderRoiLine({
       units_valued: 26,
       cost_usd: null,
@@ -296,61 +297,34 @@ describe('renderReviewTable — the ## How This Was Calculated review rows (2-dp
   });
 });
 
-describe('renderTokenDetail — the ## Token Detail per-model table (separators; cost split)', () => {
-  it('renders per-model rows and a bold total; null per-row cost_usd is an em dash', () => {
-    // Why: subscription arms carry no marginal $ (cost_usd null) but ARE priced at API rates
-    // (cost_usd_est) — the two columns must never be conflated, and the total cost_usd must read
-    // "$0 (null)" so a subscription span is not misread as unpriced.
-    const usage: UsageMetrics = {
-      input_tokens: 81606,
-      output_tokens: 744912,
-      cache_read_tokens: 57908649,
-      cache_write_tokens: 1955846,
-      total_tokens: 60691013,
-      cost_usd: null,
-      cost_usd_est: 64.58,
-      cost_provenance: 'subscription-covered',
-      agents: ['claude'],
-      by_model: [
-        {
-          model: 'claude-opus-4-8',
-          arm: 'subscription',
-          input_tokens: 81516,
-          output_tokens: 683867,
-          cache_read_tokens: 53313057,
-          cache_write_tokens: 1726318,
-          total_tokens: 55804758,
-          cost_usd: null,
-          cost_usd_est: 61.42,
-        },
-        {
-          model: 'claude-sonnet-4-6',
-          arm: 'subscription',
-          input_tokens: 90,
-          output_tokens: 61045,
-          cache_read_tokens: 4595592,
-          cache_write_tokens: 229528,
-          total_tokens: 4886255,
-          cost_usd: null,
-          cost_usd_est: 3.16,
-        },
-      ],
-      attribution: 'date-window-approx',
-    };
-    expect(renderTokenDetail(usage)).toBe(
+describe('renderTokenDetail — the ## Token Detail section (per-model + by-provider + provenance)', () => {
+  it('renders per-model rows, a by-provider subtotal, and a table-version provenance line', () => {
+    // Why: the cost columns must never be conflated — cost_usd is the OPTIONAL actual (null on an
+    // estimate-only span, rendered "$0 (null)") and cost_usd_est is tokens × table. The provider
+    // subtotal is the DEC-0005 provider dimension; the provenance line names the pinned table.
+    expect(renderTokenDetail(makeUsage())).toBe(
       [
-        '| model | arm | input | output | cache_read | cache_write | total | cost_usd | cost_usd_est |',
-        '| --- | --- | --- | --- | --- | --- | --- | --- | --- |',
-        '| claude-opus-4-8 | subscription | 81,516 | 683,867 | 53,313,057 | 1,726,318 | 55,804,758 | — | $61.42 |',
-        '| claude-sonnet-4-6 | subscription | 90 | 61,045 | 4,595,592 | 229,528 | 4,886,255 | — | $3.16 |',
-        '| **total** |  | **81,606** | **744,912** | **57,908,649** | **1,955,846** | **60,691,013** | **$0 (null)** | **$64.58** |',
+        '| model | provider | effort | input | output | cache_read | cache_write | total | cost_usd | cost_usd_est |',
+        '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |',
+        '| claude-opus-4-8 | anthropic | — | 81,516 | 683,867 | 53,313,057 | 1,726,318 | 55,804,758 | — | $61.42 |',
+        '| claude-sonnet-4-6 | anthropic | — | 90 | 61,045 | 4,595,592 | 229,528 | 4,886,255 | — | $3.16 |',
+        '| **total** |  |  | **81,606** | **744,912** | **57,908,649** | **1,955,846** | **60,691,013** | **$0 (null)** | **$64.58** |',
+        '',
+        '**By provider:**',
+        '',
+        '| provider | input | output | cache_read | cache_write | total | cost_usd_est |',
+        '| --- | --- | --- | --- | --- | --- | --- |',
+        '| anthropic | 81,606 | 744,912 | 57,908,649 | 1,955,846 | 60,691,013 | $64.58 |',
+        '',
+        `Priced via LiteLLM table ${LITELLM_TABLE_VERSION}. actual: none (${USAGE_ACTUAL_REASON})`,
       ].join('\n'),
     );
   });
 
-  it('shows a real per-row cost_usd and marks a null est as an em dash', () => {
-    // Why: an OpenRouter arm has authoritative marginal $ (cost_usd) but may be unpriceable by
-    // ccusage (est null); the total cost_usd must then be a real figure, not "$0 (null)".
+  it('shows the top-level actual $ and an unknown-model row with em-dash est + reason', () => {
+    // Why: under DEC-0005 the actual is a TOP-LEVEL figure (OpenRouter /credits) — never split per
+    // model, so per-row cost_usd stays an em dash while the total carries the real $1.50. An unknown
+    // model prices to an em-dash estimate (its est_reason lives on the row), never a silent $0.
     const usage: UsageMetrics = {
       input_tokens: 100,
       output_tokens: 200,
@@ -359,26 +333,42 @@ describe('renderTokenDetail — the ## Token Detail per-model table (separators;
       total_tokens: 300,
       cost_usd: 1.5,
       cost_usd_est: null,
-      cost_provenance: 'openrouter-api',
-      agents: ['openrouter'],
+      cost_provenance: 'openrouter-actual',
+      pricing_table_version: LITELLM_TABLE_VERSION,
+      agents: ['claude'],
       by_model: [
         {
           model: 'glm-4.6',
-          arm: 'openrouter',
+          provider: 'unknown',
+          effort: null,
           input_tokens: 100,
           output_tokens: 200,
           cache_read_tokens: 0,
           cache_write_tokens: 0,
           total_tokens: 300,
-          cost_usd: 1.5,
+          cost_usd: null,
+          cost_usd_est: null,
+          est_reason: 'no LiteLLM price row for model "glm-4.6"',
+        },
+      ],
+      by_provider: [
+        {
+          provider: 'unknown',
+          input_tokens: 100,
+          output_tokens: 200,
+          cache_read_tokens: 0,
+          cache_write_tokens: 0,
+          total_tokens: 300,
+          cost_usd: null,
           cost_usd_est: null,
         },
       ],
       attribution: 'date-window-approx',
     };
     const out = renderTokenDetail(usage);
-    expect(out).toContain('| glm-4.6 | openrouter | 100 | 200 | 0 | 0 | 300 | $1.50 | — |');
-    expect(out).toContain('| **total** |  | **100** | **200** | **0** | **0** | **300** | **$1.50** | **—** |');
+    expect(out).toContain('| glm-4.6 | unknown | — | 100 | 200 | 0 | 0 | 300 | — | — |');
+    expect(out).toContain('| **total** |  |  | **100** | **200** | **0** | **0** | **300** | **$1.50** | **—** |');
+    expect(out).toContain(`Priced via LiteLLM table ${LITELLM_TABLE_VERSION}. actual: $1.50 (openrouter-actual)`);
   });
 });
 
@@ -429,14 +419,22 @@ describe('renderValueReport — full deterministic assembly (golden, byte-stable
       ].join('\n'),
     );
 
-    // (a) ## Token Detail.
+    // (a) ## Token Detail — per-model table + by-provider subtotal + provenance line.
     expect(res.data.sections.tokenDetail).toBe(
       [
-        '| model | arm | input | output | cache_read | cache_write | total | cost_usd | cost_usd_est |',
-        '| --- | --- | --- | --- | --- | --- | --- | --- | --- |',
-        '| claude-opus-4-8 | subscription | 81,516 | 683,867 | 53,313,057 | 1,726,318 | 55,804,758 | — | $61.42 |',
-        '| claude-sonnet-4-6 | subscription | 90 | 61,045 | 4,595,592 | 229,528 | 4,886,255 | — | $3.16 |',
-        '| **total** |  | **81,606** | **744,912** | **57,908,649** | **1,955,846** | **60,691,013** | **$0 (null)** | **$64.58** |',
+        '| model | provider | effort | input | output | cache_read | cache_write | total | cost_usd | cost_usd_est |',
+        '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |',
+        '| claude-opus-4-8 | anthropic | — | 81,516 | 683,867 | 53,313,057 | 1,726,318 | 55,804,758 | — | $61.42 |',
+        '| claude-sonnet-4-6 | anthropic | — | 90 | 61,045 | 4,595,592 | 229,528 | 4,886,255 | — | $3.16 |',
+        '| **total** |  |  | **81,606** | **744,912** | **57,908,649** | **1,955,846** | **60,691,013** | **$0 (null)** | **$64.58** |',
+        '',
+        '**By provider:**',
+        '',
+        '| provider | input | output | cache_read | cache_write | total | cost_usd_est |',
+        '| --- | --- | --- | --- | --- | --- | --- |',
+        '| anthropic | 81,606 | 744,912 | 57,908,649 | 1,955,846 | 60,691,013 | $64.58 |',
+        '',
+        `Priced via LiteLLM table ${LITELLM_TABLE_VERSION}. actual: none (${USAGE_ACTUAL_REASON})`,
       ].join('\n'),
     );
 

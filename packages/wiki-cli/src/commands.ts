@@ -463,9 +463,7 @@ export async function cmdValueUsage(args: string[]): Promise<void> {
   const until = requireValue(args, '--until', 'YYYY-MM-DD');
   if (!until) return;
 
-  const ccusageVersion = parseValue(args, '--ccusage-version');
-
-  const result = await computeValueUsage({ dir, since, until, ccusageVersion });
+  const result = await computeValueUsage({ dir, since, until });
 
   if (!result.ok) {
     console.error(`Error [${result.error}]: ${result.message}`);

@@ -1,58 +1,39 @@
 /**
- * Value-usage module — the ONE kb module that shells npx and makes a network call.
+ * Value-usage module — the owned token read + LiteLLM-table cost surface (DEC-0005 / WK-0064).
  *
- * Scrapes token/cost usage for the target repo + date window across every arm the
- * user runs, and repo-attributes it:
+ * Reads the local CLI session logs DIRECTLY (no external CLI shell-out), repo-attributes them, prices them
+ * against a vendored + pinned LiteLLM table, and aggregates by model AND by provider:
  *
- *  - Claude family (subscription Claude, local Ollama/OSS, OpenRouter) all run
- *    THROUGH Claude Code, so they share `~/.claude/projects/<encoded-cwd>/*.jsonl`.
- *    `ccusage claude daily --json --instances` reads them, grouped by project cwd
- *    (the encoded-cwd key), and prices them. Arm is identified per model string.
- *  - Codex is a SEPARATE CLI (`~/.codex/sessions/.../rollout-*.jsonl`). ccusage's codex
- *    views expose NO cwd, so codex cannot be repo-scoped via ccusage. Instead we
- *    read the raw session logs directly: `session_meta.cwd` (and `turn_context`)
- *    carry the launch directory — for interactive sessions the repo root, for kb
- *    dispatch runs a subdir under the repo — so a cwd prefix-match attributes
- *    codex usage to the repo. Codex dollars-at-API-rates come from joining the
- *    repo-matched sessions to `ccusage codex session --json` on the session UUID.
+ *  - Claude Code writes `~/.claude/projects/<encoded-cwd>/**\/*.jsonl` (incl. `subagents/`
+ *    subfolders). We parse each assistant line's `message.usage` + `message.model` + top-level
+ *    `timestamp`, dedupe on `message.id`, window by date, and repo-scope by the encoded-cwd
+ *    folder key. A `<synthetic>` 0-token pseudo-model is skipped.
+ *  - Codex is a separate CLI (`~/.codex/sessions/.../rollout-*.jsonl`). `session_meta.cwd` /
+ *    `turn_context.cwd` carry the launch directory, so a cwd prefix-match attributes codex usage
+ *    to the repo; `turn_context.effort` carries the optional reasoning-effort dimension.
  *
- * Worktree-agnostic attribution: sessions run in a git worktree of the repo are
- * attributed via `git worktree list --porcelain` roots (UsageDeps.listWorktreeRoots).
- * A worktree REMOVED before the scrape drops its tokens (cut the VAL while worktrees
- * exist) — deterministic, stated limitation.
+ * Cost model (DEC-0005, amended 2026-08-17 per operator):
+ *  - cost_usd_est  `tokens × table` at LiteLLM list rates, per model; provider = litellm_provider.
+ *                  Unknown model → null + reason (never a silent $0). The estimate is NOT a bill.
+ *  - cost_usd      the actual out-of-pocket $. No API returns a per-repo/per-span dollar figure, so
+ *                  the tool never fabricates one: cost_usd is always null (+ actual_reason). Only an
+ *                  operator hand-editing the record supplies a real number. (The former OpenRouter
+ *                  /credits reconciliation was removed: /credits is an ACCOUNT-LIFETIME total, not
+ *                  span-scoped, so it produced the same stale figure on every report.)
  *
- * Dual cost fields (operator decision 2026-07-10):
- *  - cost_usd      real/marginal out-of-pocket: OR → authoritative API $; local → 0;
- *                  subscription (incl. codex-on-subscription) → null (flat fee).
- *  - cost_usd_est  ccusage (LiteLLM) at-API-rates estimate for EVERY arm — the
- *                  interpretable "what it would have metered" figure. Partial codex
- *                  pricing (some sessions unjoinable) sums what it can: downward-biased.
+ * OpenRouter is still reported as a PROVIDER when its models ran through Claude Code — those tokens
+ * are in the `~/.claude` JSONL and priced by the table like any other model. Only the meaningless
+ * lifetime-dollar layer is gone.
+ *
+ * Worktree-agnostic attribution via `git worktree list --porcelain` roots. A worktree REMOVED
+ * before the scrape drops its tokens (cut the VAL while worktrees exist) — stated limitation.
  *
  * Public API: computeValueUsage(opts, deps?) → Promise<Result<UsageMetrics>>
  *
  * Rules:
- * - Result<T> everywhere; never throw from computeValueUsage
- * - Egress points are injectable via UsageDeps (ccusage exec, codex-log read, OR fetch)
- * - NEVER log, echo, or include the OpenRouter key in any returned value or output
- * - Use execFileSync with an arg array (no shell string interpolation) in defaults
- *
- * ccusage `claude daily --json --instances` shape (verified against ccusage 20.0.17):
- * {
- *   projects: {
- *     "<encoded-cwd>": [                 // key = cwd with : \ / replaced by -
- *       {
- *         date, project, inputTokens, outputTokens,
- *         cacheCreationTokens, cacheReadTokens, totalCost, totalTokens,
- *         modelsUsed: string[],
- *         modelBreakdowns: [
- *           { modelName, inputTokens, outputTokens,
- *             cacheCreationTokens, cacheReadTokens, cost }
- *         ]
- *       }
- *     ]
- *   },
- *   totals: { ... }
- * }
+ * - Result<T> everywhere; never throw from computeValueUsage.
+ * - The core path is FULLY OFFLINE + deterministic — no network calls at all.
+ * - Egress points are injectable via UsageDeps (log readers, pricing-table load).
  */
 
 import * as fs from 'node:fs';
@@ -64,136 +45,198 @@ import type {
   ValueUsageOpts,
   UsageMetrics,
   UsageModelDetail,
-  UsageArm,
+  UsageProviderDetail,
   CostProvenance,
   ModelPatternEntry,
 } from './types.js';
+import { priceModel, loadDefaultPricingTable, LITELLM_TABLE_VERSION, type PricingTable } from './pricing.js';
 
 // ---------------------------------------------------------------------------
-// Pinned ccusage version (spec §2.3: @latest forbidden for reproducibility)
-// Config-overridable via opts.ccusageVersion. Verified current 2026-07-10.
-// ---------------------------------------------------------------------------
-
-const CCUSAGE_VERSION = '20.0.17';
-
-// ---------------------------------------------------------------------------
-// UsageDeps — injectable seams for testing
+// Normalized read records (Claude + Codex)
 // ---------------------------------------------------------------------------
 
 /**
- * A single repo-attributable codex session's usage, read from raw ~/.codex logs.
- * Tokens are already normalized to the same shape as the claude family:
- * `input_tokens` is NON-cached input; `cache_read_tokens` is cached input.
+ * One assistant message's usage read from a Claude Code JSONL line. `projectKey` is the
+ * encoded-cwd folder name (the repo-scope key); `messageId` is the dedup key.
+ */
+export interface ClaudeMessageUsage {
+  projectKey: string;
+  messageId: string;
+  model: string;
+  /** YYYY-MM-DD from the top-level `timestamp` (the date-window key). */
+  date: string;
+  input_tokens: number;
+  output_tokens: number;
+  /** From `message.usage.cache_read_input_tokens`. */
+  cache_read_tokens: number;
+  /** From `message.usage.cache_creation_input_tokens` (a number). */
+  cache_write_tokens: number;
+}
+
+/**
+ * A single repo-attributable codex session's usage, read from raw ~/.codex logs. Tokens are
+ * normalized to the Claude-family shape: `input_tokens` is NON-cached input; `cache_read_tokens`
+ * is cached input. Codex has no cache-write bucket. `effort` is the optional reasoning-effort
+ * dimension (`turn_context.effort`, e.g. "xhigh"); null when the session did not log one.
  */
 export interface CodexSessionUsage {
   /** session_meta.cwd (or turn_context.cwd) — the codex launch directory. */
   cwd: string;
   /** turn_context.model, e.g. "gpt-5.5"; falls back to "codex". */
   model: string;
-  /**
-   * Rollout session UUID (session_meta.payload.id, or parsed from the rollout
-   * filename) — the join key for `ccusage codex session` pricing. Absent when
-   * unparseable; such sessions stay tokens-only (cost_usd_est null).
-   */
-  session_id?: string;
+  effort: string | null;
   input_tokens: number;
   cache_read_tokens: number;
   output_tokens: number;
   total_tokens: number;
 }
 
+// ---------------------------------------------------------------------------
+// UsageDeps — injectable seams for testing
+// ---------------------------------------------------------------------------
+
 /**
  * The egress points of value-usage, all injectable so tests are hermetic.
  */
 export interface UsageDeps {
   /**
-   * Run `npx ccusage@<version> claude daily --json --instances --since --until`.
-   * Returns raw stdout string. May throw if ccusage is absent.
-   * Covers the whole Claude family (subscription / local / OpenRouter arms).
+   * Read repo-attributable Claude Code assistant-message usage for the date window.
+   * Returns records tagged with their encoded-cwd `projectKey`; the caller repo-scopes and
+   * dedupes. Returns [] when Claude logs are absent/unreadable. Must never throw.
    */
-  runClaudeCcusage(version: string, since: string, until: string): string;
+  readClaudeSessions(since: string, until: string): ClaudeMessageUsage[];
 
   /**
-   * Read raw ~/.codex session logs for the date window and return every
-   * session's usage WITH its launch cwd (repo filtering happens in the caller).
-   * Returns [] when codex is absent or unreadable. Must never throw for that.
+   * Read raw ~/.codex session logs for the date window and return every session's usage WITH
+   * its launch cwd (repo filtering happens in the caller). Returns [] when codex is absent or
+   * unreadable. Must never throw.
    */
   readCodexSessions(since: string, until: string): CodexSessionUsage[];
 
   /**
-   * Run `npx ccusage@<version> codex session --json --since --until`.
-   * Returns raw stdout: the $-lookup table for pricing repo-matched codex
-   * sessions by sessionId (cost_usd_est only). May throw if ccusage is absent;
-   * pricing is best-effort and tokens never depend on it. Optional so partial
-   * test deps stay valid; when absent, codex stays unpriced (est null).
+   * Load the LiteLLM pricing table. Optional: when absent, the vendored, pinned table is read
+   * from disk (loadDefaultPricingTable). Injected in tests with a small synthetic table.
    */
-  runCodexCcusageSessions?(version: string, since: string, until: string): string;
+  loadPricingTable?(): PricingTable;
 
   /**
-   * OpenRouter credits reconcile: reads key from ~/.claude/arms/secrets.env,
-   * calls GET /api/v1/credits. Returns null if key unavailable or call fails.
-   * MUST NEVER log or expose the key.
-   */
-  fetchOpenRouterCredits(): Promise<{ total_credits: number; total_usage: number } | null>;
-
-  /**
-   * Lists additional worktree root paths of the target repo via
-   * `git worktree list --porcelain`. Returns [] when git is unavailable or
-   * there are no linked worktrees. Must never throw.
-   * Optional: when absent from a caller-provided deps object, treated as no
-   * extra roots ([]) so existing hermetic tests retain today's exact behavior.
+   * Lists additional worktree root paths of the target repo via `git worktree list --porcelain`.
+   * Returns [] when git is unavailable or there are no linked worktrees. Must never throw.
+   * Optional: absent from a caller-provided deps object → treated as no extra roots ([]).
    */
   listWorktreeRoots?(dir: string): string[];
 }
 
 // ---------------------------------------------------------------------------
-// Default real implementations
+// Claude Code JSONL reader (owned — mirrors the Codex reader)
+// ---------------------------------------------------------------------------
+
+/** Coerce a possibly-absent JSON number field to a finite number (0 when missing/NaN). */
+function num(v: unknown): number {
+  const n = typeof v === 'number' ? v : Number(v ?? 0);
+  return Number.isFinite(n) ? n : 0;
+}
+
+/**
+ * Parse one Claude Code JSONL file's raw text into per-assistant-message usage records.
+ * Only lines carrying `message.usage` are kept (assistant turns); a `<synthetic>` model is
+ * skipped. Pure — no dedup, no windowing (the caller owns those). Never throws.
+ */
+export function parseClaudeJsonl(raw: string, projectKey: string): ClaudeMessageUsage[] {
+  const out: ClaudeMessageUsage[] = [];
+  for (const line of raw.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    let d: unknown;
+    try {
+      d = JSON.parse(trimmed);
+    } catch {
+      continue;
+    }
+    if (typeof d !== 'object' || d === null) continue;
+    const rec = d as { timestamp?: unknown; message?: unknown };
+    const msg = rec.message;
+    if (typeof msg !== 'object' || msg === null) continue;
+    const m = msg as { id?: unknown; model?: unknown; usage?: unknown };
+    // Only assistant messages carry a usage object.
+    if (typeof m.usage !== 'object' || m.usage === null) continue;
+    const model = typeof m.model === 'string' ? m.model : '';
+    if (!model || model === '<synthetic>') continue; // skip the 0-token pseudo-model
+    const u = m.usage as Record<string, unknown>;
+    const ts = typeof rec.timestamp === 'string' ? rec.timestamp : '';
+    out.push({
+      projectKey,
+      messageId: typeof m.id === 'string' ? m.id : '',
+      model,
+      date: ts.slice(0, 10),
+      input_tokens: num(u['input_tokens']),
+      output_tokens: num(u['output_tokens']),
+      cache_read_tokens: num(u['cache_read_input_tokens']),
+      cache_write_tokens: num(u['cache_creation_input_tokens']),
+    });
+  }
+  return out;
+}
+
+/** Recursively collect *.jsonl paths under a Claude projects root (incl. subagents/ subfolders). */
+function listClaudeJsonl(root: string): string[] {
+  const results: string[] = [];
+  const walk = (dir: string): void => {
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      const full = path.join(dir, e.name);
+      if (e.isDirectory()) walk(full);
+      else if (e.isFile() && e.name.endsWith('.jsonl')) results.push(full);
+    }
+  };
+  if (fs.existsSync(root)) walk(root);
+  return results;
+}
+
+/**
+ * Walk a Claude `projects` root, parse every `*.jsonl` (incl. nested `subagents/`), tag each
+ * record with its top-level project folder key, and keep records whose per-message date is
+ * within [since, until]. Repo-scoping + dedup are the caller's job. Never throws.
+ */
+export function readClaudeSessionsFrom(
+  projectsRoot: string,
+  since: string,
+  until: string,
+): ClaudeMessageUsage[] {
+  const out: ClaudeMessageUsage[] = [];
+  const files = listClaudeJsonl(projectsRoot);
+  for (const file of files) {
+    const rel = path.relative(projectsRoot, file);
+    const projectKey = rel.split(path.sep)[0] ?? '';
+    let raw: string;
+    try {
+      raw = fs.readFileSync(file, 'utf-8');
+    } catch {
+      continue;
+    }
+    for (const r of parseClaudeJsonl(raw, projectKey)) {
+      if (r.date && r.date >= since && r.date <= until) out.push(r);
+    }
+  }
+  return out;
+}
+
+const defaultReadClaudeSessions: UsageDeps['readClaudeSessions'] = (since, until) =>
+  readClaudeSessionsFrom(path.join(os.homedir(), '.claude', 'projects'), since, until);
+
+// ---------------------------------------------------------------------------
+// Codex session-log reader (owned)
 // ---------------------------------------------------------------------------
 
 /**
- * Shell out to `npx -y <ccArgs...>`.
- * Windows: the `npx.cmd` shim can't be spawned via execFile directly
- * (spawnSync EINVAL — Node's CVE-2024-27980 fix bars .cmd without a shell).
- * Route through cmd.exe (a real .exe) which resolves `npx` on PATH. This is
- * NOT `shell: true`, so args are passed as argv and never re-concatenated.
- */
-function execNpx(ccArgs: string[]): string {
-  if (process.platform === 'win32') {
-    return execFileSync('cmd.exe', ['/c', 'npx', '-y', ...ccArgs], {
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-      windowsHide: true,
-    });
-  }
-  return execFileSync('npx', ['-y', ...ccArgs], {
-    encoding: 'utf-8',
-    stdio: ['pipe', 'pipe', 'pipe'],
-  });
-}
-
-const defaultRunClaudeCcusage: UsageDeps['runClaudeCcusage'] = (version, since, until) =>
-  execNpx([
-    `ccusage@${version}`,
-    'claude',
-    'daily',
-    '--json',
-    '--instances',
-    '--since',
-    since,
-    '--until',
-    until,
-  ]);
-
-const defaultRunCodexCcusageSessions: NonNullable<UsageDeps['runCodexCcusageSessions']> = (
-  version,
-  since,
-  until,
-) => execNpx([`ccusage@${version}`, 'codex', 'session', '--json', '--since', since, '--until', until]);
-
-/**
- * Default codex reader: walk ~/.codex/sessions/<Y>/<M>/<D>/rollout-*.jsonl,
- * keep files whose date is within [since, until], and for each extract the
- * launch cwd, model, and final cumulative token usage. Never throws.
+ * Default codex reader: walk ~/.codex/sessions/<Y>/<M>/<D>/rollout-*.jsonl, keep files whose
+ * date is within [since, until], and for each extract the launch cwd, model, effort, and final
+ * cumulative token usage. Never throws.
  */
 const defaultReadCodexSessions: UsageDeps['readCodexSessions'] = (since, until) => {
   const sessionsRoot = path.join(os.homedir(), '.codex', 'sessions');
@@ -238,9 +281,9 @@ function listCodexRollouts(root: string): string[] {
 }
 
 /**
- * Parse one codex rollout file: cwd (session_meta / turn_context), model
- * (last turn_context.model), and the final cumulative total_token_usage.
- * Returns null if the file has no usable token data.
+ * Parse one codex rollout file: cwd (session_meta / turn_context), model + effort (last
+ * turn_context), and the final cumulative total_token_usage. Returns null if the file has no
+ * usable token data.
  */
 function readOneCodexRollout(file: string): CodexSessionUsage | null {
   let raw: string;
@@ -252,7 +295,7 @@ function readOneCodexRollout(file: string): CodexSessionUsage | null {
 
   let cwd: string | undefined;
   let model: string | undefined;
-  let sessionId: string | undefined;
+  let effort: string | null = null;
   let lastUsage: { input: number; cached: number; output: number; total: number } | undefined;
 
   for (const line of raw.split('\n')) {
@@ -269,40 +312,33 @@ function readOneCodexRollout(file: string): CodexSessionUsage | null {
     const payload = rec.payload ?? {};
 
     if (rec.type === 'session_meta') {
-      if (typeof payload.cwd === 'string') cwd = payload.cwd;
-      if (typeof payload.id === 'string') sessionId = payload.id;
+      if (typeof payload['cwd'] === 'string') cwd = payload['cwd'] as string;
     }
     if (rec.type === 'turn_context') {
-      if (typeof payload.cwd === 'string' && !cwd) cwd = payload.cwd;
-      if (typeof payload.model === 'string') model = payload.model;
+      if (typeof payload['cwd'] === 'string' && !cwd) cwd = payload['cwd'] as string;
+      if (typeof payload['model'] === 'string') model = payload['model'] as string;
+      if (typeof payload['effort'] === 'string') effort = payload['effort'] as string;
     }
-    if (payload.type === 'token_count') {
-      const info = payload.info as { total_token_usage?: Record<string, number> } | undefined;
+    if (payload['type'] === 'token_count') {
+      const info = payload['info'] as { total_token_usage?: Record<string, number> } | undefined;
       const tu = info?.total_token_usage;
       if (tu) {
         lastUsage = {
-          input: Number(tu.input_tokens ?? 0),
-          cached: Number(tu.cached_input_tokens ?? 0),
-          output: Number(tu.output_tokens ?? 0),
-          total: Number(tu.total_tokens ?? 0),
+          input: num(tu['input_tokens']),
+          cached: num(tu['cached_input_tokens']),
+          output: num(tu['output_tokens']),
+          total: num(tu['total_tokens']),
         };
       }
     }
   }
 
   if (!cwd || !lastUsage) return null;
-  // Join key fallback: the session UUID is also embedded in the rollout filename.
-  if (!sessionId) {
-    const fm = path
-      .basename(file)
-      .match(/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i);
-    sessionId = fm?.[1];
-  }
   // Normalize to Claude-family shape: input_tokens excludes cached; cache_read = cached.
   return {
     cwd,
     model: model ?? 'codex',
-    session_id: sessionId,
+    effort,
     input_tokens: Math.max(0, lastUsage.input - lastUsage.cached),
     cache_read_tokens: lastUsage.cached,
     output_tokens: lastUsage.output,
@@ -310,48 +346,12 @@ function readOneCodexRollout(file: string): CodexSessionUsage | null {
   };
 }
 
-const defaultFetchOpenRouterCredits: UsageDeps['fetchOpenRouterCredits'] = async () => {
-  // Read key in-process; NEVER log or include in any returned value
-  const secretsPath = path.join(os.homedir(), '.claude', 'arms', 'secrets.env');
-  let apiKey: string | undefined;
-  try {
-    const raw = fs.readFileSync(secretsPath, 'utf-8');
-    for (const line of raw.split('\n')) {
-      const m = line.match(/^OPENROUTER_API_KEY\s*=\s*(.+)$/);
-      if (m) {
-        apiKey = m[1].trim();
-        break;
-      }
-    }
-  } catch {
-    return null;
-  }
-
-  if (!apiKey) return null;
-
-  try {
-    const resp = await fetch('https://openrouter.ai/api/v1/credits', {
-      headers: { Authorization: `Bearer ${apiKey}` },
-    });
-    if (!resp.ok) return null;
-    const json = (await resp.json()) as { total_credits?: number; total_usage?: number };
-    if (typeof json.total_credits !== 'number' || typeof json.total_usage !== 'number') return null;
-    return { total_credits: json.total_credits, total_usage: json.total_usage };
-  } catch {
-    return null;
-  }
-  // apiKey intentionally not returned, logged, or included in any output
-};
-
 /**
- * Default worktree-root lister: parses `git worktree list --porcelain` and
- * returns EVERY worktree root the repo knows, including the main checkout —
- * no positional assumption about which stanza is `dir` (works when `dir` is
- * itself a linked worktree). The caller dedupes against `targetDir`. Returns
- * [] on any failure (git absent, not a git repo).
+ * Default worktree-root lister: parses `git worktree list --porcelain` and returns EVERY
+ * worktree root the repo knows, including the main checkout. The caller dedupes against
+ * `targetDir`. Returns [] on any failure (git absent, not a git repo).
  *
- * NOTE: git is a real .exe on Windows — no cmd.exe shim needed (unlike npx.cmd).
- * See execNpx above for why that routing exists only for the npx.cmd shim.
+ * NOTE: git is a real .exe on Windows — no cmd.exe shim needed.
  */
 export const defaultListWorktreeRoots: NonNullable<UsageDeps['listWorktreeRoots']> = (dir) => {
   let raw: string;
@@ -377,25 +377,21 @@ export const defaultListWorktreeRoots: NonNullable<UsageDeps['listWorktreeRoots'
 };
 
 const DEFAULT_DEPS: UsageDeps = {
-  runClaudeCcusage: defaultRunClaudeCcusage,
+  readClaudeSessions: defaultReadClaudeSessions,
   readCodexSessions: defaultReadCodexSessions,
-  runCodexCcusageSessions: defaultRunCodexCcusageSessions,
-  fetchOpenRouterCredits: defaultFetchOpenRouterCredits,
+  loadPricingTable: loadDefaultPricingTable,
   listWorktreeRoots: defaultListWorktreeRoots,
 };
 
 // ---------------------------------------------------------------------------
-// value-config model_patterns loader (minimal, value-usage-local, no shared dep)
+// value-config model_patterns loader (table-key aliases; value-usage-local)
 // ---------------------------------------------------------------------------
 
 /**
- * Load model_patterns from `wiki/.value-config.json` best-effort.
- * Returns [] when the file is absent, unreadable, or malformed.
- * Mirror of value-report's loadConfig pattern (opts > file > default) but
- * minimal: only the model_patterns field is consumed here.
- * IMPORTANT: never import or call value-report.ts's private loadConfig —
- * cross-function reuse would create a hard coupling across otherwise independent
- * code paths.
+ * Load model_patterns (table-key aliases) from `wiki/.value-config.json`, best-effort.
+ * Returns [] when the file is absent, unreadable, or malformed. Each entry must carry a
+ * string `pattern` + a string `table_key`. Never imports value-report's private loadConfig —
+ * cross-function reuse would couple otherwise independent code paths.
  */
 function loadModelPatterns(dir: string): ModelPatternEntry[] {
   const configPath = path.join(dir, 'wiki', '.value-config.json');
@@ -404,25 +400,17 @@ function loadModelPatterns(dir: string): ModelPatternEntry[] {
     const parsed = JSON.parse(raw) as Record<string, unknown>;
     const patterns = parsed['model_patterns'];
     if (!Array.isArray(patterns)) return [];
-    // Validate each entry: must have string pattern + valid arm string
     const valid: ModelPatternEntry[] = [];
-    const validArms = new Set<string>([
-      'subscription',
-      'local',
-      'openrouter',
-      'codex',
-      'unknown',
-    ]);
     for (const p of patterns) {
       if (
         typeof p === 'object' &&
         p !== null &&
         typeof (p as Record<string, unknown>)['pattern'] === 'string' &&
-        validArms.has(String((p as Record<string, unknown>)['arm']))
+        typeof (p as Record<string, unknown>)['table_key'] === 'string'
       ) {
         valid.push({
           pattern: (p as Record<string, unknown>)['pattern'] as string,
-          arm: (p as Record<string, unknown>)['arm'] as UsageArm,
+          table_key: (p as Record<string, unknown>)['table_key'] as string,
         });
       }
     }
@@ -433,59 +421,7 @@ function loadModelPatterns(dir: string): ModelPatternEntry[] {
 }
 
 // ---------------------------------------------------------------------------
-// Arm identification (spec §2.3)
-// ---------------------------------------------------------------------------
-
-/**
- * Identify the arm from a claude-family model string, consulting config patterns first.
- *
- * Resolution order:
- * 1. `patterns` (from opts.config.model_patterns or wiki/.value-config.json):
- *    case-insensitive substring match; first match wins → its arm.
- * 2. Built-in heuristics:
- *    a. `claude-*` → subscription
- *    b. slash-namespaced (`z-ai/glm-5.2`, `deepseek/deepseek-chat`) → openrouter
- *    c. Provider-namespaced Anthropic / Bedrock region-profile guard:
- *       contains `anthropic.` OR starts with `us.` / `eu.` / `ap.` / `apac.`
- *       → unknown (NEVER local — these are PAYG enterprise endpoints, real $)
- *    d. `name:tag` (colon, not slash) → local
- *    e. anything else → unknown
- *
- * (Codex rows are tagged `codex` at their source, not via this function.)
- *
- * Match rule for patterns: case-insensitive substring. The model id and pattern
- * are both lowercased before comparison; no regex escaping required.
- */
-function identifyArm(model: string, patterns: ModelPatternEntry[]): UsageArm {
-  // 1. Config patterns first (case-insensitive substring, first match wins)
-  const modelLower = model.toLowerCase();
-  for (const entry of patterns) {
-    if (modelLower.includes(entry.pattern.toLowerCase())) {
-      return entry.arm;
-    }
-  }
-
-  // 2. Built-in heuristics
-  if (model.startsWith('claude-')) return 'subscription';
-  if (model.includes('/')) return 'openrouter';
-
-  // 2c. Enterprise/gateway guard: provider-namespaced Anthropic ids or
-  // Bedrock region-profile prefixes (us. / eu. / ap. / apac.) must NEVER
-  // be classified local — they are PAYG endpoints with real marginal cost.
-  // With no matching config pattern they degrade to unknown → ccusage-priced.
-  if (
-    model.includes('anthropic.') ||
-    /^(?:us|eu|ap|apac)\./.test(model)
-  ) {
-    return 'unknown';
-  }
-
-  if (model.includes(':')) return 'local';
-  return 'unknown';
-}
-
-// ---------------------------------------------------------------------------
-// CWD encoding + repo matching (spec §2.3)
+// CWD encoding + repo matching
 // ---------------------------------------------------------------------------
 
 /** Encode a cwd the way Claude Code does: replace `:` `\` `/` with `-`. */
@@ -493,7 +429,7 @@ function encodeCwd(cwdPath: string): string {
   return cwdPath.replace(/[:\\/]/g, '-');
 }
 
-/** True if two paths encode to the same string (claude projects-key match). */
+/** True if a project folder key and a repo root encode to the same string. */
 function encodedMatches(projectKey: string, targetDir: string): boolean {
   return encodeCwd(projectKey) === encodeCwd(targetDir);
 }
@@ -517,153 +453,58 @@ function isUnderDir(cwd: string, targetDir: string): boolean {
 interface UsageRow {
   model: string;
   source: 'claude' | 'codex';
+  /** Reasoning effort (Codex only); null for Claude. Part of the merge key. */
+  effort: string | null;
   input_tokens: number;
   cache_write_tokens: number;
   cache_read_tokens: number;
   output_tokens: number;
-  /**
-   * ccusage (LiteLLM) at-API-rates $ estimate. Claude-family rows always carry a
-   * number (modelBreakdowns[].cost); codex rows carry the sessionId-joined
-   * costUSD, or null when the session couldn't be priced.
-   */
-  ccusage_est_cost: number | null;
 }
 
-// ---------------------------------------------------------------------------
-// ccusage claude JSON shape (v20 `claude daily --json --instances`)
-// ---------------------------------------------------------------------------
-
-interface CcusageModelBreakdown {
-  modelName: string;
-  inputTokens: number;
-  outputTokens: number;
-  cacheCreationTokens: number;
-  cacheReadTokens: number;
-  cost: number;
-}
-
-interface CcusageDayEntry {
-  date: string;
-  project: string;
-  modelBreakdowns?: CcusageModelBreakdown[];
-}
-
-interface CcusageClaudeOutput {
-  projects: Record<string, CcusageDayEntry[]>;
-  totals?: unknown;
-}
-
-/**
- * Parse `ccusage claude daily --json --instances` and extract per-model rows
- * for the target repo (matched on encoded-cwd project key against any root in
- * `roots`). `roots` is the deduped list [targetDir, ...worktreeRoots].
- * Returns null if the shape is unrecognizable; [] if no root has an entry.
- */
-function parseClaudeInstances(raw: string, roots: string[]): UsageRow[] | null {
-  let parsed: CcusageClaudeOutput;
-  try {
-    parsed = JSON.parse(raw) as CcusageClaudeOutput;
-  } catch {
-    return null;
-  }
-  if (!parsed?.projects || typeof parsed.projects !== 'object') return null;
-
-  const rows: UsageRow[] = [];
-  for (const [projectKey, dayEntries] of Object.entries(parsed.projects)) {
-    if (!roots.some((r) => encodedMatches(projectKey, r))) continue;
-    if (!Array.isArray(dayEntries)) continue;
-    for (const day of dayEntries) {
-      const breakdowns = day?.modelBreakdowns;
-      if (!Array.isArray(breakdowns)) continue;
-      for (const mb of breakdowns) {
-        rows.push({
-          model: mb.modelName,
-          source: 'claude',
-          input_tokens: Number(mb.inputTokens ?? 0),
-          cache_write_tokens: Number(mb.cacheCreationTokens ?? 0),
-          cache_read_tokens: Number(mb.cacheReadTokens ?? 0),
-          output_tokens: Number(mb.outputTokens ?? 0),
-          ccusage_est_cost: Number(mb.cost ?? 0),
-        });
-      }
-    }
-  }
-  return rows;
-}
-
-// ---------------------------------------------------------------------------
-// ccusage codex session JSON shape (v20 `codex session --json`) — the $ lookup
-// table for the sessionId join. `directory` there is the DATE folder, not cwd,
-// so it can't repo-scope; only sessionId + costUSD are consumed.
-// ---------------------------------------------------------------------------
-
-interface CcusageCodexSession {
-  sessionId?: string;
-  sessionFile?: string;
-  costUSD?: number;
-}
-
-/**
- * Extract the bare session UUID from any of the id forms floating around:
- * raw `session_meta.payload.id` (bare UUID), a rollout filename, or ccusage
- * v20's composite `sessionId` (`<Y>/<M>/<D>/rollout-<ISO>-<uuid>` — verified
- * 2026-07-10; NOT the bare UUID the shape was first assumed to be). The UUID
- * is always the tail, so both join sides normalize through this.
- */
-const SESSION_UUID_TAIL_RE =
-  /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:\.jsonl)?\s*$/i;
-
-function extractSessionUuid(id: string): string | undefined {
-  return id.match(SESSION_UUID_TAIL_RE)?.[1]?.toLowerCase();
-}
-
-/**
- * Parse `ccusage codex session --json` into a bare-UUID → costUSD map.
- * Returns null if the shape is unrecognizable (treated as no prices).
- */
-function parseCodexSessionPrices(raw: string): Map<string, number> | null {
-  let parsed: { sessions?: CcusageCodexSession[] };
-  try {
-    parsed = JSON.parse(raw) as { sessions?: CcusageCodexSession[] };
-  } catch {
-    return null;
-  }
-  if (!Array.isArray(parsed?.sessions)) return null;
-
-  const prices = new Map<string, number>();
-  for (const s of parsed.sessions) {
-    const idSource = typeof s?.sessionId === 'string' ? s.sessionId : s?.sessionFile;
-    if (typeof idSource !== 'string' || typeof s?.costUSD !== 'number') continue;
-    const uuid = extractSessionUuid(idSource);
-    if (uuid) prices.set(uuid, s.costUSD);
-  }
-  return prices;
-}
-
-// ---------------------------------------------------------------------------
-// Merge rows: combine rows with same (source, model)
-// ---------------------------------------------------------------------------
-
+/** Combine rows sharing (source, model, effort) — the aggregation key. */
 function mergeRows(rows: UsageRow[]): Map<string, UsageRow> {
   const merged = new Map<string, UsageRow>();
   for (const row of rows) {
-    const key = `${row.source}::${row.model}`;
+    const key = `${row.source}::${row.model}::${row.effort ?? ''}`;
     const existing = merged.get(key);
     if (existing) {
       existing.input_tokens += row.input_tokens;
       existing.cache_write_tokens += row.cache_write_tokens;
       existing.cache_read_tokens += row.cache_read_tokens;
       existing.output_tokens += row.output_tokens;
-      // Est merge: all-null stays null; otherwise sum what was priced (downward-biased).
-      existing.ccusage_est_cost =
-        existing.ccusage_est_cost === null && row.ccusage_est_cost === null
-          ? null
-          : (existing.ccusage_est_cost ?? 0) + (row.ccusage_est_cost ?? 0);
     } else {
       merged.set(key, { ...row });
     }
   }
   return merged;
+}
+
+/** Aggregate per-model details into per-provider rows (provider = litellm_provider). */
+function aggregateByProvider(models: UsageModelDetail[]): UsageProviderDetail[] {
+  const map = new Map<string, UsageProviderDetail>();
+  for (const m of models) {
+    let p = map.get(m.provider);
+    if (!p) {
+      p = {
+        provider: m.provider,
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_read_tokens: 0,
+        cache_write_tokens: 0,
+        total_tokens: 0,
+        cost_usd: null,
+        cost_usd_est: null,
+      };
+      map.set(m.provider, p);
+    }
+    p.input_tokens += m.input_tokens;
+    p.output_tokens += m.output_tokens;
+    p.cache_read_tokens += m.cache_read_tokens;
+    p.cache_write_tokens += m.cache_write_tokens;
+    p.total_tokens += m.total_tokens;
+    if (m.cost_usd_est !== null) p.cost_usd_est = (p.cost_usd_est ?? 0) + m.cost_usd_est;
+  }
+  return [...map.values()];
 }
 
 // ---------------------------------------------------------------------------
@@ -680,8 +521,10 @@ function unavailableMetrics(reason: string): UsageMetrics {
     cost_usd: null,
     cost_usd_est: null,
     cost_provenance: 'unavailable',
+    pricing_table_version: LITELLM_TABLE_VERSION,
     agents: [],
     by_model: [],
+    by_provider: [],
     attribution: 'date-window-approx',
     reason,
   };
@@ -692,26 +535,19 @@ function unavailableMetrics(reason: string): UsageMetrics {
 // ---------------------------------------------------------------------------
 
 /**
- * Scrape token/cost usage from ccusage (claude family) + raw ~/.codex logs
- * (codex) + OpenRouter, repo-attributed for the target repo + date window.
- *
- * Self-aware: missing data, ccusage errors, and empty-for-span all produce
- * `ok()` with `cost_provenance: 'unavailable'` + a machine-readable `reason`.
- * Never `fail()` for missing data.
+ * Scrape token/cost usage from the owned Claude + Codex reads, price via the vendored LiteLLM
+ * table, reconcile the optional OpenRouter actual, and repo-attribute for the target repo +
+ * date window. Self-aware: no data for the span produces `ok()` with
+ * `cost_provenance: 'unavailable'` + a machine-readable `reason`, never `fail()`.
  */
 export async function computeValueUsage(
   opts: ValueUsageOpts,
   deps: UsageDeps = DEFAULT_DEPS,
 ): Promise<Result<UsageMetrics>> {
-  const version = opts.ccusageVersion ?? CCUSAGE_VERSION;
   const targetDir = path.resolve(opts.dir);
 
-  // Compute all repo roots: main checkout + any linked worktrees.
-  // deps.listWorktreeRoots is optional: absent on a caller-provided deps object
-  // → no extra roots ([] ) so existing hermetic tests keep today's behavior.
-  // When deps is wholly absent (real runs), DEFAULT_DEPS includes it.
+  // Compute all repo roots: main checkout + any linked worktrees (deduped, win32 case-insensitive).
   const wtRoots: string[] = deps.listWorktreeRoots ? deps.listWorktreeRoots(targetDir) : [];
-  // Dedupe by resolved path, case-insensitive on win32 (mirrors isUnderDir normalization).
   const seenRoots = new Set<string>();
   const roots: string[] = [];
   for (const r of [targetDir, ...wtRoots]) {
@@ -723,172 +559,105 @@ export async function computeValueUsage(
     }
   }
 
-  // Load model_patterns: opts.config overrides > file > default [].
-  // opts.config.model_patterns = [] is a valid override (clears file patterns).
-  const modelPatterns: ModelPatternEntry[] =
+  // Table-key aliases: opts.config overrides > file > default []. A [] override clears file aliases.
+  const aliases: ModelPatternEntry[] =
     opts.config?.model_patterns !== undefined
       ? opts.config.model_patterns
       : loadModelPatterns(targetDir);
 
-  // --- Step 1: Claude family via ccusage (repo-filtered by encoded cwd) ---
+  // Pricing table: injected (tests) or the vendored, pinned default.
+  const table: PricingTable = (deps.loadPricingTable ?? loadDefaultPricingTable)();
 
-  let claudeRows: UsageRow[] | null = null;
-  let claudeError: string | undefined;
+  // --- Step 1: Claude family via the owned JSONL read (repo-scoped, deduped) ---
+
+  let claudeRows: UsageRow[] = [];
   try {
-    const raw = deps.runClaudeCcusage(version, opts.since, opts.until);
-    claudeRows = parseClaudeInstances(raw, roots);
-    if (claudeRows === null) {
-      claudeError = 'ccusage claude output malformed or unparseable';
+    const msgs = deps.readClaudeSessions(opts.since, opts.until);
+    const inScope = msgs.filter((mm) => roots.some((r) => encodedMatches(mm.projectKey, r)));
+    const seen = new Set<string>();
+    for (const mm of inScope) {
+      if (mm.messageId) {
+        if (seen.has(mm.messageId)) continue; // dedup on message id
+        seen.add(mm.messageId);
+      }
+      claudeRows.push({
+        model: mm.model,
+        source: 'claude',
+        effort: null, // Claude logs no effort level
+        input_tokens: mm.input_tokens,
+        cache_write_tokens: mm.cache_write_tokens,
+        cache_read_tokens: mm.cache_read_tokens,
+        output_tokens: mm.output_tokens,
+      });
     }
-  } catch (e) {
-    claudeError = `ccusage claude failed: ${e instanceof Error ? e.message : String(e)}`;
+  } catch {
+    claudeRows = [];
   }
 
-  // --- Step 2: Codex via raw ~/.codex logs (repo-filtered by cwd prefix) ---
+  // --- Step 2: Codex via the owned raw-log read (repo-scoped by cwd prefix) ---
 
   let codexRows: UsageRow[] = [];
   try {
     const sessions = deps.readCodexSessions(opts.since, opts.until);
-    const repoSessions = sessions.filter((s) => roots.some((r) => isUnderDir(s.cwd, r)));
-
-    // Price the repo-matched sessions by sessionId join against
-    // `ccusage codex session --json` (cost_usd_est only — best-effort; tokens
-    // never depend on it, and a failed join degrades to est null, never fail()).
-    let codexPrices: Map<string, number> | null = null;
-    if (repoSessions.length > 0 && deps.runCodexCcusageSessions) {
-      try {
-        codexPrices = parseCodexSessionPrices(
-          deps.runCodexCcusageSessions(version, opts.since, opts.until),
-        );
-      } catch {
-        codexPrices = null;
-      }
-    }
-
-    codexRows = repoSessions.map((s) => {
-      // Both sides normalize to the bare UUID (ccusage sessionId is composite).
-      const uuid = s.session_id !== undefined ? extractSessionUuid(s.session_id) : undefined;
-      return {
+    codexRows = sessions
+      .filter((s) => roots.some((r) => isUnderDir(s.cwd, r)))
+      .map((s) => ({
         model: s.model,
         source: 'codex' as const,
+        effort: s.effort,
         input_tokens: s.input_tokens,
         cache_write_tokens: 0,
         cache_read_tokens: s.cache_read_tokens,
         output_tokens: s.output_tokens,
-        ccusage_est_cost:
-          uuid !== undefined && codexPrices?.has(uuid) ? codexPrices.get(uuid)! : null,
-      };
-    });
+      }));
   } catch {
     codexRows = [];
   }
 
-  // Claude scrape failed entirely AND no codex rows → unavailable
-  if (claudeRows === null && codexRows.length === 0) {
-    return ok(unavailableMetrics(claudeError ?? 'ccusage unavailable'));
-  }
-
-  const allRows: UsageRow[] = [...(claudeRows ?? []), ...codexRows];
-
-  // Data sources responded but nothing matched this repo in the window
+  const allRows: UsageRow[] = [...claudeRows, ...codexRows];
   if (allRows.length === 0) {
     return ok(unavailableMetrics('no token data for this directory in the given window'));
   }
 
-  // --- Step 3: Merge by (source, model) ---
+  // --- Step 3: Merge by (source, model, effort) ---
 
-  const byModel = mergeRows(allRows);
+  const byKey = mergeRows(allRows);
 
-  // --- Step 4: Fetch OR credits (single call; key never leaves the dep) ---
-
-  const orCredits = await deps.fetchOpenRouterCredits();
-
-  // --- Step 5: Build per-model detail + compute arm provenances ---
+  // --- Step 4: Price each merged row via the LiteLLM table → per-model detail ---
 
   const modelDetails: UsageModelDetail[] = [];
-  const armProvenances = new Set<CostProvenance>();
-
-  // For OR reconcile: sum ccusage-estimated OR cost to weight OR credits allocation
-  let totalOrCcusageCost = 0;
-  for (const [, row] of byModel) {
-    if (row.source === 'claude' && identifyArm(row.model, modelPatterns) === 'openrouter') {
-      totalOrCcusageCost += row.ccusage_est_cost ?? 0;
-    }
-  }
-  const orModelCount = [...byModel.values()].filter(
-    (r) => r.source === 'claude' && identifyArm(r.model, modelPatterns) === 'openrouter',
-  ).length;
-
-  for (const [, row] of byModel) {
-    const arm: UsageArm = row.source === 'codex' ? 'codex' : identifyArm(row.model, modelPatterns);
-    const inputTokens = row.input_tokens;
-    const cacheWrite = row.cache_write_tokens;
-    const cacheRead = row.cache_read_tokens;
-    const outputTokens = row.output_tokens;
-    const total = inputTokens + cacheWrite + cacheRead + outputTokens;
-
-    let costUsd: number | null;
-    let armProvenance: CostProvenance;
-
-    switch (arm) {
-      case 'subscription':
-        // Marginal $: none (flat fee). The at-API-rates figure lives in cost_usd_est.
-        costUsd = null;
-        armProvenance = 'subscription-covered';
-        break;
-
-      case 'codex':
-        // Tokens repo-attributed from raw logs; marginal $ none (subscription-
-        // covered). At-API-rates $ arrives via the sessionId join (cost_usd_est).
-        costUsd = null;
-        armProvenance = 'subscription-covered';
-        break;
-
-      case 'local':
-        // Always $0 (spec §2.3)
-        costUsd = 0;
-        armProvenance = 'local-free';
-        break;
-
-      case 'openrouter':
-        if (orCredits !== null) {
-          // Authoritative: use OR total_usage (spec §2.3), allocated proportionally
-          if (totalOrCcusageCost > 0) {
-            costUsd = orCredits.total_usage * ((row.ccusage_est_cost ?? 0) / totalOrCcusageCost);
-          } else {
-            costUsd = orCredits.total_usage / Math.max(1, orModelCount);
-          }
-          armProvenance = 'openrouter-api';
-        } else {
-          // Degrade to ccusage-priced (spec §2.3)
-          costUsd = row.ccusage_est_cost ?? 0;
-          armProvenance = 'ccusage-priced';
-        }
-        break;
-
-      default:
-        // unknown arm — use ccusage pricing
-        costUsd = row.ccusage_est_cost ?? 0;
-        armProvenance = 'ccusage-priced';
-        break;
-    }
-
-    armProvenances.add(armProvenance);
+  for (const [, row] of byKey) {
+    const priced = priceModel(
+      row.model,
+      {
+        input_tokens: row.input_tokens,
+        output_tokens: row.output_tokens,
+        cache_write_tokens: row.cache_write_tokens,
+        cache_read_tokens: row.cache_read_tokens,
+      },
+      table,
+      aliases,
+    );
+    const total =
+      row.input_tokens + row.cache_write_tokens + row.cache_read_tokens + row.output_tokens;
     modelDetails.push({
       model: row.model,
-      arm,
-      input_tokens: inputTokens,
-      output_tokens: outputTokens,
-      cache_read_tokens: cacheRead,
-      cache_write_tokens: cacheWrite,
+      provider: priced.provider,
+      effort: row.effort,
+      input_tokens: row.input_tokens,
+      output_tokens: row.output_tokens,
+      cache_read_tokens: row.cache_read_tokens,
+      cache_write_tokens: row.cache_write_tokens,
       total_tokens: total,
-      cost_usd: costUsd,
-      // At-API-rates estimate for every arm; null only when unpriceable (codex join miss)
-      cost_usd_est: row.ccusage_est_cost,
+      cost_usd: null, // actual is top-level only, never split per model
+      cost_usd_est: priced.cost_usd_est,
+      est_reason: priced.est_reason,
     });
   }
 
-  // --- Step 6: Compute totals ---
+  // --- Step 6: Aggregate by provider + compute totals ---
+
+  const byProvider = aggregateByProvider(modelDetails);
 
   const totalInputTokens = modelDetails.reduce((s, m) => s + m.input_tokens, 0);
   const totalOutputTokens = modelDetails.reduce((s, m) => s + m.output_tokens, 0);
@@ -896,38 +665,25 @@ export async function computeValueUsage(
   const totalCacheWrite = modelDetails.reduce((s, m) => s + m.cache_write_tokens, 0);
   const totalAllTokens = modelDetails.reduce((s, m) => s + m.total_tokens, 0);
 
-  // Cost: sum numeric costs; pure tokens-only (subscription/codex) → null.
-  let totalCostUsd: number | null = null;
-  const numericCosts = modelDetails.map((m) => m.cost_usd).filter((c): c is number => c !== null);
-  const allTokensOnly = modelDetails.every((m) => m.arm === 'subscription' || m.arm === 'codex');
-
-  if (allTokensOnly) {
-    totalCostUsd = null;
-  } else if (numericCosts.length > 0) {
-    totalCostUsd = numericCosts.reduce((s, c) => s + c, 0);
-  }
-
-  // At-API-rates estimate: sum whatever was priced; null when nothing was.
-  const estCosts = modelDetails
-    .map((m) => m.cost_usd_est)
-    .filter((c): c is number => c !== null);
+  // Estimate: sum whatever priced; null when nothing could be priced (never a fabricated 0).
+  const estCosts = modelDetails.map((m) => m.cost_usd_est).filter((c): c is number => c !== null);
   const totalCostUsdEst: number | null =
     estCosts.length > 0 ? estCosts.reduce((s, c) => s + c, 0) : null;
 
-  // --- Step 7: Overall provenance ---
+  // --- Step 7: Actual + provenance ---
+  // No API returns a per-span dollar figure, so the tool never fabricates an actual: cost_usd is
+  // always null. Only an operator hand-editing the record supplies a real number. The estimate
+  // (tokens × table) is the interpretable figure.
+  const costUsd: number | null = null;
+  const provenance: CostProvenance = 'litellm-estimate';
+  const actualReason =
+    'no per-span actual-dollar source exists; cost is a tokens × LiteLLM-table estimate (list rates, not a bill)';
 
-  let overallProvenance: CostProvenance;
-  if (armProvenances.size === 1) {
-    overallProvenance = [...armProvenances][0]!;
-  } else {
-    overallProvenance = 'mixed';
-  }
-
-  // --- Step 8: Agents list (repo-attributable arms only) ---
+  // --- Step 8: Agents list (from the owned read sources) ---
 
   const agents: string[] = [];
-  if (modelDetails.some((m) => m.arm !== 'codex')) agents.push('claude');
-  if (modelDetails.some((m) => m.arm === 'codex')) agents.push('codex');
+  if (claudeRows.length > 0) agents.push('claude');
+  if (codexRows.length > 0) agents.push('codex');
 
   return ok({
     input_tokens: totalInputTokens,
@@ -935,11 +691,14 @@ export async function computeValueUsage(
     cache_read_tokens: totalCacheRead,
     cache_write_tokens: totalCacheWrite,
     total_tokens: totalAllTokens,
-    cost_usd: totalCostUsd,
+    cost_usd: costUsd,
     cost_usd_est: totalCostUsdEst,
-    cost_provenance: overallProvenance,
+    cost_provenance: provenance,
+    pricing_table_version: LITELLM_TABLE_VERSION,
+    ...(actualReason ? { actual_reason: actualReason } : {}),
     agents,
     by_model: modelDetails,
+    by_provider: byProvider,
     attribution: 'date-window-approx',
   });
 }

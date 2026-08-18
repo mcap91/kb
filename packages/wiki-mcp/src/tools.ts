@@ -155,18 +155,16 @@ export const tools: ToolDef[] = [
   {
     name: 'value-usage',
     description:
-      'Scrape token/cost data from ccusage (claude + codex) and OpenRouter /credits for a date window. Returns UsageMetrics as JSON. Degrades gracefully when ccusage or keys are absent.',
+      'Own the Claude + Codex JSONL read and price it via a vendored, pinned LiteLLM table (tokens × table) for a date window, aggregated by model + provider. Returns UsageMetrics as JSON; actual cost is the optional OpenRouter /credits reconciliation. Offline core path — degrades gracefully when logs or keys are absent.',
     inputSchema: dirSchema.extend({
       since: z.string().describe('Window start date (YYYY-MM-DD) — use window_start from value-report output'),
       until: z.string().describe('Window end date (YYYY-MM-DD) — use window_end from value-report output'),
-      ccusageVersion: z.string().optional().describe('Pin ccusage version (default: from wiki/.value-config.json or built-in pin)'),
     }),
     handler: async (input) =>
       computeValueUsage({
         dir: input.dir as string,
         since: input.since as string,
         until: input.until as string,
-        ccusageVersion: input.ccusageVersion as string | undefined,
       }),
   },
   {

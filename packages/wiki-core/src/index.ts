@@ -38,8 +38,8 @@ export type {
   UnitClassCounts,
   ValueMetrics,
   ValueUsageOpts,
-  UsageArm,
   UsageModelDetail,
+  UsageProviderDetail,
   UsageMetrics,
   PlanBundleManifest,
   WikiContractMetadata,
@@ -184,9 +184,14 @@ export type { DraftValInfo } from './value-report.js';
 export { readPublishedPriors, finalizeValueReport } from './value-finalize.js';
 export type { FinalizeValueReportOpts } from './value-finalize.js';
 
-// Value usage (token/cost scraper — the one kb module that shells npx and makes a network call)
-export { computeValueUsage } from './value-usage.js';
-export type { UsageDeps } from './value-usage.js';
+// Value usage (owned Claude+Codex read + LiteLLM-table pricing — DEC-0005 / WK-0064;
+// offline core path, optional OpenRouter actual only)
+export { computeValueUsage, parseClaudeJsonl, readClaudeSessionsFrom, defaultListWorktreeRoots } from './value-usage.js';
+export type { UsageDeps, ClaudeMessageUsage, CodexSessionUsage } from './value-usage.js';
+
+// Pricing (vendored, version-pinned LiteLLM table — DEC-0005 / WK-0064)
+export { priceModel, resolveModelEntry, loadDefaultPricingTable, LITELLM_TABLE_VERSION } from './pricing.js';
+export type { LitellmEntry, PricingTable, ModelAlias, TokenBuckets, PricedModel } from './pricing.js';
 
 // Value render/finalize (deterministic VAL body fill — WK-0058)
 export {

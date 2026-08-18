@@ -8,6 +8,11 @@
  */
 
 import type { ValueMetrics, UsageMetrics, ValueReviewUnit } from '../../packages/wiki-core/src/types.js';
+import { LITELLM_TABLE_VERSION } from '../../packages/wiki-core/src/pricing.js';
+
+/** The actual_reason value-usage emits when no OpenRouter /credits source exists (estimate-only). */
+export const USAGE_ACTUAL_REASON =
+  'no in-band actual source (OpenRouter /credits) on this host; cost is a LiteLLM list-rate estimate only';
 
 export function makeMetrics(over: Partial<ValueMetrics>): ValueMetrics {
   const z = { survives: 0, wired: 0, tested: 0 };
@@ -68,12 +73,15 @@ export function makeUsage(): UsageMetrics {
     total_tokens: 60691013,
     cost_usd: null,
     cost_usd_est: 64.58,
-    cost_provenance: 'subscription-covered',
+    cost_provenance: 'litellm-estimate',
+    pricing_table_version: LITELLM_TABLE_VERSION,
+    actual_reason: USAGE_ACTUAL_REASON,
     agents: ['claude'],
     by_model: [
       {
         model: 'claude-opus-4-8',
-        arm: 'subscription',
+        provider: 'anthropic',
+        effort: null,
         input_tokens: 81516,
         output_tokens: 683867,
         cache_read_tokens: 53313057,
@@ -81,10 +89,12 @@ export function makeUsage(): UsageMetrics {
         total_tokens: 55804758,
         cost_usd: null,
         cost_usd_est: 61.42,
+        est_reason: null,
       },
       {
         model: 'claude-sonnet-4-6',
-        arm: 'subscription',
+        provider: 'anthropic',
+        effort: null,
         input_tokens: 90,
         output_tokens: 61045,
         cache_read_tokens: 4595592,
@@ -92,6 +102,19 @@ export function makeUsage(): UsageMetrics {
         total_tokens: 4886255,
         cost_usd: null,
         cost_usd_est: 3.16,
+        est_reason: null,
+      },
+    ],
+    by_provider: [
+      {
+        provider: 'anthropic',
+        input_tokens: 81606,
+        output_tokens: 744912,
+        cache_read_tokens: 57908649,
+        cache_write_tokens: 1955846,
+        total_tokens: 60691013,
+        cost_usd: null,
+        cost_usd_est: 64.58,
       },
     ],
     attribution: 'date-window-approx',

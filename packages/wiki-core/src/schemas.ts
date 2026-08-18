@@ -64,12 +64,18 @@ export const prioritySchema = z.enum(['critical', 'high', 'medium', 'low']);
 
 export const valueStatusSchema = z.enum(['draft', 'published']);
 
+// Record-validation surface: the three EMITTED provenances (DEC-0005 / WK-0064) plus the legacy
+// values tolerated so immutable historical VALs (pre-DEC-0005, never editable) lint clean. Code
+// only ever emits the first three (see the CostProvenance TS union).
 export const costProvenanceSchema = z.enum([
-  'openrouter-api',
-  'ccusage-priced',
-  'subscription-covered',
-  'local-free',
+  'litellm-estimate',
+  'openrouter-actual',
   'unavailable',
+  // legacy — tolerated for historical VAL records only; never emitted
+  'subscription-covered',
+  'ccusage-priced',
+  'openrouter-api',
+  'local-free',
   'mixed',
 ]);
 
@@ -317,6 +323,7 @@ export const valueFrontmatterSchema = z.object({
   cost_usd: z.coerce.number().optional(),
   cost_usd_est: z.coerce.number().optional(),
   cost_provenance: costProvenanceSchema.optional(),
+  pricing_table_version: z.string().optional(),
   agents: z.array(z.string()).optional(),
   // Output — observed (tool-filled)
   span_days: z.coerce.number().optional(),

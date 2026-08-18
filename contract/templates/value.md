@@ -77,7 +77,7 @@ logs rotate) and a mutable report is a massageable report.
 
 FIELD SOURCES — every field is one of four kinds. Do not blur them.
   [tool]     value-report filled it (git + graph, deterministic, offline). Trust as observed.
-  [scraped]  value-usage filled it (ccusage + OpenRouter). Point-in-time; freeze it here.
+  [scraped]  value-usage filled it (owned Claude+Codex read × LiteLLM table; optional OpenRouter actual). Point-in-time; freeze it here.
   [operator] ONLY the human sets it. The agent must never write these.
   [agent]    the conversing agent supplies it (narrative + per-unit proposals).
 
@@ -91,13 +91,13 @@ Identity / scope:
 
 Cost — the ROI cost side (leave blank if value-usage returned unavailable; blank beats guessed):
   input/output/cache_read/cache_write/total_tokens                                 [scraped]
-  cost_usd          REAL/marginal out-of-pocket $: OpenRouter → authoritative API
-                    figure; local → 0; subscription (incl. codex-on-subscription)
-                    → blank (flat fee, no marginal charge — never fabricate $)     [scraped]
-  cost_usd_est      ccusage (LiteLLM) at-API-rates estimate, populated for EVERY
-                    arm incl. subscription + codex (codex priced by sessionId join) [scraped]
-  cost_provenance   openrouter-api | ccusage-priced | subscription-covered |
-                    local-free | unavailable | mixed                               [scraped]
+  cost_usd          OPTIONAL actual out-of-pocket $: OpenRouter /credits (or an
+                    operator-supplied figure) → the figure; else blank (never fabricate,
+                    never derive from the estimate — DEC-0005)                      [scraped]
+  cost_usd_est      `tokens × vendored pinned LiteLLM table` list-rate estimate, by
+                    model AND provider; blank when nothing could be priced          [scraped]
+  cost_provenance   litellm-estimate | openrouter-actual | unavailable             [scraped]
+  pricing_table_version   the pinned LiteLLM table that priced this span (provenance) [scraped]
   agents            e.g. [claude, codex]                                           [scraped]
   Per-model token detail goes in the ## Token Detail table below, NOT in frontmatter.
 
@@ -192,8 +192,8 @@ ROI LINE (print at the end of ## Agent Value, verbatim shape — keeps the serie
   shipped <units_valued> working units; agents cost $<cost_usd> (est. $<cost_usd_est> at API
   rates) / <total_tokens> tokens; replication value <replication_days> operator-days vs
   <work_days> days worked → leverage <leverage>× (floor); chain <cum_leverage>×
-If cost_usd is null (pure subscription-covered), render it as $0 out-of-pocket and let the
-at-API-rates estimate carry the interpretable figure. Never invent a real-dollar number.
+If cost_usd is null (no in-band actual source — estimate-only span), render it as $0 out-of-pocket
+and let the at-API-rates estimate carry the interpretable figure. Never invent a real-dollar number.
 
 CEILING REFERENCE LINE (print immediately after the ROI line — display-only, never enters any
 arithmetic):
@@ -261,9 +261,9 @@ the record stays reproducible from this section alone.
    Denominator is work_days (distinct in-span commit dates — the calibration instrument).
    span_days is printed context only and never enters the arithmetic.
 
-4. Cost side: total tokens and BOTH dollar figures — cost_usd (real/marginal out-of-pocket)
-   and cost_usd_est (ccusage at-API-rates, every arm incl. subscription + codex) — with
-   cost_provenance and the ccusage version that priced them.
+4. Cost side: total tokens and BOTH dollar figures — cost_usd (optional actual out-of-pocket:
+   OpenRouter /credits or operator-supplied) and cost_usd_est (tokens × vendored LiteLLM table,
+   by model + provider) — with cost_provenance and the pinned pricing_table_version that priced them.
 -->
 
 ## Agent Value
