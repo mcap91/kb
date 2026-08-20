@@ -16,9 +16,7 @@ output_tokens:
 cache_read_tokens:
 cache_write_tokens:
 total_tokens:
-cost_usd:
-cost_usd_est:
-cost_provenance:
+est_usd:
 agents: []
 span_days:
 work_days:
@@ -91,14 +89,14 @@ Identity / scope:
 
 Cost — the ROI cost side (leave blank if value-usage returned unavailable; blank beats guessed):
   input/output/cache_read/cache_write/total_tokens                                 [scraped]
-  cost_usd          OPTIONAL actual out-of-pocket $: OpenRouter /credits (or an
-                    operator-supplied figure) → the figure; else blank (never fabricate,
-                    never derive from the estimate — DEC-0005)                      [scraped]
-  cost_usd_est      `tokens × vendored pinned LiteLLM table` list-rate estimate, by
-                    model AND provider; blank when nothing could be priced          [scraped]
-  cost_provenance   litellm-estimate | openrouter-actual | unavailable             [scraped]
+  est_usd           THE single cost surface (WK-0066): `tokens × vendored pinned LiteLLM
+                    table` list-rate estimate, by model AND provider; blank when nothing
+                    REMOTE could be priced. Local/self-hosted (dispatch + ollama endpoint)
+                    rows contribute 0. Not a bill; there is no separate actual/out-of-pocket
+                    figure (WK-0064's dead "actual" apparatus was removed — DEC-0005)  [scraped]
   pricing_table_version   the pinned LiteLLM table that priced this span (provenance) [scraped]
-  agents            e.g. [claude, codex]                                           [scraped]
+  agents            source set derived from the readers that produced records, e.g.
+                    [claude, codex, dispatch]                                       [scraped]
   Per-model token detail goes in the ## Token Detail table below, NOT in frontmatter.
 
 Output — observed (all from value-report):                                         [tool]
@@ -189,11 +187,12 @@ NULL RESULTS ARE THE POINT. If cost bought little or nothing, say so plainly in 
 around a negative or zero result. A series that can only say "win" is a broken instrument.
 
 ROI LINE (print at the end of ## Agent Value, verbatim shape — keeps the series comparable):
-  shipped <units_valued> working units; agents cost $<cost_usd> (est. $<cost_usd_est> at API
-  rates) / <total_tokens> tokens; replication value <replication_days> operator-days vs
-  <work_days> days worked → leverage <leverage>× (floor); chain <cum_leverage>×
-If cost_usd is null (no in-band actual source — estimate-only span), render it as $0 out-of-pocket
-and let the at-API-rates estimate carry the interpretable figure. Never invent a real-dollar number.
+  shipped <units_valued> working units; agents cost est. $<est_usd> at API rates /
+  <total_tokens> tokens; replication value <replication_days> operator-days vs <work_days>
+  days worked → leverage <leverage>× (floor); chain <cum_leverage>×
+Cost is a single surface (WK-0066): est_usd = tokens × table (list rates, not a bill). If est_usd
+is null (nothing remote could be priced), it renders as "est. unavailable". Never invent a
+real-dollar number; there is no separate actual/out-of-pocket figure.
 
 CEILING REFERENCE LINE (print immediately after the ROI line — display-only, never enters any
 arithmetic):
@@ -214,11 +213,11 @@ Do NOT read other VAL files for examples. This template is self-contained.
 ## Token Detail
 
 <!-- Filled by value-finalize from value-usage by_model[] (2-dp $, thousands separators). Splice
-its output; do not hand-format. -->
+its output; do not hand-format. Single cost surface (WK-0066): est_usd = tokens × table. -->
 
-| model | arm | input | output | cache_read | cache_write | total | cost_usd | cost_usd_est |
-|-------|-----|-------|--------|------------|-------------|-------|----------|--------------|
-|       |     |       |        |            |             |       |          |              |
+| model | provider | input | output | cache_read | cache_write | total | est_usd |
+|-------|----------|-------|--------|------------|-------------|-------|---------|
+|       |          |       |        |            |             |       |         |
 
 ## Candidates
 
@@ -261,9 +260,10 @@ the record stays reproducible from this section alone.
    Denominator is work_days (distinct in-span commit dates — the calibration instrument).
    span_days is printed context only and never enters the arithmetic.
 
-4. Cost side: total tokens and BOTH dollar figures — cost_usd (optional actual out-of-pocket:
-   OpenRouter /credits or operator-supplied) and cost_usd_est (tokens × vendored LiteLLM table,
-   by model + provider) — with cost_provenance and the pinned pricing_table_version that priced them.
+4. Cost side: total tokens and the single dollar figure — est_usd (tokens × vendored LiteLLM
+   table, by model + provider; list rates, not a bill) — with the pinned pricing_table_version
+   that priced them. Local/self-hosted (dispatch + ollama) rows contribute est_usd 0. There is no
+   separate actual/out-of-pocket figure (WK-0066 removed WK-0064's dead "actual" apparatus).
 -->
 
 ## Agent Value

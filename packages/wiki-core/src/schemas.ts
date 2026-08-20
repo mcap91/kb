@@ -314,15 +314,18 @@ export const valueFrontmatterSchema = z.object({
   head_commit: z.string(),
   prior_val: z.string(),
   chain_status: chainStatusSchema,
-  // Cost — observed (scraped)
+  // Cost — observed (scraped). Single surface: est_usd (WK-0066). The cost_usd/cost_usd_est/
+  // cost_provenance fields are legacy-tolerated so immutable historical VALs (VAL-0001) still
+  // lint clean; they are never emitted by the current tool.
   input_tokens: z.coerce.number().optional(),
   output_tokens: z.coerce.number().optional(),
   cache_read_tokens: z.coerce.number().optional(),
   cache_write_tokens: z.coerce.number().optional(),
   total_tokens: z.coerce.number().optional(),
-  cost_usd: z.coerce.number().optional(),
-  cost_usd_est: z.coerce.number().optional(),
-  cost_provenance: costProvenanceSchema.optional(),
+  est_usd: z.coerce.number().optional(),
+  cost_usd: z.coerce.number().optional(), // legacy — tolerated for historical VALs, never emitted
+  cost_usd_est: z.coerce.number().optional(), // legacy — renamed to est_usd (WK-0066)
+  cost_provenance: costProvenanceSchema.optional(), // legacy — removed from the emit surface (WK-0066)
   pricing_table_version: z.string().optional(),
   agents: z.array(z.string()).optional(),
   // Output — observed (tool-filled)

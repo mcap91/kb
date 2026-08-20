@@ -155,7 +155,7 @@ export const tools: ToolDef[] = [
   {
     name: 'value-usage',
     description:
-      'Own the Claude + Codex JSONL read and price it via a vendored, pinned LiteLLM table (tokens × table) for a date window, aggregated by model + provider. Returns UsageMetrics as JSON; actual cost is the optional OpenRouter /credits reconciliation. Offline core path — degrades gracefully when logs or keys are absent.',
+      'Own the local usage read as a union of per-source readers (Claude ~/.claude, Codex ~/.codex, and the dispatch .agent-runs sentinel) and price it via a vendored, pinned LiteLLM table (tokens × table) for a date window, aggregated by model + provider. Single cost surface: est_usd (list-rate estimate; unknown remote model → null + reason, never a silent $0; local/self-hosted dispatch runs → est_usd 0). Returns UsageMetrics as JSON. Fully offline + deterministic; each reader degrades gracefully (returns [] when its store is absent/unreadable) and the scrape is unavailable only when every reader yields zero.',
     inputSchema: dirSchema.extend({
       since: z.string().describe('Window start date (YYYY-MM-DD) — use window_start from value-report output'),
       until: z.string().describe('Window end date (YYYY-MM-DD) — use window_end from value-report output'),

@@ -312,6 +312,7 @@
         "cache_read_tokens",
         "cache_write_tokens",
         "total_tokens",
+        "est_usd",
         "cost_usd",
         "cost_usd_est",
         "cost_provenance",

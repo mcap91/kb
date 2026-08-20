@@ -70,7 +70,7 @@ export interface PricedModel {
   /** The resolved table key, or null when no row matched. */
   table_key: string | null;
   /** tokens × table at list rates, or null when the model has no price row. */
-  cost_usd_est: number | null;
+  est_usd: number | null;
   /** Why the estimate is null (unknown model), else null. Never a silent $0. */
   est_reason: string | null;
 }
@@ -115,13 +115,13 @@ export function priceModel(
     return {
       provider: 'unknown',
       table_key: null,
-      cost_usd_est: null,
+      est_usd: null,
       est_reason: `no LiteLLM price row for model "${model}"`,
     };
   }
 
   const { entry, table_key } = resolved;
-  const cost_usd_est =
+  const est_usd =
     buckets.input_tokens * (entry.input_cost_per_token ?? 0) +
     buckets.output_tokens * (entry.output_cost_per_token ?? 0) +
     buckets.cache_write_tokens * (entry.cache_creation_input_token_cost ?? 0) +
@@ -130,7 +130,7 @@ export function priceModel(
   return {
     provider: entry.litellm_provider ?? 'unknown',
     table_key,
-    cost_usd_est,
+    est_usd,
     est_reason: null,
   };
 }
