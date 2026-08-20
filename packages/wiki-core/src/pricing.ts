@@ -11,8 +11,8 @@
  *   output × output_cost_per_token
  *   cache-write × cache_creation_input_token_cost   (~+25% of input; the accuracy lever)
  *   cache-read  × cache_read_input_token_cost       (~−90% of input)
- * A model with no table row (after alias resolution) prices to `null` + an explicit
- * reason — never a silent $0 (which would undercount real spend).
+ * A model whose id is not an exact table key prices to `null` + an explicit reason —
+ * never a silent $0 (which would undercount real spend), never a substitute rate.
  *
  * Pure + offline except `loadDefaultPricingTable`, which reads the vendored JSON off disk.
  * No Result<T> here: this is an internal helper, not a public wiki-core API surface;
@@ -43,18 +43,6 @@ export interface LitellmEntry {
 /** The whole vendored table: model key → row. */
 export type PricingTable = Record<string, LitellmEntry>;
 
-/**
- * A model-id → table-key alias (repurposed `model_patterns`, WK-0064). `pattern` is a
- * case-insensitive substring tested against the raw model id; the first alias whose
- * pattern matches resolves the id to `table_key`. Maps gateway-rewritten / dated /
- * provider-prefixed ids (`us.anthropic.claude-…`, `claude-…-<date>`, `anthropic/…`)
- * onto a canonical price row.
- */
-export interface ModelAlias {
-  pattern: string;
-  table_key: string;
-}
-
 /** The four repo-attributed token buckets for one model. */
 export interface TokenBuckets {
   input_tokens: number;
@@ -76,41 +64,31 @@ export interface PricedModel {
 }
 
 /**
- * Resolve a raw model id to a table row: exact key first, then the first alias whose
- * (case-insensitive) substring pattern matches AND whose target key exists in the table.
- * Returns null when nothing resolves.
+ * Resolve a raw model id to a table row by EXACT key only (WK-0066: the model-id → table-key
+ * override mechanism was removed on operator direction — "either it's in the table or it fails
+ * loud"). The id either matches a vendored LiteLLM key or it doesn't; there is no alias table, no
+ * namespace transform, no substitute rate. Returns null when the id is not an exact key.
  */
 export function resolveModelEntry(
   model: string,
   table: PricingTable,
-  aliases: ModelAlias[],
 ): { table_key: string; entry: LitellmEntry } | null {
-  const direct = table[model];
-  if (direct) return { table_key: model, entry: direct };
-
-  const modelLower = model.toLowerCase();
-  for (const alias of aliases) {
-    if (modelLower.includes(alias.pattern.toLowerCase())) {
-      const entry = table[alias.table_key];
-      if (entry) return { table_key: alias.table_key, entry };
-      // An alias pointing at a non-existent key does not resolve — keep scanning.
-    }
-  }
-  return null;
+  const entry = table[model];
+  return entry ? { table_key: model, entry } : null;
 }
 
 /**
- * Price one model's token buckets against the table (+aliases). Each bucket is multiplied
+ * Price one model's token buckets against the table (exact key only). Each bucket is multiplied
  * by its own rate; a rate absent from the row degrades that bucket to 0 (not to the input
- * rate). An unmatched model prices to null + reason. Total function — never throws.
+ * rate). A model whose id is not an exact table key prices to null + reason (fail loud — never a
+ * silent $0, never a substitute rate). Total function — never throws.
  */
 export function priceModel(
   model: string,
   buckets: TokenBuckets,
   table: PricingTable,
-  aliases: ModelAlias[],
 ): PricedModel {
-  const resolved = resolveModelEntry(model, table, aliases);
+  const resolved = resolveModelEntry(model, table);
   if (!resolved) {
     return {
       provider: 'unknown',

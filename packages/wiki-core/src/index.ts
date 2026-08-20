@@ -191,7 +191,7 @@ export type { UsageDeps, ClaudeMessageUsage, CodexSessionUsage } from './value-u
 
 // Pricing (vendored, version-pinned LiteLLM table — DEC-0005 / WK-0064)
 export { priceModel, resolveModelEntry, loadDefaultPricingTable, LITELLM_TABLE_VERSION } from './pricing.js';
-export type { LitellmEntry, PricingTable, ModelAlias, TokenBuckets, PricedModel } from './pricing.js';
+export type { LitellmEntry, PricingTable, TokenBuckets, PricedModel } from './pricing.js';
 
 // Value render/finalize (deterministic VAL body fill — WK-0058)
 export {

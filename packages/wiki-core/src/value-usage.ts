@@ -39,7 +39,6 @@ import type {
   UsageRecord,
   SourceReader,
   SourceReaderContext,
-  ModelPatternEntry,
 } from './types.js';
 import { priceModel, loadDefaultPricingTable, LITELLM_TABLE_VERSION, type PricingTable } from './pricing.js';
 
@@ -471,43 +470,6 @@ const DEFAULT_DEPS: UsageDeps = {
 };
 
 // ---------------------------------------------------------------------------
-// value-config model_patterns loader (table-key aliases; value-usage-local)
-// ---------------------------------------------------------------------------
-
-/**
- * Load model_patterns (table-key aliases) from `wiki/.value-config.json`, best-effort.
- * Returns [] when the file is absent, unreadable, or malformed. Each entry must carry a
- * string `pattern` + a string `table_key`. Never imports value-report's private loadConfig —
- * cross-function reuse would couple otherwise independent code paths.
- */
-function loadModelPatterns(dir: string): ModelPatternEntry[] {
-  const configPath = path.join(dir, 'wiki', '.value-config.json');
-  try {
-    const raw = fs.readFileSync(configPath, 'utf-8');
-    const parsed = JSON.parse(raw) as Record<string, unknown>;
-    const patterns = parsed['model_patterns'];
-    if (!Array.isArray(patterns)) return [];
-    const valid: ModelPatternEntry[] = [];
-    for (const p of patterns) {
-      if (
-        typeof p === 'object' &&
-        p !== null &&
-        typeof (p as Record<string, unknown>)['pattern'] === 'string' &&
-        typeof (p as Record<string, unknown>)['table_key'] === 'string'
-      ) {
-        valid.push({
-          pattern: (p as Record<string, unknown>)['pattern'] as string,
-          table_key: (p as Record<string, unknown>)['table_key'] as string,
-        });
-      }
-    }
-    return valid;
-  } catch {
-    return [];
-  }
-}
-
-// ---------------------------------------------------------------------------
 // CWD encoding + repo matching
 // ---------------------------------------------------------------------------
 
@@ -729,12 +691,6 @@ export async function computeValueUsage(
     }
   }
 
-  // Table-key aliases: opts.config overrides > file > default []. A [] override clears file aliases.
-  const aliases: ModelPatternEntry[] =
-    opts.config?.model_patterns !== undefined
-      ? opts.config.model_patterns
-      : loadModelPatterns(targetDir);
-
   // Pricing table: injected (tests) or the vendored, pinned default.
   const table: PricingTable = (deps.loadPricingTable ?? loadDefaultPricingTable)();
 
@@ -775,7 +731,6 @@ export async function computeValueUsage(
         cache_read_tokens: m.cache_read_tokens,
       },
       table,
-      aliases,
     );
     return {
       model: m.model,

@@ -289,31 +289,11 @@ describe('pricing — tokens × table with distinct cache rates', () => {
     expect(result.data.total_tokens).toBe(1500);
   });
 
-  it('a dated/gateway model id resolves via a model_patterns alias', async () => {
-    const deps = baseDeps({
-      readClaudeSessions: () => [
-        claudeMsg(ENCODED_DIR, 'a', 'us.anthropic.claude-opus-4-8-v1:0', { input: 1000, output: 0 }),
-      ],
-    });
-    const result = await computeValueUsage(
-      {
-        dir: DIR,
-        since: SINCE,
-        until: UNTIL,
-        config: { model_patterns: [{ pattern: 'claude-opus-4-8', table_key: 'claude-opus-4-8' }] },
-      },
-      deps,
-    );
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    const m = result.data.by_model[0]!;
-    expect(m.provider).toBe('anthropic');
-    expect(m.est_usd).toBeCloseTo(1000 * 0.00001, 12); // 0.01
-  });
-
-  it('a slash-namespaced OpenRouter id fails loud (null + reason) with no alias — never silent $0', async () => {
-    // Why: WK-0066 alias task — an unresolved remote OR id must price to null + reason, so real
-    // spend is never silently zeroed. (Adding the alias to wiki/.value-config.json is operator-gated.)
+  it('a non-exact remote id (provider-prefixed / slash-namespaced) fails loud — either in the table or null', async () => {
+    // Why (WK-0066): the model-id override mechanism was removed. `z-ai/glm-5.2` is not an exact
+    // vendored key, so it prices null + reason (fail loud) — never a substitute rate, never a silent
+    // $0. Tokens are still counted. (If the operator wants it priced, the pinned table is re-vendored
+    // per DEC-0005; there is no per-repo alias override.)
     const deps = baseDeps({
       readDispatchUsage: () => [
         {
@@ -336,20 +316,7 @@ describe('pricing — tokens × table with distinct cache rates', () => {
     expect(m.est_usd).toBeNull();
     expect(m.est_reason).toMatch(/z-ai\/glm-5\.2/);
     expect(result.data.est_usd).toBeNull();
-
-    // ...and WITH an alias to a table key it resolves and prices.
-    const aliased = await computeValueUsage(
-      {
-        dir: DIR,
-        since: SINCE,
-        until: UNTIL,
-        config: { model_patterns: [{ pattern: 'z-ai/glm-5.2', table_key: 'gpt-5.5' }] },
-      },
-      deps,
-    );
-    expect(aliased.ok).toBe(true);
-    if (!aliased.ok) return;
-    expect(aliased.data.by_model[0]!.est_usd).toBeCloseTo(1000 * 0.000001 + 500 * 0.000008, 12);
+    expect(result.data.total_tokens).toBe(1500); // tokens still counted
   });
 });
 
