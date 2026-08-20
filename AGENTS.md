@@ -462,6 +462,28 @@ npm run typecheck && npm test
 
 Both must pass.
 
+### Cross-platform gate (Windows AND Linux/WSL)
+
+The gate must be green on **both** Windows and Linux/WSL before work is declared complete.
+
+Running the Linux gate from a Windows checkout has one trap: a `node_modules` installed on Windows
+(or one shared via `/mnt/c`) ships **Windows-only native binaries** (rolldown/esbuild), so `npm test`
+(vitest) fails under WSL with a `MODULE_NOT_FOUND` for the native binding. `tsc` is pure JS and runs
+fine either way. Do **not** run `npm install` against the shared `/mnt/c` tree — it overwrites the
+native binaries and breaks the Windows install.
+
+To run the Linux gate, use an isolated WSL-home checkout with its own native install:
+
+```
+# one-time setup (WSL): clone into the Linux filesystem and install Linux-native deps
+wsl bash -c 'cd ~ && git clone /mnt/c/Users/<you>/projects/kb kb-linux-test && cd kb-linux-test && npm install'
+
+# each run: sync the working tree in (node_modules preserved), then gate
+wsl bash -c 'cd ~/kb-linux-test && rsync -a --delete --exclude node_modules --exclude .git /mnt/c/Users/<you>/projects/kb/ ./ && npm run typecheck && npm test'
+```
+
+Report the actual output for each platform; if one was not run, say so explicitly.
+
 ## What Not To Do
 
 - **Do not add HO to the manifest.** HO-\* is dispatch-owned, not manifest-driven.
