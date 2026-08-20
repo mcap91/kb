@@ -35,6 +35,14 @@ function fail(msg) {
   process.exit(1);
 }
 
+// Structured token-usage sentinel for the kb dispatch launcher (WK-0066). The launcher parses the
+// LAST `##KB_USAGE##` line from metadata/stderr.log and writes metadata/usage.json into the run
+// bundle; value-usage's dispatch reader ingests + prices it (ollama endpoint ⇒ local, est_usd 0).
+// Emitted as its own clean stderr line (no log prefix) so the marker is unambiguous.
+function emitUsageSentinel(usage) {
+  process.stderr.write(`##KB_USAGE## ${JSON.stringify(usage)}\n`);
+}
+
 /** Read every file in the reviewed context/ dir as reference material (best-effort). */
 async function readContext(dir) {
   if (!dir) return [];
@@ -111,10 +119,20 @@ async function main() {
   if (!answer.trim()) return fail("model returned an empty answer.");
 
   const ms = Date.now() - startedAt;
+  // prompt_eval_count = INPUT tokens (WK-0066 fix: previously unread — no input tokens captured);
+  // eval_count = OUTPUT tokens. Ollama has no usage log, so this sentinel is the ONLY ollama path.
+  const promptEvalCount = json.prompt_eval_count ?? 0;
   const evalCount = json.eval_count ?? 0;
   const evalSec = (json.eval_duration ?? 0) / 1e9;
   const tps = evalSec > 0 ? (evalCount / evalSec).toFixed(1) : "?";
-  log(`done in ${ms} ms — ${evalCount} tok @ ${tps} tok/s`);
+  log(`done in ${ms} ms — in=${promptEvalCount} out=${evalCount} tok @ ${tps} tok/s`);
+
+  emitUsageSentinel({
+    model: MODEL,
+    endpoint: OLLAMA_URL,
+    prompt_tokens: promptEvalCount,
+    completion_tokens: evalCount,
+  });
 
   // stdout is the launcher-owned response (stdout_capture transport).
   process.stdout.write(answer);

@@ -219,18 +219,16 @@ export function renderReviewTable(rows: ResolvedRow[]): string {
 // Token Detail table (## Token Detail — per-model tokens + cost split, scraped)
 // ---------------------------------------------------------------------------
 
-/** Column headers for the per-model Token Detail table, in render order. */
+/** Column headers for the per-model Token Detail table, in render order (WK-0066: est_usd only). */
 const TOKEN_HEADERS = [
   'model',
   'provider',
-  'effort',
   'input',
   'output',
   'cache_read',
   'cache_write',
   'total',
-  'cost_usd',
-  'cost_usd_est',
+  'est_usd',
 ];
 
 /** Column headers for the by-provider subtotal table. */
@@ -241,7 +239,7 @@ const PROVIDER_HEADERS = [
   'cache_read',
   'cache_write',
   'total',
-  'cost_usd_est',
+  'est_usd',
 ];
 
 /** A per-row/aggregate $ cell: null → em dash; a number → `$X.XX`. */
@@ -262,30 +260,23 @@ function renderProviderSubtotal(rows: UsageProviderDetail[]): string {
       fmtInt(p.cache_read_tokens),
       fmtInt(p.cache_write_tokens),
       fmtInt(p.total_tokens),
-      fmtCost(p.cost_usd_est),
+      fmtCost(p.est_usd),
     ]),
   );
   return ['**By provider:**', '', header, sep, ...body].join('\n');
 }
 
-/** The provenance line: which pinned table priced this, and whether an actual reconciled it. */
+/** The provenance line: which pinned LiteLLM table priced this scrape (WK-0066: estimate-only). */
 function renderProvenanceLine(usage: UsageMetrics): string {
-  const actual =
-    usage.cost_usd === null
-      ? usage.actual_reason
-        ? `actual: none (${usage.actual_reason})`
-        : 'actual: none'
-      : `actual: $${fmtNum(usage.cost_usd)} (${usage.cost_provenance})`;
-  return `Priced via LiteLLM table ${usage.pricing_table_version}. ${actual}`;
+  return `Priced via LiteLLM table ${usage.pricing_table_version} (tokens × table list rates; not a bill).`;
 }
 
 /**
  * Render the `## Token Detail` section from scraped usage (display: separators + 2-dp $): a
- * per-model table (with provider + optional effort), a by-provider subtotal, and a provenance
- * line naming the pinned LiteLLM table. The two cost columns stay distinct: `cost_usd` (the
- * OPTIONAL actual out-of-pocket, null unless an OpenRouter/operator source exists) and
- * `cost_usd_est` (tokens × table at list rates). A null aggregate `cost_usd` reads `$0 (null)`
- * so an estimate-only span is not misread as unpriced. Deterministic — the model never writes this.
+ * per-model table (model / provider / tokens / est_usd), a by-provider subtotal, and a provenance
+ * line naming the pinned LiteLLM table. Single cost surface (WK-0066): `est_usd` = tokens × table
+ * at list rates (null when nothing remote could be priced; 0 for local/self-hosted rows). No actual
+ * layer, no effort column. Deterministic — the model never writes this.
  */
 export function renderTokenDetail(usage: UsageMetrics): string {
   const header = mdRow(TOKEN_HEADERS);
@@ -294,28 +285,23 @@ export function renderTokenDetail(usage: UsageMetrics): string {
     mdRow([
       m.model,
       m.provider,
-      m.effort ?? '—',
       fmtInt(m.input_tokens),
       fmtInt(m.output_tokens),
       fmtInt(m.cache_read_tokens),
       fmtInt(m.cache_write_tokens),
       fmtInt(m.total_tokens),
-      fmtCost(m.cost_usd),
-      fmtCost(m.cost_usd_est),
+      fmtCost(m.est_usd),
     ]),
   );
-  const totalCostUsd = usage.cost_usd === null ? '$0 (null)' : `$${fmtNum(usage.cost_usd)}`;
   const total = mdRow([
     '**total**',
-    '',
     '',
     `**${fmtInt(usage.input_tokens)}**`,
     `**${fmtInt(usage.output_tokens)}**`,
     `**${fmtInt(usage.cache_read_tokens)}**`,
     `**${fmtInt(usage.cache_write_tokens)}**`,
     `**${fmtInt(usage.total_tokens)}**`,
-    `**${totalCostUsd}**`,
-    `**${fmtCost(usage.cost_usd_est)}**`,
+    `**${fmtCost(usage.est_usd)}**`,
   ]);
   const modelTable = [header, sep, ...body, total].join('\n');
   return [modelTable, '', renderProviderSubtotal(usage.by_provider), '', renderProvenanceLine(usage)].join('\n');
@@ -420,10 +406,9 @@ export function renderUnclassifiedGroups(candidates: ValueCandidate[], maxNewGro
 /** Inputs for the printed ROI headline. Numbers are raw; the renderer applies the display split. */
 export interface RoiLineInput {
   units_valued: number;
-  /** Real/marginal out-of-pocket $, or null for a pure subscription-covered span. */
-  cost_usd: number | null;
-  /** LiteLLM list-rate estimate (tokens × table), or null when nothing could be priced. */
-  cost_usd_est: number | null;
+  /** LiteLLM list-rate estimate (tokens × table) — the single cost surface (WK-0066); null when
+   *  nothing remote could be priced. Local/self-hosted rows contribute 0. */
+  est_usd: number | null;
   total_tokens: number;
   replication_days: number;
   work_days: number;
@@ -433,16 +418,15 @@ export interface RoiLineInput {
 
 /**
  * Render the ROI headline (recipe step 6). Deterministic string assembly — the model never writes
- * this line. cost_usd null → "$0 out-of-pocket" (the estimate carries the interpretable figure);
- * cum_leverage null → "chain n/a" (the chain is optional, WK-0058).
+ * this line. Single cost surface (WK-0066): the tokens × table estimate; no actual/out-of-pocket
+ * split. est_usd null → "est. unavailable"; cum_leverage null → "chain n/a" (chain optional, WK-0058).
  */
 export function renderRoiLine(i: RoiLineInput): string {
-  const cost = i.cost_usd === null ? '$0 out-of-pocket' : `$${fmtNum(i.cost_usd)}`;
-  const est = i.cost_usd_est === null ? 'est. unavailable' : `est. $${fmtNum(i.cost_usd_est)} at API rates`;
+  const est = i.est_usd === null ? 'est. unavailable' : `est. $${fmtNum(i.est_usd)} at API rates`;
   const chain = i.cum_leverage === null ? 'chain n/a' : `chain ${fmtNum(i.cum_leverage)}×`;
   return (
     `shipped ${fmtInt(i.units_valued)} working units; ` +
-    `agents cost ${cost} (${est}) / ${fmtInt(i.total_tokens)} tokens; ` +
+    `agents cost ${est} / ${fmtInt(i.total_tokens)} tokens; ` +
     `replication value ${fmtNum(i.replication_days)} operator-days vs ${fmtInt(i.work_days)} days worked → ` +
     `leverage ${fmtNum(i.leverage)}× (floor); ${chain}`
   );
@@ -553,8 +537,7 @@ export function renderValueReport(input: RenderValueReportInput): Result<Rendere
 
   const roiLine = renderRoiLine({
     units_valued: arithmetic.units_valued,
-    cost_usd: usage.cost_usd,
-    cost_usd_est: usage.cost_usd_est,
+    est_usd: usage.est_usd,
     total_tokens: usage.total_tokens,
     replication_days: arithmetic.replication_days,
     work_days: metrics.work_days,

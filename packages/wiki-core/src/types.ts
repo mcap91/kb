@@ -226,16 +226,23 @@ export interface ValueFrontmatter {
   head_commit: string;
   prior_val: string; // prior VAL id, or "none"
   chain_status: ChainStatus;
-  // Cost — observed (scraped by value-usage; DEC-0005 owned read + LiteLLM table)
+  // Cost — observed (scraped by value-usage; DEC-0005/WK-0066 owned union read + LiteLLM table)
   input_tokens?: number;
   output_tokens?: number;
   cache_read_tokens?: number;
   cache_write_tokens?: number;
   total_tokens?: number;
-  /** Actual out-of-pocket $ — OpenRouter /credits or operator-supplied; blank when none. */
+  /** The single cost surface (WK-0066): `tokens × vendored LiteLLM table` list-rate estimate;
+   *  blank when nothing REMOTE could be priced. Local/self-hosted rows contribute 0. */
+  est_usd?: number;
+  /** @deprecated legacy actual out-of-pocket $ — removed with WK-0064's dead "actual" apparatus
+   *  (WK-0066). Tolerated only so immutable historical VALs (VAL-0001) still validate; never emitted. */
   cost_usd?: number;
-  /** `tokens × vendored LiteLLM table` list-rate estimate; blank when nothing could be priced. */
+  /** @deprecated legacy estimate field name — renamed to `est_usd` (WK-0066). Tolerated for
+   *  historical VALs only; never emitted. */
   cost_usd_est?: number;
+  /** @deprecated legacy cost provenance — removed with the actual/estimate split (WK-0066).
+   *  Tolerated for historical VALs only; never emitted. */
   cost_provenance?: CostProvenance;
   /** Pinned LiteLLM table version that priced this span (provenance, WK-0064). */
   pricing_table_version?: string;
@@ -579,25 +586,23 @@ export interface ValueUsageOpts {
 /** Per-model token/cost detail (goes to the record body table, not frontmatter). */
 export interface UsageModelDetail {
   model: string;
-  /** LiteLLM `litellm_provider` of the resolved price row; `'unknown'` when unmatched. */
+  /**
+   * LiteLLM `litellm_provider` of the resolved price row; `'unknown'` when unmatched (a remote
+   * model with no row → est_usd null + reason); `'local'` for a self-hosted dispatch/ollama run.
+   */
   provider: string;
-  /** Reasoning effort where the provider logs it (Codex `turn_context.effort`); null for Claude. */
-  effort: string | null;
   input_tokens: number;
   output_tokens: number;
   cache_read_tokens: number;
   cache_write_tokens: number;
   total_tokens: number;
   /**
-   * Real/marginal out-of-pocket $ for this model row. Always null under DEC-0005: the only
-   * in-band actual (OpenRouter /credits) is account-scoped, surfaced at the top level, never
-   * split per model. Kept so the render can show it beside the estimate if a future per-row
-   * actual source appears.
+   * The single cost surface (WK-0066): `tokens × vendored LiteLLM table` at list rates. Null when
+   * a REMOTE model has no price row (+ est_reason, never a silent $0); `0` for a LOCAL/self-hosted
+   * run (dispatch/ollama — no dollar cost, never a counterfactual). Never a fabricated actual.
    */
-  cost_usd: number | null;
-  /** `tokens × vendored LiteLLM table` at list rates; null when the model has no price row. */
-  cost_usd_est: number | null;
-  /** Why cost_usd_est is null (unknown model); null when priced. Never a silent $0. */
+  est_usd: number | null;
+  /** Why est_usd is null (unknown remote model); null when priced or local. Never a silent $0. */
   est_reason: string | null;
 }
 
@@ -609,13 +614,54 @@ export interface UsageProviderDetail {
   cache_read_tokens: number;
   cache_write_tokens: number;
   total_tokens: number;
-  /** Actual out-of-pocket $ for the provider; null (actual is top-level only under DEC-0005). */
-  cost_usd: number | null;
   /** Σ list-rate estimate over the provider's models; null when none could be priced. */
-  cost_usd_est: number | null;
+  est_usd: number | null;
 }
 
-/** Scraped token/cost metrics from value-usage (owned read + LiteLLM table — WK-0064). */
+/**
+ * One normalized usage record emitted by a `SourceReader` (WK-0066). Source-agnostic and
+ * already repo-scoped + date-windowed by the reader that produced it. `source` is the
+ * provenance (how it ran: 'claude' | 'codex' | 'dispatch'); `local` marks a self-hosted run
+ * (ollama endpoint) that prices to est_usd 0. Cache buckets are 0 where the source has none.
+ */
+export interface UsageRecord {
+  source: string;
+  model: string;
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  cache_write_tokens: number;
+  /** YYYY-MM-DD (the date-window key + provenance). */
+  date: string;
+  /** True for a self-hosted/local run (dispatch + ollama endpoint) → est_usd 0, never priced. */
+  local?: boolean;
+}
+
+/** The context a `SourceReader` receives: the date window + the repo-attribution roots. */
+export interface SourceReaderContext {
+  since: string;
+  until: string;
+  /** Target repo root + linked worktree roots (resolved, deduped). Each reader repo-scopes itself. */
+  roots: string[];
+}
+
+/**
+ * A pluggable per-source reader (WK-0066). Owns its own on-disk format, store detection, repo
+ * attribution, date windowing, and dedup; returns [] when its store is absent/unreadable/malformed
+ * and MUST NEVER throw. The core unions the readers (`readers.flatMap(safe)`) and prices the result.
+ */
+export interface SourceReader {
+  /** Provenance label for records this reader emits (also feeds the derived `agents` set). */
+  source: string;
+  read(ctx: SourceReaderContext): UsageRecord[];
+}
+
+/**
+ * Scraped token/cost metrics from value-usage (owned union readers + LiteLLM table — WK-0066).
+ * Single cost surface: `est_usd` (tokens × table). No actual layer, no provenance split, no
+ * per-row effort (all removed with WK-0064's dead scaffolding). `reason` (present) is the
+ * "unavailable" signal — set only when every reader yielded zero for the span.
+ */
 export interface UsageMetrics {
   input_tokens: number;
   output_tokens: number;
@@ -623,24 +669,21 @@ export interface UsageMetrics {
   cache_write_tokens: number;
   total_tokens: number;
   /**
-   * Actual out-of-pocket $ — populated ONLY from a real source (OpenRouter /credits or an
-   * operator-supplied figure), else null. Never derived from the estimate.
+   * Σ `tokens × table` list-rate estimate across models; null when nothing REMOTE could be priced.
+   * Local/self-hosted rows contribute 0 (never null, never a counterfactual). The estimate is the
+   * headline figure — never a bill, never a fabricated actual.
    */
-  cost_usd: number | null;
-  /** Σ `tokens × table` list-rate estimate across models; null when nothing could be priced. */
-  cost_usd_est: number | null;
-  cost_provenance: CostProvenance;
+  est_usd: number | null;
   /** The pinned LiteLLM table version that priced this scrape (provenance). */
   pricing_table_version: string;
-  /** Why cost_usd (actual) is null — no in-band actual source on this host. Absent when actual is set. */
-  actual_reason?: string;
+  /** Source set derived from the readers that produced records (e.g. [claude, codex, dispatch]). */
   agents: string[];
   by_model: UsageModelDetail[];
   /** Aggregate by provider (litellm_provider) — the DEC-0005 provider dimension. */
   by_provider: UsageProviderDetail[];
   /** Always "date-window-approx" — adjacent non-committed work may bleed in (spec §6.4). */
   attribution: string;
-  /** Machine-readable reason when cost_provenance is "unavailable". */
+  /** Machine-readable reason when the scrape is "unavailable" (every reader yielded zero). */
   reason?: string;
 }
 

@@ -1,26 +1,34 @@
 /**
- * Tests for computeValueUsage (value-usage.ts) — the OWNED read + LiteLLM-table cost
- * surface (WK-0064 / DEC-0005). ccusage is retired: the Claude and Codex token reads are
- * ours, pricing is `tokens × a vendored pinned LiteLLM table`, aggregation is by model AND
- * by provider (+ optional effort), and "actual" is the optional OpenRouter reconciliation.
+ * Tests for computeValueUsage (value-usage.ts) — the OWNED union-reader + LiteLLM-table cost
+ * surface (WK-0066 / DEC-0005). The Claude, Codex, and dispatch (.agent-runs) reads are ours;
+ * pricing is `tokens × a vendored pinned LiteLLM table`; aggregation is by model AND by provider;
+ * the single cost surface is `est_usd` (no actual layer, no effort dimension). Local/self-hosted
+ * dispatch runs (ollama endpoint) price to est_usd 0.
  *
- * Strategy: inject fake UsageDeps — readClaudeSessions / readCodexSessions return canned
- * normalized records, loadPricingTable returns a small SYNTHETIC table (never the 1.75 MB
- * vendored one). Hermetic and fully offline: no network, no real ~/.claude / ~/.codex access,
- * no ccusage.
+ * Strategy: inject fake UsageDeps — readClaudeSessions / readCodexSessions / readDispatchUsage
+ * return canned normalized records, loadPricingTable returns a small SYNTHETIC table (never the
+ * 1.75 MB vendored one). Hermetic and fully offline: no network, no real ~/.claude / ~/.codex.
  *
  * Host-native synthetic fixtures only (WK-0043): DIR is derived per platform so it is
  * already absolute for the host running the suite (path.resolve is a no-op), symmetric on
  * Windows and Linux/WSL. The paths need not physically exist.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import type {
   UsageDeps,
   ClaudeMessageUsage,
   CodexSessionUsage,
 } from '../packages/wiki-core/src/value-usage.js';
-import { computeValueUsage } from '../packages/wiki-core/src/value-usage.js';
+import {
+  computeValueUsage,
+  defaultReadDispatchUsage,
+  isLocalEndpoint,
+} from '../packages/wiki-core/src/value-usage.js';
+import type { UsageRecord } from '../packages/wiki-core/src/types.js';
 import type { PricingTable } from '../packages/wiki-core/src/pricing.js';
 
 // ---------------------------------------------------------------------------
@@ -89,12 +97,10 @@ function codexSession(
   input: number,
   cacheRead: number,
   output: number,
-  effort: string | null = null,
 ): CodexSessionUsage {
   return {
     cwd,
     model,
-    effort,
     input_tokens: input,
     cache_read_tokens: cacheRead,
     output_tokens: output,
@@ -102,11 +108,15 @@ function codexSession(
   };
 }
 
-/** Base deps: a synthetic pricing table, no worktrees, empty readers. Fully offline. */
+/**
+ * Base deps: a synthetic pricing table, no worktrees, empty readers. Fully offline. The dispatch
+ * reader defaults to [] (no injected records) so tests that don't exercise it read no real files.
+ */
 function baseDeps(over: Partial<UsageDeps> = {}): UsageDeps {
   return {
     readClaudeSessions: () => [],
     readCodexSessions: () => [],
+    readDispatchUsage: () => [],
     loadPricingTable: () => SYN_TABLE,
     ...over,
   };
@@ -199,7 +209,6 @@ describe('token extraction — all four buckets, per model', () => {
     const m = d.by_model[0]!;
     expect(m.model).toBe('claude-opus-4-8');
     expect(m.provider).toBe('anthropic');
-    expect(m.effort).toBeNull(); // Claude logs no effort
   });
 
   it('splits a two-model session into two by_model rows', async () => {
@@ -239,7 +248,7 @@ describe('dedup — a repeated message id is counted once', () => {
 // ---------------------------------------------------------------------------
 
 describe('pricing — tokens × table with distinct cache rates', () => {
-  it('prices a claude model exactly, cost_usd stays null (no per-row actual)', async () => {
+  it('prices a claude model exactly into the single est_usd surface', async () => {
     const deps = baseDeps({
       readClaudeSessions: () => [
         claudeMsg(ENCODED_DIR, 'a', 'claude-opus-4-8', {
@@ -256,10 +265,9 @@ describe('pricing — tokens × table with distinct cache rates', () => {
     // 1000*1e-5 + 500*3e-5 + 200*1.25e-5 + 300*1e-6
     //   = 0.01   + 0.015   + 0.0025      + 0.0003   = 0.0278
     const m = result.data.by_model[0]!;
-    expect(m.cost_usd_est).toBeCloseTo(0.0278, 10);
-    expect(m.cost_usd).toBeNull();
+    expect(m.est_usd).toBeCloseTo(0.0278, 10);
     expect(m.est_reason).toBeNull();
-    expect(result.data.cost_usd_est).toBeCloseTo(0.0278, 10);
+    expect(result.data.est_usd).toBeCloseTo(0.0278, 10);
   });
 
   it('an unknown model prices to null + an explicit reason (never a silent $0)', async () => {
@@ -273,10 +281,10 @@ describe('pricing — tokens × table with distinct cache rates', () => {
     if (!result.ok) return;
     const m = result.data.by_model[0]!;
     expect(m.provider).toBe('unknown');
-    expect(m.cost_usd_est).toBeNull();
+    expect(m.est_usd).toBeNull();
     expect(m.est_reason).toMatch(/mystery-model-9/);
     // Nothing priceable → total estimate is null, not 0.
-    expect(result.data.cost_usd_est).toBeNull();
+    expect(result.data.est_usd).toBeNull();
     // Tokens still counted.
     expect(result.data.total_tokens).toBe(1500);
   });
@@ -300,7 +308,48 @@ describe('pricing — tokens × table with distinct cache rates', () => {
     if (!result.ok) return;
     const m = result.data.by_model[0]!;
     expect(m.provider).toBe('anthropic');
-    expect(m.cost_usd_est).toBeCloseTo(1000 * 0.00001, 12); // 0.01
+    expect(m.est_usd).toBeCloseTo(1000 * 0.00001, 12); // 0.01
+  });
+
+  it('a slash-namespaced OpenRouter id fails loud (null + reason) with no alias — never silent $0', async () => {
+    // Why: WK-0066 alias task — an unresolved remote OR id must price to null + reason, so real
+    // spend is never silently zeroed. (Adding the alias to wiki/.value-config.json is operator-gated.)
+    const deps = baseDeps({
+      readDispatchUsage: () => [
+        {
+          source: 'dispatch',
+          model: 'z-ai/glm-5.2',
+          input_tokens: 1000,
+          output_tokens: 500,
+          cache_read_tokens: 0,
+          cache_write_tokens: 0,
+          date: '2026-07-05',
+          local: false,
+        },
+      ],
+    });
+    const result = await computeValueUsage({ dir: DIR, since: SINCE, until: UNTIL }, deps);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const m = result.data.by_model[0]!;
+    expect(m.provider).toBe('unknown');
+    expect(m.est_usd).toBeNull();
+    expect(m.est_reason).toMatch(/z-ai\/glm-5\.2/);
+    expect(result.data.est_usd).toBeNull();
+
+    // ...and WITH an alias to a table key it resolves and prices.
+    const aliased = await computeValueUsage(
+      {
+        dir: DIR,
+        since: SINCE,
+        until: UNTIL,
+        config: { model_patterns: [{ pattern: 'z-ai/glm-5.2', table_key: 'gpt-5.5' }] },
+      },
+      deps,
+    );
+    expect(aliased.ok).toBe(true);
+    if (!aliased.ok) return;
+    expect(aliased.data.by_model[0]!.est_usd).toBeCloseTo(1000 * 0.000001 + 500 * 0.000008, 12);
   });
 });
 
@@ -327,30 +376,113 @@ describe('by_provider — aggregates from litellm_provider', () => {
     expect(byProv.anthropic!.input_tokens).toBe(3000);
     expect(byProv.openai!.input_tokens).toBe(500);
     // anthropic est = 1000*1e-5 + 2000*3e-6 = 0.01 + 0.006 = 0.016
-    expect(byProv.anthropic!.cost_usd_est).toBeCloseTo(0.016, 10);
+    expect(byProv.anthropic!.est_usd).toBeCloseTo(0.016, 10);
     // openai est = 500*1e-6 = 0.0005
-    expect(byProv.openai!.cost_usd_est).toBeCloseTo(0.0005, 10);
+    expect(byProv.openai!.est_usd).toBeCloseTo(0.0005, 10);
   });
 });
 
 // ---------------------------------------------------------------------------
-// effort dimension (Codex logs it; Claude does not)
+// Dispatch .agent-runs reader (situations 3 + 7) — remote priced, local $0
 // ---------------------------------------------------------------------------
 
-describe('effort — optional per-row dimension, Codex only', () => {
-  it('carries Codex turn_context.effort and splits distinct efforts of the same model', async () => {
+/** A dispatch UsageRecord fixture (already repo-scoped + windowed by the reader). */
+function dispatchRec(model: string, input: number, output: number, local: boolean): UsageRecord {
+  return {
+    source: 'dispatch',
+    model,
+    input_tokens: input,
+    output_tokens: output,
+    cache_read_tokens: 0,
+    cache_write_tokens: 0,
+    date: '2026-07-05',
+    local,
+  };
+}
+
+describe('dispatch — .agent-runs sentinel: remote priced by table, local self-hosted → est_usd 0', () => {
+  it('prices a remote (OpenRouter) dispatch model via the table', async () => {
     const deps = baseDeps({
-      readCodexSessions: () => [
-        codexSession(DIR, 'gpt-5.5', 100, 0, 50, 'xhigh'),
-        codexSession(DIR, 'gpt-5.5', 200, 0, 80, 'low'),
+      readDispatchUsage: () => [dispatchRec('gpt-5.5', 1000, 500, false)],
+    });
+    const result = await computeValueUsage({ dir: DIR, since: SINCE, until: UNTIL }, deps);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const m = result.data.by_model[0]!;
+    expect(m.provider).toBe('openai');
+    // 1000*1e-6 + 500*8e-6 = 0.001 + 0.004 = 0.005
+    expect(m.est_usd).toBeCloseTo(0.005, 12);
+    expect(result.data.agents).toEqual(['dispatch']);
+  });
+
+  it('prices a local/self-hosted (ollama) dispatch model to est_usd 0 (never null, never a counterfactual)', async () => {
+    const deps = baseDeps({
+      readDispatchUsage: () => [dispatchRec('qwen3-coder:30b', 2000, 1000, true)],
+    });
+    const result = await computeValueUsage({ dir: DIR, since: SINCE, until: UNTIL }, deps);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const m = result.data.by_model[0]!;
+    expect(m.provider).toBe('local');
+    expect(m.est_usd).toBe(0); // real 0, not null — no substitute-model rate
+    expect(m.est_reason).toBeNull();
+    expect(m.total_tokens).toBe(3000);
+    // A local-only span totals est_usd 0, not null.
+    expect(result.data.est_usd).toBe(0);
+  });
+
+  it('all sources union in one span: agents lists claude + codex + dispatch; est_usd sums the priced rows', async () => {
+    // Why (WK-0066 AC): every capture path produces priced UsageRecords in one scrape — the union
+    // is the coverage contract. Local dispatch contributes tokens + $0; remote/claude/codex price.
+    const deps = baseDeps({
+      readClaudeSessions: () => [claudeMsg(ENCODED_DIR, 'a', 'claude-opus-4-8', { input: 1000, output: 0 })],
+      readCodexSessions: () => [codexSession(DIR, 'gpt-5.5', 500, 0, 0)],
+      readDispatchUsage: () => [
+        dispatchRec('claude-sonnet-4-6', 2000, 0, false), // remote (OR-through-dispatch)
+        dispatchRec('qwen3-coder:30b', 400, 100, true), // local ollama → $0
       ],
     });
     const result = await computeValueUsage({ dir: DIR, since: SINCE, until: UNTIL }, deps);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    const efforts = result.data.by_model.map((m) => m.effort).sort();
-    expect(efforts).toEqual(['low', 'xhigh']);
-    expect(result.data.by_model.every((m) => m.provider === 'openai')).toBe(true);
+    expect(result.data.agents).toEqual(['claude', 'codex', 'dispatch']);
+    // est_usd = opus(1000*1e-5=0.01) + gpt(500*1e-6=0.0005) + sonnet(2000*3e-6=0.006) + local(0)
+    expect(result.data.est_usd).toBeCloseTo(0.01 + 0.0005 + 0.006, 10);
+    expect(result.data.total_tokens).toBe(1000 + 500 + 2000 + 500);
+  });
+});
+
+describe('isLocalEndpoint — ollama endpoints are local, OpenRouter is remote', () => {
+  it('classifies the ollama defaults as local and openrouter.ai as remote', () => {
+    expect(isLocalEndpoint('http://localhost:11434')).toBe(true);
+    expect(isLocalEndpoint('http://127.0.0.1:11434/api/chat')).toBe(true);
+    expect(isLocalEndpoint('https://openrouter.ai/api/v1')).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Situation 5: dispatch-launched Claude cwd is a <repo>/.agent-runs/... subfolder
+// ---------------------------------------------------------------------------
+
+describe('claude attribution — situation 5: a bundle-nested cwd attributes to the repo (PREFIX)', () => {
+  it('includes a Claude project key under <repo>/.agent-runs/... (was silently dropped by exact-match)', async () => {
+    // Why (WK-0066): a dispatch-launched Claude runs with cwd = <repo>/.agent-runs/runs/<h>/RUN-x/
+    // agent-visible, whose encoded key is <encodedRoot>-.agent-runs-... — an exact-equality scope
+    // test dropped it. The encoded-root PREFIX match attributes it to the repo.
+    const nestedCwd = DIR + SEP + '.agent-runs' + SEP + 'runs' + SEP + 'H' + SEP + 'RUN-x' + SEP + 'agent-visible';
+    const nestedKey = nestedCwd.replace(/[:\\/]/g, '-');
+    const deps = baseDeps({
+      readClaudeSessions: () => [
+        claudeMsg(nestedKey, 'nested', 'claude-opus-4-8', { input: 1234, output: 0 }),
+        // A sibling with an unrelated name is still excluded (prefix boundary).
+        claudeMsg((HOME_ROOT + SEP + 'other').replace(/[:\\/]/g, '-'), 'x', 'claude-opus-4-8', { input: 9, output: 9 }),
+      ],
+    });
+    const result = await computeValueUsage({ dir: DIR, since: SINCE, until: UNTIL }, deps);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.input_tokens).toBe(1234);
+    expect(result.data.total_tokens).toBe(1234);
   });
 });
 
@@ -397,11 +529,11 @@ describe('codex — repo attribution by cwd prefix', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Actual is never fabricated (no OpenRouter lifetime figure; no per-span dollar API)
+// Single cost surface: est_usd only (no actual layer / no provenance split — WK-0066)
 // ---------------------------------------------------------------------------
 
-describe('actual — never fabricated; cost_usd is always null + reason', () => {
-  it('leaves cost_usd null with an actual_reason and litellm-estimate provenance', async () => {
+describe('cost surface — est_usd only; no actual / provenance / effort fields', () => {
+  it('surfaces the tokens × table estimate and carries no removed cost fields', async () => {
     const deps = baseDeps({
       readClaudeSessions: () => [
         claudeMsg(ENCODED_DIR, 'a', 'claude-opus-4-8', { input: 1000, output: 500 }),
@@ -410,11 +542,15 @@ describe('actual — never fabricated; cost_usd is always null + reason', () => 
     const result = await computeValueUsage({ dir: DIR, since: SINCE, until: UNTIL }, deps);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.data.cost_usd).toBeNull();
-    expect(result.data.actual_reason).toBeTruthy();
-    expect(result.data.cost_provenance).toBe('litellm-estimate');
-    // The tokens × table estimate is the interpretable figure.
-    expect(result.data.cost_usd_est).toBeGreaterThan(0);
+    // The tokens × table estimate is the single interpretable figure.
+    expect(result.data.est_usd).toBeGreaterThan(0);
+    // WK-0064's dead "actual"/provenance/effort scaffolding is gone from the surface.
+    const asRecord = result.data as unknown as Record<string, unknown>;
+    expect(asRecord.cost_usd).toBeUndefined();
+    expect(asRecord.cost_usd_est).toBeUndefined();
+    expect(asRecord.cost_provenance).toBeUndefined();
+    expect(asRecord.actual_reason).toBeUndefined();
+    expect(result.data.by_model[0] as unknown as Record<string, unknown>).not.toHaveProperty('effort');
   });
 });
 
@@ -437,18 +573,81 @@ describe('provenance — pinned table version is stamped', () => {
 });
 
 describe('self-aware — no token data for the span is ok(), not fail()', () => {
-  it('returns unavailable provenance + reason + zeroed totals when nothing matches', async () => {
+  it('returns a reason (the unavailable signal) + zeroed totals when every reader yields zero', async () => {
     const deps = baseDeps(); // empty readers
     const result = await computeValueUsage({ dir: DIR, since: SINCE, until: UNTIL }, deps);
     expect(result.ok).toBe(true); // MUST be ok(), never fail()
     if (!result.ok) return;
-    expect(result.data.cost_provenance).toBe('unavailable');
+    // The `reason` field (present) is the "unavailable" signal now that cost_provenance is gone.
     expect(result.data.reason).toBeDefined();
     expect(result.data.total_tokens).toBe(0);
     expect(result.data.by_model).toEqual([]);
     expect(result.data.by_provider).toEqual([]);
-    expect(result.data.cost_usd).toBeNull();
-    expect(result.data.cost_usd_est).toBeNull();
+    expect(result.data.agents).toEqual([]);
+    expect(result.data.est_usd).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Dispatch reader over REAL .agent-runs files (host-native temp fixture; offline, no ~/.claude)
+// ---------------------------------------------------------------------------
+
+describe('defaultReadDispatchUsage — reads real <repo>/.agent-runs bundles, windows, classifies local', () => {
+  let repo: string;
+
+  function writeBundle(
+    root: string,
+    handoff: string,
+    run: string,
+    usage: Record<string, unknown>,
+    completedAt: string,
+  ): void {
+    const metaDir = path.join(root, '.agent-runs', 'runs', handoff, run, 'metadata');
+    fs.mkdirSync(metaDir, { recursive: true });
+    fs.writeFileSync(path.join(metaDir, 'usage.json'), JSON.stringify(usage), 'utf-8');
+    fs.writeFileSync(path.join(metaDir, 'meta.json'), JSON.stringify({ completed_at: completedAt }), 'utf-8');
+  }
+
+  afterEach(() => {
+    if (repo) {
+      try {
+        fs.rmSync(repo, { recursive: true, force: true });
+      } catch {
+        /* ignore */
+      }
+    }
+  });
+
+  it('ingests an in-window sentinel (remote + local), windows out an old one — offline, repo-local', () => {
+    repo = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-dispatch-read-'));
+    writeBundle(
+      repo, 'H1', 'RUN-a',
+      { model: 'z-ai/glm-5.2', endpoint: 'https://openrouter.ai/api/v1', prompt_tokens: 1000, completion_tokens: 500 },
+      '2026-07-05T10:00:00Z',
+    );
+    writeBundle(
+      repo, 'H2', 'RUN-b',
+      { model: 'qwen3-coder:30b', endpoint: 'http://localhost:11434', prompt_tokens: 200, completion_tokens: 100 },
+      '2026-07-06T10:00:00Z',
+    );
+    writeBundle(
+      repo, 'H3', 'RUN-c',
+      { model: 'gpt-5.5', endpoint: 'https://openrouter.ai/api/v1', prompt_tokens: 9999, completion_tokens: 9999 },
+      '2026-06-01T10:00:00Z', // out of window
+    );
+
+    const recs = defaultReadDispatchUsage({ since: '2026-07-01', until: '2026-07-10', roots: [repo] });
+    const byModel = Object.fromEntries(recs.map((r) => [r.model, r]));
+    expect(Object.keys(byModel).sort()).toEqual(['qwen3-coder:30b', 'z-ai/glm-5.2']);
+    expect(byModel['z-ai/glm-5.2']!.local).toBe(false);
+    expect(byModel['z-ai/glm-5.2']!.input_tokens).toBe(1000); // prompt_tokens → input
+    expect(byModel['z-ai/glm-5.2']!.output_tokens).toBe(500); // completion_tokens → output
+    expect(byModel['qwen3-coder:30b']!.local).toBe(true); // ollama endpoint → local
+  });
+
+  it('returns [] when the repo has no .agent-runs bundle (absent store → never throws)', () => {
+    repo = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-dispatch-empty-'));
+    expect(defaultReadDispatchUsage({ since: '2026-07-01', until: '2026-07-10', roots: [repo] })).toEqual([]);
   });
 });
 

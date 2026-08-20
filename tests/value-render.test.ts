@@ -30,7 +30,7 @@ import type {
   ValueDataTrace,
   ValueCandidate,
 } from '../packages/wiki-core/src/types.js';
-import { makeMetrics, makeUsage, GOLDEN_UNITS, USAGE_ACTUAL_REASON } from './helpers/value-fixtures.js';
+import { makeMetrics, makeUsage, GOLDEN_UNITS } from './helpers/value-fixtures.js';
 import { LITELLM_TABLE_VERSION } from '../packages/wiki-core/src/pricing.js';
 
 describe('fmtInt — thousands-separated integers (display only)', () => {
@@ -113,11 +113,12 @@ describe('computeArithmetic — cum_leverage over the published chain (body-only
 });
 
 describe('renderRoiLine — the printed ROI headline (2-dp + separators)', () => {
-  it('renders an estimate-only span (no actual) as $0 out-of-pocket, est carries the figure', () => {
+  it('renders the single est_usd cost surface (WK-0066: no actual / out-of-pocket split)', () => {
+    // Why: WK-0066 collapsed the cost side to one figure — tokens × table. The line names the
+    // estimate directly ("est. $X at API rates"), never a two-number actual/estimate split.
     const line = renderRoiLine({
       units_valued: 26,
-      cost_usd: null,
-      cost_usd_est: 116.57,
+      est_usd: 116.57,
       total_tokens: 87300000,
       replication_days: 52.21153846153845,
       work_days: 13,
@@ -125,17 +126,17 @@ describe('renderRoiLine — the printed ROI headline (2-dp + separators)', () =>
       cum_leverage: 4.02,
     });
     expect(line).toBe(
-      'shipped 26 working units; agents cost $0 out-of-pocket (est. $116.57 at API rates) / ' +
+      'shipped 26 working units; agents cost est. $116.57 at API rates / ' +
         '87,300,000 tokens; replication value 52.21 operator-days vs 13 days worked → ' +
         'leverage 4.02× (floor); chain 4.02×',
     );
   });
 
-  it('shows the real out-of-pocket cost when cost_usd is present', () => {
+  it('renders "est. unavailable" when nothing could be priced (est_usd null, never a silent $0)', () => {
+    // Why: a span of only unknown-remote models prices to null — the line must say so, not imply $0.
     const line = renderRoiLine({
       units_valued: 5,
-      cost_usd: 12.34,
-      cost_usd_est: 12.34,
+      est_usd: null,
       total_tokens: 1000,
       replication_days: 3,
       work_days: 2,
@@ -143,7 +144,7 @@ describe('renderRoiLine — the printed ROI headline (2-dp + separators)', () =>
       cum_leverage: 1.5,
     });
     expect(line).toBe(
-      'shipped 5 working units; agents cost $12.34 (est. $12.34 at API rates) / 1,000 tokens; ' +
+      'shipped 5 working units; agents cost est. unavailable / 1,000 tokens; ' +
         'replication value 3.00 operator-days vs 2 days worked → leverage 1.50× (floor); chain 1.50×',
     );
   });
@@ -151,8 +152,7 @@ describe('renderRoiLine — the printed ROI headline (2-dp + separators)', () =>
   it('marks the chain n/a when cum_leverage is unavailable (broken prior link)', () => {
     const line = renderRoiLine({
       units_valued: 5,
-      cost_usd: null,
-      cost_usd_est: 1,
+      est_usd: 1,
       total_tokens: 1000,
       replication_days: 3,
       work_days: 2,
@@ -160,7 +160,7 @@ describe('renderRoiLine — the printed ROI headline (2-dp + separators)', () =>
       cum_leverage: null,
     });
     expect(line).toBe(
-      'shipped 5 working units; agents cost $0 out-of-pocket (est. $1.00 at API rates) / 1,000 tokens; ' +
+      'shipped 5 working units; agents cost est. $1.00 at API rates / 1,000 tokens; ' +
         'replication value 3.00 operator-days vs 2 days worked → leverage 1.50× (floor); chain n/a',
     );
   });
@@ -299,56 +299,51 @@ describe('renderReviewTable — the ## How This Was Calculated review rows (2-dp
 
 describe('renderTokenDetail — the ## Token Detail section (per-model + by-provider + provenance)', () => {
   it('renders per-model rows, a by-provider subtotal, and a table-version provenance line', () => {
-    // Why: the cost columns must never be conflated — cost_usd is the OPTIONAL actual (null on an
-    // estimate-only span, rendered "$0 (null)") and cost_usd_est is tokens × table. The provider
-    // subtotal is the DEC-0005 provider dimension; the provenance line names the pinned table.
+    // Why: the single cost surface (WK-0066) is est_usd = tokens × table — no effort column, no
+    // actual/estimate split. The provider subtotal is the DEC-0005 provider dimension; the
+    // provenance line names the pinned table and states these are list rates, not a bill.
     expect(renderTokenDetail(makeUsage())).toBe(
       [
-        '| model | provider | effort | input | output | cache_read | cache_write | total | cost_usd | cost_usd_est |',
-        '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |',
-        '| claude-opus-4-8 | anthropic | — | 81,516 | 683,867 | 53,313,057 | 1,726,318 | 55,804,758 | — | $61.42 |',
-        '| claude-sonnet-4-6 | anthropic | — | 90 | 61,045 | 4,595,592 | 229,528 | 4,886,255 | — | $3.16 |',
-        '| **total** |  |  | **81,606** | **744,912** | **57,908,649** | **1,955,846** | **60,691,013** | **$0 (null)** | **$64.58** |',
+        '| model | provider | input | output | cache_read | cache_write | total | est_usd |',
+        '| --- | --- | --- | --- | --- | --- | --- | --- |',
+        '| claude-opus-4-8 | anthropic | 81,516 | 683,867 | 53,313,057 | 1,726,318 | 55,804,758 | $61.42 |',
+        '| claude-sonnet-4-6 | anthropic | 90 | 61,045 | 4,595,592 | 229,528 | 4,886,255 | $3.16 |',
+        '| **total** |  | **81,606** | **744,912** | **57,908,649** | **1,955,846** | **60,691,013** | **$64.58** |',
         '',
         '**By provider:**',
         '',
-        '| provider | input | output | cache_read | cache_write | total | cost_usd_est |',
+        '| provider | input | output | cache_read | cache_write | total | est_usd |',
         '| --- | --- | --- | --- | --- | --- | --- |',
         '| anthropic | 81,606 | 744,912 | 57,908,649 | 1,955,846 | 60,691,013 | $64.58 |',
         '',
-        `Priced via LiteLLM table ${LITELLM_TABLE_VERSION}. actual: none (${USAGE_ACTUAL_REASON})`,
+        `Priced via LiteLLM table ${LITELLM_TABLE_VERSION} (tokens × table list rates; not a bill).`,
       ].join('\n'),
     );
   });
 
-  it('shows the top-level actual $ and an unknown-model row with em-dash est + reason', () => {
-    // Why: under DEC-0005 the actual is a TOP-LEVEL figure (OpenRouter /credits) — never split per
-    // model, so per-row cost_usd stays an em dash while the total carries the real $1.50. An unknown
-    // model prices to an em-dash estimate (its est_reason lives on the row), never a silent $0.
+  it('an unknown remote model renders an em-dash est_usd + carries its reason (never a silent $0)', () => {
+    // Why: an unknown remote model prices to null — the row + total show an em dash (its est_reason
+    // lives on the row), never a fabricated $0 that would undercount real spend.
     const usage: UsageMetrics = {
       input_tokens: 100,
       output_tokens: 200,
       cache_read_tokens: 0,
       cache_write_tokens: 0,
       total_tokens: 300,
-      cost_usd: 1.5,
-      cost_usd_est: null,
-      cost_provenance: 'openrouter-actual',
+      est_usd: null,
       pricing_table_version: LITELLM_TABLE_VERSION,
-      agents: ['claude'],
+      agents: ['dispatch'],
       by_model: [
         {
-          model: 'glm-4.6',
+          model: 'z-ai/glm-5.2',
           provider: 'unknown',
-          effort: null,
           input_tokens: 100,
           output_tokens: 200,
           cache_read_tokens: 0,
           cache_write_tokens: 0,
           total_tokens: 300,
-          cost_usd: null,
-          cost_usd_est: null,
-          est_reason: 'no LiteLLM price row for model "glm-4.6"',
+          est_usd: null,
+          est_reason: 'no LiteLLM price row for model "z-ai/glm-5.2"',
         },
       ],
       by_provider: [
@@ -359,16 +354,57 @@ describe('renderTokenDetail — the ## Token Detail section (per-model + by-prov
           cache_read_tokens: 0,
           cache_write_tokens: 0,
           total_tokens: 300,
-          cost_usd: null,
-          cost_usd_est: null,
+          est_usd: null,
         },
       ],
       attribution: 'date-window-approx',
     };
     const out = renderTokenDetail(usage);
-    expect(out).toContain('| glm-4.6 | unknown | — | 100 | 200 | 0 | 0 | 300 | — | — |');
-    expect(out).toContain('| **total** |  |  | **100** | **200** | **0** | **0** | **300** | **$1.50** | **—** |');
-    expect(out).toContain(`Priced via LiteLLM table ${LITELLM_TABLE_VERSION}. actual: $1.50 (openrouter-actual)`);
+    expect(out).toContain('| z-ai/glm-5.2 | unknown | 100 | 200 | 0 | 0 | 300 | — |');
+    expect(out).toContain('| **total** |  | **100** | **200** | **0** | **0** | **300** | **—** |');
+    expect(out).toContain(`Priced via LiteLLM table ${LITELLM_TABLE_VERSION} (tokens × table list rates; not a bill).`);
+  });
+
+  it('renders a local/self-hosted (dispatch + ollama) row at est_usd $0.00, never null', () => {
+    // Why: WK-0066/DEC-0005 addendum — a local run has no dollar cost and is NOT priced at a
+    // substitute model's rate. It shows tokens + a real $0.00 (provider 'local'), never an em dash.
+    const usage: UsageMetrics = {
+      input_tokens: 500,
+      output_tokens: 250,
+      cache_read_tokens: 0,
+      cache_write_tokens: 0,
+      total_tokens: 750,
+      est_usd: 0,
+      pricing_table_version: LITELLM_TABLE_VERSION,
+      agents: ['dispatch'],
+      by_model: [
+        {
+          model: 'qwen3-coder:30b',
+          provider: 'local',
+          input_tokens: 500,
+          output_tokens: 250,
+          cache_read_tokens: 0,
+          cache_write_tokens: 0,
+          total_tokens: 750,
+          est_usd: 0,
+          est_reason: null,
+        },
+      ],
+      by_provider: [
+        {
+          provider: 'local',
+          input_tokens: 500,
+          output_tokens: 250,
+          cache_read_tokens: 0,
+          cache_write_tokens: 0,
+          total_tokens: 750,
+          est_usd: 0,
+        },
+      ],
+      attribution: 'date-window-approx',
+    };
+    const out = renderTokenDetail(usage);
+    expect(out).toContain('| qwen3-coder:30b | local | 500 | 250 | 0 | 0 | 750 | $0.00 |');
   });
 });
 
@@ -422,25 +458,25 @@ describe('renderValueReport — full deterministic assembly (golden, byte-stable
     // (a) ## Token Detail — per-model table + by-provider subtotal + provenance line.
     expect(res.data.sections.tokenDetail).toBe(
       [
-        '| model | provider | effort | input | output | cache_read | cache_write | total | cost_usd | cost_usd_est |',
-        '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |',
-        '| claude-opus-4-8 | anthropic | — | 81,516 | 683,867 | 53,313,057 | 1,726,318 | 55,804,758 | — | $61.42 |',
-        '| claude-sonnet-4-6 | anthropic | — | 90 | 61,045 | 4,595,592 | 229,528 | 4,886,255 | — | $3.16 |',
-        '| **total** |  |  | **81,606** | **744,912** | **57,908,649** | **1,955,846** | **60,691,013** | **$0 (null)** | **$64.58** |',
+        '| model | provider | input | output | cache_read | cache_write | total | est_usd |',
+        '| --- | --- | --- | --- | --- | --- | --- | --- |',
+        '| claude-opus-4-8 | anthropic | 81,516 | 683,867 | 53,313,057 | 1,726,318 | 55,804,758 | $61.42 |',
+        '| claude-sonnet-4-6 | anthropic | 90 | 61,045 | 4,595,592 | 229,528 | 4,886,255 | $3.16 |',
+        '| **total** |  | **81,606** | **744,912** | **57,908,649** | **1,955,846** | **60,691,013** | **$64.58** |',
         '',
         '**By provider:**',
         '',
-        '| provider | input | output | cache_read | cache_write | total | cost_usd_est |',
+        '| provider | input | output | cache_read | cache_write | total | est_usd |',
         '| --- | --- | --- | --- | --- | --- | --- |',
         '| anthropic | 81,606 | 744,912 | 57,908,649 | 1,955,846 | 60,691,013 | $64.58 |',
         '',
-        `Priced via LiteLLM table ${LITELLM_TABLE_VERSION}. actual: none (${USAGE_ACTUAL_REASON})`,
+        `Priced via LiteLLM table ${LITELLM_TABLE_VERSION} (tokens × table list rates; not a bill).`,
       ].join('\n'),
     );
 
     // (a) ROI + ceiling lines.
     expect(res.data.sections.roiLine).toBe(
-      'shipped 2 working units; agents cost $0 out-of-pocket (est. $64.58 at API rates) / ' +
+      'shipped 2 working units; agents cost est. $64.58 at API rates / ' +
         '60,691,013 tokens; replication value 2.00 operator-days vs 1 days worked → ' +
         'leverage 2.00× (floor); chain 2.67×',
     );
@@ -594,7 +630,7 @@ describe('SRC-0003 regression — precision split (raw frontmatter numeric, 2-dp
       cocomo_pm_nominal: 19.02,
       cocomo_kloc: 5.573,
     });
-    const usage = { ...makeUsage(), cost_usd_est: 740.3097241700002 }; // the other SRC-0003 figure
+    const usage = { ...makeUsage(), est_usd: 740.3097241700002 }; // the other SRC-0003 figure
     const res = renderValueReport({ metrics, usage, ratified: [], priors: [] });
     expect(res.ok).toBe(true);
     if (!res.ok) return;

@@ -342,6 +342,51 @@ async function writeStateMetadata(
   );
 }
 
+/** The `##KB_USAGE##` sentinel marker the blackboard adapters print on stderr (WK-0066). */
+const KB_USAGE_MARKER = '##KB_USAGE##';
+
+/**
+ * Parse the LAST `##KB_USAGE##` sentinel object from captured adapter stderr (pure). The adapters
+ * print `##KB_USAGE## {"model":..,"endpoint":..,"prompt_tokens":..,"completion_tokens":..}`; the
+ * marker may be preceded by a log prefix, so we scan from the marker and JSON-parse the remainder,
+ * keeping the last line that parses. Returns null when no usable sentinel is present.
+ */
+export function parseLastUsageSentinel(raw: string): Record<string, unknown> | null {
+  let parsed: Record<string, unknown> | null = null;
+  for (const line of raw.split('\n')) {
+    const idx = line.indexOf(KB_USAGE_MARKER);
+    if (idx === -1) continue;
+    const candidate = line.slice(idx + KB_USAGE_MARKER.length).trim();
+    try {
+      const obj = JSON.parse(candidate);
+      if (obj !== null && typeof obj === 'object') parsed = obj as Record<string, unknown>;
+    } catch {
+      // not a usable sentinel line — keep scanning
+    }
+  }
+  return parsed;
+}
+
+/**
+ * Read the adapter's captured stderr and write the last `##KB_USAGE##` sentinel verbatim to
+ * `metadata/usage.json` (WK-0066). value-usage's dispatch reader ingests + prices the file (ollama
+ * endpoint ⇒ local est_usd 0, OpenRouter ⇒ priced by the LiteLLM table). Best-effort: no sentinel
+ * (claude/codex agents, or a failed adapter) → no file written; a malformed line → skipped. Never
+ * throws — token telemetry is agent-relayed and must not affect launch correctness (all bundle
+ * writes stay launcher-side, matching dispatch's operator-owned trust boundary).
+ */
+export async function writeUsageSentinel(metadataDir: string, stderrPath: string): Promise<void> {
+  try {
+    const raw = await readFile(stderrPath, 'utf-8');
+    const parsed = parseLastUsageSentinel(raw);
+    if (parsed !== null) {
+      await writeJsonAtomic(join(metadataDir, 'usage.json'), parsed);
+    }
+  } catch {
+    // stderr.log unreadable → no usage.json; never throw.
+  }
+}
+
 function buildEmptyBodyDiagnostic(transportKind: AgentLauncherConfig['response_transport']['kind']): string {
   const transportLabel = transportKind === 'stdout_capture'
     ? 'captured nothing on child stdout'
@@ -722,6 +767,10 @@ export async function launch(opts: LaunchOpts): Promise<DispatchResult<RunResult
     await new Promise<void>((resolvePromise) => {
       stderrStream.end(() => resolvePromise());
     });
+
+    // Token-usage sentinel → metadata/usage.json (WK-0066). Best-effort; never affects the run's
+    // terminal status. stderr.log is fully flushed above, so the last sentinel line is present.
+    await writeUsageSentinel(metadataDir, stderrPath);
 
     let response = '';
     if (await pathExists(responsePath)) {

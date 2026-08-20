@@ -1,39 +1,29 @@
 /**
- * Value-usage module — the owned token read + LiteLLM-table cost surface (DEC-0005 / WK-0064).
+ * Value-usage module — the owned token read + LiteLLM-table cost surface (DEC-0005 / WK-0066).
  *
- * Reads the local CLI session logs DIRECTLY (no external CLI shell-out), repo-attributes them, prices them
- * against a vendored + pinned LiteLLM table, and aggregates by model AND by provider:
+ * Reads local agentic-coding usage as a UNION of small per-source readers, repo-attributes each,
+ * prices `tokens × a vendored + pinned LiteLLM table`, and aggregates by model AND by provider.
  *
- *  - Claude Code writes `~/.claude/projects/<encoded-cwd>/**\/*.jsonl` (incl. `subagents/`
- *    subfolders). We parse each assistant line's `message.usage` + `message.model` + top-level
- *    `timestamp`, dedupe on `message.id`, window by date, and repo-scope by the encoded-cwd
- *    folder key. A `<synthetic>` 0-token pseudo-model is skipped.
- *  - Codex is a separate CLI (`~/.codex/sessions/.../rollout-*.jsonl`). `session_meta.cwd` /
- *    `turn_context.cwd` carry the launch directory, so a cwd prefix-match attributes codex usage
- *    to the repo; `turn_context.effort` carries the optional reasoning-effort dimension.
+ * Sources (situations 1-5 + 7; OpenCode #6 is WK-0067):
+ *  - claude   : `~/.claude/projects/<encoded-cwd>/**\/*.jsonl`. Assistant `message.usage` +
+ *               `message.model` + top-level `timestamp`; dedup on `message.id`; `<synthetic>`
+ *               skipped. Repo-scope by encoded-cwd PREFIX so a dispatch-launched Claude whose cwd
+ *               is a `<repo>/.agent-runs/...` subdir still attributes to the repo (situation 5).
+ *  - codex    : `~/.codex/sessions/.../rollout-*.jsonl`. `session_meta.cwd` prefix-match.
+ *  - dispatch : `<repo>/.agent-runs/runs/**\/metadata/usage.json` — the sentinel the launcher
+ *               writes from the last `##KB_USAGE##` stderr line an adapter prints. In-repo path ⇒
+ *               exact attribution. Local (ollama endpoint) → est_usd 0; remote (OpenRouter) → priced.
  *
- * Cost model (DEC-0005, amended 2026-08-17 per operator):
- *  - cost_usd_est  `tokens × table` at LiteLLM list rates, per model; provider = litellm_provider.
- *                  Unknown model → null + reason (never a silent $0). The estimate is NOT a bill.
- *  - cost_usd      the actual out-of-pocket $. No API returns a per-repo/per-span dollar figure, so
- *                  the tool never fabricates one: cost_usd is always null (+ actual_reason). Only an
- *                  operator hand-editing the record supplies a real number. (The former OpenRouter
- *                  /credits reconciliation was removed: /credits is an ACCOUNT-LIFETIME total, not
- *                  span-scoped, so it produced the same stale figure on every report.)
+ * Graceful-fallback contract (WK-0066): each reader self-detects its store and returns [] on
+ * absent/unreadable/malformed — NEVER throws. The core does `readers.flatMap(safe)` and unions
+ * whatever is present; the scrape is "unavailable" (a `reason` set) ONLY when every reader yields zero.
  *
- * OpenRouter is still reported as a PROVIDER when its models ran through Claude Code — those tokens
- * are in the `~/.claude` JSONL and priced by the table like any other model. Only the meaningless
- * lifetime-dollar layer is gone.
+ * Cost model: `est_usd = tokens × table` (list rates), by model + provider. A REMOTE model with no
+ * row → null + reason (never a silent $0). LOCAL/self-hosted → est_usd 0 (never null, never a
+ * substitute-model counterfactual — DEC-0005 addendum). There is no "actual" layer.
  *
- * Worktree-agnostic attribution via `git worktree list --porcelain` roots. A worktree REMOVED
- * before the scrape drops its tokens (cut the VAL while worktrees exist) — stated limitation.
- *
- * Public API: computeValueUsage(opts, deps?) → Promise<Result<UsageMetrics>>
- *
- * Rules:
- * - Result<T> everywhere; never throw from computeValueUsage.
- * - The core path is FULLY OFFLINE + deterministic — no network calls at all.
- * - Egress points are injectable via UsageDeps (log readers, pricing-table load).
+ * Public API: computeValueUsage(opts, deps?) → Promise<Result<UsageMetrics>>. Fully offline +
+ * deterministic; Result<T> everywhere; never throws.
  */
 
 import * as fs from 'node:fs';
@@ -46,13 +36,15 @@ import type {
   UsageMetrics,
   UsageModelDetail,
   UsageProviderDetail,
-  CostProvenance,
+  UsageRecord,
+  SourceReader,
+  SourceReaderContext,
   ModelPatternEntry,
 } from './types.js';
 import { priceModel, loadDefaultPricingTable, LITELLM_TABLE_VERSION, type PricingTable } from './pricing.js';
 
 // ---------------------------------------------------------------------------
-// Normalized read records (Claude + Codex)
+// Normalized read records (Claude + Codex raw shapes — the store-access seam)
 // ---------------------------------------------------------------------------
 
 /**
@@ -76,15 +68,13 @@ export interface ClaudeMessageUsage {
 /**
  * A single repo-attributable codex session's usage, read from raw ~/.codex logs. Tokens are
  * normalized to the Claude-family shape: `input_tokens` is NON-cached input; `cache_read_tokens`
- * is cached input. Codex has no cache-write bucket. `effort` is the optional reasoning-effort
- * dimension (`turn_context.effort`, e.g. "xhigh"); null when the session did not log one.
+ * is cached input. Codex has no cache-write bucket.
  */
 export interface CodexSessionUsage {
   /** session_meta.cwd (or turn_context.cwd) — the codex launch directory. */
   cwd: string;
   /** turn_context.model, e.g. "gpt-5.5"; falls back to "codex". */
   model: string;
-  effort: string | null;
   input_tokens: number;
   cache_read_tokens: number;
   output_tokens: number;
@@ -96,22 +86,28 @@ export interface CodexSessionUsage {
 // ---------------------------------------------------------------------------
 
 /**
- * The egress points of value-usage, all injectable so tests are hermetic.
+ * The egress points of value-usage, all injectable so tests are hermetic. The Claude/Codex seams
+ * return RAW, all-repo, date-windowed records (the reader repo-scopes + dedups); the dispatch seam
+ * returns already-normalized `UsageRecord`s (its store lives in-repo, so it scopes + windows itself).
  */
 export interface UsageDeps {
   /**
-   * Read repo-attributable Claude Code assistant-message usage for the date window.
-   * Returns records tagged with their encoded-cwd `projectKey`; the caller repo-scopes and
-   * dedupes. Returns [] when Claude logs are absent/unreadable. Must never throw.
+   * Read repo-attributable Claude Code assistant-message usage for the date window, tagged with
+   * the encoded-cwd `projectKey`. [] when absent/unreadable. Must never throw.
    */
   readClaudeSessions(since: string, until: string): ClaudeMessageUsage[];
 
   /**
-   * Read raw ~/.codex session logs for the date window and return every session's usage WITH
-   * its launch cwd (repo filtering happens in the caller). Returns [] when codex is absent or
-   * unreadable. Must never throw.
+   * Read raw ~/.codex session usage for the date window WITH each session's launch cwd (the reader
+   * repo-scopes). [] when codex is absent/unreadable. Must never throw.
    */
   readCodexSessions(since: string, until: string): CodexSessionUsage[];
+
+  /**
+   * Read the dispatch `.agent-runs` usage sentinels under the repo roots, windowed + normalized to
+   * `UsageRecord`s (source 'dispatch'). Optional: default walks the filesystem. Must never throw.
+   */
+  readDispatchUsage?(ctx: SourceReaderContext): UsageRecord[];
 
   /**
    * Load the LiteLLM pricing table. Optional: when absent, the vendored, pinned table is read
@@ -121,8 +117,7 @@ export interface UsageDeps {
 
   /**
    * Lists additional worktree root paths of the target repo via `git worktree list --porcelain`.
-   * Returns [] when git is unavailable or there are no linked worktrees. Must never throw.
-   * Optional: absent from a caller-provided deps object → treated as no extra roots ([]).
+   * [] when git is unavailable or there are no linked worktrees. Must never throw. Optional.
    */
   listWorktreeRoots?(dir: string): string[];
 }
@@ -235,8 +230,8 @@ const defaultReadClaudeSessions: UsageDeps['readClaudeSessions'] = (since, until
 
 /**
  * Default codex reader: walk ~/.codex/sessions/<Y>/<M>/<D>/rollout-*.jsonl, keep files whose
- * date is within [since, until], and for each extract the launch cwd, model, effort, and final
- * cumulative token usage. Never throws.
+ * date is within [since, until], and for each extract the launch cwd, model, and final cumulative
+ * token usage. Never throws.
  */
 const defaultReadCodexSessions: UsageDeps['readCodexSessions'] = (since, until) => {
   const sessionsRoot = path.join(os.homedir(), '.codex', 'sessions');
@@ -281,9 +276,8 @@ function listCodexRollouts(root: string): string[] {
 }
 
 /**
- * Parse one codex rollout file: cwd (session_meta / turn_context), model + effort (last
- * turn_context), and the final cumulative total_token_usage. Returns null if the file has no
- * usable token data.
+ * Parse one codex rollout file: cwd (session_meta / turn_context), model (last turn_context), and
+ * the final cumulative total_token_usage. Returns null if the file has no usable token data.
  */
 function readOneCodexRollout(file: string): CodexSessionUsage | null {
   let raw: string;
@@ -295,7 +289,6 @@ function readOneCodexRollout(file: string): CodexSessionUsage | null {
 
   let cwd: string | undefined;
   let model: string | undefined;
-  let effort: string | null = null;
   let lastUsage: { input: number; cached: number; output: number; total: number } | undefined;
 
   for (const line of raw.split('\n')) {
@@ -317,7 +310,6 @@ function readOneCodexRollout(file: string): CodexSessionUsage | null {
     if (rec.type === 'turn_context') {
       if (typeof payload['cwd'] === 'string' && !cwd) cwd = payload['cwd'] as string;
       if (typeof payload['model'] === 'string') model = payload['model'] as string;
-      if (typeof payload['effort'] === 'string') effort = payload['effort'] as string;
     }
     if (payload['type'] === 'token_count') {
       const info = payload['info'] as { total_token_usage?: Record<string, number> } | undefined;
@@ -338,13 +330,107 @@ function readOneCodexRollout(file: string): CodexSessionUsage | null {
   return {
     cwd,
     model: model ?? 'codex',
-    effort,
     input_tokens: Math.max(0, lastUsage.input - lastUsage.cached),
     cache_read_tokens: lastUsage.cached,
     output_tokens: lastUsage.output,
     total_tokens: lastUsage.total,
   };
 }
+
+// ---------------------------------------------------------------------------
+// Dispatch `.agent-runs` usage-sentinel reader (owned; in-repo ⇒ exact attribution)
+// ---------------------------------------------------------------------------
+
+/**
+ * True when a sentinel endpoint is a LOCAL/self-hosted worker (ollama). Local dispatch runs price
+ * to est_usd 0 (DEC-0005 addendum: no substitute-model counterfactual). OpenRouter (`openrouter.ai`)
+ * is remote → priced by the table. Matched on the ollama defaults (localhost / loopback / :11434).
+ */
+export function isLocalEndpoint(endpoint: string): boolean {
+  return /localhost|127\.0\.0\.1|::1|:11434|ollama/i.test(endpoint);
+}
+
+/** Collect `<root>/.agent-runs/runs/<handoffId>/<RUN-*>/metadata/usage.json` paths under one root. */
+function listDispatchUsageFiles(root: string): string[] {
+  const runsRoot = path.join(root, '.agent-runs', 'runs');
+  const results: string[] = [];
+  let handoffs: fs.Dirent[];
+  try {
+    handoffs = fs.readdirSync(runsRoot, { withFileTypes: true });
+  } catch {
+    return results;
+  }
+  for (const h of handoffs) {
+    if (!h.isDirectory()) continue;
+    const handoffDir = path.join(runsRoot, h.name);
+    let runs: fs.Dirent[];
+    try {
+      runs = fs.readdirSync(handoffDir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const r of runs) {
+      if (!r.isDirectory()) continue;
+      const usagePath = path.join(handoffDir, r.name, 'metadata', 'usage.json');
+      if (fs.existsSync(usagePath)) results.push(usagePath);
+    }
+  }
+  return results;
+}
+
+/** Read the co-located `meta.json` completed/started date (YYYY-MM-DD) for windowing; '' if absent. */
+function dispatchRunDate(usagePath: string): string {
+  const metaPath = path.join(path.dirname(usagePath), 'meta.json');
+  try {
+    const meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8')) as Record<string, unknown>;
+    const ts = meta['completed_at'] ?? meta['started_at'];
+    return typeof ts === 'string' ? ts.slice(0, 10) : '';
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Default dispatch reader (WK-0066): walk each root's `.agent-runs` bundles, parse every
+ * `metadata/usage.json` (the launcher-written sentinel), window by the run's `meta.json` date, and
+ * normalize to `UsageRecord`s. In-repo path ⇒ exact attribution (no cwd guessing). A run with no
+ * readable meta.json date is INCLUDED (fail-open — dropping real spend is worse than a stale window).
+ * Never throws.
+ */
+export const defaultReadDispatchUsage: NonNullable<UsageDeps['readDispatchUsage']> = (ctx) => {
+  const out: UsageRecord[] = [];
+  for (const root of ctx.roots) {
+    for (const usagePath of listDispatchUsageFiles(root)) {
+      let parsed: Record<string, unknown>;
+      try {
+        parsed = JSON.parse(fs.readFileSync(usagePath, 'utf-8')) as Record<string, unknown>;
+      } catch {
+        continue; // malformed sentinel → skip, never throw
+      }
+      const model = typeof parsed['model'] === 'string' ? (parsed['model'] as string) : '';
+      if (!model) continue;
+      const endpoint = typeof parsed['endpoint'] === 'string' ? (parsed['endpoint'] as string) : '';
+      const date = dispatchRunDate(usagePath);
+      // Window when we have a date; include when we don't (fail-open).
+      if (date && (date < ctx.since || date > ctx.until)) continue;
+      out.push({
+        source: 'dispatch',
+        model,
+        input_tokens: num(parsed['prompt_tokens']),
+        output_tokens: num(parsed['completion_tokens']),
+        cache_read_tokens: 0,
+        cache_write_tokens: 0,
+        date,
+        local: isLocalEndpoint(endpoint),
+      });
+    }
+  }
+  return out;
+};
+
+// ---------------------------------------------------------------------------
+// Worktree roots
+// ---------------------------------------------------------------------------
 
 /**
  * Default worktree-root lister: parses `git worktree list --porcelain` and returns EVERY
@@ -379,6 +465,7 @@ export const defaultListWorktreeRoots: NonNullable<UsageDeps['listWorktreeRoots'
 const DEFAULT_DEPS: UsageDeps = {
   readClaudeSessions: defaultReadClaudeSessions,
   readCodexSessions: defaultReadCodexSessions,
+  readDispatchUsage: defaultReadDispatchUsage,
   loadPricingTable: loadDefaultPricingTable,
   listWorktreeRoots: defaultListWorktreeRoots,
 };
@@ -429,13 +516,27 @@ function encodeCwd(cwdPath: string): string {
   return cwdPath.replace(/[:\\/]/g, '-');
 }
 
-/** True if a project folder key and a repo root encode to the same string. */
-function encodedMatches(projectKey: string, targetDir: string): boolean {
-  return encodeCwd(projectKey) === encodeCwd(targetDir);
+/**
+ * True if a Claude project folder key is the target repo OR a directory under it, by encoded-cwd
+ * PREFIX (situation-5 fix, WK-0066): a dispatch-launched Claude runs with cwd =
+ * `<repo>/.agent-runs/…`, whose encoded key is `<encodedRoot>-.agent-runs-…` — an exact-equality
+ * test (the old `encodedMatches`) silently dropped it. Prefix on the `-` boundary attributes it.
+ * Case-insensitive on win32.
+ *
+ * LIMITATION: Claude's cwd encoding maps `/`, `\`, and `:` all to `-`, so a subdir `kb/other` and a
+ * sibling repo `kb-other` encode identically — a `<repo>-<name>` sibling cannot be distinguished
+ * from a `<repo>/<name>` subdir on the encoded key alone. Codex (raw paths, `isUnderDir`) keeps the
+ * strict sibling guard; for Claude this boundary case is accepted (WK-0066 Notes).
+ */
+function encodedIsUnder(projectKey: string, targetDir: string): boolean {
+  const encRoot = encodeCwd(path.resolve(targetDir));
+  const a = process.platform === 'win32' ? projectKey.toLowerCase() : projectKey;
+  const b = process.platform === 'win32' ? encRoot.toLowerCase() : encRoot;
+  return a === b || a.startsWith(b + '-');
 }
 
 /**
- * True if `cwd` is the target repo or a directory under it (codex prefix match).
+ * True if `cwd` is the target repo or a directory under it (codex prefix match on the REAL path).
  * Case-insensitive on Windows. Guards `kb` vs `kb-other` via the separator.
  */
 function isUnderDir(cwd: string, targetDir: string): boolean {
@@ -447,39 +548,112 @@ function isUnderDir(cwd: string, targetDir: string): boolean {
 }
 
 // ---------------------------------------------------------------------------
-// Internal row model (source-tagged: claude family vs codex)
+// Pluggable source readers (each repo-scopes + normalizes itself; never throws)
 // ---------------------------------------------------------------------------
 
-interface UsageRow {
-  model: string;
-  source: 'claude' | 'codex';
-  /** Reasoning effort (Codex only); null for Claude. Part of the merge key. */
-  effort: string | null;
-  input_tokens: number;
-  cache_write_tokens: number;
-  cache_read_tokens: number;
-  output_tokens: number;
+/** Build the reader union from the (possibly injected) store-access deps. */
+function buildReaders(deps: UsageDeps): SourceReader[] {
+  return [
+    {
+      source: 'claude',
+      read: ({ since, until, roots }): UsageRecord[] => {
+        const msgs = deps.readClaudeSessions(since, until);
+        const inScope = msgs.filter((m) => roots.some((r) => encodedIsUnder(m.projectKey, r)));
+        const seen = new Set<string>();
+        const out: UsageRecord[] = [];
+        for (const m of inScope) {
+          if (m.messageId) {
+            if (seen.has(m.messageId)) continue; // dedup on message id
+            seen.add(m.messageId);
+          }
+          out.push({
+            source: 'claude',
+            model: m.model,
+            input_tokens: m.input_tokens,
+            output_tokens: m.output_tokens,
+            cache_read_tokens: m.cache_read_tokens,
+            cache_write_tokens: m.cache_write_tokens,
+            date: m.date,
+            local: false,
+          });
+        }
+        return out;
+      },
+    },
+    {
+      source: 'codex',
+      read: ({ since, until, roots }): UsageRecord[] => {
+        const sessions = deps.readCodexSessions(since, until);
+        return sessions
+          .filter((s) => roots.some((r) => isUnderDir(s.cwd, r)))
+          .map((s) => ({
+            source: 'codex',
+            model: s.model,
+            input_tokens: s.input_tokens,
+            output_tokens: s.output_tokens,
+            cache_read_tokens: s.cache_read_tokens,
+            cache_write_tokens: 0,
+            date: '', // codex sessions carry no per-session date; the reader already windowed
+            local: false,
+          }));
+      },
+    },
+    {
+      source: 'dispatch',
+      read: (ctx): UsageRecord[] => (deps.readDispatchUsage ?? defaultReadDispatchUsage)(ctx),
+    },
+  ];
 }
 
-/** Combine rows sharing (source, model, effort) — the aggregation key. */
-function mergeRows(rows: UsageRow[]): Map<string, UsageRow> {
-  const merged = new Map<string, UsageRow>();
-  for (const row of rows) {
-    const key = `${row.source}::${row.model}::${row.effort ?? ''}`;
-    const existing = merged.get(key);
+/** Wrap a reader's read so a throw degrades to [] (the graceful-fallback contract). */
+function safeRead(reader: SourceReader, ctx: SourceReaderContext): UsageRecord[] {
+  try {
+    return reader.read(ctx);
+  } catch {
+    return [];
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Aggregation (by model → by provider)
+// ---------------------------------------------------------------------------
+
+/** A model's merged token buckets across the union (local-ness carried for pricing). */
+interface MergedModel {
+  model: string;
+  local: boolean;
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  cache_write_tokens: number;
+}
+
+/** Merge union records by model id (a model id has one consistent locality). */
+function mergeByModel(records: UsageRecord[]): MergedModel[] {
+  const map = new Map<string, MergedModel>();
+  for (const r of records) {
+    const existing = map.get(r.model);
     if (existing) {
-      existing.input_tokens += row.input_tokens;
-      existing.cache_write_tokens += row.cache_write_tokens;
-      existing.cache_read_tokens += row.cache_read_tokens;
-      existing.output_tokens += row.output_tokens;
+      existing.input_tokens += r.input_tokens;
+      existing.output_tokens += r.output_tokens;
+      existing.cache_read_tokens += r.cache_read_tokens;
+      existing.cache_write_tokens += r.cache_write_tokens;
+      existing.local = existing.local || !!r.local;
     } else {
-      merged.set(key, { ...row });
+      map.set(r.model, {
+        model: r.model,
+        local: !!r.local,
+        input_tokens: r.input_tokens,
+        output_tokens: r.output_tokens,
+        cache_read_tokens: r.cache_read_tokens,
+        cache_write_tokens: r.cache_write_tokens,
+      });
     }
   }
-  return merged;
+  return [...map.values()];
 }
 
-/** Aggregate per-model details into per-provider rows (provider = litellm_provider). */
+/** Aggregate per-model details into per-provider rows (provider = litellm_provider, or 'local'). */
 function aggregateByProvider(models: UsageModelDetail[]): UsageProviderDetail[] {
   const map = new Map<string, UsageProviderDetail>();
   for (const m of models) {
@@ -492,8 +666,7 @@ function aggregateByProvider(models: UsageModelDetail[]): UsageProviderDetail[] 
         cache_read_tokens: 0,
         cache_write_tokens: 0,
         total_tokens: 0,
-        cost_usd: null,
-        cost_usd_est: null,
+        est_usd: null,
       };
       map.set(m.provider, p);
     }
@@ -502,7 +675,7 @@ function aggregateByProvider(models: UsageModelDetail[]): UsageProviderDetail[] 
     p.cache_read_tokens += m.cache_read_tokens;
     p.cache_write_tokens += m.cache_write_tokens;
     p.total_tokens += m.total_tokens;
-    if (m.cost_usd_est !== null) p.cost_usd_est = (p.cost_usd_est ?? 0) + m.cost_usd_est;
+    if (m.est_usd !== null) p.est_usd = (p.est_usd ?? 0) + m.est_usd;
   }
   return [...map.values()];
 }
@@ -518,9 +691,7 @@ function unavailableMetrics(reason: string): UsageMetrics {
     cache_read_tokens: 0,
     cache_write_tokens: 0,
     total_tokens: 0,
-    cost_usd: null,
-    cost_usd_est: null,
-    cost_provenance: 'unavailable',
+    est_usd: null,
     pricing_table_version: LITELLM_TABLE_VERSION,
     agents: [],
     by_model: [],
@@ -535,10 +706,9 @@ function unavailableMetrics(reason: string): UsageMetrics {
 // ---------------------------------------------------------------------------
 
 /**
- * Scrape token/cost usage from the owned Claude + Codex reads, price via the vendored LiteLLM
- * table, reconcile the optional OpenRouter actual, and repo-attribute for the target repo +
- * date window. Self-aware: no data for the span produces `ok()` with
- * `cost_provenance: 'unavailable'` + a machine-readable `reason`, never `fail()`.
+ * Scrape token/cost usage from the owned union readers (Claude + Codex + dispatch), price via the
+ * vendored LiteLLM table, and repo-attribute for the target repo + date window. Self-aware: no data
+ * for the span produces `ok()` with a `reason` (unavailable) + zeroed totals, never `fail()`.
  */
 export async function computeValueUsage(
   opts: ValueUsageOpts,
@@ -568,95 +738,59 @@ export async function computeValueUsage(
   // Pricing table: injected (tests) or the vendored, pinned default.
   const table: PricingTable = (deps.loadPricingTable ?? loadDefaultPricingTable)();
 
-  // --- Step 1: Claude family via the owned JSONL read (repo-scoped, deduped) ---
+  // --- Union the pluggable readers; each self-detects, repo-scopes, and never throws ---
+  const ctx: SourceReaderContext = { since: opts.since, until: opts.until, roots };
+  const readers = buildReaders(deps);
+  const records: UsageRecord[] = readers.flatMap((r) => safeRead(r, ctx));
 
-  let claudeRows: UsageRow[] = [];
-  try {
-    const msgs = deps.readClaudeSessions(opts.since, opts.until);
-    const inScope = msgs.filter((mm) => roots.some((r) => encodedMatches(mm.projectKey, r)));
-    const seen = new Set<string>();
-    for (const mm of inScope) {
-      if (mm.messageId) {
-        if (seen.has(mm.messageId)) continue; // dedup on message id
-        seen.add(mm.messageId);
-      }
-      claudeRows.push({
-        model: mm.model,
-        source: 'claude',
-        effort: null, // Claude logs no effort level
-        input_tokens: mm.input_tokens,
-        cache_write_tokens: mm.cache_write_tokens,
-        cache_read_tokens: mm.cache_read_tokens,
-        output_tokens: mm.output_tokens,
-      });
-    }
-  } catch {
-    claudeRows = [];
-  }
-
-  // --- Step 2: Codex via the owned raw-log read (repo-scoped by cwd prefix) ---
-
-  let codexRows: UsageRow[] = [];
-  try {
-    const sessions = deps.readCodexSessions(opts.since, opts.until);
-    codexRows = sessions
-      .filter((s) => roots.some((r) => isUnderDir(s.cwd, r)))
-      .map((s) => ({
-        model: s.model,
-        source: 'codex' as const,
-        effort: s.effort,
-        input_tokens: s.input_tokens,
-        cache_write_tokens: 0,
-        cache_read_tokens: s.cache_read_tokens,
-        output_tokens: s.output_tokens,
-      }));
-  } catch {
-    codexRows = [];
-  }
-
-  const allRows: UsageRow[] = [...claudeRows, ...codexRows];
-  if (allRows.length === 0) {
+  if (records.length === 0) {
     return ok(unavailableMetrics('no token data for this directory in the given window'));
   }
 
-  // --- Step 3: Merge by (source, model, effort) ---
-
-  const byKey = mergeRows(allRows);
-
-  // --- Step 4: Price each merged row via the LiteLLM table → per-model detail ---
-
-  const modelDetails: UsageModelDetail[] = [];
-  for (const [, row] of byKey) {
+  // --- Merge by model, then price each row (local → est_usd 0; remote → tokens × table) ---
+  const merged = mergeByModel(records);
+  const modelDetails: UsageModelDetail[] = merged.map((m) => {
+    const total = m.input_tokens + m.output_tokens + m.cache_read_tokens + m.cache_write_tokens;
+    if (m.local) {
+      // Local/self-hosted (dispatch + ollama endpoint) → est_usd 0. Never null, never a
+      // substitute-model counterfactual (DEC-0005 addendum).
+      return {
+        model: m.model,
+        provider: 'local',
+        input_tokens: m.input_tokens,
+        output_tokens: m.output_tokens,
+        cache_read_tokens: m.cache_read_tokens,
+        cache_write_tokens: m.cache_write_tokens,
+        total_tokens: total,
+        est_usd: 0,
+        est_reason: null,
+      };
+    }
     const priced = priceModel(
-      row.model,
+      m.model,
       {
-        input_tokens: row.input_tokens,
-        output_tokens: row.output_tokens,
-        cache_write_tokens: row.cache_write_tokens,
-        cache_read_tokens: row.cache_read_tokens,
+        input_tokens: m.input_tokens,
+        output_tokens: m.output_tokens,
+        cache_write_tokens: m.cache_write_tokens,
+        cache_read_tokens: m.cache_read_tokens,
       },
       table,
       aliases,
     );
-    const total =
-      row.input_tokens + row.cache_write_tokens + row.cache_read_tokens + row.output_tokens;
-    modelDetails.push({
-      model: row.model,
+    return {
+      model: m.model,
       provider: priced.provider,
-      effort: row.effort,
-      input_tokens: row.input_tokens,
-      output_tokens: row.output_tokens,
-      cache_read_tokens: row.cache_read_tokens,
-      cache_write_tokens: row.cache_write_tokens,
+      input_tokens: m.input_tokens,
+      output_tokens: m.output_tokens,
+      cache_read_tokens: m.cache_read_tokens,
+      cache_write_tokens: m.cache_write_tokens,
       total_tokens: total,
-      cost_usd: null, // actual is top-level only, never split per model
-      cost_usd_est: priced.cost_usd_est,
+      est_usd: priced.est_usd,
       est_reason: priced.est_reason,
-    });
-  }
+    };
+  });
 
-  // --- Step 6: Aggregate by provider + compute totals ---
-
+  // --- Aggregate by provider + compute totals ---
   const byProvider = aggregateByProvider(modelDetails);
 
   const totalInputTokens = modelDetails.reduce((s, m) => s + m.input_tokens, 0);
@@ -665,25 +799,14 @@ export async function computeValueUsage(
   const totalCacheWrite = modelDetails.reduce((s, m) => s + m.cache_write_tokens, 0);
   const totalAllTokens = modelDetails.reduce((s, m) => s + m.total_tokens, 0);
 
-  // Estimate: sum whatever priced; null when nothing could be priced (never a fabricated 0).
-  const estCosts = modelDetails.map((m) => m.cost_usd_est).filter((c): c is number => c !== null);
-  const totalCostUsdEst: number | null =
+  // Estimate: sum whatever priced (local 0s included); null when NOTHING could be priced (never a
+  // fabricated 0). A span of only unknown remote models → null; a span of only local runs → 0.
+  const estCosts = modelDetails.map((m) => m.est_usd).filter((c): c is number => c !== null);
+  const totalEstUsd: number | null =
     estCosts.length > 0 ? estCosts.reduce((s, c) => s + c, 0) : null;
 
-  // --- Step 7: Actual + provenance ---
-  // No API returns a per-span dollar figure, so the tool never fabricates an actual: cost_usd is
-  // always null. Only an operator hand-editing the record supplies a real number. The estimate
-  // (tokens × table) is the interpretable figure.
-  const costUsd: number | null = null;
-  const provenance: CostProvenance = 'litellm-estimate';
-  const actualReason =
-    'no per-span actual-dollar source exists; cost is a tokens × LiteLLM-table estimate (list rates, not a bill)';
-
-  // --- Step 8: Agents list (from the owned read sources) ---
-
-  const agents: string[] = [];
-  if (claudeRows.length > 0) agents.push('claude');
-  if (codexRows.length > 0) agents.push('codex');
+  // Agents / source set: derived from the readers that produced records (not hardcoded).
+  const agents = [...new Set(records.map((r) => r.source))].sort();
 
   return ok({
     input_tokens: totalInputTokens,
@@ -691,11 +814,8 @@ export async function computeValueUsage(
     cache_read_tokens: totalCacheRead,
     cache_write_tokens: totalCacheWrite,
     total_tokens: totalAllTokens,
-    cost_usd: costUsd,
-    cost_usd_est: totalCostUsdEst,
-    cost_provenance: provenance,
+    est_usd: totalEstUsd,
     pricing_table_version: LITELLM_TABLE_VERSION,
-    ...(actualReason ? { actual_reason: actualReason } : {}),
     agents,
     by_model: modelDetails,
     by_provider: byProvider,

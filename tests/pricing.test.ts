@@ -55,7 +55,7 @@ describe('priceModel — exact key, all four buckets at their distinct rates', (
     const priced = priceModel('claude-opus-4-8', buckets(1000, 500, 200, 300), TABLE, []);
     // 1000*5e-6 + 500*25e-6 + 200*6.25e-6 + 300*5e-7
     //   = 0.005    + 0.0125   + 0.00125    + 0.00015   = 0.0189
-    expect(priced.cost_usd_est).toBeCloseTo(0.0189, 10);
+    expect(priced.est_usd).toBeCloseTo(0.0189, 10);
     expect(priced.provider).toBe('anthropic');
     expect(priced.table_key).toBe('claude-opus-4-8');
     expect(priced.est_reason).toBeNull();
@@ -64,12 +64,12 @@ describe('priceModel — exact key, all four buckets at their distinct rates', (
   it('cache-write is NOT priced at the input rate (regression guard on the distinct rate)', () => {
     // Only cache-write tokens: must use 6.25e-6, not the 5e-6 input rate.
     const priced = priceModel('claude-opus-4-8', buckets(0, 0, 1000, 0), TABLE, []);
-    expect(priced.cost_usd_est).toBeCloseTo(1000 * 0.00000625, 12); // 0.00625, not 0.005
+    expect(priced.est_usd).toBeCloseTo(1000 * 0.00000625, 12); // 0.00625, not 0.005
   });
 
   it('cache-read is NOT priced at the input rate (regression guard on the distinct rate)', () => {
     const priced = priceModel('claude-opus-4-8', buckets(0, 0, 0, 1000), TABLE, []);
-    expect(priced.cost_usd_est).toBeCloseTo(1000 * 0.0000005, 12); // 0.0005, not 0.005
+    expect(priced.est_usd).toBeCloseTo(1000 * 0.0000005, 12); // 0.0005, not 0.005
   });
 });
 
@@ -78,7 +78,7 @@ describe('priceModel — missing per-bucket rate degrades that bucket to 0, neve
     // gpt-5.5 has no cache_creation_input_token_cost. cache-write tokens contribute 0.
     const priced = priceModel('gpt-5.5', buckets(1000, 500, 400, 200), TABLE, []);
     // 1000*1e-6 + 500*8e-6 + 400*0 + 200*1e-7 = 0.001 + 0.004 + 0 + 0.00002 = 0.00502
-    expect(priced.cost_usd_est).toBeCloseTo(0.00502, 10);
+    expect(priced.est_usd).toBeCloseTo(0.00502, 10);
     expect(priced.provider).toBe('openai');
   });
 });
@@ -86,7 +86,7 @@ describe('priceModel — missing per-bucket rate degrades that bucket to 0, neve
 describe('priceModel — unknown model yields null + explicit reason (never $0)', () => {
   it('returns cost_usd_est null, provider unknown, and a machine-readable reason', () => {
     const priced = priceModel('some-unlisted-model-x', buckets(1000, 1000, 0, 0), TABLE, []);
-    expect(priced.cost_usd_est).toBeNull();
+    expect(priced.est_usd).toBeNull();
     expect(priced.provider).toBe('unknown');
     expect(priced.table_key).toBeNull();
     expect(priced.est_reason).toBeTruthy();
@@ -135,7 +135,7 @@ describe('loadDefaultPricingTable — the vendored, pinned table wires up', () =
     const priced = priceModel('claude-opus-4-8', buckets(1000, 1000, 0, 0), table, []);
     expect(priced.provider).toBe('anthropic');
     expect(priced.table_key).toBe('claude-opus-4-8');
-    expect(priced.cost_usd_est).toBeGreaterThan(0);
+    expect(priced.est_usd).toBeGreaterThan(0);
   });
 
   it('stamps a pinned table version for provenance', () => {

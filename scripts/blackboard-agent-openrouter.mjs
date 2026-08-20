@@ -35,6 +35,14 @@ const TIMEOUT_MS = Number(process.env.OPENROUTER_TIMEOUT_MS ?? 1_200_000);
 
 const log = (...a) => console.error("[blackboard-agent-openrouter]", ...a);
 
+// Structured token-usage sentinel for the kb dispatch launcher (WK-0066). The launcher parses the
+// LAST `##KB_USAGE##` line from metadata/stderr.log and writes metadata/usage.json into the run
+// bundle; value-usage's dispatch reader ingests + prices it (openrouter.ai ⇒ remote, priced by the
+// LiteLLM table). Emitted as its own clean stderr line (no log prefix) so the marker is unambiguous.
+function emitUsageSentinel(usage) {
+  process.stderr.write(`##KB_USAGE## ${JSON.stringify(usage)}\n`);
+}
+
 class FailError extends Error {}
 // Throw rather than process.exit(): an abrupt exit while a fetch/timer handle is
 // still open trips a libuv assertion on Windows and can scramble the exit code.
@@ -161,6 +169,13 @@ async function main() {
   const ms = Date.now() - startedAt;
   const usage = json.usage ?? {};
   log(`done in ${ms} ms — prompt=${usage.prompt_tokens ?? "?"} completion=${usage.completion_tokens ?? "?"} tokens`);
+
+  emitUsageSentinel({
+    model: MODEL,
+    endpoint: BASE_URL,
+    prompt_tokens: usage.prompt_tokens ?? 0,
+    completion_tokens: usage.completion_tokens ?? 0,
+  });
 
   // stdout is the launcher-owned response (stdout_capture transport).
   process.stdout.write(answer);
