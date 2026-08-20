@@ -775,7 +775,6 @@ function deepMergeConfig(base: ValueConfig, over: Partial<ValueConfig>): ValueCo
   }
   if (over.script_path_overrides !== undefined) result.script_path_overrides = over.script_path_overrides;
   if (over.orphan_data_globs !== undefined) result.orphan_data_globs = over.orphan_data_globs;
-  if (over.model_patterns !== undefined) result.model_patterns = over.model_patterns;
   return result;
 }
 

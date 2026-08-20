@@ -356,20 +356,6 @@ export type UnitClass = CodeUnitClass | DataUnitClass | 'unclassified';
 export type RateFlag = 'test-code' | 'fixture-generator' | 'workflow-dsl' | 'shell-wrapper';
 
 /**
- * One config-driven model-id → table-key alias (repurposed for pricing — WK-0064).
- * Match rule: case-insensitive substring — the model id is lowercased and tested against
- * the lowercased `pattern`. The first matching entry maps the id to `table_key`, the
- * canonical LiteLLM row used to price it. Handles gateway-rewritten / dated /
- * provider-prefixed ids (`us.anthropic.claude-…`, `claude-…-<date>`, `anthropic/…`).
- */
-export interface ModelPatternEntry {
-  /** Substring to search for in the model id (case-insensitive). */
-  pattern: string;
-  /** The canonical LiteLLM table key to price the matched model against. */
-  table_key: string;
-}
-
-/**
  * Measurement config, loaded from `wiki/.value-config.json`.
  * Controls what the tool measures; estimation arithmetic lives in the template/agent layer.
  * Precedence: tool args > file > code defaults.
@@ -406,14 +392,6 @@ export interface ValueConfig {
    * Operator ruling — the tool never infers generator ownership. Optional; default [].
    */
   orphan_data_globs?: string[];
-  /**
-   * Ordered list of model-id → table-key aliases consulted when an exact table key is
-   * absent (WK-0064). Use to map gateway-rewritten / dated / provider-prefixed ids
-   * (Bedrock, Vertex, `anthropic/…`) onto a canonical LiteLLM price row. First match wins.
-   * Default: [] (no aliases). Optional so existing ValueConfig literals (value-report.ts
-   * DEFAULT_CONFIG) do not require a migration — absent means [].
-   */
-  model_patterns?: ModelPatternEntry[];
   /**
    * Pinned LiteLLM pricing-table version, frozen into a published VAL's resolved_config for
    * provenance (WK-0064 / DEC-0005). Freeze slot: the runtime value is the pricing module's
@@ -571,16 +549,11 @@ export interface ValueMetrics {
   config_hash: string;
 }
 
-/** Options for computeValueUsage (offline core path; optional OpenRouter actual only). */
+/** Options for computeValueUsage (fully offline; pricing is exact table-key match or fail loud). */
 export interface ValueUsageOpts {
   dir: string;
   since: string;
   until: string;
-  /**
-   * Inline config overrides — primarily for tests (hermetic, no disk I/O).
-   * `model_patterns` (table-key aliases) here take precedence over `wiki/.value-config.json`.
-   */
-  config?: { model_patterns?: ModelPatternEntry[] };
 }
 
 /** Per-model token/cost detail (goes to the record body table, not frontmatter). */
