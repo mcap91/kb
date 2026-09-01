@@ -18,6 +18,7 @@ import type {
   AgentLauncherConfig,
   LaunchEvent,
   LaunchOpts,
+  ModelInjection,
   ReviewedWriteScope,
   RunResult,
 } from './types.js';
@@ -194,6 +195,9 @@ function buildEnv(
   reviewId: string,
   runId: string,
   launcherEnv?: Record<string, string>,
+  modelInjection?: ModelInjection,
+  model?: string,
+  effort?: string,
 ): Record<string, string> {
   const env = buildBaseEnv(launcherEnv);
 
@@ -205,7 +209,32 @@ function buildEnv(
   env['AGENT_BLACKBOARD_RESPONSE_PATH'] = responsePath;
   env['AGENT_BLACKBOARD_REVIEW_ID'] = reviewId;
   env['AGENT_BLACKBOARD_RUN_ID'] = runId;
+
+  if (modelInjection?.kind === 'env' && model) {
+    env[modelInjection.model_var] = model;
+    if (effort && modelInjection.effort_var) {
+      env[modelInjection.effort_var] = effort;
+    }
+  }
+
   return env;
+}
+
+function buildModelInjectionArgv(
+  injection: ModelInjection,
+  model?: string,
+  effort?: string,
+): string[] {
+  if (injection.kind !== 'argv' || !model) return [];
+  const args = [injection.model_flag, model];
+  if (effort) {
+    if (injection.effort_flag) {
+      args.push(injection.effort_flag, effort);
+    } else if (injection.effort_args && injection.effort_template) {
+      args.push(...injection.effort_args, injection.effort_template.replace('{effort}', effort));
+    }
+  }
+  return args;
 }
 
 function buildCommand(
@@ -217,6 +246,8 @@ function buildCommand(
   responsePath: string,
   repoRoot: string,
   additionalDirectories: string[],
+  model?: string,
+  effort?: string,
 ): { command: string; args: string[] } {
   const replacements = {
     repo_root: repoRoot,
@@ -235,6 +266,10 @@ function buildCommand(
     for (const directory of additionalDirectories) {
       args.push('--add-dir', directory);
     }
+  }
+
+  if (agent.model_injection && model) {
+    args.push(...buildModelInjectionArgv(agent.model_injection, model, effort));
   }
 
   if (agent.instruction_transport.kind !== 'stdin' && agent.wrapper_arg) {
@@ -677,6 +712,15 @@ export async function launch(opts: LaunchOpts): Promise<DispatchResult<RunResult
 
   await writeFile(responsePath, '', 'utf-8');
 
+  let modelPassedThrough = false;
+  if (opts.model && !agentConfig.model_injection) {
+    launchWarnings.push(
+      `--model was passed but agent "${payload.agent}" has no model_injection config; skipping injection.`,
+    );
+  } else if (opts.model && agentConfig.model_injection) {
+    modelPassedThrough = true;
+  }
+
   const env = buildEnv(
     repoRoot,
     runDir,
@@ -687,6 +731,9 @@ export async function launch(opts: LaunchOpts): Promise<DispatchResult<RunResult
     opts.reviewId,
     runId,
     agentConfig.env,
+    modelPassedThrough ? agentConfig.model_injection : undefined,
+    opts.model,
+    opts.effort,
   );
 
   const { command, args } = buildCommand(
@@ -698,6 +745,8 @@ export async function launch(opts: LaunchOpts): Promise<DispatchResult<RunResult
     responsePath,
     repoRoot,
     reviewedWriteScope.access_directories,
+    modelPassedThrough ? opts.model : undefined,
+    modelPassedThrough ? opts.effort : undefined,
   );
   const argv = [command, ...args];
   const redactionPlaceholders: Array<[string, string]> = [
@@ -848,6 +897,9 @@ export async function launch(opts: LaunchOpts): Promise<DispatchResult<RunResult
       response_path: responsePath,
       stdout_path: agentConfig.response_transport.kind === 'file' ? stdoutPath : null,
       stderr_path: stderrPath,
+      model: opts.model ?? null,
+      effort: opts.effort ?? null,
+      model_passed_through: modelPassedThrough,
     });
 
     const sizes = await readArtifactSizes();

@@ -145,12 +145,16 @@ Command Options:
     --review-id <RV-uuid>    Review ID from review step (required)
     --dir <path>             Repository root directory (required)
     --json                   Print machine-readable artifact paths
+    --model <model>          Override model for this run
+    --effort <level>         Override effort/reasoning level for this run
 
   review-and-launch
     --dir <path>             Repository root directory (required)
     --handoff <rel-path>     Relative path to handoff file (required)
     --agent <name>           Agent name from registry (required)
     --reviewed-and-accept-risks  Explicit operator acknowledgment (required)
+    --model <model>          Override model for this run
+    --effort <level>         Override effort/reasoning level for this run
 
   cleanup
     --dir <path>             Repository root directory (defaults to cwd)
@@ -293,6 +297,8 @@ async function cmdLaunch(args: string[]): Promise<number> {
   const dir = getFlagValue(args, '--dir');
   const json = getFlag(args, '--json');
   const verbose = getFlag(args, '--verbose');
+  const model = getFlagValue(args, '--model');
+  const effort = getFlagValue(args, '--effort');
 
   if (!reviewId || !dir) {
     console.error('Error: --review-id and --dir are required');
@@ -304,6 +310,8 @@ async function cmdLaunch(args: string[]): Promise<number> {
     dir,
     verbose,
     onEvent: json ? undefined : createLaunchProgressReporter(),
+    model,
+    effort,
   });
   if (!result.ok) {
     if (json && isLaunchFailureDetail(result.detail)) {
@@ -358,6 +366,8 @@ async function cmdReviewAndLaunch(args: string[]): Promise<number> {
   const agent = getFlagValue(args, '--agent');
   const accepted = getFlag(args, '--reviewed-and-accept-risks');
   const verbose = getFlag(args, '--verbose');
+  const model = getFlagValue(args, '--model');
+  const effort = getFlagValue(args, '--effort');
 
   if (!dir || !handoff || !agent || !accepted) {
     console.error('Error: --dir, --handoff, --agent, and --reviewed-and-accept-risks are required');
@@ -370,6 +380,8 @@ async function cmdReviewAndLaunch(args: string[]): Promise<number> {
     agent,
     reviewedAndAcceptRisks: true,
     verbose,
+    model,
+    effort,
   });
 
   if (!result.ok) {

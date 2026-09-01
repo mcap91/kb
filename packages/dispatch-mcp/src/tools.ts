@@ -92,6 +92,8 @@ export const tools: ToolDef[] = [
     inputSchema: dirSchema.extend({
       reviewId: z.string(),
       background: z.boolean().optional(),
+      model: z.string().optional().describe('Model to use for this run'),
+      effort: z.string().optional().describe('Effort/reasoning level for this run'),
     }),
     handler: async (input) => {
       if (input.background === false) {
@@ -113,6 +115,8 @@ export const tools: ToolDef[] = [
       agent: z.string(),
       reviewedAndAcceptRisks: z.boolean(),
       background: z.boolean().optional(),
+      model: z.string().optional().describe('Model to use for this run'),
+      effort: z.string().optional().describe('Effort/reasoning level for this run'),
     }),
     handler: async (input) => {
       if (input.background === false) {
