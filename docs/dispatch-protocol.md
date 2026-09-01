@@ -418,6 +418,16 @@ The `read_only.argv_suffix` block is an additional restriction layer that is onl
 `mode: redteam`. It constrains the launched child run; it is not the mechanism that gives the child
 access to MCP tools.
 
+### Upgrading the Registry After a Pull
+
+`init-config` writes `launchers.v1.json` only if it does not already exist. When upstream code adds new registry fields (e.g. `model_passthrough`), an existing registry on another rig will not pick them up automatically. After pulling, run:
+
+```
+npm run dispatch -- init-config --force
+```
+
+This rewrites `launchers.v1.json` from `createDefaultRegistry()` with the current defaults. If the operator has customized the registry (added agents, changed timeouts), the `--force` rewrite will overwrite those — re-add customizations after.
+
 ### Claude Billing Constraint
 
 The default `claude` profile uses Claude Code print mode: `claude --print --output-format text
