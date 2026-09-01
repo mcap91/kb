@@ -3246,7 +3246,7 @@ describe('dispatch', () => {
               PATH: binDir,
               PATHEXT: '.CMD;.EXE',
             },
-            model_injection: { kind: 'argv', model_flag: '--model', effort_flag: '--effort' },
+            model_passthrough: { kind: 'argv', model_flag: '--model', effort_flag: '--effort' },
           },
         },
       });
@@ -3318,7 +3318,7 @@ describe('dispatch', () => {
               PATH: binDir,
               PATHEXT: '.CMD;.EXE',
             },
-            model_injection: {
+            model_passthrough: {
               kind: 'argv',
               model_flag: '-m',
               effort_args: ['-c'],
@@ -3415,7 +3415,7 @@ describe('dispatch', () => {
               PATH: binDir,
               PATHEXT: '.CMD;.EXE',
             },
-            model_injection: { kind: 'env', model_var: 'OPENROUTER_MODEL' },
+            model_passthrough: { kind: 'env', model_var: 'OPENROUTER_MODEL' },
           },
         },
       });
@@ -3452,7 +3452,7 @@ describe('dispatch', () => {
       expect(meta.model_passed_through).toBe(true);
     }, 30_000);
 
-    it('warns and skips when agent has no model_injection config', async () => {
+    it('warns and skips when agent has no model_passthrough config', async () => {
       await setupBootstrappedRepo(repoRoot);
       await setupFullConfig();
       const { review, launch } = await import('@kb/dispatch-core');
@@ -3487,7 +3487,7 @@ describe('dispatch', () => {
       const launchRaw = await readFile(join(run.data.runDir, 'metadata', 'launch.json'), 'utf-8');
       const launchJson = JSON.parse(launchRaw) as { warnings?: string[] };
       expect(launchJson.warnings).toBeDefined();
-      expect(launchJson.warnings!.some((w: string) => w.includes('no model_injection config'))).toBe(true);
+      expect(launchJson.warnings!.some((w: string) => w.includes('no model_passthrough config'))).toBe(true);
     }, 30_000);
 
     it('no-model launch behaves exactly as before (regression)', async () => {

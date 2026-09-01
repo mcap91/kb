@@ -54,7 +54,7 @@ export const agentReadOnlyConfigSchema = z.object({
   response_writable: z.boolean().optional(),
 });
 
-export const modelInjectionSchema = z.discriminatedUnion('kind', [
+export const modelPassthroughSchema = z.discriminatedUnion('kind', [
   z.object({
     kind: z.literal('argv'),
     model_flag: z.string(),
@@ -80,7 +80,7 @@ export const agentLauncherConfigSchema = z.object({
   read_only: agentReadOnlyConfigSchema.optional(),
   description: z.string().optional(),
   env: z.record(z.string(), z.string()).optional(),
-  model_injection: modelInjectionSchema.optional(),
+  model_passthrough: modelPassthroughSchema.optional(),
 });
 
 export const agentRegistrySchema = z.object({

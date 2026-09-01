@@ -128,7 +128,7 @@ export function createDefaultRegistry(): AgentRegistry {
         },
         description: 'Claude Code CLI adapter',
         env: CLAUDE_DISPATCH_ENV,
-        model_injection: { kind: 'argv', model_flag: '--model', effort_flag: '--effort' },
+        model_passthrough: { kind: 'argv', model_flag: '--model', effort_flag: '--effort' },
       },
       codex: {
         base_argv: ['codex', 'exec'],
@@ -143,7 +143,7 @@ export function createDefaultRegistry(): AgentRegistry {
           response_writable: true,
         },
         description: 'Codex CLI adapter',
-        model_injection: {
+        model_passthrough: {
           kind: 'argv',
           model_flag: '-m',
           effort_args: ['-c'],
