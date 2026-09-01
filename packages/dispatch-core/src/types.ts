@@ -141,6 +141,20 @@ export interface AgentReadOnlyConfig {
   response_writable?: boolean;
 }
 
+export type ModelInjection =
+  | {
+    kind: 'argv';
+    model_flag: string;
+    effort_flag?: string;
+    effort_args?: string[];
+    effort_template?: string;
+  }
+  | {
+    kind: 'env';
+    model_var: string;
+    effort_var?: string;
+  };
+
 /** Configuration for a single agent launcher. */
 export interface AgentLauncherConfig {
   base_argv: string[];
@@ -153,6 +167,7 @@ export interface AgentLauncherConfig {
   read_only?: AgentReadOnlyConfig;
   description?: string;
   env?: Record<string, string>;
+  model_injection?: ModelInjection;
 }
 
 /**
@@ -206,6 +221,8 @@ export interface ReviewOpts {
   agent: string;
   reviewedAndAcceptRisks: boolean;
   verbose?: boolean;
+  model?: string;
+  effort?: string;
 }
 
 /** Result of a successful review. */
@@ -287,6 +304,8 @@ export interface LaunchOpts {
   dir: string;
   verbose?: boolean;
   onEvent?: (event: LaunchEvent) => void;
+  model?: string;
+  effort?: string;
 }
 
 /** Result of a successful agent run. */

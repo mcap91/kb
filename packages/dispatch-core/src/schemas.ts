@@ -54,6 +54,21 @@ export const agentReadOnlyConfigSchema = z.object({
   response_writable: z.boolean().optional(),
 });
 
+export const modelInjectionSchema = z.discriminatedUnion('kind', [
+  z.object({
+    kind: z.literal('argv'),
+    model_flag: z.string(),
+    effort_flag: z.string().optional(),
+    effort_args: z.array(z.string()).optional(),
+    effort_template: z.string().optional(),
+  }),
+  z.object({
+    kind: z.literal('env'),
+    model_var: z.string(),
+    effort_var: z.string().optional(),
+  }),
+]);
+
 export const agentLauncherConfigSchema = z.object({
   base_argv: z.array(z.string()).min(1),
   noninteractive_argv: z.array(z.string()),
@@ -65,6 +80,7 @@ export const agentLauncherConfigSchema = z.object({
   read_only: agentReadOnlyConfigSchema.optional(),
   description: z.string().optional(),
   env: z.record(z.string(), z.string()).optional(),
+  model_injection: modelInjectionSchema.optional(),
 });
 
 export const agentRegistrySchema = z.object({

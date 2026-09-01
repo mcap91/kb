@@ -3218,6 +3218,348 @@ describe('dispatch', () => {
       expect(fakeArgv[fakeArgv.length - 1]).toMatch(/fake-agent\.ts$/);
     });
   });
+
+  describe('model/effort passthrough (WK-0069)', () => {
+    it('injects model argv for claude-style agents', async () => {
+      await setupBootstrappedRepo(repoRoot);
+      const binDir = join(tempDir, 'claude-model-bin');
+      await writeStdoutAgentLauncher(binDir, 'claude');
+      if (process.platform === 'linux') {
+        await writeFakeBwrapLauncher(binDir);
+      }
+
+      await setupFullConfig({
+        version: 1,
+        agents: {
+          claude: {
+            base_argv: ['claude'],
+            noninteractive_argv: ['--print', '--output-format', 'text', '--no-session-persistence'],
+            instruction_transport: { kind: 'stdin' },
+            response_transport: { kind: 'stdout_capture' },
+            timeout_seconds: 30,
+            read_only: {
+              supported: true,
+              argv_suffix: ['--permission-mode', 'default', '--disallowedTools', 'Edit Write NotebookEdit Bash'],
+              response_writable: true,
+            },
+            env: {
+              PATH: binDir,
+              PATHEXT: '.CMD;.EXE',
+            },
+            model_injection: { kind: 'argv', model_flag: '--model', effort_flag: '--effort' },
+          },
+        },
+      });
+
+      const { review, launch } = await import('@kb/dispatch-core');
+      await writeFile(
+        join(repoRoot, 'wiki', 'handoffs', 'HO-0001.md'),
+        makeManualHandoff({ allowed_agents: ['claude'] }),
+      );
+
+      const rev = await review({
+        dir: repoRoot,
+        handoff: 'wiki/handoffs/HO-0001.md',
+        agent: 'claude',
+        reviewedAndAcceptRisks: true,
+      });
+      expect(rev.ok).toBe(true);
+      if (!rev.ok) return;
+
+      const run = await launch({
+        reviewId: rev.data.reviewId,
+        dir: repoRoot,
+        model: 'claude-sonnet-5',
+        effort: 'high',
+      });
+      expect(run.ok).toBe(true);
+      if (!run.ok) return;
+
+      const response = run.data.response ?? '';
+      const argvMatch = response.match(/^argv: (.+)$/m);
+      expect(argvMatch).toBeTruthy();
+      const argv = JSON.parse(argvMatch![1]!) as string[];
+      expect(argv).toContain('--model');
+      expect(argv).toContain('claude-sonnet-5');
+      expect(argv).toContain('--effort');
+      expect(argv).toContain('high');
+      const modelIdx = argv.indexOf('--model');
+      expect(argv[modelIdx + 1]).toBe('claude-sonnet-5');
+      const effortIdx = argv.indexOf('--effort');
+      expect(argv[effortIdx + 1]).toBe('high');
+
+      const metaRaw = await readFile(join(run.data.runDir, 'metadata', 'meta.json'), 'utf-8');
+      const meta = JSON.parse(metaRaw) as { model: string; effort: string; model_passed_through: boolean };
+      expect(meta.model).toBe('claude-sonnet-5');
+      expect(meta.effort).toBe('high');
+      expect(meta.model_passed_through).toBe(true);
+    }, 30_000);
+
+    it('injects codex-style model with -c effort template', async () => {
+      await setupBootstrappedRepo(repoRoot);
+      const binDir = join(tempDir, 'codex-model-bin');
+      await writeStdoutAgentLauncher(binDir, 'codex-stub');
+
+      await setupFullConfig({
+        version: 1,
+        agents: {
+          'codex-stub': {
+            base_argv: ['codex-stub'],
+            noninteractive_argv: [],
+            instruction_transport: { kind: 'stdin' },
+            response_transport: { kind: 'stdout_capture' },
+            timeout_seconds: 30,
+            read_only: {
+              supported: true,
+              argv_suffix: [],
+              response_writable: true,
+            },
+            env: {
+              PATH: binDir,
+              PATHEXT: '.CMD;.EXE',
+            },
+            model_injection: {
+              kind: 'argv',
+              model_flag: '-m',
+              effort_args: ['-c'],
+              effort_template: 'model_reasoning_effort={effort}',
+            },
+          },
+        },
+      });
+
+      const { review, launch } = await import('@kb/dispatch-core');
+      await writeFile(
+        join(repoRoot, 'wiki', 'handoffs', 'HO-0001.md'),
+        makeManualHandoff({ allowed_agents: ['codex-stub'] }),
+      );
+
+      const rev = await review({
+        dir: repoRoot,
+        handoff: 'wiki/handoffs/HO-0001.md',
+        agent: 'codex-stub',
+        reviewedAndAcceptRisks: true,
+      });
+      expect(rev.ok).toBe(true);
+      if (!rev.ok) return;
+
+      const run = await launch({
+        reviewId: rev.data.reviewId,
+        dir: repoRoot,
+        model: 'gpt-5.4',
+        effort: 'high',
+      });
+      expect(run.ok).toBe(true);
+      if (!run.ok) return;
+
+      const response = run.data.response ?? '';
+      const argvMatch = response.match(/^argv: (.+)$/m);
+      expect(argvMatch).toBeTruthy();
+      const argv = JSON.parse(argvMatch![1]!) as string[];
+      expect(argv).toContain('-m');
+      expect(argv[argv.indexOf('-m') + 1]).toBe('gpt-5.4');
+      expect(argv).toContain('-c');
+      const effortArgValue = argv[argv.indexOf('-c') + 1]!;
+      expect(effortArgValue).toContain('model_reasoning_effort=');
+      expect(effortArgValue).toContain('high');
+    }, 30_000);
+
+    it('injects model via env for env-kind injection', async () => {
+      await setupBootstrappedRepo(repoRoot);
+
+      const envAgentScriptPath = join(tempDir, 'env-model-agent.cjs');
+      await writeFile(
+        envAgentScriptPath,
+        [
+          "let input = '';",
+          "process.stdin.setEncoding('utf-8');",
+          "process.stdin.on('data', (chunk) => { input += chunk; });",
+          "process.stdin.on('end', () => {",
+          "  process.stdout.write([",
+          "    '# Env Agent Response',",
+          "    '',",
+          "    `OPENROUTER_MODEL: ${process.env.OPENROUTER_MODEL || 'unset'}`,",
+          "  ].join('\\n'));",
+          "});",
+          '',
+        ].join('\n'),
+        'utf-8',
+      );
+
+      const binDir = join(tempDir, 'env-model-bin');
+      await mkdir(binDir, { recursive: true });
+      const commandPath = join(binDir, process.platform === 'win32' ? 'env-agent.CMD' : 'env-agent');
+      const commandBody = process.platform === 'win32'
+        ? `@echo off\r\n"${process.execPath}" "${envAgentScriptPath}" %*\r\n`
+        : `#!/bin/sh\nexec ${quotePosixArg(process.execPath)} ${quotePosixArg(envAgentScriptPath)} "$@"\n`;
+      await writeFile(commandPath, commandBody, 'utf-8');
+      if (process.platform !== 'win32') {
+        await chmod(commandPath, 0o755);
+      }
+
+      await setupFullConfig({
+        version: 1,
+        agents: {
+          'env-agent': {
+            base_argv: ['env-agent'],
+            noninteractive_argv: [],
+            instruction_transport: { kind: 'stdin' },
+            response_transport: { kind: 'stdout_capture' },
+            timeout_seconds: 30,
+            read_only: {
+              supported: true,
+              argv_suffix: [],
+              response_writable: true,
+            },
+            env: {
+              PATH: binDir,
+              PATHEXT: '.CMD;.EXE',
+            },
+            model_injection: { kind: 'env', model_var: 'OPENROUTER_MODEL' },
+          },
+        },
+      });
+
+      const { review, launch } = await import('@kb/dispatch-core');
+      await writeFile(
+        join(repoRoot, 'wiki', 'handoffs', 'HO-0001.md'),
+        makeManualHandoff({ allowed_agents: ['env-agent'] }),
+      );
+
+      const rev = await review({
+        dir: repoRoot,
+        handoff: 'wiki/handoffs/HO-0001.md',
+        agent: 'env-agent',
+        reviewedAndAcceptRisks: true,
+      });
+      expect(rev.ok).toBe(true);
+      if (!rev.ok) return;
+
+      const run = await launch({
+        reviewId: rev.data.reviewId,
+        dir: repoRoot,
+        model: 'openai/gpt-5.4',
+      });
+      expect(run.ok).toBe(true);
+      if (!run.ok) return;
+
+      const response = run.data.response ?? '';
+      expect(response).toContain('OPENROUTER_MODEL: openai/gpt-5.4');
+
+      const metaRaw = await readFile(join(run.data.runDir, 'metadata', 'meta.json'), 'utf-8');
+      const meta = JSON.parse(metaRaw) as { model: string; model_passed_through: boolean };
+      expect(meta.model).toBe('openai/gpt-5.4');
+      expect(meta.model_passed_through).toBe(true);
+    }, 30_000);
+
+    it('warns and skips when agent has no model_injection config', async () => {
+      await setupBootstrappedRepo(repoRoot);
+      await setupFullConfig();
+      const { review, launch } = await import('@kb/dispatch-core');
+
+      await writeFile(
+        join(repoRoot, 'wiki', 'handoffs', 'HO-0001.md'),
+        makeManualHandoff(),
+      );
+
+      const rev = await review({
+        dir: repoRoot,
+        handoff: 'wiki/handoffs/HO-0001.md',
+        agent: 'fake-agent',
+        reviewedAndAcceptRisks: true,
+      });
+      expect(rev.ok).toBe(true);
+      if (!rev.ok) return;
+
+      const run = await launch({
+        reviewId: rev.data.reviewId,
+        dir: repoRoot,
+        model: 'some-model',
+      });
+      expect(run.ok).toBe(true);
+      if (!run.ok) return;
+
+      const metaRaw = await readFile(join(run.data.runDir, 'metadata', 'meta.json'), 'utf-8');
+      const meta = JSON.parse(metaRaw) as { model: string; model_passed_through: boolean };
+      expect(meta.model).toBe('some-model');
+      expect(meta.model_passed_through).toBe(false);
+
+      const launchRaw = await readFile(join(run.data.runDir, 'metadata', 'launch.json'), 'utf-8');
+      const launchJson = JSON.parse(launchRaw) as { warnings?: string[] };
+      expect(launchJson.warnings).toBeDefined();
+      expect(launchJson.warnings!.some((w: string) => w.includes('no model_injection config'))).toBe(true);
+    }, 30_000);
+
+    it('no-model launch behaves exactly as before (regression)', async () => {
+      await setupBootstrappedRepo(repoRoot);
+      await setupFullConfig();
+      const { review, launch } = await import('@kb/dispatch-core');
+
+      await writeFile(
+        join(repoRoot, 'wiki', 'handoffs', 'HO-0001.md'),
+        makeManualHandoff(),
+      );
+
+      const rev = await review({
+        dir: repoRoot,
+        handoff: 'wiki/handoffs/HO-0001.md',
+        agent: 'fake-agent',
+        reviewedAndAcceptRisks: true,
+      });
+      expect(rev.ok).toBe(true);
+      if (!rev.ok) return;
+
+      const run = await launch({
+        reviewId: rev.data.reviewId,
+        dir: repoRoot,
+      });
+      expect(run.ok).toBe(true);
+      if (!run.ok) return;
+
+      const metaRaw = await readFile(join(run.data.runDir, 'metadata', 'meta.json'), 'utf-8');
+      const meta = JSON.parse(metaRaw) as { model: unknown; effort: unknown; model_passed_through: boolean };
+      expect(meta.model).toBeNull();
+      expect(meta.effort).toBeNull();
+      expect(meta.model_passed_through).toBe(false);
+    }, 30_000);
+
+    it('model remains forbidden in HO frontmatter', async () => {
+      await setupBootstrappedRepo(repoRoot);
+      await setupFullConfig();
+      const { review } = await import('@kb/dispatch-core');
+
+      await writeFile(
+        join(repoRoot, 'wiki', 'handoffs', 'HO-0001.md'),
+        [
+          '---',
+          'schema_version: 1',
+          'id: HO-0001',
+          'title: Test Handoff',
+          'subject: kb:test',
+          'allowed_agents: [fake-agent]',
+          'mode: implement',
+          'model: claude-sonnet-5',
+          '---',
+          '',
+          '# Goal',
+          'Exercise the dispatch pipeline.',
+        ].join('\n'),
+      );
+
+      const result = await review({
+        dir: repoRoot,
+        handoff: 'wiki/handoffs/HO-0001.md',
+        agent: 'fake-agent',
+        reviewedAndAcceptRisks: true,
+      });
+
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.error).toBe('FORBIDDEN_FIELD');
+        expect(result.message.toLowerCase()).toContain('model');
+      }
+    });
+  });
 });
 
 describe('runProcess timeout guard', () => {

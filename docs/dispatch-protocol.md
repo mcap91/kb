@@ -388,6 +388,7 @@ The agent registry (`launchers.v1.json`) maps agent names to launcher configurat
 | `read_only` | no | Required for `redteam` compatibility |
 | `description` | no | Human-readable description |
 | `env` | no | Additional environment variables to set |
+| `model_injection` | no | How model/effort overrides are injected at launch time (see Model/Effort Passthrough) |
 
 `base_argv[0]` may remain a portable bare command such as `claude` or `codex`. At launch time,
 dispatch resolves bare commands using PATH and safe platform fallback directories, including common
@@ -428,6 +429,37 @@ normal interactive Claude usage.
 use Claude interactively as the parent/operator with kb MCP tools, or have Claude read and answer HOs
 manually. Dispatch-launched Claude remains an optional operator-owned registry profile, not a required
 route.
+
+### Model/Effort Passthrough (WK-0069)
+
+`dispatch launch` and `dispatch review-and-launch` accept optional `--model` and `--effort` flags. These let the operator or orchestrating agent select a model per run without editing the registry.
+
+```
+dispatch review-and-launch --dir . --handoff wiki/handoffs/HO-0010.md --agent codex \
+  --model gpt-5.4 --effort high --reviewed-and-accept-risks
+```
+
+MCP callers pass `model` and `effort` as tool input params on the `launch` and `review-and-launch` tools.
+
+**How injection works.** Each agent declares how it receives model/effort via the `model_injection` registry field:
+
+| Kind | `model_injection` value | Effect |
+|------|------------------------|--------|
+| `argv` | `{ kind: "argv", model_flag: "--model", effort_flag: "--effort" }` | Flags inserted after `noninteractive_argv`, before wrapper/response args |
+| `argv` (template) | `{ kind: "argv", model_flag: "-m", effort_args: ["-c"], effort_template: "model_reasoning_effort={effort}" }` | Model flag + effort via `-c` config override (Codex pattern) |
+| `env` | `{ kind: "env", model_var: "OPENROUTER_MODEL" }` | Model set as env var in the filtered environment |
+
+The default registry ships `model_injection` for `claude` and `codex`. Agents without `model_injection` (e.g. `fake-agent`) receive a warning when `--model` is passed; injection is skipped, and `model_passed_through: false` is recorded in `meta.json`.
+
+**meta.json fields.** Every run records:
+
+| Field | Value |
+|-------|-------|
+| `model` | The operator-supplied model string, or `null` |
+| `effort` | The operator-supplied effort string, or `null` |
+| `model_passed_through` | `true` if model was injected into argv/env; `false` if skipped |
+
+Omitting `--model` behaves exactly as before. `model` remains a forbidden HO frontmatter field — model selection is an operator/orchestrator concern, not a handoff concern.
 
 ### Local Model Agents
 

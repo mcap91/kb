@@ -107,6 +107,8 @@ export async function reviewAndLaunch(
     reviewId: reviewResult.data.reviewId,
     dir: reviewOpts.dir,
     verbose: reviewOpts.verbose,
+    model: reviewOpts.model,
+    effort: reviewOpts.effort,
   };
 
   return launch(launchOpts);
