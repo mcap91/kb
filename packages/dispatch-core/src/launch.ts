@@ -18,7 +18,7 @@ import type {
   AgentLauncherConfig,
   LaunchEvent,
   LaunchOpts,
-  ModelInjection,
+  ModelPassthrough,
   ReviewedWriteScope,
   RunResult,
 } from './types.js';
@@ -195,7 +195,7 @@ function buildEnv(
   reviewId: string,
   runId: string,
   launcherEnv?: Record<string, string>,
-  modelInjection?: ModelInjection,
+  modelPassthrough?: ModelPassthrough,
   model?: string,
   effort?: string,
 ): Record<string, string> {
@@ -210,18 +210,18 @@ function buildEnv(
   env['AGENT_BLACKBOARD_REVIEW_ID'] = reviewId;
   env['AGENT_BLACKBOARD_RUN_ID'] = runId;
 
-  if (modelInjection?.kind === 'env' && model) {
-    env[modelInjection.model_var] = model;
-    if (effort && modelInjection.effort_var) {
-      env[modelInjection.effort_var] = effort;
+  if (modelPassthrough?.kind === 'env' && model) {
+    env[modelPassthrough.model_var] = model;
+    if (effort && modelPassthrough.effort_var) {
+      env[modelPassthrough.effort_var] = effort;
     }
   }
 
   return env;
 }
 
-function buildModelInjectionArgv(
-  injection: ModelInjection,
+function buildModelPassthroughArgv(
+  injection: ModelPassthrough,
   model?: string,
   effort?: string,
 ): string[] {
@@ -268,8 +268,8 @@ function buildCommand(
     }
   }
 
-  if (agent.model_injection && model) {
-    args.push(...buildModelInjectionArgv(agent.model_injection, model, effort));
+  if (agent.model_passthrough && model) {
+    args.push(...buildModelPassthroughArgv(agent.model_passthrough, model, effort));
   }
 
   if (agent.instruction_transport.kind !== 'stdin' && agent.wrapper_arg) {
@@ -713,11 +713,11 @@ export async function launch(opts: LaunchOpts): Promise<DispatchResult<RunResult
   await writeFile(responsePath, '', 'utf-8');
 
   let modelPassedThrough = false;
-  if (opts.model && !agentConfig.model_injection) {
+  if (opts.model && !agentConfig.model_passthrough) {
     launchWarnings.push(
-      `--model was passed but agent "${payload.agent}" has no model_injection config; skipping injection.`,
+      `--model was passed but agent "${payload.agent}" has no model_passthrough config; skipping injection.`,
     );
-  } else if (opts.model && agentConfig.model_injection) {
+  } else if (opts.model && agentConfig.model_passthrough) {
     modelPassedThrough = true;
   }
 
@@ -731,7 +731,7 @@ export async function launch(opts: LaunchOpts): Promise<DispatchResult<RunResult
     opts.reviewId,
     runId,
     agentConfig.env,
-    modelPassedThrough ? agentConfig.model_injection : undefined,
+    modelPassedThrough ? agentConfig.model_passthrough : undefined,
     opts.model,
     opts.effort,
   );

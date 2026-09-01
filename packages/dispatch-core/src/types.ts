@@ -141,7 +141,7 @@ export interface AgentReadOnlyConfig {
   response_writable?: boolean;
 }
 
-export type ModelInjection =
+export type ModelPassthrough =
   | {
     kind: 'argv';
     model_flag: string;
@@ -167,7 +167,7 @@ export interface AgentLauncherConfig {
   read_only?: AgentReadOnlyConfig;
   description?: string;
   env?: Record<string, string>;
-  model_injection?: ModelInjection;
+  model_passthrough?: ModelPassthrough;
 }
 
 /**
