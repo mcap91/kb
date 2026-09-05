@@ -501,6 +501,10 @@ Report the actual output for each platform; if one was not run, say so explicitl
 - **Do not modify files under `scratch_space/`.** That directory is for planning and reference only.
 
 
+## Test Consuming Repo
+
+`C:\Users\mcap9\projects\test_kb` is a test consuming repo. It can be cleared and re-bootstrapped at any time. Use it for smoke-testing dispatch, bootstrap, sync-contract, and any feature that targets a consuming repo via `--dir`. Do not treat its contents as durable.
+
 ## Interaction Contract
 
 - Do not stop at findings. If you identify a problem, propose a concrete fix in the same response.
