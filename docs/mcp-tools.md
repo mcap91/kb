@@ -1,5 +1,10 @@
 # kb MCP Tools Reference
 
+> ⚠️ **Superseded direction (2026-09-04):** DEC-0007 ratified dispatch v2 (spec:
+> `docs/superpowers/specs/2026-09-04-universal-dispatch-v2-design.md`; build plan: PLN-0004). This
+> section describes the current-but-being-replaced system and stays accurate until the v2 phase that
+> replaces it lands.
+
 The one-page contract for kb's two **local stdio** MCP servers, so the wiki-search-first
 retrieval flow can confirm the tool set without calling `tools/list`. Both servers run as
 single-user stdio subprocesses (`node --import tsx … server.ts`, registered in `.mcp.json`)
