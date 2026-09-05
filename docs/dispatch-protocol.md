@@ -1,5 +1,10 @@
 # Dispatch Protocol Reference
 
+> ⚠️ **Superseded direction (2026-09-04):** DEC-0007 ratified dispatch v2 (spec:
+> `docs/superpowers/specs/2026-09-04-universal-dispatch-v2-design.md`; build plan: PLN-0004). This
+> section describes the current-but-being-replaced system and stays accurate until the v2 phase that
+> replaces it lands.
+
 Technical reference for the `kb` Dispatch Protocol -- a reviewed multi-agent handoff system.
 
 ## Trust Model

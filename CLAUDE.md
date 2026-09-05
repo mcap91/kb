@@ -88,11 +88,11 @@ npm run typecheck                          Type checking
 - Graph is deterministic and file/module level only. No semantic inference.
 - All public functions return Result types. Do not throw.
 - Agent processes spawn with `cwd = agent-visible` inside the reviewed run bundle. The agent never controls its working directory.
-- Import `@kb/wiki-core` from wiki-cli and wiki-mcp. Import `@kb/dispatch-core` from dispatch-cli. No cross-subsystem imports.
+- Import `@kb/wiki-core` from wiki-cli and wiki-mcp. Import `@kb/dispatch-core` from dispatch-cli. Import `@kb/dispatch-core` from dispatch-mcp. No cross-subsystem imports.
 
 ### Monorepo Structure
 
-Six packages under `packages/`: `wiki-core`, `wiki-cli`, `wiki-mcp`, `dispatch-core`, `dispatch-cli`, `graph-explore`.
+Seven packages under `packages/`: `wiki-core`, `wiki-cli`, `wiki-mcp`, `dispatch-core`, `dispatch-cli`, `dispatch-mcp`, `graph-explore`.
 
 Contract lives in `contract/` with `manifest.json` as the source of truth for record types.
 
