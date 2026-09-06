@@ -88,7 +88,7 @@ npm run typecheck                          Type checking
 - Graph is deterministic and file/module level only. No semantic inference.
 - All public functions return Result types. Do not throw.
 - Agent processes spawn with `cwd = agent-visible` inside the reviewed run bundle. The agent never controls its working directory.
-- Import `@kb/wiki-core` from wiki-cli and wiki-mcp. Import `@kb/dispatch-core` from dispatch-cli. Import `@kb/dispatch-core` from dispatch-mcp. No cross-subsystem imports.
+- Import `@kb/wiki-core` from wiki-cli and wiki-mcp. Import `@kb/dispatch-core` from dispatch-cli. Import `@kb/dispatch-core` from dispatch-mcp. No cross-subsystem imports, with ONE ratified one-way exception (DEC-0007): dispatch-core may import wiki-core's record primitives; wiki-core must never import from dispatch-core.
 
 ### Monorepo Structure
 
@@ -107,4 +107,4 @@ Subagents default to Sonnet via `CLAUDE_CODE_SUBAGENT_MODEL` in `.claude/setting
 - Include `wiki/handoffs/` in wiki scanning operations
 - Add semantic/heuristic graph features
 - Throw from public API functions
-- Import across subsystem boundaries
+- Import across subsystem boundaries (sole exception: the DEC-0007 one-way dispatch-core→wiki-core record-primitive import)
