@@ -101,6 +101,8 @@ export interface BackgroundLaunchOpts {
   dir: string;
   startupTimeoutMs?: number;
   verbose?: boolean;
+  model?: string;
+  effort?: string;
 }
 
 export interface WaitForRunOpts {

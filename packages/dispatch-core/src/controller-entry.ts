@@ -6,9 +6,11 @@ import { getReviewDir } from './paths.js';
 import type { LaunchEvent } from './types.js';
 import type { ControllerMetadata } from './types-background.js';
 
-function parseArgs(argv: string[]): { reviewId: string; dir: string } {
+function parseArgs(argv: string[]): { reviewId: string; dir: string; model?: string; effort?: string } {
   let reviewId = '';
   let dir = '';
+  let model: string | undefined;
+  let effort: string | undefined;
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--review-id' && argv[i + 1]) {
       reviewId = argv[i + 1]!;
@@ -16,13 +18,19 @@ function parseArgs(argv: string[]): { reviewId: string; dir: string } {
     } else if (argv[i] === '--dir' && argv[i + 1]) {
       dir = argv[i + 1]!;
       i++;
+    } else if (argv[i] === '--model' && argv[i + 1]) {
+      model = argv[i + 1]!;
+      i++;
+    } else if (argv[i] === '--effort' && argv[i + 1]) {
+      effort = argv[i + 1]!;
+      i++;
     }
   }
   if (!reviewId || !dir) {
     console.error('Usage: controller-entry --review-id <id> --dir <path>');
     process.exit(2);
   }
-  return { reviewId, dir };
+  return { reviewId, dir, model, effort };
 }
 
 function writeControllerJson(metadataDir: string, data: ControllerMetadata): void {
@@ -34,7 +42,7 @@ function writePrelaunchJson(metadataDir: string, data: ControllerMetadata): void
 }
 
 async function main(): Promise<void> {
-  const { reviewId, dir } = parseArgs(process.argv.slice(2));
+  const { reviewId, dir, model, effort } = parseArgs(process.argv.slice(2));
   const startedAt = new Date().toISOString();
   const controllerPid = process.pid;
   const reviewMetadataDir = join(getReviewDir(dir, reviewId), 'metadata');
@@ -71,7 +79,7 @@ async function main(): Promise<void> {
     }
   };
 
-  const result = await launch({ reviewId, dir, onEvent });
+  const result = await launch({ reviewId, dir, model, effort, onEvent });
 
   if (metadataDir) {
     if (result.ok) {
