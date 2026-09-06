@@ -292,6 +292,7 @@ If generated views are missing or stale, fall back to:
 - `wiki-mcp` imports from `@kb/wiki-core`. It does not import from dispatch or graph.
 - `dispatch-cli` imports from `@kb/dispatch-core`. It does not import from wiki or graph.
 - `dispatch-mcp` imports from `@kb/dispatch-core`. It does not import from wiki or graph.
+- `dispatch-core` may import `@kb/wiki-core`'s record primitives — the ONE ratified one-way exception (DEC-0007, for the shared HO id seam; lands with PLN-0004 S2). `wiki-core` must never import from dispatch-core.
 - `graph-explore` is standalone. It reads wiki files directly but does not import wiki-core or dispatch-core.
 - No circular dependencies between packages.
 
@@ -496,7 +497,7 @@ Report the actual output for each platform; if one was not run, say so explicitl
 - **Do not add semantic or heuristic graph features.** Graph is deterministic, code-first, file/module level only.
 - **Do not modify `contract/manifest.json` to add new record types without a design decision.** The seven types (WK, IN, DEC, SRC, AREA, PLN, VAL) are the current set.
 - **Do not throw from public API functions.** Use the Result type pattern.
-- **Do not import across subsystem boundaries.** wiki-cli uses wiki-core. dispatch-cli uses dispatch-core. graph-explore is standalone.
+- **Do not import across subsystem boundaries.** wiki-cli uses wiki-core. dispatch-cli uses dispatch-core. graph-explore is standalone. Sole ratified exception (DEC-0007): dispatch-core may import wiki-core's record primitives, one-way, never the reverse.
 - **Do not describe features that do not exist.** No semantic search, no embeddings, no function-level graphs.
 - **Do not modify files under `scratch_space/`.** That directory is for planning and reference only.
 
