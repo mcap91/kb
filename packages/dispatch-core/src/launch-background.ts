@@ -235,6 +235,8 @@ export async function launchBackground(
     controllerEntryPath,
     '--review-id', opts.reviewId,
     '--dir', repoRoot,
+    ...(opts.model ? ['--model', opts.model] : []),
+    ...(opts.effort ? ['--effort', opts.effort] : []),
   ], {
     detached: true,
     stdio: 'ignore',
@@ -290,5 +292,7 @@ export async function reviewAndLaunchBackground(
     dir: reviewOpts.dir,
     startupTimeoutMs: backgroundOpts?.startupTimeoutMs,
     verbose: reviewOpts.verbose,
+    model: reviewOpts.model,
+    effort: reviewOpts.effort,
   });
 }

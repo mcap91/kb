@@ -3560,6 +3560,171 @@ describe('dispatch', () => {
       }
     });
   });
+
+  describe('model/effort passthrough background parity (WK-0072)', () => {
+    it('launchBackground forwards model/effort to the controller, injecting the same argv as the foreground path', async () => {
+      await setupBootstrappedRepo(repoRoot);
+      const binDir = join(tempDir, 'claude-model-bg-bin');
+      await writeStdoutAgentLauncher(binDir, 'claude');
+      if (process.platform === 'linux') {
+        await writeFakeBwrapLauncher(binDir);
+      }
+
+      await setupFullConfig({
+        version: 1,
+        agents: {
+          claude: {
+            base_argv: ['claude'],
+            noninteractive_argv: ['--print', '--output-format', 'text', '--no-session-persistence'],
+            instruction_transport: { kind: 'stdin' },
+            response_transport: { kind: 'stdout_capture' },
+            timeout_seconds: 30,
+            read_only: {
+              supported: true,
+              argv_suffix: ['--permission-mode', 'default', '--disallowedTools', 'Edit Write NotebookEdit Bash'],
+              response_writable: true,
+            },
+            env: {
+              PATH: binDir,
+              PATHEXT: '.CMD;.EXE',
+            },
+            model_passthrough: { kind: 'argv', model_flag: '--model', effort_flag: '--effort' },
+          },
+        },
+      });
+
+      const { review, launchBackground, waitForRun } = await import('@kb/dispatch-core');
+      await writeFile(
+        join(repoRoot, 'wiki', 'handoffs', 'HO-0001.md'),
+        makeManualHandoff({ allowed_agents: ['claude'] }),
+      );
+
+      const rev = await review({
+        dir: repoRoot,
+        handoff: 'wiki/handoffs/HO-0001.md',
+        agent: 'claude',
+        reviewedAndAcceptRisks: true,
+      });
+      expect(rev.ok).toBe(true);
+      if (!rev.ok) return;
+
+      const bg = await launchBackground({
+        reviewId: rev.data.reviewId,
+        dir: repoRoot,
+        model: 'claude-sonnet-5',
+        effort: 'high',
+      });
+      expect(bg.ok).toBe(true);
+      if (!bg.ok) return;
+
+      await waitForRun({ dir: repoRoot, runId: bg.data.runId, timeoutSeconds: 30 });
+
+      const response = await readFile(bg.data.responsePath, 'utf-8');
+      const argvMatch = response.match(/^argv: (.+)$/m);
+      expect(argvMatch).toBeTruthy();
+      const argv = JSON.parse(argvMatch![1]!) as string[];
+      expect(argv).toContain('--model');
+      expect(argv[argv.indexOf('--model') + 1]).toBe('claude-sonnet-5');
+      expect(argv).toContain('--effort');
+      expect(argv[argv.indexOf('--effort') + 1]).toBe('high');
+
+      const metaRaw = await readFile(bg.data.metaPath, 'utf-8');
+      const meta = JSON.parse(metaRaw) as { model: string; effort: string; model_passed_through: boolean };
+      expect(meta.model).toBe('claude-sonnet-5');
+      expect(meta.effort).toBe('high');
+      expect(meta.model_passed_through).toBe(true);
+    }, 30_000);
+
+    it('MCP review-and-launch background handler forwards model/effort, matching the foreground env injection', async () => {
+      await setupBootstrappedRepo(repoRoot);
+
+      const envAgentScriptPath = join(tempDir, 'env-model-bg-agent.cjs');
+      await writeFile(
+        envAgentScriptPath,
+        [
+          "let input = '';",
+          "process.stdin.setEncoding('utf-8');",
+          "process.stdin.on('data', (chunk) => { input += chunk; });",
+          "process.stdin.on('end', () => {",
+          "  process.stdout.write([",
+          "    '# Env Agent Response',",
+          "    '',",
+          "    `OPENROUTER_MODEL: ${process.env.OPENROUTER_MODEL || 'unset'}`,",
+          "  ].join('\\n'));",
+          "});",
+          '',
+        ].join('\n'),
+        'utf-8',
+      );
+
+      const binDir = join(tempDir, 'env-model-bg-bin');
+      await mkdir(binDir, { recursive: true });
+      const commandPath = join(binDir, process.platform === 'win32' ? 'env-agent.CMD' : 'env-agent');
+      const commandBody = process.platform === 'win32'
+        ? `@echo off\r\n"${process.execPath}" "${envAgentScriptPath}" %*\r\n`
+        : `#!/bin/sh\nexec ${quotePosixArg(process.execPath)} ${quotePosixArg(envAgentScriptPath)} "$@"\n`;
+      await writeFile(commandPath, commandBody, 'utf-8');
+      if (process.platform !== 'win32') {
+        await chmod(commandPath, 0o755);
+      }
+
+      await setupFullConfig({
+        version: 1,
+        agents: {
+          'env-agent': {
+            base_argv: ['env-agent'],
+            noninteractive_argv: [],
+            instruction_transport: { kind: 'stdin' },
+            response_transport: { kind: 'stdout_capture' },
+            timeout_seconds: 30,
+            read_only: {
+              supported: true,
+              argv_suffix: [],
+              response_writable: true,
+            },
+            env: {
+              PATH: binDir,
+              PATHEXT: '.CMD;.EXE',
+            },
+            model_passthrough: { kind: 'env', model_var: 'OPENROUTER_MODEL' },
+          },
+        },
+      });
+
+      const { waitForRun } = await import('@kb/dispatch-core');
+      const { tools } = await import('@kb/dispatch-mcp');
+      await writeFile(
+        join(repoRoot, 'wiki', 'handoffs', 'HO-0001.md'),
+        makeManualHandoff({ allowed_agents: ['env-agent'] }),
+      );
+
+      const reviewAndLaunchTool = tools.find((tool: { name: string }) => tool.name === 'review-and-launch');
+      expect(reviewAndLaunchTool).toBeDefined();
+      if (!reviewAndLaunchTool) return;
+
+      const result = await reviewAndLaunchTool.handler({
+        dir: repoRoot,
+        handoff: 'wiki/handoffs/HO-0001.md',
+        agent: 'env-agent',
+        reviewedAndAcceptRisks: true,
+        model: 'openai/gpt-5.4',
+      }) as { ok: boolean; data?: { runId: string; status: string; responsePath: string; metaPath: string } };
+
+      expect(result.ok).toBe(true);
+      expect(result.data?.status).toBe('launching');
+      if (!result.data) return;
+
+      await waitForRun({ dir: repoRoot, runId: result.data.runId, timeoutSeconds: 30 });
+
+      const response = await readFile(result.data.responsePath, 'utf-8');
+      expect(response).toContain('OPENROUTER_MODEL: openai/gpt-5.4');
+
+      const metaRaw = await readFile(result.data.metaPath, 'utf-8');
+      const meta = JSON.parse(metaRaw) as { model: string; model_passed_through: boolean };
+      expect(meta.model).toBe('openai/gpt-5.4');
+      expect(meta.model_passed_through).toBe(true);
+    }, 30_000);
+  });
 });
 
 describe('runProcess timeout guard', () => {

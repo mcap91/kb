@@ -104,6 +104,8 @@ export const tools: ToolDef[] = [
         dir: input.dir as string,
         reviewId: input.reviewId as string,
         verbose: input.verbose as boolean | undefined,
+        model: input.model as string | undefined,
+        effort: input.effort as string | undefined,
       });
     },
   },
@@ -129,6 +131,8 @@ export const tools: ToolDef[] = [
         agent: input.agent as string,
         reviewedAndAcceptRisks: input.reviewedAndAcceptRisks as boolean,
         verbose: input.verbose as boolean | undefined,
+        model: input.model as string | undefined,
+        effort: input.effort as string | undefined,
       });
     },
   },
