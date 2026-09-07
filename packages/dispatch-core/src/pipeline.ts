@@ -24,7 +24,7 @@
  */
 import { randomUUID } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 
 import type { DispatchResult } from './errors.js';
 import { ok, fail } from './errors.js';
@@ -90,17 +90,18 @@ function logVerbose(verbose: boolean | undefined, message: string): void {
 }
 
 export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<DispatchResult2>> {
+  const dir = resolve(opts.dir);
   const { verbose } = opts;
 
   // 1. Parse HO
   logVerbose(verbose, `parsing handoff ${opts.handoff}`);
-  const parsed = await parseHandoff(join(opts.dir, opts.handoff));
+  const parsed = await parseHandoff(join(dir, opts.handoff));
   if (!parsed.ok) return parsed;
   const handoff = parsed.data;
 
   // 2. Admission (bad_record-lite, missing_write_scope, dirty_repo; resolves base_sha)
   logVerbose(verbose, `running admission checks for ${handoff.id}`);
-  const admission = await checkAdmission(handoff, opts.dir);
+  const admission = await checkAdmission(handoff, dir);
   if (!admission.ok) return admission;
 
   // 3. Resolve model
@@ -114,7 +115,7 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
   const runId = `RUN-${randomUUID()}`;
 
   // 6. Create run dir
-  const runDir = getRunDir(opts.dir, handoff.id, runId);
+  const runDir = getRunDir(dir, handoff.id, runId);
   try {
     await mkdir(runDir, { recursive: true });
   } catch (err) {
@@ -137,7 +138,7 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
 
   // 7. Assemble prompt
   logVerbose(verbose, 'assembling worker prompt');
-  const assembled = await assemblePrompt(handoff, opts.dir);
+  const assembled = await assemblePrompt(handoff, dir);
   if (!assembled.ok) return assembled;
 
   // 8. Write prompt to run dir
@@ -151,7 +152,7 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
   // 9. Clone (ephemeral full clone @ pinned base_sha, WSL2 ext4)
   logVerbose(verbose, `cloning mother repo at base_sha ${admission.data.baseSha}`);
   const cloneResult = await createClone({
-    motherRepo: opts.dir,
+    motherRepo: dir,
     runId,
     baseSha: admission.data.baseSha,
   });
@@ -303,7 +304,7 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       logVerbose(verbose, 'delivering scope-checked commit');
       const deliveryScript = buildDeliveryScript({
         clonePath,
-        motherRepoWsl: windowsToWslPath(opts.dir),
+        motherRepoWsl: windowsToWslPath(dir),
         handoffId: handoff.id,
         baseSha: admission.data.baseSha,
         excludePrefixes: WORKER_INFRA_PREFIXES,
