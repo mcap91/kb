@@ -14,6 +14,7 @@ import {
   sync,
   create,
   findKbRoot,
+  ensureGitignoreEntries,
 } from '../packages/wiki-core/src/index.js';
 
 import { writeManagedBlock } from '../packages/wiki-core/src/agent-instructions.js';
@@ -450,6 +451,117 @@ describe('idempotency and ID-safety', () => {
     if (createResult.ok) {
       expect(createResult.data.id).toBe('WK-0004');
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// .gitignore Tests
+// ---------------------------------------------------------------------------
+
+describe('.gitignore', () => {
+  let tmp: TmpRepo;
+
+  afterEach(() => {
+    tmp?.cleanup();
+  });
+
+  it('bootstrap creates .gitignore with .agent-runs/ when absent', async () => {
+    tmp = createTmpDir();
+    const result = await bootstrap({ dir: tmp.dir, repo: 'test/repo' });
+    expect(result.ok).toBe(true);
+
+    const content = readText(tmp.dir, '.gitignore');
+    expect(content).toContain('.agent-runs/');
+  });
+
+  it('bootstrap appends .agent-runs/ to existing .gitignore', async () => {
+    tmp = createTmpDir();
+    fs.writeFileSync(path.join(tmp.dir, '.gitignore'), 'node_modules/\ndist/\n', 'utf-8');
+
+    const result = await bootstrap({ dir: tmp.dir, repo: 'test/repo' });
+    expect(result.ok).toBe(true);
+
+    const content = readText(tmp.dir, '.gitignore');
+    expect(content).toContain('node_modules/');
+    expect(content).toContain('dist/');
+    expect(content).toContain('.agent-runs/');
+  });
+
+  it('bootstrap is idempotent — does not duplicate .agent-runs/', async () => {
+    tmp = createTmpDir();
+    fs.writeFileSync(path.join(tmp.dir, '.gitignore'), '.agent-runs/\n', 'utf-8');
+
+    const result = await bootstrap({ dir: tmp.dir, repo: 'test/repo' });
+    expect(result.ok).toBe(true);
+
+    const content = readText(tmp.dir, '.gitignore');
+    const count = (content.match(/\.agent-runs\//g) || []).length;
+    expect(count).toBe(1);
+  });
+
+  it('sync adds .agent-runs/ to existing repo missing the entry', async () => {
+    tmp = await createBootstrappedRepo();
+    // Remove the entry that bootstrap just added
+    const gitignorePath = path.join(tmp.dir, '.gitignore');
+    const content = fs.readFileSync(gitignorePath, 'utf-8');
+    fs.writeFileSync(gitignorePath, content.replace('.agent-runs/\n', ''), 'utf-8');
+
+    const result = await sync({ dir: tmp.dir });
+    expect(result.ok).toBe(true);
+
+    const after = readText(tmp.dir, '.gitignore');
+    expect(after).toContain('.agent-runs/');
+  });
+
+  it('dryRun does not write .gitignore', async () => {
+    tmp = createTmpDir();
+    await bootstrap({ dir: tmp.dir, repo: 'test/repo', dryRun: true });
+    expect(fs.existsSync(path.join(tmp.dir, '.gitignore'))).toBe(false);
+  });
+});
+
+describe('ensureGitignoreEntries', () => {
+  let tmp: TmpRepo;
+
+  afterEach(() => {
+    tmp?.cleanup();
+  });
+
+  it('creates .gitignore when absent', () => {
+    tmp = createTmpDir();
+    const result = ensureGitignoreEntries(tmp.dir);
+    expect(result.action).toBe('created');
+    expect(readText(tmp.dir, '.gitignore')).toBe('.agent-runs/\n');
+  });
+
+  it('appends missing entry to existing file', () => {
+    tmp = createTmpDir();
+    fs.writeFileSync(path.join(tmp.dir, '.gitignore'), 'node_modules/\n', 'utf-8');
+    const result = ensureGitignoreEntries(tmp.dir);
+    expect(result.action).toBe('updated');
+    expect(readText(tmp.dir, '.gitignore')).toBe('node_modules/\n.agent-runs/\n');
+  });
+
+  it('appends newline before entry when file lacks trailing newline', () => {
+    tmp = createTmpDir();
+    fs.writeFileSync(path.join(tmp.dir, '.gitignore'), 'node_modules/', 'utf-8');
+    const result = ensureGitignoreEntries(tmp.dir);
+    expect(result.action).toBe('updated');
+    expect(readText(tmp.dir, '.gitignore')).toBe('node_modules/\n.agent-runs/\n');
+  });
+
+  it('returns unchanged when entry already present', () => {
+    tmp = createTmpDir();
+    fs.writeFileSync(path.join(tmp.dir, '.gitignore'), '.agent-runs/\n', 'utf-8');
+    const result = ensureGitignoreEntries(tmp.dir);
+    expect(result.action).toBe('unchanged');
+  });
+
+  it('dryRun reports action without writing', () => {
+    tmp = createTmpDir();
+    const result = ensureGitignoreEntries(tmp.dir, { dryRun: true });
+    expect(result.action).toBe('created');
+    expect(fs.existsSync(path.join(tmp.dir, '.gitignore'))).toBe(false);
   });
 });
 

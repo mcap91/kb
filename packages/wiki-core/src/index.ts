@@ -129,6 +129,9 @@ export { writeManagedBlock } from './agent-instructions.js';
 // MCP config (.mcp.json)
 export { writeMcpConfig } from './mcp-config.js';
 
+// Gitignore
+export { ensureGitignoreEntries } from './gitignore.js';
+
 // Bootstrap
 export { bootstrap } from './bootstrap.js';
 
