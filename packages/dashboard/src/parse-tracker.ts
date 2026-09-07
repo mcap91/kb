@@ -1,0 +1,174 @@
+import type { DashboardData, Phase, PhaseTask, LogEntry, FailureEntry } from './schema.js';
+import { laneOf, summarize, sourceLatestDate } from './util.js';
+
+export function parseTracker(
+  content: string,
+  record: { id: string; title: string; status: string },
+): DashboardData {
+  const phases = parsePhaseTable(content);
+  const gates = parseGates(content);
+  const tasksByPhase = parseTaskMapping(content);
+
+  // Match gate -> phase by slice id (NOT array index -- index-zipping silently
+  // misattributes on any reordering) and lift the human label from the gate
+  // heading parenthetical: "S1 gate (orchestrate)" -> label "orchestrate".
+  for (const g of gates) {
+    const phase = phases.find(p => p.id.toLowerCase() === g.sliceId.toLowerCase());
+    if (!phase) continue;
+    phase.gate = { checked: g.checked, text: g.text };
+    if (g.label) phase.label = g.label;
+  }
+
+  for (const [phaseId, tasks] of Object.entries(tasksByPhase)) {
+    const phase = phases.find(p => p.id === phaseId);
+    if (phase) phase.tasks.push(...tasks);
+  }
+
+  return {
+    record: { ...record, type: 'PLN' },
+    summary: summarize(phases.map(p => p.lane)),
+    phases,
+    workItems: [],
+    completedLog: parseCompletedLog(content),
+    failureLog: parseFailureLog(content),
+    dataDate: sourceLatestDate(content),
+    source: `wiki/plans/${record.id}/execution/tracker.md`,
+  };
+}
+
+function extractSection(content: string, heading: string): string {
+  const escaped = heading.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const regex = new RegExp(`^##\\s+${escaped}`, 'mi');
+  const match = content.match(regex);
+  if (!match || match.index === undefined) return '';
+  const start = match.index + match[0].length;
+  const next = content.indexOf('\n## ', start);
+  return content.slice(start, next === -1 ? undefined : next).trim();
+}
+
+function parseMarkdownTable(section: string): Record<string, string>[] {
+  const lines = section.split('\n').filter(l => l.trim().startsWith('|'));
+  if (lines.length < 3) return [];
+  const headers = splitRow(lines[0]);
+  return lines.slice(2).map(line => {
+    const cells = splitRow(line);
+    const row: Record<string, string> = {};
+    headers.forEach((h, i) => { row[h] = cells[i] || ''; });
+    return row;
+  });
+}
+
+function splitRow(line: string): string[] {
+  return line.split('|').map(c => c.trim()).filter((_, i, a) => i > 0 && i < a.length - 1);
+}
+
+function parsePhaseTable(content: string): Phase[] {
+  const section = extractSection(content, 'Phase Status Table');
+  return parseMarkdownTable(section).map(row => {
+    const id = (row['Slice (phase)'] || row['Phase'] || Object.values(row)[0] || '').trim();
+    const status = (row['Status'] || '').trim();
+    return {
+      id,
+      label: '',
+      status,
+      lane: laneOf(status, false),
+      started: (row['Started'] || '').trim(),
+      completed: (row['Completed'] || '').trim(),
+      notes: (row['Notes'] || '').trim(),
+      gate: null,
+      tasks: [],
+    };
+  });
+}
+
+interface GateItem { sliceId: string; label: string; checked: boolean; text: string; }
+
+function parseGates(content: string): GateItem[] {
+  const section = extractSection(content, 'Gates');
+  const items: GateItem[] = [];
+  const regex = /^- \[([ xX])\] (.+)$/gm;
+  let match;
+  while ((match = regex.exec(section)) !== null) {
+    const text = match[2].replace(/\*\*/g, '').trim();
+    const m = text.match(/^(pre-s\d+|s\d+)\s+gate\s*(?:\(([^)]+)\))?/i);
+    items.push({
+      sliceId: m ? m[1] : '',
+      label: m && m[2] ? m[2].trim() : '',
+      checked: match[1].toLowerCase() === 'x',
+      text,
+    });
+  }
+  return items;
+}
+
+function parseTaskMapping(content: string): Record<string, PhaseTask[]> {
+  const section = extractSection(content, 'Task-to-Phase Mapping');
+  const rows = parseMarkdownTable(section);
+  const result: Record<string, PhaseTask[]> = {};
+
+  for (const row of rows) {
+    const taskId = (row['Task'] || '').trim();
+    const phaseRaw = row['Slice (phase)'] || row['Phase'] || '';
+    const description = (row['Description'] || '').trim();
+    const interaction = (row['user_interaction'] || '').trim();
+
+    for (const entry of phaseRaw.split(',').map(e => e.trim())) {
+      const scopeMatch = entry.match(/^(.+?)\s*\((.+?)\)\s*$/);
+      const phaseId = (scopeMatch ? scopeMatch[1] : entry).trim();
+      const scope = scopeMatch ? scopeMatch[2] : '';
+      if (!result[phaseId]) result[phaseId] = [];
+      result[phaseId].push({ id: taskId, scope, description, interaction });
+    }
+  }
+  return result;
+}
+
+function parseCompletedLog(content: string): LogEntry[] {
+  const section = extractSection(content, 'Completed Log');
+  return parseMarkdownTable(section).map(row => ({
+    date: (row['Date'] || '').trim(),
+    task: (row['Task'] || '').trim(),
+    summary: (row['Summary'] || '').trim(),
+  }));
+}
+
+function parseFailureLog(content: string): FailureEntry[] {
+  const section = extractSection(content, 'Failure Log');
+  if (!section) return [];
+
+  const raw = section.split(/^###\s+/m).filter(s => s.trim()).map(part => {
+    const nl = part.indexOf('\n');
+    return {
+      title: (nl === -1 ? part : part.slice(0, nl)).trim(),
+      body: nl === -1 ? '' : part.slice(nl).trim(),
+    };
+  });
+
+  // A failure is resolved when its own text carries a RESOLUTION/RESOLVED marker,
+  // OR a later entry supersedes it (the log is chronological; supersession closes
+  // the thread). Checking the BODY -- not just the heading -- is the fix for the
+  // stale "Issues" card, where a fixed failure kept rendering as active.
+  const supersededByLater = raw.map((_, i) =>
+    raw.slice(i + 1).some(e => /supersed/i.test(`${e.title}\n${e.body}`)));
+
+  return raw.map((e, i) => {
+    const selfResolved = /\bRESOLUTION\b|\bRESOLVED\b/i.test(`${e.title}\n${e.body}`);
+    const resolved = selfResolved || supersededByLater[i];
+    const resolution = selfResolved
+      ? extractResolution(`${e.title}\n${e.body}`)
+      : supersededByLater[i] ? 'Superseded by a later entry' : '';
+    return { title: e.title, resolved, resolution, body: e.body };
+  });
+}
+
+function extractResolution(text: string): string {
+  for (const line of text.split('\n')) {
+    if (/\bRESOLUTION\b|\bRESOLVED\b/i.test(line)) {
+      return line
+        .replace(/\*\*/g, '')
+        .replace(/^[-\s]*\d{4}-\d{2}-\d{2}\s*[—-]\s*/, '')
+        .trim();
+    }
+  }
+  return '';
+}
