@@ -171,6 +171,7 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
     // once secrets.env has been sourced — bwrap's S0 jail args do not clear
     // env, so a sourced secret reaches the jailed pi process unchanged).
     const bwrapCommand = [...jailArgs.argv, invocation.cmd, ...invocation.args].map(shQuote).join(' ');
+    const runDirWsl = windowsToWslPath(runDir);
     const executionScript = [
       '#!/usr/bin/env bash',
       'set -euo pipefail',
@@ -195,7 +196,8 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       `WIN_HOST=$(${resolveWinHostIp()})`,
       'sed -i "s/{{WIN_HOST}}/$WIN_HOST/g" "$PI_CODING_AGENT_DIR/models.json"',
       '',
-      bwrapCommand,
+      `PI_LOG=${shQuote(`${runDirWsl}/pi-output.log`)}`,
+      `${bwrapCommand} 2>&1 | tee "$PI_LOG"`,
       '',
     ].join('\n');
 
