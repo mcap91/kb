@@ -21,6 +21,8 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import type { DispatchResult } from './errors.js';
 import { ok, fail } from './errors.js';
 import { parseHandoff } from './ho.js';
+import { checkAdmission } from './admission.js';
+import { getDefaultRegistry, resolveModel } from './model-registry.js';
 import { getRunDir } from './paths.js';
 import { isAlive } from './run-state.js';
 
@@ -210,9 +212,18 @@ export async function launchDispatchBackground(
   const repoRoot = resolve(opts.dir);
   const timeoutMs = opts.startupTimeoutMs ?? DEFAULT_STARTUP_TIMEOUT_MS;
 
+  // Synchronous gate (ruling 2): all fast, deterministic checks run HERE
+  // before spawning. Refusals return immediately with no runId. The controller
+  // re-runs these inside runDispatch() (idempotent, cheap).
   const parsed = await parseHandoff(join(repoRoot, opts.handoff));
   if (!parsed.ok) return parsed;
   const handoffId = parsed.data.id;
+
+  const admission = await checkAdmission(parsed.data, repoRoot);
+  if (!admission.ok) return admission;
+
+  const modelResult = resolveModel(getDefaultRegistry(), opts.model);
+  if (!modelResult.ok) return modelResult;
 
   const activeCheck = await checkActiveRunExists(repoRoot, handoffId);
   if (!activeCheck.ok) return activeCheck;
