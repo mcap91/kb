@@ -251,6 +251,112 @@ describe('delivery.ts — parseDeliveryOutput', () => {
 });
 
 // ---------------------------------------------------------------------------
+// WK-0075: worker infra dir exclusion (.pi-agent/)
+// ---------------------------------------------------------------------------
+
+describe('WK-0075 — parseEnumerateOutput preserves .pi-agent/ files (pipeline owns filtering)', () => {
+  it('includes .pi-agent/ files in untrackedFiles (proving pipeline filter is needed)', () => {
+    const stdout = [
+      '---STATUS-START---',
+      ' M src/foo.ts',
+      '---STATUS-END---',
+      '---RENAME-START---',
+      '---RENAME-END---',
+      '---DIFF-START---',
+      '---DIFF-END---',
+      '---UNTRACKED-START---',
+      '.pi-agent/auth.json',
+      '.pi-agent/models.json',
+      '.pi-agent/models-store.json',
+      'src/new-file.ts',
+      '---UNTRACKED-END---',
+    ].join('\n');
+
+    const result = parseEnumerateOutput(stdout);
+    expect(result.untrackedFiles).toContain('.pi-agent/auth.json');
+    expect(result.untrackedFiles).toContain('.pi-agent/models.json');
+    expect(result.untrackedFiles).toContain('.pi-agent/models-store.json');
+    expect(result.untrackedFiles).toContain('src/new-file.ts');
+    expect(result.changedFiles).toContain('src/foo.ts');
+  });
+});
+
+describe('WK-0075 — infra filtering before checkWriteScope', () => {
+  const WORKER_INFRA_PREFIXES = ['.pi-agent'];
+  const isWorkerInfra = (p: string): boolean =>
+    WORKER_INFRA_PREFIXES.some(pfx => p === pfx || p.startsWith(pfx + '/'));
+
+  it('without filter, .pi-agent/ files cause scope refusal', () => {
+    const allFiles = ['src/foo.ts', '.pi-agent/auth.json', '.pi-agent/models.json'];
+    const result = checkWriteScope(allFiles, ['src/']);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.offendingPaths).toContain('.pi-agent/auth.json');
+      expect(result.offendingPaths).toContain('.pi-agent/models.json');
+    }
+  });
+
+  it('after filtering, scope check passes on task files alone', () => {
+    const changedFiles = ['src/foo.ts'];
+    const untrackedFiles = ['.pi-agent/auth.json', '.pi-agent/models.json', 'src/bar.ts'];
+
+    const allFiltered = [
+      ...changedFiles.filter(f => !isWorkerInfra(f)),
+      ...untrackedFiles.filter(f => !isWorkerInfra(f)),
+    ];
+    expect(allFiltered).toEqual(['src/foo.ts', 'src/bar.ts']);
+
+    const result = checkWriteScope(allFiltered, ['src/']);
+    expect(result.ok).toBe(true);
+  });
+
+  it('filters the bare directory name as well as nested paths', () => {
+    const files = ['.pi-agent', '.pi-agent/auth.json', 'src/ok.ts'];
+    const filtered = files.filter(f => !isWorkerInfra(f));
+    expect(filtered).toEqual(['src/ok.ts']);
+  });
+});
+
+describe('WK-0075 — buildDeliveryScript excludes infra dirs from git-add', () => {
+  it('generates pathspec excludes when excludePrefixes are given', () => {
+    const { scriptContent } = buildDeliveryScript({
+      clonePath: '/tmp/run/clone',
+      motherRepoWsl: '/mnt/c/example/projects/kb',
+      handoffId: 'HO-0002',
+      baseSha: 'deadbeef',
+      excludePrefixes: ['.pi-agent'],
+    });
+
+    expect(scriptContent).toContain("add -A -- ':!.pi-agent'");
+  });
+
+  it('uses bare git add -A when no excludePrefixes are given', () => {
+    const { scriptContent } = buildDeliveryScript({
+      clonePath: '/tmp/run/clone',
+      motherRepoWsl: '/mnt/c/example/projects/kb',
+      handoffId: 'HO-0002',
+      baseSha: 'deadbeef',
+    });
+
+    expect(scriptContent).toMatch(/\$GIT add -A\n/);
+  });
+
+  it('handles multiple exclude prefixes', () => {
+    const { scriptContent } = buildDeliveryScript({
+      clonePath: '/tmp/run/clone',
+      motherRepoWsl: '/mnt/c/example/projects/kb',
+      handoffId: 'HO-0002',
+      baseSha: 'deadbeef',
+      excludePrefixes: ['.pi-agent', '.codex'],
+    });
+
+    expect(scriptContent).toContain("':!.pi-agent'");
+    expect(scriptContent).toContain("':!.codex'");
+    expect(scriptContent).toContain('add -A --');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // capture.ts — writeResponseDoc
 // ---------------------------------------------------------------------------
 

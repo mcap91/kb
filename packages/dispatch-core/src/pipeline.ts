@@ -52,6 +52,12 @@ import { getRunDir } from './paths.js';
 const WORKER_TIMEOUT_SECS = 1800;
 const WORKER_TIMEOUT_MS = WORKER_TIMEOUT_SECS * 1000;
 
+// Worker infrastructure directories that live inside the ephemeral clone
+// (bwrap S0 only mounts clonePath writable). Excluded from enumeration
+// and delivery to prevent scope refusal and credential leaks (WK-0075).
+const PI_WORKER_DIR = '.pi-agent';
+const WORKER_INFRA_PREFIXES = [PI_WORKER_DIR];
+
 export interface DispatchOpts {
   /** Windows path to the mother repo */
   dir: string;
@@ -157,7 +163,7 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
     // clonePath: jail.ts's S0-minimum bwrap only remounts clonePath writable
     // (bwrap cannot bind a path that doesn't already exist under the ro root),
     // so anywhere Pi needs to write must live under the one writable bind.
-    const workerDir = `${clonePath}/.pi-agent`;
+    const workerDir = `${clonePath}/${PI_WORKER_DIR}`;
     const promptPathWsl = windowsToWslPath(promptPath);
     const invocation = buildInvocation(promptPathWsl, model, clonePath, workerDir);
 
@@ -260,7 +266,12 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       );
     }
     const enumerated = parseEnumerateOutput(enumerateExec.data.stdout);
-    const allChangedFiles = [...enumerated.changedFiles, ...enumerated.untrackedFiles];
+    const isWorkerInfra = (p: string): boolean =>
+      WORKER_INFRA_PREFIXES.some(pfx => p === pfx || p.startsWith(pfx + '/'));
+    const allChangedFiles = [
+      ...enumerated.changedFiles.filter(f => !isWorkerInfra(f)),
+      ...enumerated.untrackedFiles.filter(f => !isWorkerInfra(f)),
+    ];
 
     // 17. Check write scope, scan secrets — refusals are DATA (a DeliveryOutcome
     // variant), not a DispatchResult failure; the pipeline ran correctly.
@@ -295,6 +306,7 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
         motherRepoWsl: windowsToWslPath(opts.dir),
         handoffId: handoff.id,
         baseSha: admission.data.baseSha,
+        excludePrefixes: WORKER_INFRA_PREFIXES,
       });
       const deliveryExec = await execViaWsl2({
         runDir,
