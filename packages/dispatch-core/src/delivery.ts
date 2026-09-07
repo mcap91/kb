@@ -274,7 +274,8 @@ MOTHER_REPO=${shQuote(motherRepoWsl)}
 HANDOFF_ID=${shQuote(handoffId)}
 BASE_SHA=${shQuote(baseSha)}
 
-export GIT_INDEX_FILE="$CLONE_PATH/.dispatch-delivery-idx"
+DELIVERY_IDX=$(mktemp /tmp/dispatch-delivery-idx.XXXXXX)
+export GIT_INDEX_FILE="$DELIVERY_IDX"
 export GIT_COMMITTER_NAME="kb-dispatch"
 export GIT_COMMITTER_EMAIL="dispatch@kb.local"
 export GIT_AUTHOR_NAME="kb-dispatch"
@@ -292,12 +293,12 @@ ${gitAddLine}
 TREE=$($GIT write-tree)
 COMMIT=$($GIT commit-tree "$TREE" -p "$BASE_SHA" -m "dispatch: $HANDOFF_ID")
 
-rm -f "$CLONE_PATH/.dispatch-delivery-idx"
+rm -f "$DELIVERY_IDX"
 
 # CAS push-back to the mother repo: same tree + same base as the existing tip
 # is an idempotent no-op; a different tree from the same base is a structured
 # conflict, never a clobber.
-EXISTING_REF=$($GIT -C "$MOTHER_REPO" rev-parse "refs/heads/dispatch/$HANDOFF_ID" 2>/dev/null || echo "NONE")
+EXISTING_REF=$($GIT -C "$MOTHER_REPO" rev-parse --verify "refs/heads/dispatch/$HANDOFF_ID" 2>/dev/null || echo "NONE")
 
 if [ "$EXISTING_REF" = "NONE" ]; then
   $GIT push "$MOTHER_REPO" "$COMMIT:refs/heads/dispatch/$HANDOFF_ID"
@@ -309,8 +310,8 @@ if [ "$EXISTING_REF" = "NONE" ]; then
   $GIT diff --name-only "$BASE_SHA" "$TREE"
   echo "---CHANGED-FILES-END---"
 else
-  EXISTING_TREE=$($GIT -C "$MOTHER_REPO" rev-parse "refs/heads/dispatch/$HANDOFF_ID^{tree}" 2>/dev/null || echo "")
-  EXISTING_PARENT=$($GIT -C "$MOTHER_REPO" rev-parse "refs/heads/dispatch/$HANDOFF_ID^" 2>/dev/null || echo "")
+  EXISTING_TREE=$($GIT -C "$MOTHER_REPO" rev-parse --verify "refs/heads/dispatch/$HANDOFF_ID^{tree}" 2>/dev/null || echo "")
+  EXISTING_PARENT=$($GIT -C "$MOTHER_REPO" rev-parse --verify "refs/heads/dispatch/$HANDOFF_ID^" 2>/dev/null || echo "")
 
   if [ "$EXISTING_TREE" = "$TREE" ] && [ "$EXISTING_PARENT" = "$BASE_SHA" ]; then
     echo "IDEMPOTENT"

@@ -192,7 +192,7 @@ describe('delivery.ts — buildDeliveryScript', () => {
     expect(scriptContent).toContain(
       '-c core.autocrlf=false -c core.eol=lf -c core.hooksPath= -c core.fsmonitor=',
     );
-    expect(scriptContent).toContain('GIT_INDEX_FILE="$CLONE_PATH/.dispatch-delivery-idx"');
+    expect(scriptContent).toContain('GIT_INDEX_FILE="$DELIVERY_IDX"');
     expect(scriptContent).toContain('read-tree "$BASE_SHA"');
     expect(scriptContent).toContain('write-tree');
     expect(scriptContent).toContain('commit-tree "$TREE" -p "$BASE_SHA"');
