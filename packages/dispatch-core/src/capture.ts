@@ -32,6 +32,8 @@ export interface CaptureOpts {
   model?: string;
   /** Isolation backend */
   isolationBackend?: string;
+  /** Needed access/decisions the worker reported on a non-completed outcome (rev-5 §5); parsed from Pi output. */
+  needs?: string[];
 }
 
 export interface CaptureResult {
@@ -125,7 +127,7 @@ function formatUsageSection(piResult: CaptureOpts['piResult']): string {
  * files) followed by a free-form findings body (spec §5).
  */
 export async function writeResponseDoc(opts: CaptureOpts): Promise<DispatchResult<CaptureResult>> {
-  const { runDir, handoff, delivery, piResult, model, isolationBackend } = opts;
+  const { runDir, handoff, delivery, piResult, model, isolationBackend, needs } = opts;
 
   const outcome = deriveOutcome(delivery, piResult);
   const branch = deriveBranch(handoff.id, delivery);
@@ -133,8 +135,9 @@ export async function writeResponseDoc(opts: CaptureOpts): Promise<DispatchResul
   const totalTokens = piResult?.usage.totalTokens ?? 0;
   const costUsd = piResult?.usage.costUsd ?? 0;
   const changedFilesYaml = `[${changedFiles.map((file) => JSON.stringify(file)).join(', ')}]`;
+  const hasNeeds = !!needs && needs.length > 0;
 
-  const frontmatter = [
+  const frontmatterLines = [
     '---',
     `handoff_id: ${handoff.id}`,
     `outcome: ${outcome}`,
@@ -144,23 +147,33 @@ export async function writeResponseDoc(opts: CaptureOpts): Promise<DispatchResul
     `cost_usd: ${costUsd}`,
     `branch: ${branch}`,
     `changed_files: ${changedFilesYaml}`,
-    '---',
-    '',
-  ].join('\n');
+  ];
+  if (hasNeeds) {
+    const needsYaml = `[${needs!.map((entry) => JSON.stringify(entry)).join(', ')}]`;
+    frontmatterLines.push(`needs: ${needsYaml}`);
+  }
+  frontmatterLines.push('---', '');
+  const frontmatter = frontmatterLines.join('\n');
 
-  const body = [
+  const bodyLines = [
     `# Response: ${handoff.title}`,
     '',
     '## Outcome',
     describeOutcome(delivery),
     '',
+  ];
+  if (hasNeeds) {
+    bodyLines.push('## Needs', ...needs!.map((entry) => `- ${entry}`), '');
+  }
+  bodyLines.push(
     '## Changed Files',
     formatChangedFilesSection(delivery),
     '',
     '## Usage',
     formatUsageSection(piResult),
     '',
-  ].join('\n');
+  );
+  const body = bodyLines.join('\n');
 
   const responseContent = `${frontmatter}\n${body}`;
   const responsePath = join(runDir, `${handoff.id}.response.md`);
@@ -184,7 +197,7 @@ export async function writeResponseDoc(opts: CaptureOpts): Promise<DispatchResul
  * always `[]` in S0 — credential profiles are S3 (T10) territory.
  */
 export function buildProvenanceWriteBack(opts: CaptureOpts): ProvenanceWriteBack {
-  const { runDir, handoff, delivery, model, isolationBackend } = opts;
+  const { runDir, handoff, delivery, model, isolationBackend, needs } = opts;
 
   const fields: Record<string, string | boolean | string[]> = {
     run_id: basename(runDir),
@@ -196,6 +209,10 @@ export function buildProvenanceWriteBack(opts: CaptureOpts): ProvenanceWriteBack
     response: `${handoff.id}.response.md`,
     credentials_granted: [],
   };
+
+  if (needs && needs.length > 0) {
+    fields.needs = needs;
+  }
 
   return { fields };
 }
