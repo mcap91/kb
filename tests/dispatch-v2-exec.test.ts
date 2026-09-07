@@ -70,6 +70,7 @@ describe('buildJailArgs', () => {
     expect(result.argv).toEqual([
       'bwrap',
       '--ro-bind', '/', '/',
+      '--proc', '/proc',
       '--bind', clonePath, clonePath,
       '--chdir', clonePath,
       '--',
@@ -83,6 +84,7 @@ describe('buildJailArgs', () => {
     expect(result.argv).toEqual([
       'bwrap',
       '--ro-bind', '/', '/',
+      '--proc', '/proc',
       '--bind', clonePath, clonePath,
       '--chdir', cwd,
       '--',
