@@ -28,7 +28,21 @@ export type DispatchErrorCode =
   | 'LOOKUP_FAILED'
   | 'ENVIRONMENT_UNSUPPORTED'
   | 'BACKGROUND_LAUNCH_FAILED'
-  | 'WAIT_TIMEOUT';
+  | 'WAIT_TIMEOUT'
+  // --- v2 dispatch pipeline (PLN-0004 S0) ---
+  | 'BAD_RECORD'
+  | 'MISSING_WRITE_SCOPE'
+  | 'DIRTY_REPO'
+  | 'ADMISSION_FAILED'
+  | 'MODEL_NOT_FOUND'
+  | 'ASSEMBLE_FAILED'
+  | 'ADAPTER_FAILED'
+  | 'WSL2_EXEC_FAILED'
+  | 'CLONE_FAILED'
+  | 'DELIVERY_FAILED'
+  | 'CAPTURE_FAILED'
+  | 'PREFLIGHT_FAILED'
+  | 'PIPELINE_FAILED';
 
 /**
  * Discriminated union result type for dispatch-core operations.
