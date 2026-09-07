@@ -1,20 +1,30 @@
 import { readFileSync, existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { parseTracker } from './parse-tracker.js';
 import { parseInitiative } from './parse-initiative.js';
 import { parseWkSet, expandRange } from './parse-wk-set.js';
 import { emit } from './emit.js';
 import { parseFrontmatter } from './util.js';
 
-const repoRoot = process.cwd();
-const args = process.argv.slice(2);
+const rawArgs = process.argv.slice(2);
+let repoRoot = process.cwd();
+const args: string[] = [];
+
+for (let i = 0; i < rawArgs.length; i++) {
+  if (rawArgs[i] === '--dir' && i + 1 < rawArgs.length) {
+    repoRoot = resolve(rawArgs[++i]);
+  } else {
+    args.push(rawArgs[i]);
+  }
+}
 
 if (args.length === 0) {
-  console.error('Usage: npm run dashboard -- <ID> [<ID>...]');
-  console.error('  PLN-0004          Plan with tracker');
-  console.error('  IN-0004           Initiative with linked WKs');
-  console.error('  WK-0070..WK-0075  Work item range');
-  console.error('  WK-0070 WK-0072   Work item list');
+  console.error('Usage: npm run dashboard -- <ID> [--dir <path>] [<ID>...]');
+  console.error('  PLN-0004                    Plan with tracker');
+  console.error('  IN-0004                     Initiative with linked WKs');
+  console.error('  WK-0070..WK-0075            Work item range');
+  console.error('  WK-0070 WK-0072             Work item list');
+  console.error('  --dir /path/to/repo         Repo root (default: cwd)');
   process.exit(1);
 }
 
