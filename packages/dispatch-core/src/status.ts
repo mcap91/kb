@@ -6,35 +6,9 @@ import type { DispatchResult } from './errors.js';
 import { ok, fail } from './errors.js';
 import { getTokenDir, type TokenState } from './paths.js';
 import { readRunArtifacts } from './lookup.js';
+import { isAlive, isRecordedProcessAlive } from './run-state.js';
 
 const ACTIVE_HEARTBEAT_GRACE_MS = 5 * 60 * 1000;
-
-function isAlive(target: number): boolean {
-  try {
-    process.kill(target, 0);
-    return true;
-  } catch (err) {
-    if (typeof err === 'object' && err !== null && 'code' in err && err.code === 'ESRCH') {
-      return false;
-    }
-    return true;
-  }
-}
-
-function isRecordedProcessAlive(pid: number, pgid: number): boolean {
-  if (process.platform !== 'win32' && pgid > 0) {
-    try {
-      process.kill(-pgid, 0);
-      return true;
-    } catch (err) {
-      if (!(typeof err === 'object' && err !== null && 'code' in err && err.code === 'ESRCH')) {
-        return true;
-      }
-    }
-  }
-
-  return pid > 0 ? isAlive(pid) : false;
-}
 
 async function listTerminalRunReviewIds(repoRoot: string): Promise<Set<string>> {
   const runsDir = join(repoRoot, '.agent-runs', 'runs');
