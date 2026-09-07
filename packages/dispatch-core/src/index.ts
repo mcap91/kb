@@ -227,3 +227,10 @@ export { runPreflight, parsePreflightOutput } from './preflight.js';
 // The runDispatch() pipeline
 export type { DispatchOpts, DispatchResult2 } from './pipeline.js';
 export { runDispatch } from './pipeline.js';
+
+// ---------------------------------------------------------------------------
+// V2 background dispatch (S1)
+// ---------------------------------------------------------------------------
+
+export type { DispatchBackgroundOpts, DispatchBackgroundResult } from './dispatch-background.js';
+export { launchDispatchBackground } from './dispatch-background.js';

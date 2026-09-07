@@ -58,6 +58,8 @@ const WORKER_TIMEOUT_MS = WORKER_TIMEOUT_SECS * 1000;
 const PI_WORKER_DIR = '.pi-agent';
 const WORKER_INFRA_PREFIXES = [PI_WORKER_DIR];
 
+const VALID_RUN_ID = /^RUN-[0-9a-f-]{36}$/i;
+
 export interface DispatchOpts {
   /** Windows path to the mother repo */
   dir: string;
@@ -65,6 +67,8 @@ export interface DispatchOpts {
   handoff: string;
   /** Model alias from the registry (e.g. 'deepseek', 'qwen3:8b') */
   model: string;
+  /** Pre-minted run id (background controller injects this; standalone callers omit). */
+  runId?: string;
   /** Run preflight before dispatch? (default: true) */
   preflight?: boolean;
   /** Verbose output */
@@ -111,10 +115,13 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
   const model = modelResult.data;
   const canonicalModel = `${model.provider}/${model.modelId}`;
 
-  // 5. Generate run ID
-  const runId = `RUN-${randomUUID()}`;
+  // 5. Run ID — injected by the background controller, or minted here for standalone callers.
+  const runId = opts.runId ?? `RUN-${randomUUID()}`;
+  if (!VALID_RUN_ID.test(runId)) {
+    return fail('PIPELINE_FAILED', `Invalid run id format: ${runId}`);
+  }
 
-  // 6. Create run dir
+  // 6. Create run dir (idempotent — controller may have already created it)
   const runDir = getRunDir(dir, handoff.id, runId);
   try {
     await mkdir(runDir, { recursive: true });
