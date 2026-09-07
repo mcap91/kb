@@ -49,6 +49,9 @@ import { writeResponseDoc } from './capture.js';
 import { runPreflight } from './preflight.js';
 import { getRunDir } from './paths.js';
 
+const WORKER_TIMEOUT_SECS = 1800;
+const WORKER_TIMEOUT_MS = WORKER_TIMEOUT_SECS * 1000;
+
 export interface DispatchOpts {
   /** Windows path to the mother repo */
   dir: string;
@@ -187,6 +190,7 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       'fi',
       '',
       `export PI_CODING_AGENT_DIR=${shQuote(workerDir)}`,
+      'export PI_OFFLINE=1',
       'mkdir -p "$PI_CODING_AGENT_DIR"',
       '',
       `cat <<'DISPATCH_MODELS_JSON_EOF' > "$PI_CODING_AGENT_DIR/models.json"`,
@@ -197,18 +201,21 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       'sed -i "s/{{WIN_HOST}}/$WIN_HOST/g" "$PI_CODING_AGENT_DIR/models.json"',
       '',
       `PI_LOG=${shQuote(`${runDirWsl}/pi-output.log`)}`,
-      `${bwrapCommand} 2>&1 | tee "$PI_LOG"`,
+      `WORKER_TIMEOUT_SECS=${WORKER_TIMEOUT_SECS}`,
+      `timeout --signal=TERM --kill-after=30s "$WORKER_TIMEOUT_SECS" ${bwrapCommand} < /dev/null 2>&1 | tee "$PI_LOG"`,
       '',
     ].join('\n');
 
     // 14. Execute via execViaWsl2
     logVerbose(verbose, `invoking ${canonicalModel} via bwrap+pi in the WSL2 clone`);
-    const execResult = await execViaWsl2({ runDir, scriptContent: executionScript, scriptName: 'dispatch-run.sh' });
+    const execResult = await execViaWsl2({
+      runDir,
+      scriptContent: executionScript,
+      scriptName: 'dispatch-run.sh',
+      timeoutMs: WORKER_TIMEOUT_MS + 60_000,
+    });
     if (!execResult.ok) return execResult;
-    if (execResult.data.exitCode !== 0) {
-      // pi --mode json always exits 0 (adapters/pi.ts) — a non-zero exit here
-      // means the SETUP portion of the script (or bwrap itself) failed, not a
-      // worker-reported outcome.
+    if (execResult.data.exitCode !== 0 && execResult.data.exitCode !== 124) {
       return fail(
         'PIPELINE_FAILED',
         `Dispatch execution script exited with code ${execResult.data.exitCode} (killedBySignal=${execResult.data.killedBySignal}).`,
@@ -216,9 +223,23 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       );
     }
 
-    // 15. Parse Pi output
+    // 15. Parse Pi output (exit 124 = watchdog timeout; recoverable only if
+    // Pi wrote agent_end before the reap — the pi#4303 post-completion flavor)
     const piParsed = parsePiOutput(execResult.data.stdout);
-    if (!piParsed.ok) return piParsed;
+    if (!piParsed.ok) {
+      if (execResult.data.exitCode === 124) {
+        return fail('PIPELINE_FAILED', `Worker timed out after ${WORKER_TIMEOUT_SECS}s (watchdog exit 124; no parseable output).`, execResult.data);
+      }
+      return piParsed;
+    }
+
+    if (execResult.data.exitCode === 124 && !piParsed.data.hasAgentEnd) {
+      return fail('PIPELINE_FAILED', `Worker timed out after ${WORKER_TIMEOUT_SECS}s (watchdog exit 124).`, { exitCode: 124, piOutcome: piParsed.data.outcome });
+    }
+
+    if (execResult.data.exitCode === 124) {
+      logVerbose(verbose, 'watchdog reaped pi after completion (pi#4303 flavor)');
+    }
     logVerbose(verbose, `pi outcome: ${piParsed.data.outcome}`);
 
     // 16. Enumerate changes
@@ -228,6 +249,7 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       runDir,
       scriptContent: enumerateScript.scriptContent,
       scriptName: enumerateScript.scriptName,
+      timeoutMs: 120_000,
     });
     if (!enumerateExec.ok) return enumerateExec;
     if (enumerateExec.data.exitCode !== 0) {
@@ -278,6 +300,7 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
         runDir,
         scriptContent: deliveryScript.scriptContent,
         scriptName: deliveryScript.scriptName,
+        timeoutMs: 120_000,
       });
       if (!deliveryExec.ok) return deliveryExec;
       if (deliveryExec.data.exitCode !== 0) {
