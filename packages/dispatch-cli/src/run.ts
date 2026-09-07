@@ -460,6 +460,24 @@ async function cmdStatus(args: string[]): Promise<number> {
   console.log(`Rejected tokens: ${data.rejected.length}`);
   console.log(`Runs in repo: ${data.runCount}`);
   console.log(`Review bundles in repo: ${data.reviewCount}`);
+
+  if (data.runs && data.runs.length > 0) {
+    console.log(`\nRuns (${data.runs.length}):`);
+    for (const run of data.runs) {
+      const runtime = run.runtimeSecs !== null ? `${Math.round(run.runtimeSecs)}s` : '-';
+      const hbAge = run.heartbeatAgeSecs !== null ? `${Math.round(run.heartbeatAgeSecs)}s` : '-';
+      const stale = run.stale ? ' STALE' : '';
+      const delivery = run.deliveryStatus ? ` delivery=${run.deliveryStatus}` : '';
+      const branch = run.branch ? ` branch=${run.branch}` : '';
+      console.log(`  ${run.runId} [${run.status}] ${run.handoffId} model=${run.model ?? '-'} runtime=${runtime} hb_age=${hbAge}${stale}${delivery}${branch}`);
+      if (run.logTail && run.logTail.length > 0) {
+        for (const line of run.logTail) {
+          console.log(`    | ${line}`);
+        }
+      }
+    }
+  }
+
   return 0;
 }
 
