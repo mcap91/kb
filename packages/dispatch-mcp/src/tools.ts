@@ -7,6 +7,7 @@ import {
   initConfig,
   launch,
   launchBackground,
+  launchDispatchBackground,
   review,
   reviewAndLaunch,
   reviewAndLaunchBackground,
@@ -156,12 +157,19 @@ export const tools: ToolDef[] = [
   },
   {
     name: 'wait-for-run',
-    description: 'Wait for a dispatch run to reach terminal status, returning current state on timeout. Requires at least one of reviewId or runId.',
+    description: 'Wait for a dispatch run to reach terminal status, returning current state on timeout. Requires at least one of reviewId or runId. MCP callers default to a 20s timeout and are capped at 120s (poll at turn boundaries instead of requesting a long wait) — use the CLI `wait-for-run` verb for long unattended blocking waits.',
     inputSchema: requireRunIdentifier(runIdentifierSchema.extend({
-      timeoutSeconds: z.number().optional(),
+      timeoutSeconds: z.number().optional().describe('Timeout in seconds. Default 20, clamped to 120 max for MCP callers.'),
       pollIntervalMs: z.number().optional(),
     })),
-    handler: async (input) => waitForRun(input as unknown as Parameters<typeof waitForRun>[0]),
+    handler: async (input) => {
+      const requestedTimeoutSeconds = typeof input.timeoutSeconds === 'number' ? input.timeoutSeconds : 20;
+      const timeoutSeconds = Math.min(requestedTimeoutSeconds, 120);
+      return waitForRun({
+        ...(input as unknown as Parameters<typeof waitForRun>[0]),
+        timeoutSeconds,
+      });
+    },
   },
   {
     name: 'get-response',
@@ -171,5 +179,25 @@ export const tools: ToolDef[] = [
       includeLogs: z.boolean().optional(),
     })),
     handler: async (input) => getResponse(input as unknown as Parameters<typeof getResponse>[0]),
+  },
+  {
+    name: 'dispatch',
+    description: 'Run the v2 dispatch pipeline: gate → clone → jail → worker → delivery → capture. Always runs in background; returns runId immediately. Use status/wait-for-run to track progress.',
+    inputSchema: z.object({
+      dir: z.string().describe('Target repo directory'),
+      handoff: z.string().describe('Repo-relative path to the HO file, e.g. wiki/handoffs/HO-0004.md'),
+      model: z.string().describe('Model alias from the registry, e.g. deepseek, qwen3:8b'),
+      effort: z.string().optional().describe('Effort/reasoning level (refused with EFFORT_UNSUPPORTED when the model cannot carry it)'),
+      preflight: z.boolean().optional().describe('Run bwrap preflight check (default: true)'),
+      verbose: z.boolean().optional(),
+    }),
+    handler: async (input) => launchDispatchBackground({
+      dir: input.dir as string,
+      handoff: input.handoff as string,
+      model: input.model as string,
+      effort: input.effort as string | undefined,
+      preflight: input.preflight as boolean | undefined,
+      verbose: input.verbose as boolean | undefined,
+    }),
   },
 ];
