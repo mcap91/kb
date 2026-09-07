@@ -258,8 +258,13 @@ export function buildDeliveryScript(opts: {
   motherRepoWsl: string;
   handoffId: string;
   baseSha: string;
+  excludePrefixes?: string[];
 }): DeliveryScript {
   const { clonePath, motherRepoWsl, handoffId, baseSha } = opts;
+  const prefixes = opts.excludePrefixes ?? [];
+  const gitAddLine = prefixes.length === 0
+    ? '$GIT add -A'
+    : `$GIT add -A -- ${prefixes.map(p => shQuote(':!' + p)).join(' ')}`;
 
   const scriptContent = `#!/bin/bash
 set -euo pipefail
@@ -282,7 +287,7 @@ cd "$CLONE_PATH"
 # Seed a temp index from base_sha (never the real index) and stage the full
 # working-tree delta (modified + untracked + deleted) into it.
 $GIT read-tree "$BASE_SHA"
-$GIT add -A
+${gitAddLine}
 
 TREE=$($GIT write-tree)
 COMMIT=$($GIT commit-tree "$TREE" -p "$BASE_SHA" -m "dispatch: $HANDOFF_ID")
