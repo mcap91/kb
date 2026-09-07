@@ -5,14 +5,12 @@ import {
   access,
   copyFile,
   mkdir,
-  open,
   readFile,
   readdir,
-  rename,
   stat,
   writeFile,
 } from 'node:fs/promises';
-import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
+import { isAbsolute, join, resolve } from 'node:path';
 
 import type {
   AgentLauncherConfig,
@@ -29,6 +27,16 @@ import { readTokenFile, verifyToken, moveToken } from './token.js';
 import { getReviewDir, getRunDir } from './paths.js';
 import { loadRegistry, resolveAgentConfig } from './registry.js';
 import { buildSpawnInvocation, resolveExecutableCommand, shouldSpawnDetached } from './spawn.js';
+import {
+  writeAtomic,
+  writeJsonAtomic,
+  writeStateMetadata,
+  isAlive,
+  isRecordedProcessAlive,
+  signalChildProcessGroup,
+  HEARTBEAT_INTERVAL_MS,
+  type TerminalRunStatus,
+} from './run-state.js';
 
 const ENV_ALLOWLIST_POSIX = [
   'HOME',
@@ -61,11 +69,9 @@ const ENV_ALLOWLIST_WINDOWS = [
   'PATHEXT',
 ];
 
-const HEARTBEAT_INTERVAL_MS = 1000;
 const CANCEL_GRACE_MS = 30_000;
 
 type LaunchTokenState = 'launching' | 'consumed' | 'rejected';
-type TerminalRunStatus = 'completed' | 'failed' | 'timed_out' | 'cancelled' | 'rejected';
 
 type ReviewManifest = {
   handoff_id: string;
@@ -101,27 +107,6 @@ async function sha256File(path: string): Promise<string> {
 
 async function sha256TaggedFile(path: string): Promise<string> {
   return sha256Tagged(await readFile(path));
-}
-
-async function writeAtomic(targetPath: string, content: string): Promise<void> {
-  const dirPath = dirname(targetPath);
-  await mkdir(dirPath, { recursive: true });
-  const tempPath = join(
-    dirPath,
-    `.tmp-${basename(targetPath)}-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`,
-  );
-  const handle = await open(tempPath, 'w');
-  try {
-    await handle.writeFile(content, 'utf-8');
-    await handle.sync();
-  } finally {
-    await handle.close();
-  }
-  await rename(tempPath, targetPath);
-}
-
-async function writeJsonAtomic(targetPath: string, value: unknown): Promise<void> {
-  await writeAtomic(targetPath, `${JSON.stringify(value, null, 2)}\n`);
 }
 
 async function copyTree(sourceDir: string, targetDir: string): Promise<void> {
@@ -352,31 +337,6 @@ async function writeLaunchMetadata(
   await writeJsonAtomic(join(metadataDir, 'launch.json'), payload);
 }
 
-async function writeStateMetadata(
-  metadataDir: string,
-  data: {
-    runId: string;
-    status: 'launching' | 'running' | TerminalRunStatus;
-    pid: number;
-    pgid: number;
-    startedAt: string;
-    heartbeatAt: string;
-  },
-): Promise<void> {
-  await writeJsonAtomic(
-    join(metadataDir, 'state.json'),
-    {
-      schema_version: 1,
-      run_id: data.runId,
-      status: data.status,
-      pid: data.pid,
-      pgid: data.pgid,
-      started_at: data.startedAt,
-      heartbeat_at: data.heartbeatAt,
-    },
-  );
-}
-
 /** The `##KB_USAGE##` sentinel marker the blackboard adapters print on stderr (WK-0066). */
 const KB_USAGE_MARKER = '##KB_USAGE##';
 
@@ -499,61 +459,6 @@ function compareTokenToReview(
   }
 
   return ok(undefined);
-}
-
-function isAlive(target: number): boolean {
-  try {
-    process.kill(target, 0);
-    return true;
-  } catch (err) {
-    if (typeof err === 'object' && err !== null && 'code' in err && err.code === 'ESRCH') {
-      return false;
-    }
-    return true;
-  }
-}
-
-function isRecordedProcessAlive(pid: number, pgid: number): boolean {
-  if (process.platform !== 'win32' && pgid > 0) {
-    try {
-      process.kill(-pgid, 0);
-      return true;
-    } catch (err) {
-      if (!(typeof err === 'object' && err !== null && 'code' in err && err.code === 'ESRCH')) {
-        return true;
-      }
-    }
-  }
-
-  return pid > 0 ? isAlive(pid) : false;
-}
-
-function signalChildProcessGroup(child: ChildProcess, signal: NodeJS.Signals): void {
-  if (!child.pid) {
-    return;
-  }
-
-  if (process.platform !== 'win32') {
-    try {
-      process.kill(-child.pid, signal);
-      return;
-    } catch (err) {
-      if (!(typeof err === 'object' && err !== null && 'code' in err && err.code === 'ESRCH')) {
-        try {
-          process.kill(child.pid, signal);
-        } catch {
-          // best effort
-        }
-        return;
-      }
-    }
-  }
-
-  try {
-    process.kill(child.pid, signal);
-  } catch {
-    // best effort
-  }
 }
 
 async function verifyReviewedBundle(

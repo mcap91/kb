@@ -103,6 +103,14 @@ export { review } from './review.js';
 // Launch
 export { launch } from './launch.js';
 
+// Run state (shared v1/v2 seam). NOTE: `TerminalRunStatus` is intentionally NOT re-exported here
+// under its own name — `types-background.ts` already exports a structurally identical
+// `TerminalRunStatus` (same literal union) via the "Background launch types" section above, and
+// re-exporting run-state.ts's copy under the same bare name is a duplicate-identifier compile
+// error (TS2300). Consumers needing the type get it from that existing export; code inside this
+// package imports it directly from './run-state.js'.
+export { writeAtomic, writeJsonAtomic, writeStateMetadata, isAlive, isRecordedProcessAlive, signalChildProcessGroup, HEARTBEAT_INTERVAL_MS } from './run-state.js';
+
 // Environment
 export {
   checkEnvironment,
