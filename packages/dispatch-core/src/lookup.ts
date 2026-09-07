@@ -124,8 +124,22 @@ export async function resolveRun(opts: {
       const metaJson = await tryReadJson(join(metadataDir, 'meta.json')) as Record<string, unknown> | null;
       const reviewJson = await tryReadJson(join(metadataDir, 'review.json')) as Record<string, unknown> | null;
       const stateJson = await tryReadJson(join(metadataDir, 'state.json')) as Record<string, unknown> | null;
+      // v2 dual-layout fallback (PLN-0004 S1 Wave 3, s1-rulings ruling 5/7): v2
+      // runs keep their ONE state.json at the run root, not under metadata/.
+      // v1 run dirs never have a root-level state.json, so this is a no-op for them.
+      const v2StateJson = await tryReadJson(join(runDir, 'state.json')) as Record<string, unknown> | null;
+      const isV2 = v2StateJson !== null && v2StateJson.schema_version === 2;
 
-      const identity = extractRunIdentity(launchMeta, metaJson, reviewJson);
+      const identity = isV2
+        ? {
+          reviewId: null,
+          handoffId: (typeof v2StateJson!.handoff_id === 'string' ? v2StateJson!.handoff_id : handoffId),
+          // v2 has no agent-registry concept (every S1 run goes through the Pi
+          // harness) and doesn't mirror the HO's mode into state.json.
+          agent: 'pi',
+          mode: 'implement',
+        }
+        : extractRunIdentity(launchMeta, metaJson, reviewJson);
 
       if (bothProvided) {
         const normalizedTarget = normalizeRunId(opts.runId!);
@@ -136,16 +150,20 @@ export async function resolveRun(opts: {
         continue;
       }
 
-      const status = deriveStatus(metaJson, stateJson, launchMeta);
+      const status = isV2
+        ? ((typeof v2StateJson!.status === 'string' ? v2StateJson!.status : 'unknown') as InternalRunStatus)
+        : deriveStatus(metaJson, stateJson, launchMeta);
 
       candidates.push({
         runId: runDirName,
         runDir,
-        handoffId,
+        handoffId: identity.handoffId ?? handoffId,
         reviewId: identity.reviewId ?? '',
         agent: identity.agent ?? 'unknown',
         mode: identity.mode ?? 'implement',
-        startedAt: (launchMeta?.started_at as string) ?? null,
+        startedAt: isV2
+          ? (typeof v2StateJson!.started_at === 'string' ? v2StateJson!.started_at : null)
+          : (launchMeta?.started_at as string) ?? null,
         status,
       });
     }

@@ -415,4 +415,33 @@ export interface StatusResult {
   rejected: TokenInfo[];
   runCount: number;
   reviewCount: number;
+  runs: RunInfo[];
+}
+
+// ---------------------------------------------------------------------------
+// v2 status runs[] (PLN-0004 S1 Wave 3, s1-rulings ruling 6)
+// ---------------------------------------------------------------------------
+
+/**
+ * Repo-wide per-run view, additive alongside the v1 token-bucket fields above.
+ * Built by dual-layout scanning `.agent-runs/runs/`: v1 run dirs keep
+ * `metadata/state.json` (schema_version 1 or absent); v2 run dirs keep ONE
+ * `state.json` at the run root (schema_version 2). Both shapes populate this
+ * one interface — fields with no v1 analog (`model`, `deliveryStatus`,
+ * `branch`, `logTail`) are null for v1 rows.
+ */
+export interface RunInfo {
+  runId: string;
+  handoffId: string;
+  model: string | null;
+  status: string;
+  startedAt: string | null;
+  runtimeSecs: number | null;
+  heartbeatAt: string | null;
+  heartbeatAgeSecs: number | null;
+  stale: boolean;
+  deliveryStatus: string | null;
+  branch: string | null;
+  logTail: string[] | null;
+  schemaVersion: number;
 }
