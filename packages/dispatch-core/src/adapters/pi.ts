@@ -57,6 +57,7 @@ export interface PiUsage {
 export interface PiResult {
   outcome: 'completed' | 'partial' | 'blocked' | 'failed' | 'error';
   stopReason?: string;
+  hasAgentEnd: boolean;
   usage: PiUsage;
   /** Raw parsed JSON-lines events, in stream order. */
   events: unknown[];
@@ -110,7 +111,7 @@ export function buildInvocation(
   clonePath: string,
   workerDir: string,
 ): PiInvocation {
-  const env: Record<string, string> = { PI_CODING_AGENT_DIR: workerDir };
+  const env: Record<string, string> = { PI_CODING_AGENT_DIR: workerDir, PI_OFFLINE: '1' };
   if (model.apiKeyEnv) {
     // Placeholder reference only — the real value is sourced from secrets.env at
     // spawn time (execution/s0-rulings.md ruling 5), never assembled here.
@@ -165,6 +166,10 @@ export function parsePiOutput(stdout: string): DispatchResult<PiResult> {
     return fail('No parseable JSON-lines events found in Pi output.', { rawLineCount: lines.length });
   }
 
+  if (events.length === 0) {
+    return ok({ outcome: 'failed', stopReason: 'empty_stream', hasAgentEnd: false, usage: { totalTokens: 0, costUsd: 0 }, events: [] });
+  }
+
   let totalTokens = 0;
   let costUsd = 0;
   let sawError = false;
@@ -201,7 +206,15 @@ export function parsePiOutput(stdout: string): DispatchResult<PiResult> {
   // 'completed'; the response-doc-level completed/partial/blocked/failed
   // distinction is read from the worker's own response text by the capture
   // step (Wave 2 delivery/capture), not inferred here.
-  const outcome: PiResult['outcome'] = sawError ? 'error' : 'completed';
+  const hasAgentEnd = events.some(e => isRecord(e) && e.type === 'agent_end');
+  const outcome: PiResult['outcome'] = sawError
+    ? 'error'
+    : hasAgentEnd
+      ? 'completed'
+      : 'failed';
+  if (outcome === 'failed' && stopReason === undefined) {
+    stopReason = 'truncated_stream';
+  }
 
-  return ok({ outcome, stopReason, usage: { totalTokens, costUsd }, events });
+  return ok({ outcome, stopReason, hasAgentEnd, usage: { totalTokens, costUsd }, events });
 }

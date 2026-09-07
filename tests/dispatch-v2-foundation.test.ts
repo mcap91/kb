@@ -417,6 +417,7 @@ describe('adapters/pi.ts — facts-only Pi adapter', () => {
     ]);
     expect(invocation.env).toEqual({
       PI_CODING_AGENT_DIR: '/tmp/run/worker-dir',
+      PI_OFFLINE: '1',
       OPENROUTER_API_KEY: '$OPENROUTER_API_KEY',
     });
     expect(invocation.cwd).toBe('/tmp/run/clone');
@@ -438,7 +439,7 @@ describe('adapters/pi.ts — facts-only Pi adapter', () => {
     };
 
     const invocation = buildInvocation('/tmp/run/prompt.txt', model, '/tmp/run/clone', '/tmp/run/worker-dir');
-    expect(invocation.env).toEqual({ PI_CODING_AGENT_DIR: '/tmp/run/worker-dir' });
+    expect(invocation.env).toEqual({ PI_CODING_AGENT_DIR: '/tmp/run/worker-dir', PI_OFFLINE: '1' });
     expect(invocation.args).toContain('ollama/qwen3:8b');
   });
 
@@ -537,5 +538,32 @@ describe('adapters/pi.ts — facts-only Pi adapter', () => {
     if (!failing.ok) {
       expect(failing.error).toBe('ADAPTER_FAILED');
     }
+  });
+
+  it('parsePiOutput returns failed/empty_stream on empty input', () => {
+    const result = parsePiOutput('');
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.outcome).toBe('failed');
+    expect(result.data.stopReason).toBe('empty_stream');
+    expect(result.data.hasAgentEnd).toBe(false);
+    expect(result.data.usage.totalTokens).toBe(0);
+  });
+
+  it('parsePiOutput returns failed/truncated_stream when no agent_end is present', () => {
+    const lines = [
+      JSON.stringify({ type: 'agent_start' }),
+      JSON.stringify({
+        type: 'message_end',
+        message: { role: 'assistant', usage: { totalTokens: 30, cost: { total: 0.0003 } } },
+      }),
+    ].join('\n');
+
+    const result = parsePiOutput(lines);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.outcome).toBe('failed');
+    expect(result.data.stopReason).toBe('truncated_stream');
+    expect(result.data.hasAgentEnd).toBe(false);
   });
 });
