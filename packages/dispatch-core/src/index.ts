@@ -157,3 +157,65 @@ export {
   launchReviewBackground,
   reviewAndLaunchInBackground,
 } from './wrapper.js';
+
+// ---------------------------------------------------------------------------
+// V2 dispatch pipeline (PLN-0004 S0). Lives alongside v1 above; nothing in
+// this section replaces or modifies a v1 export. `HandoffMode` collides with
+// v1's own export of the same name (types.ts) — the v2 one is re-exported as
+// `V2HandoffMode`.
+// ---------------------------------------------------------------------------
+
+// HO frontmatter parsing (§5)
+export type { Handoff, HandoffMode as V2HandoffMode } from './ho.js';
+export { parseHandoff, parseHandoffContent } from './ho.js';
+
+// Admission gate (§7 S0 subset)
+export type { AdmissionResult } from './admission.js';
+export { checkAdmission } from './admission.js';
+
+// Model registry (T23 S0 seed)
+export type { ModelEntry, ModelRegistry } from './model-registry.js';
+export { getDefaultRegistry, resolveModel } from './model-registry.js';
+
+// Mechanical prompt assembly (§8)
+export type { AssembledPrompt } from './assemble.js';
+export { assemblePrompt } from './assemble.js';
+
+// Pi adapter (facts-only; D10)
+export type { PiModelsJson, PiInvocation, PiUsage, PiResult } from './adapters/pi.js';
+export { buildModelsJson, buildInvocation, parsePiOutput } from './adapters/pi.js';
+
+// Windows -> WSL2 routing (§11)
+export type { Wsl2ScriptOpts, Wsl2ExecResult } from './wsl2.js';
+export { execViaWsl2, classifySignalExit, windowsToWslPath, resolveWinHostIp } from './wsl2.js';
+
+// bwrap jail args (§11 S0 minimum)
+export type { JailOpts, JailArgs } from './jail.js';
+export { buildJailArgs } from './jail.js';
+
+// Ephemeral clone management (§8)
+export type { CloneOpts, CloneResult } from './clone.js';
+export { createClone, removeClone, sweepOrphanClones } from './clone.js';
+
+// Delivery gate (§8 — enumerate -> verdict -> land)
+export type { DeliveryOpts, DeliveryOutcome, EnumerateScript, DeliveryScript, EnumerateResult } from './delivery.js';
+export {
+  buildEnumerateScript,
+  parseEnumerateOutput,
+  checkWriteScope,
+  scanSecrets,
+  buildDeliveryScript,
+  parseDeliveryOutput,
+} from './delivery.js';
+
+// Capture (§5/§8 — response doc + provenance write-back fields)
+export type { CaptureOpts, CaptureResult, ProvenanceWriteBack } from './capture.js';
+export { writeResponseDoc, buildProvenanceWriteBack } from './capture.js';
+
+// Host preflight + remediation (T27; DEC-0008 D20)
+export type { PreflightResult } from './preflight.js';
+export { runPreflight, parsePreflightOutput } from './preflight.js';
+
+// The runDispatch() pipeline
+export type { DispatchOpts, DispatchResult2 } from './pipeline.js';
+export { runDispatch } from './pipeline.js';

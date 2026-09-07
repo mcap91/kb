@@ -26,6 +26,7 @@ import {
 } from './contract.js';
 import { writeManagedBlock } from './agent-instructions.js';
 import { writeMcpConfig } from './mcp-config.js';
+import { ensureGitignoreEntries } from './gitignore.js';
 import { debug, setVerbose } from './debug.js';
 
 // ---------------------------------------------------------------------------
@@ -398,6 +399,12 @@ export async function sync(opts: SyncOpts): Promise<Result<SyncResult>> {
     if (mcpData.commands) {
       instructions.push(...mcpData.commands);
     }
+  }
+
+  // 7. Ensure .gitignore contains kb entries
+  const gitignoreResult = ensureGitignoreEntries(targetDir, { dryRun: checkOnly });
+  if (gitignoreResult.action !== 'unchanged') {
+    updated.push('.gitignore');
   }
 
   return ok({

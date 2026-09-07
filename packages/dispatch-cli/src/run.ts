@@ -9,6 +9,7 @@ import {
   launch,
   review,
   reviewAndLaunch,
+  runDispatch,
   status,
 } from '@kb/dispatch-core';
 
@@ -16,6 +17,7 @@ import type {
   CheckEnvironmentResult,
   CleanupReport,
   CreateHandoffResult,
+  DispatchResult2,
   LaunchEvent,
   ReviewResult,
   RunResult,
@@ -108,6 +110,7 @@ Commands:
   review-and-launch          Review and immediately launch a handoff
   cleanup                    Clean up stale dispatch state
   status                     Show current dispatch state
+  dispatch                   Run the v2 dispatch pipeline
 
 Global Options:
   --help                     Show this help text
@@ -161,6 +164,12 @@ Command Options:
 
   status
     --dir <path>             Repository root directory (defaults to cwd)
+
+  dispatch                   Run the v2 dispatch pipeline
+    --dir <path>             Repository root directory (required)
+    --handoff <rel-path>     Relative path to handoff file (required)
+    --model <alias>          Model alias from registry (required)
+    --no-preflight           Skip bwrap preflight check
 `.trim();
 
 async function cmdInitConfig(args: string[]): Promise<number> {
@@ -440,6 +449,42 @@ async function cmdStatus(args: string[]): Promise<number> {
   return 0;
 }
 
+async function cmdDispatch(args: string[]): Promise<number> {
+  const dir = getFlagValue(args, '--dir');
+  const handoff = getFlagValue(args, '--handoff');
+  const model = getFlagValue(args, '--model');
+  const noPreflight = getFlag(args, '--no-preflight');
+  const verbose = getFlag(args, '--verbose');
+
+  if (!dir || !handoff || !model) {
+    console.error('Error: --dir, --handoff, and --model are required');
+    return 1;
+  }
+
+  const result = await runDispatch({
+    dir,
+    handoff,
+    model,
+    preflight: !noPreflight,
+    verbose,
+  });
+
+  if (!result.ok) {
+    console.error(`Dispatch failed: [${result.error}] ${result.message}`);
+    return 1;
+  }
+
+  const data: DispatchResult2 = result.data;
+  console.log('Dispatch succeeded.');
+  console.log(`  Run ID:    ${data.runId}`);
+  console.log(`  Handoff:   ${data.handoffId}`);
+  console.log(`  Model:     ${data.model}`);
+  console.log(`  Run dir:   ${data.runDir}`);
+  console.log(`  Response:  ${data.responsePath}`);
+  console.log(`  Delivery:  ${data.delivery.status}`);
+  return 0;
+}
+
 export async function run(args: string[]): Promise<number> {
   const showHelp = getFlag(args, '--help') || getFlag(args, '-h');
   const showVersion = getFlag(args, '--version') || getFlag(args, '-v');
@@ -472,6 +517,8 @@ export async function run(args: string[]): Promise<number> {
       return cmdCleanup(args);
     case 'status':
       return cmdStatus(args);
+    case 'dispatch':
+      return cmdDispatch(args);
     default:
       console.error(`Unknown command: ${command}`);
       console.error('Run with --help to see available commands.');
