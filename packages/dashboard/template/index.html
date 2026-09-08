@@ -1,0 +1,560 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dashboard</title>
+<script>
+// Set theme before paint (no flash). Default: dark.
+try { document.documentElement.dataset.theme = localStorage.getItem('kb-dash-theme') || 'dark'; }
+catch (e) { document.documentElement.dataset.theme = 'dark'; }
+</script>
+<style>
+:root{
+  --bg:#0a0c10; --surface:#12151c; --surface-2:#171b24;
+  --border:#232834; --border-strong:#313846;
+  --ink:#e6e9ef; --ink-2:#9aa4b2; --ink-3:#626c7d;
+  --done:#3fb865; --prog:#4d9dff; --blocked:#ff6b5e; --queued:#6b7688;
+  --accent:#f0a831;
+  --done-bg:rgba(63,184,101,.10); --prog-bg:rgba(77,157,255,.10);
+  --blocked-bg:rgba(255,107,94,.10); --queued-bg:rgba(107,118,136,.10);
+  --accent-bg:rgba(240,168,49,.12);
+  --shadow:0 1px 0 rgba(0,0,0,.35), 0 10px 26px -14px rgba(0,0,0,.7);
+  --mono:ui-monospace,'Cascadia Code','JetBrains Mono','SF Mono',Consolas,monospace;
+  --sans:ui-sans-serif,'Segoe UI',system-ui,-apple-system,'Helvetica Neue',sans-serif;
+  --r:8px;
+}
+:root[data-theme='light']{
+  --bg:#f4f6f9; --surface:#ffffff; --surface-2:#eef1f5;
+  --border:#e4e8ee; --border-strong:#d2d8e1;
+  --ink:#14171d; --ink-2:#525b68; --ink-3:#7b8494;
+  --done:#159447; --prog:#1f6fe6; --blocked:#d83a2e; --queued:#7b8494;
+  --accent:#b7791f;
+  --done-bg:rgba(21,148,71,.08); --prog-bg:rgba(31,111,230,.08);
+  --blocked-bg:rgba(216,58,46,.08); --queued-bg:rgba(123,132,148,.08);
+  --accent-bg:rgba(183,121,31,.10);
+  --shadow:0 1px 2px rgba(20,30,50,.06), 0 10px 22px -16px rgba(20,30,50,.28);
+}
+*{margin:0;padding:0;box-sizing:border-box}
+html{color-scheme:dark light}
+body{
+  background:var(--bg); color:var(--ink); font-family:var(--mono);
+  font-size:13px; line-height:1.55; padding:34px 30px 60px; max-width:1180px; margin:0 auto;
+  -webkit-font-smoothing:antialiased;
+}
+/* faint blueprint grid in the page backdrop for atmosphere */
+body::before{
+  content:''; position:fixed; inset:0; z-index:-1; pointer-events:none; opacity:.5;
+  background:
+    radial-gradient(1100px 500px at 78% -10%, var(--accent-bg), transparent 60%),
+    linear-gradient(var(--border) 1px, transparent 1px) 0 0/100% 46px,
+    linear-gradient(90deg, var(--border) 1px, transparent 1px) 0 0/46px 100%;
+  mask-image:linear-gradient(180deg,#000, transparent 70%);
+  -webkit-mask-image:linear-gradient(180deg,#000, transparent 70%);
+}
+
+/* lane color hooks */
+.l-done{--c:var(--done); --cbg:var(--done-bg)}
+.l-in_progress{--c:var(--prog); --cbg:var(--prog-bg)}
+.l-blocked{--c:var(--blocked); --cbg:var(--blocked-bg)}
+.l-queued{--c:var(--queued); --cbg:var(--queued-bg)}
+
+/* ── Header ── */
+.head{display:flex; align-items:flex-start; gap:20px; margin-bottom:26px}
+.head-main{flex:1; min-width:0}
+.eyebrow{font-size:15px; letter-spacing:.22em; text-transform:uppercase; color:var(--accent); font-weight:600}
+.eyebrow .id{color:var(--ink-3)}
+h1{font-family:var(--sans); font-size:26px; font-weight:750; letter-spacing:-.02em; line-height:1.15; margin:6px 0 12px}
+.head-meta{display:flex; align-items:center; flex-wrap:wrap; gap:8px 14px; font-size:11.5px; color:var(--ink-3)}
+.head-meta .sep{color:var(--border-strong)}
+.asof{color:var(--ink-2)} .asof b{color:var(--ink); font-weight:600}
+.toggle{
+  flex-shrink:0; font-family:var(--mono); font-size:11px; color:var(--ink-2); cursor:pointer;
+  background:var(--surface); border:1px solid var(--border); border-radius:6px; padding:7px 11px;
+  display:flex; align-items:center; gap:7px; transition:border-color .15s,color .15s;
+}
+.toggle:hover{border-color:var(--border-strong); color:var(--ink)}
+
+/* ── Badges ── */
+.badge{
+  display:inline-flex; align-items:center; gap:5px; padding:2px 9px; border-radius:5px;
+  font-size:11px; font-weight:600; letter-spacing:.03em; white-space:nowrap;
+  color:var(--c); background:var(--cbg); border:1px solid color-mix(in srgb, var(--c) 34%, transparent);
+}
+.badge .g{font-size:10px; line-height:1}
+
+/* ── Summary tiles + meter ── */
+.summary{display:grid; grid-template-columns:repeat(4,1fr); gap:12px; margin-bottom:14px}
+.tile{
+  background:var(--surface); border:1px solid var(--border); border-radius:var(--r);
+  padding:14px 16px; position:relative; overflow:hidden;
+}
+.tile::before{content:''; position:absolute; left:0; top:0; bottom:0; width:3px; background:var(--c)}
+.tile .n{font-family:var(--sans); font-size:30px; font-weight:750; letter-spacing:-.02em; color:var(--ink); line-height:1}
+.tile .k{display:flex; align-items:center; gap:6px; margin-top:7px; font-size:11px; color:var(--ink-2); text-transform:uppercase; letter-spacing:.08em}
+.tile .k .g{color:var(--c)}
+.meter{display:flex; gap:2px; height:8px; border-radius:5px; overflow:hidden; margin-bottom:8px}
+.meter span{background:var(--c); min-width:2px}
+.meter-cap{font-size:11px; color:var(--ink-3); margin-bottom:26px}
+.meter-cap b{color:var(--ink-2); font-weight:600}
+
+/* ── Section scaffold ── */
+.section{margin-bottom:30px}
+.section-title{
+  font-size:11px; letter-spacing:.2em; text-transform:uppercase; color:var(--ink-3);
+  font-weight:600; margin-bottom:13px; display:flex; align-items:center; gap:10px;
+}
+.section-title::after{content:''; flex:1; height:1px; background:var(--border)}
+
+/* ── Pipeline spine ── */
+.spine{display:flex; align-items:stretch; overflow-x:auto; padding:4px 2px 10px; gap:0}
+.node{display:flex; flex-direction:column; align-items:center; min-width:98px; position:relative; flex:1}
+.node .rail{position:absolute; top:15px; height:2px; width:100%; left:-50%; background:var(--border-strong)}
+.node:first-child .rail{display:none}
+.node .rail.done{background:var(--done)}
+.node .rail.active{background:linear-gradient(90deg,var(--done),var(--accent))}
+.node .dot{
+  width:32px; height:32px; border-radius:50%; display:grid; place-items:center; z-index:1;
+  background:var(--surface); border:2px solid var(--c); color:var(--c); font-size:13px; box-shadow:var(--shadow);
+}
+.node.cur .dot{border-color:var(--c); color:var(--c); box-shadow:0 0 0 4px var(--cbg)}
+.node .sid{margin-top:9px; font-size:12px; font-weight:700; color:var(--ink)}
+.node .slabel{font-size:10.5px; color:var(--ink-3); text-align:center; max-width:96px; line-height:1.3}
+.node.cur .now{margin-top:6px; font-size:9px; letter-spacing:.16em; font-weight:700; color:var(--c); background:var(--cbg); padding:2px 6px; border-radius:4px}
+.node{cursor:pointer}
+.node .dot{transition:transform .12s, box-shadow .12s}
+.node:hover .dot{transform:scale(1.08)}
+.node.sel .dot{box-shadow:0 0 0 4px var(--cbg); border-color:var(--c)}
+.slice-detail{display:none; margin-top:8px; background:var(--surface); border:1px solid var(--border-strong); border-radius:var(--r); padding:13px 15px; box-shadow:var(--shadow)}
+.slice-detail.open{display:block; animation:rise .25s both}
+.sd-head{display:flex; align-items:baseline; gap:10px; flex-wrap:wrap; margin-bottom:9px}
+.sd-head .cid{font-size:13px; font-weight:700; color:var(--c)}
+.sd-label{font-family:var(--sans); font-size:14px; font-weight:650; color:var(--ink)}
+.sd-meta{margin-left:auto; font-size:11px; color:var(--ink-3)}
+.sd-gate{font-size:11.5px; color:var(--ink-2); line-height:1.5; margin-bottom:9px}
+.sd-gate .ck{color:var(--done)} .sd-gate .uck{color:var(--queued)}
+.sd-notes{font-size:11.5px; color:var(--ink-3); line-height:1.55; white-space:pre-wrap; word-break:break-word; max-height:150px; overflow:auto; border-left:2px solid var(--border); padding-left:10px; margin-bottom:9px}
+.sd-tasks{display:flex; flex-wrap:wrap; gap:6px}
+
+/* ── Lanes ── */
+.lanes{display:grid; grid-template-columns:repeat(3,1fr); gap:14px}
+.lane{background:transparent}
+.lane-h{display:flex; align-items:center; gap:8px; font-size:11px; letter-spacing:.1em; text-transform:uppercase; font-weight:700; color:var(--c); margin-bottom:10px; padding-bottom:8px; border-bottom:2px solid color-mix(in srgb,var(--c) 40%,transparent)}
+.lane-h .cnt{margin-left:auto; color:var(--ink-3); font-weight:600}
+.lane-body{display:flex; flex-direction:column; gap:9px}
+
+.card{
+  background:var(--surface); border:1px solid var(--border); border-left:3px solid var(--c);
+  border-radius:var(--r); padding:12px 13px; box-shadow:var(--shadow); transition:transform .12s,border-color .12s;
+}
+.card:hover{transform:translateY(-2px); border-color:var(--border-strong)}
+.card .top{display:flex; align-items:baseline; gap:8px; margin-bottom:4px}
+.card .cid{font-size:11px; font-weight:700; color:var(--c)}
+.card .prio{margin-left:auto; font-size:9.5px; letter-spacing:.06em; text-transform:uppercase; color:var(--ink-3)}
+.card .ctitle{font-family:var(--sans); font-size:13.5px; font-weight:600; color:var(--ink); letter-spacing:-.01em; line-height:1.3}
+.card .cmeta{margin-top:7px; font-size:11px; color:var(--ink-3); display:flex; gap:12px; flex-wrap:wrap}
+.blocked-on{margin-top:8px; display:flex; flex-direction:column; gap:4px}
+.blocked-on .bl{display:flex; gap:6px; align-items:baseline; font-size:11px; color:var(--ink-2)}
+.blocked-on .bl .w{color:var(--blocked); font-weight:700; white-space:nowrap}
+.blocked-on .bl .t{color:var(--ink-2); overflow:hidden; text-overflow:ellipsis}
+.blocked-on .lead{font-size:10px; text-transform:uppercase; letter-spacing:.1em; color:var(--blocked)}
+
+/* native disclosure for the demoted agent-language detail */
+details.raw{margin-top:9px; border-top:1px dashed var(--border); padding-top:8px}
+details.raw>summary{cursor:pointer; font-size:10.5px; letter-spacing:.06em; text-transform:uppercase; color:var(--ink-3); list-style:none; display:flex; align-items:center; gap:6px}
+details.raw>summary::-webkit-details-marker{display:none}
+details.raw>summary::before{content:'▸'; color:var(--accent); transition:transform .15s}
+details.raw[open]>summary::before{transform:rotate(90deg)}
+details.raw .rawbody{margin-top:8px; font-size:11px; color:var(--ink-2); line-height:1.55; white-space:pre-wrap; word-break:break-word}
+details.raw .gate{color:var(--ink-3); font-size:11px; margin-bottom:8px}
+details.raw .gate .ck{color:var(--done)} details.raw .gate .uck{color:var(--queued)}
+
+.queued-strip{margin-top:14px; background:var(--surface); border:1px solid var(--border); border-radius:var(--r); padding:0 14px}
+.queued-strip>summary{cursor:pointer; padding:11px 0; font-size:11px; letter-spacing:.08em; text-transform:uppercase; color:var(--ink-2); list-style:none; display:flex; align-items:center; gap:8px}
+.queued-strip>summary::-webkit-details-marker{display:none}
+.queued-strip>summary .g{color:var(--queued)}
+.queued-list{display:flex; flex-wrap:wrap; gap:7px; padding:2px 0 14px}
+.qchip{font-size:11px; color:var(--ink-2); background:var(--queued-bg); border:1px solid var(--border); border-radius:5px; padding:4px 9px}
+.qchip b{color:var(--ink); font-weight:600}
+
+/* ── Issues (failures) ── */
+.issue{background:var(--surface); border:1px solid var(--border); border-left:3px solid var(--c); border-radius:var(--r); padding:11px 13px; margin-bottom:9px}
+.issue .ih{display:flex; align-items:baseline; gap:9px}
+.issue .g{color:var(--c); font-size:12px}
+.issue .it{font-family:var(--sans); font-size:13px; font-weight:600; color:var(--ink); line-height:1.35}
+.issue .res{margin-top:7px; font-size:11px; color:var(--done); display:flex; gap:7px}
+.issue .res .lead{white-space:nowrap; font-weight:700; text-transform:uppercase; letter-spacing:.06em; font-size:10px; padding-top:1px}
+
+/* ── Activity ── */
+.activity{background:var(--surface); border:1px solid var(--border); border-radius:var(--r); overflow:hidden}
+.act-row{display:flex; gap:12px; padding:8px 14px; border-bottom:1px solid var(--border); font-size:12px; min-width:0; align-items:flex-start}
+.act-row:last-child{border-bottom:none}
+.act-date{color:var(--ink-3); white-space:nowrap; width:88px; flex-shrink:0}
+.act-task{color:var(--accent); font-weight:600; flex:0 0 auto; min-width:40px; max-width:118px; white-space:normal; overflow-wrap:anywhere; word-break:break-word}
+.act-sum{color:var(--ink-2); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0}
+
+/* ── Task × Phase matrix ── */
+.matrix{overflow-x:auto; margin-top:2px}
+.matrix table{border-collapse:collapse; width:100%; font-size:11.5px}
+.matrix th{
+  font-size:10px; font-weight:700; letter-spacing:.06em; text-transform:uppercase;
+  color:var(--ink-3); padding:6px 8px; text-align:center; border-bottom:2px solid var(--border-strong);
+  white-space:nowrap; position:sticky; top:0; background:var(--bg);
+}
+.matrix th:first-child{text-align:left; min-width:180px}
+.matrix td{padding:5px 8px; text-align:center; border-bottom:1px solid var(--border); white-space:nowrap}
+.matrix td:first-child{text-align:left; font-size:12px; color:var(--ink); max-width:260px; overflow:hidden; text-overflow:ellipsis}
+.matrix td:first-child .tid{font-size:10px; color:var(--accent); margin-right:6px; font-weight:600}
+.matrix td{position:relative}
+.matrix .dot-active{
+  display:inline-block; width:10px; height:10px; border-radius:50%;
+  background:var(--accent); cursor:default; position:relative; z-index:1;
+}
+.matrix .dot-active[title]:hover{box-shadow:0 0 0 3px var(--accent-bg)}
+.matrix td.carry::before{
+  content:''; position:absolute; top:50%; left:0; right:0;
+  height:2px; background:var(--border-strong); transform:translateY(-50%);
+}
+.matrix td.has-dot.conn-right::after{
+  content:''; position:absolute; top:50%; left:calc(50% + 5px); right:0;
+  height:2px; background:var(--border-strong); transform:translateY(-50%);
+}
+.matrix td.has-dot.conn-left::before{
+  content:''; position:absolute; top:50%; left:0; right:calc(50% - 5px);
+  height:2px; background:var(--border-strong); transform:translateY(-50%);
+}
+.matrix td.carry.arrow-end::after{
+  content:''; position:absolute; top:50%; right:-1px; transform:translateY(-50%);
+  border:4px solid transparent; border-left:5px solid var(--border-strong);
+}
+.matrix tr:hover td{background:var(--surface)}
+
+.empty{color:var(--ink-3); font-style:italic; padding:14px; font-size:12px; text-align:center; border:1px dashed var(--border); border-radius:var(--r)}
+.foot{margin-top:36px; padding-top:14px; border-top:1px solid var(--border); font-size:10.5px; color:var(--ink-3); display:flex; gap:8px 16px; flex-wrap:wrap; align-items:center}
+.foot .k{color:var(--ink-2)} .foot .sep{color:var(--border-strong)}
+
+/* ── Motion (MOTION_INTENSITY≈2: one orchestrated load + hover) ── */
+@keyframes rise{from{opacity:0; transform:translateY(10px)} to{opacity:1; transform:none}}
+.anim{animation:rise .42s cubic-bezier(.2,.7,.2,1) both; animation-delay:calc(var(--i,0)*38ms)}
+@media(prefers-reduced-motion:reduce){.anim{animation:none}}
+
+/* ── Responsive ── */
+@media(max-width:820px){
+  .summary{grid-template-columns:repeat(2,1fr)}
+  .lanes{grid-template-columns:1fr}
+  h1{font-size:22px}
+}
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script>
+const DATA = __DASHBOARD_DATA__;
+
+const GLYPH = {done:'✓', in_progress:'▶', blocked:'⚠', queued:'○'};
+const LANE_LABEL = {done:'Done', in_progress:'In progress', blocked:'Blocked', queued:'Queued'};
+const LANE_ORDER = ['in_progress','blocked','done'];
+
+function esc(s){const e=document.createElement('span'); e.textContent=(s==null?'':String(s)); return e.innerHTML;}
+function lb(s){return String(s||'').replace(/_/g,' ');}
+let _i = 0; const nextI = () => _i++;
+
+function badge(lane, status){
+  return `<span class="badge l-${lane}"><span class="g">${GLYPH[lane]}</span>${esc(lb(status||LANE_LABEL[lane]))}</span>`;
+}
+
+function renderHead(d){
+  const t = {PLN:'Plan', IN:'Initiative', 'WK-set':'Work set'}[d.record.type] || 'Record';
+  return `<div class="head">
+    <div class="head-main">
+      <div class="eyebrow">${esc(t)} <span class="id">/ ${esc(d.record.id)}</span></div>
+      <h1>${esc(d.record.title)}</h1>
+      <div class="head-meta">
+        ${d.record.status ? badge(laneOfStatus(d.record.status), d.record.status) : ''}
+        ${d.dataDate ? `<span class="asof">as of <b>${esc(d.dataDate)}</b></span>` : ''}
+        <span class="sep">/</span>
+        <span title="source of truth">${esc(d.source)}</span>
+      </div>
+    </div>
+    <button class="toggle" onclick="toggleTheme()"><span id="themeGlyph"></span><span id="themeLabel"></span></button>
+  </div>`;
+}
+
+// Header record status may be a raw enum (e.g. 'active','approved'); map for coloring only.
+function laneOfStatus(s){
+  if(s==='done') return 'done';
+  if(s==='in_progress'||s==='active'||s==='review') return 'in_progress';
+  if(s==='blocked') return 'blocked';
+  return 'queued';
+}
+
+function renderSummary(d){
+  const s = d.summary;
+  const order = [['done',s.done],['in_progress',s.inProgress],['blocked',s.blocked],['queued',s.queued]];
+  const seg = order.filter(([,n])=>n>0)
+    .map(([lane,n])=>`<span class="l-${lane}" style="flex:${n}" title="${n} ${LANE_LABEL[lane]}"></span>`).join('');
+  const tiles = order.map(([lane,n])=>`
+    <div class="tile l-${lane} anim" style="--i:${nextI()}">
+      <div class="n">${n}</div>
+      <div class="k"><span class="g">${GLYPH[lane]}</span>${LANE_LABEL[lane]}</div>
+    </div>`).join('');
+  const unit = d.phases.length ? 'slices' : 'items';
+  return `<div class="summary">${tiles}</div>
+    <div class="meter">${seg||'<span class="l-queued" style="flex:1"></span>'}</div>
+    <div class="meter-cap"><b>${s.done}</b> of <b>${s.total}</b> ${unit} done${s.blocked?` &middot; <b style="color:var(--blocked)">${s.blocked}</b> blocked`:''}</div>`;
+}
+
+function renderPipeline(phases){
+  if(!phases.length) return '';
+  let cur = phases.findIndex(p=>p.lane!=='done'); // first not-done slice
+  const allDone = cur < 0; if(allDone) cur = phases.length;
+  const nodes = phases.map((p,i)=>{
+    const railCls = i<=cur-1 ? 'done' : i===cur ? 'active' : '';
+    const isCur = i===cur; // the focal slice, whether actively running or up next
+    const flag = isCur ? (p.lane==='in_progress' ? 'NOW' : 'NEXT') : '';
+    return `<div class="node l-${p.lane} ${isCur?'cur':''} anim" style="--i:${nextI()}" onclick="showSlice(${i})" title="click for detail">
+      <div class="rail ${railCls}"></div>
+      <div class="dot">${GLYPH[p.lane]}</div>
+      <div class="sid">${esc(p.id)}</div>
+      <div class="slabel">${esc(p.label||'')}</div>
+      ${flag?`<div class="now">${flag}</div>`:''}
+    </div>`;
+  }).join('');
+  return `<div class="section"><div class="section-title">Pipeline <span style="text-transform:none;letter-spacing:0;color:var(--ink-3);font-weight:400">&middot; click a slice</span></div>
+    <div class="spine">${nodes}</div>
+    <div id="sliceDetail" class="slice-detail"></div></div>`;
+}
+
+function gateHtml(gate){
+  if(!gate) return '';
+  return `<div class="gate"><span class="${gate.checked?'ck':'uck'}">${gate.checked?'✓':'○'}</span> ${esc(gate.text)}</div>`;
+}
+
+function phaseCard(p){
+  const done = p.tasks.length;
+  const raw = (p.gate || p.notes) ? `<details class="raw"><summary>detail</summary>
+    ${gateHtml(p.gate)}
+    ${p.notes?`<div class="rawbody">${esc(p.notes)}</div>`:''}</details>` : '';
+  return `<div class="card l-${p.lane} anim" style="--i:${nextI()}">
+    <div class="top"><span class="cid">${esc(p.id)}</span>${badge(p.lane,p.status)}</div>
+    <div class="ctitle">${esc(p.label||p.id)}</div>
+    <div class="cmeta">
+      ${p.tasks.length?`<span>${p.tasks.length} task${p.tasks.length>1?'s':''}</span>`:''}
+      ${p.started?`<span>${esc(p.started)}${p.completed?' &rarr; '+esc(p.completed):''}</span>`:''}
+    </div>
+    ${raw}
+  </div>`;
+}
+
+function wkCard(w){
+  const blk = w.blockedBy && w.blockedBy.length ? `<div class="blocked-on">
+    <span class="lead">waiting on</span>
+    ${w.blockedBy.map(b=>`<span class="bl"><span class="w">${esc(b.id)}</span><span class="t">${esc(b.title)}</span></span>`).join('')}
+  </div>` : '';
+  return `<div class="card l-${w.lane} anim" style="--i:${nextI()}">
+    <div class="top"><span class="cid">${esc(w.id)}</span>${w.priority?`<span class="prio">${esc(w.priority)}</span>`:''}</div>
+    <div class="ctitle">${esc(w.title)}</div>
+    <div class="cmeta">${badge(w.lane,w.status)}</div>
+    ${blk}
+  </div>`;
+}
+
+function renderMatrix(mx){
+  if(!mx || !mx.rows.length) return '';
+  const phaseLane = {};
+  (DATA.phases||[]).forEach(p=>{ phaseLane[p.id]=p.lane; });
+  const hdr = `<th>Task</th>` + mx.columns.map(c=>{
+    const lane = phaseLane[c];
+    return lane ? `<th class="l-${lane}" style="color:var(--c)">${esc(c)}</th>` : `<th>${esc(c)}</th>`;
+  }).join('');
+  const rows = mx.rows.map(r=>{
+    const label = `<td><span class="tid">${esc(r.taskId)}</span>${esc(r.station)}</td>`;
+    const cells = r.cells.map((c,ci)=>{
+      if(!c) return `<td></td>`;
+      const next = r.cells[ci+1];
+      const prev = r.cells[ci-1];
+      if(c === '·'){
+        const cls = 'carry' + (next && next !== '·' ? ' arrow-end' : '');
+        return `<td class="${cls}"></td>`;
+      }
+      const tip = c !== 'NEW' ? ` title="${esc(c)}"` : '';
+      const conn = [];
+      if(prev) conn.push('conn-left');
+      if(next) conn.push('conn-right');
+      const cls = 'has-dot' + (conn.length ? ' '+conn.join(' ') : '');
+      return `<td class="${cls}"><span class="dot-active"${tip}></span></td>`;
+    }).join('');
+    return `<tr>${label}${cells}</tr>`;
+  }).join('');
+  return `<div class="section"><div class="section-title">Task &times; phase matrix</div>
+    <div class="matrix"><table><thead><tr>${hdr}</tr></thead><tbody>${rows}</tbody></table></div></div>`;
+}
+
+function renderDag(dag){
+  if(!dag || !dag.nodes.length) return '';
+  const COL_W = 220, ROW_H = 56, PAD_X = 20, PAD_Y = 30, NODE_W = 180, NODE_H = 40, R = 6;
+  const byLayer = {};
+  dag.nodes.forEach(n=>{ (byLayer[n.layer] = byLayer[n.layer]||[]).push(n); });
+  const cols = dag.maxLayer + 1;
+  const maxPerCol = Math.max(...Object.values(byLayer).map(a=>a.length));
+  const svgW = cols * COL_W + PAD_X * 2;
+  const svgH = maxPerCol * ROW_H + PAD_Y * 2;
+
+  const pos = {};
+  for(let layer=0; layer<cols; layer++){
+    const items = byLayer[layer]||[];
+    items.forEach((n,i)=>{
+      pos[n.id] = { x: PAD_X + layer * COL_W, y: PAD_Y + i * ROW_H };
+    });
+  }
+
+  const laneColor = {done:'var(--done)', in_progress:'var(--prog)', blocked:'var(--blocked)', queued:'var(--queued)'};
+
+  let edges = '';
+  dag.nodes.forEach(n=>{
+    const to = pos[n.id];
+    if(!to) return;
+    n.deps.forEach(depId=>{
+      const from = pos[depId];
+      if(!from) return;
+      const x1 = from.x + NODE_W, y1 = from.y + NODE_H/2;
+      const x2 = to.x, y2 = to.y + NODE_H/2;
+      const mx = (x1 + x2) / 2;
+      edges += `<path d="M${x1},${y1} C${mx},${y1} ${mx},${y2} ${x2},${y2}" fill="none" stroke="var(--border-strong)" stroke-width="2" marker-end="url(#arrow)"/>`;
+    });
+  });
+
+  let boxes = '';
+  dag.nodes.forEach(n=>{
+    const p = pos[n.id];
+    if(!p) return;
+    const c = laneColor[n.lane]||laneColor.queued;
+    boxes += `<g>
+      <rect x="${p.x}" y="${p.y}" width="${NODE_W}" height="${NODE_H}" rx="${R}" fill="var(--surface)" stroke="${c}" stroke-width="2"/>
+      <text x="${p.x+8}" y="${p.y+16}" fill="${c}" font-size="11" font-weight="700" font-family="var(--mono)">${esc(n.id)}</text>
+      <text x="${p.x+8}" y="${p.y+31}" fill="var(--ink-2)" font-size="10" font-family="var(--sans)"><tspan>${esc(n.title.length>24 ? n.title.slice(0,24)+'…' : n.title)}</tspan></text>
+    </g>`;
+  });
+
+  return `<div class="section"><div class="section-title">Dependency graph</div>
+    <div class="matrix" style="overflow-x:auto">
+    <svg width="${svgW}" height="${svgH}" xmlns="http://www.w3.org/2000/svg" style="display:block">
+      <defs><marker id="arrow" viewBox="0 0 10 8" refX="10" refY="4" markerWidth="8" markerHeight="6" orient="auto-start-reverse">
+        <path d="M0,0 L10,4 L0,8 Z" fill="var(--border-strong)"/>
+      </marker></defs>
+      ${edges}${boxes}
+    </svg></div></div>`;
+}
+
+function renderLanes(d){
+  const isPhase = d.phases.length>0;
+  const cards = isPhase ? d.phases : d.workItems;
+  const render = isPhase ? phaseCard : wkCard;
+  const byLane = l => cards.filter(c=>c.lane===l);
+
+  const cols = LANE_ORDER.map(lane=>{
+    const items = byLane(lane);
+    return `<div class="lane l-${lane}">
+      <div class="lane-h"><span class="g">${GLYPH[lane]}</span>${LANE_LABEL[lane]}<span class="cnt">${items.length}</span></div>
+      <div class="lane-body">${items.length?items.map(render).join(''):'<div class="empty">none</div>'}</div>
+    </div>`;
+  }).join('');
+
+  const queued = byLane('queued');
+  const qStrip = queued.length ? `<details class="queued-strip">
+    <summary><span class="g">${GLYPH.queued}</span>${queued.length} queued</summary>
+    <div class="queued-list">${queued.map(c=>`<span class="qchip"><b>${esc(c.id)}</b> ${esc(isPhase?(c.label||''):c.title)}</span>`).join('')}</div>
+  </details>` : '';
+
+  return `<div class="section"><div class="section-title">Status board</div>
+    <div class="lanes">${cols}</div>${qStrip}</div>`;
+}
+
+function renderIssues(failures){
+  if(!failures || !failures.length) return '';
+  const active = failures.filter(f=>!f.resolved);
+  const resolved = failures.filter(f=>f.resolved);
+  const one = (f)=>{
+    const lane = f.resolved?'done':'blocked';
+    const raw = f.body ? `<details class="raw"><summary>detail</summary><div class="rawbody">${esc(f.body)}</div></details>` : '';
+    return `<div class="issue l-${lane} anim" style="--i:${nextI()}">
+      <div class="ih"><span class="g">${f.resolved?'✓':'⚠'}</span><span class="it">${esc(f.title)}</span></div>
+      ${f.resolved&&f.resolution?`<div class="res"><span class="lead">resolved</span><span>${esc(f.resolution)}</span></div>`:''}
+      ${raw}
+    </div>`;
+  };
+  return `<div class="section"><div class="section-title">Blockers &amp; failures</div>
+    ${active.length?active.map(one).join(''):'<div class="empty">no active blockers</div>'}
+    ${resolved.length?`<details class="queued-strip" style="margin-top:12px">
+      <summary><span class="g" style="color:var(--done)">✓</span>${resolved.length} resolved</summary>
+      <div style="padding:2px 0 12px">${resolved.map(one).join('')}</div></details>`:''}
+  </div>`;
+}
+
+function renderActivity(log){
+  if(!log || !log.length) return '';
+  const rows = log.slice().reverse().slice(0,10).map(e=>`<div class="act-row">
+    <span class="act-date">${esc(e.date)}</span>
+    <span class="act-task">${esc(e.task)}</span>
+    <span class="act-sum" title="${esc(e.summary)}">${esc(e.summary)}</span>
+  </div>`).join('');
+  return `<div class="section"><div class="section-title">Recent activity</div>
+    <div class="activity">${rows}</div></div>`;
+}
+
+function renderFoot(d){
+  return `<div class="foot">
+    <span class="k">${esc(d.record.id)}</span><span class="sep">/</span>
+    <span>source: ${esc(d.source)}</span><span class="sep">/</span>
+    ${d.dataDate?`<span>data as of ${esc(d.dataDate)}</span><span class="sep">/</span>`:''}
+    <span>deterministic render &middot; regenerate: <b class="k">npm run dashboard -- ${esc(d.record.id)}</b></span>
+  </div>`;
+}
+
+function toggleTheme(){
+  const cur = document.documentElement.dataset.theme==='light'?'dark':'light';
+  document.documentElement.dataset.theme = cur;
+  try{ localStorage.setItem('kb-dash-theme', cur); }catch(e){}
+  paintToggle();
+}
+function paintToggle(){
+  const light = document.documentElement.dataset.theme==='light';
+  const g = document.getElementById('themeGlyph'), l = document.getElementById('themeLabel');
+  if(g) g.textContent = light?'☀':'☾';
+  if(l) l.textContent = light?'Light':'Dark';
+}
+
+let _openSlice = -1;
+function markNode(i){ document.querySelectorAll('.node').forEach((n,idx)=>n.classList.toggle('sel', idx===i)); }
+function showSlice(i){
+  const box = document.getElementById('sliceDetail');
+  if(!box) return;
+  if(_openSlice === i){ box.classList.remove('open'); box.innerHTML=''; _openSlice=-1; markNode(-1); return; }
+  _openSlice = i; markNode(i);
+  const p = DATA.phases[i];
+  box.innerHTML =
+    `<div class="sd-head">
+       <span class="cid l-${p.lane}">${esc(p.id)}</span>
+       <span class="sd-label">${esc(p.label || '(slice)')}</span>
+       ${badge(p.lane, p.status)}
+       <span class="sd-meta">${p.tasks.length} task${p.tasks.length!==1?'s':''}${p.started?' &middot; '+esc(p.started):''}${p.completed?' &rarr; '+esc(p.completed):''}</span>
+     </div>
+     ${p.gate?`<div class="sd-gate"><span class="${p.gate.checked?'ck':'uck'}">${p.gate.checked?'✓':'○'}</span> ${esc(p.gate.text)}</div>`:''}
+     ${p.notes?`<div class="sd-notes">${esc(p.notes)}</div>`:''}
+     ${p.tasks.length?`<div class="sd-tasks">${p.tasks.map(t=>`<span class="qchip"><b>${esc(t.id)}</b>${t.scope?' '+esc(t.scope):''}</span>`).join('')}</div>`:''}`;
+  box.classList.add('open');
+}
+
+function render(){
+  const d = DATA;
+  document.title = `${d.record.id} — ${d.record.title}`;
+  document.getElementById('app').innerHTML =
+    renderHead(d) + renderSummary(d) + renderPipeline(d.phases) + renderMatrix(d.taskMatrix) +
+    renderDag(d.dependencyDag) + renderLanes(d) + renderIssues(d.failureLog) +
+    renderActivity(d.completedLog) + renderFoot(d);
+  paintToggle();
+}
+render();
+</script>
+</body>
+</html>
