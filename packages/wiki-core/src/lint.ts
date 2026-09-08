@@ -194,6 +194,8 @@ export async function lint(opts: LintOpts): Promise<Result<LintResult>> {
   );
 
   for (const [typeKey, typeDef] of Object.entries(manifest.types)) {
+    if (typeDef.prefix === 'HO') continue;
+
     const dir = path.join(targetDir, typeDef.directory.replace(/\//g, path.sep));
     const files = listMarkdownFiles(dir);
 

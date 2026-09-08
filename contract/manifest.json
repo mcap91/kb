@@ -417,9 +417,65 @@
         "decisions",
         "related"
       ]
+    },
+    "handoff": {
+      "aliases": ["handoff", "ho"],
+      "prefix": "HO",
+      "stateKey": "handoff",
+      "directory": "wiki/handoffs",
+      "template": "handoff.md",
+      "idStrategy": "allocated",
+      "filenameStrategy": "id_only",
+      "reservedFilenames": ["README.md"],
+      "requiredFrontMatter": [
+        "id",
+        "title",
+        "mode",
+        "status"
+      ],
+      "optionalFrontMatter": [
+        "write_scope",
+        "base_ref",
+        "web",
+        "credentials",
+        "data_mounts",
+        "read_first",
+        "acceptance",
+        "validation",
+        "run_id",
+        "agent",
+        "model",
+        "enforced",
+        "isolation_backend",
+        "credentials_granted",
+        "branch",
+        "response",
+        "created",
+        "updated",
+        "tags",
+        "related",
+        "needs"
+      ],
+      "arrayFrontMatter": [
+        "write_scope",
+        "credentials",
+        "data_mounts",
+        "read_first",
+        "acceptance",
+        "validation",
+        "credentials_granted",
+        "tags",
+        "related",
+        "needs"
+      ],
+      "enumFrontMatter": {
+        "mode": ["implement", "code_review", "redteam", "research"],
+        "status": ["draft", "dispatched", "completed", "partial", "blocked", "failed", "refused"],
+        "isolation_backend": ["bwrap", "bwrap-wsl2", "pod"]
+      }
     }
   },
-  "excludedPrefixes": ["HO"],
+  "excludedPrefixes": [],
   "generatedViews": {
     "canonical": false,
     "defaultDirectory": "wiki",

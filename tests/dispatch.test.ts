@@ -438,25 +438,31 @@ describe('dispatch', () => {
       expect(content).toContain('Launch agents from reviewed bundles instead of the live repo root.');
     });
 
-    it('allocates the next HO id by scanning existing handoffs', async () => {
+    it('allocates sequential HO ids via wiki-core allocator', async () => {
       await setupBootstrappedRepo(repoRoot);
-      await writeFile(
-        join(repoRoot, 'wiki', 'handoffs', 'HO-0001.md'),
-        makeManualHandoff({ id: 'HO-0001' }),
-      );
-
       const { createHandoff } = await import('@kb/dispatch-core');
-      const result = await createHandoff({
+
+      const r1 = await createHandoff({
         dir: repoRoot,
-        title: 'Create the second handoff',
+        title: 'First handoff',
         subject: 'kb:dispatch',
         allowed_agents: ['codex'],
         mode: 'implement',
       });
+      expect(r1.ok).toBe(true);
+      if (!r1.ok) return;
+      expect(r1.data.handoffId).toBe('HO-0001');
 
-      expect(result.ok).toBe(true);
-      if (!result.ok) return;
-      expect(result.data.handoffId).toBe('HO-0002');
+      const r2 = await createHandoff({
+        dir: repoRoot,
+        title: 'Second handoff',
+        subject: 'kb:dispatch',
+        allowed_agents: ['codex'],
+        mode: 'implement',
+      });
+      expect(r2.ok).toBe(true);
+      if (!r2.ok) return;
+      expect(r2.data.handoffId).toBe('HO-0002');
     });
   });
 

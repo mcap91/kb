@@ -1,6 +1,8 @@
-import { readFile, readdir, writeFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+import { allocate } from '@kb/wiki-core';
 
 import type { CreateHandoffOpts, CreateHandoffResult } from './types.js';
 import type { DispatchResult } from './errors.js';
@@ -51,24 +53,6 @@ async function loadHandoffTemplate(targetDir: string): Promise<DispatchResult<st
       return fail('NOT_BOOTSTRAPPED', `Handoff template not found in ${repoTemplatePath}. Bootstrap the repo first.`);
     }
   }
-}
-
-async function nextHandoffId(handoffsDir: string): Promise<string> {
-  let entries: string[] = [];
-  try {
-    entries = await readdir(handoffsDir);
-  } catch {
-    // handled by caller later on write
-  }
-
-  let max = 0;
-  for (const entry of entries) {
-    const match = entry.match(/^HO-(\d{4})\.md$/);
-    if (!match) continue;
-    max = Math.max(max, Number.parseInt(match[1]!, 10));
-  }
-
-  return `HO-${String(max + 1).padStart(4, '0')}`;
 }
 
 function renderHandoff(id: string, opts: CreateHandoffOpts): string {
@@ -122,11 +106,12 @@ export async function createHandoff(
   opts: CreateHandoffOpts,
 ): Promise<DispatchResult<CreateHandoffResult>> {
   const targetDir = resolve(opts.dir);
-  const handoffsDir = join(targetDir, 'wiki', 'handoffs');
   const templateResult = await loadHandoffTemplate(targetDir);
   if (!templateResult.ok) return templateResult;
 
-  const id = await nextHandoffId(handoffsDir);
+  const allocResult = await allocate({ dir: targetDir, prefix: 'HO' });
+  if (!allocResult.ok) return fail('ALLOCATION_FAILED', allocResult.message);
+  const id = allocResult.data.id;
   const handoffRelativePath = `wiki/handoffs/${id}.md`;
   const handoffPath = join(targetDir, handoffRelativePath);
   const content = renderHandoff(id, opts);

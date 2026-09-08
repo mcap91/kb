@@ -4,5 +4,8 @@
   "private": true,
   "type": "module",
   "main": "src/index.ts",
-  "scripts": {}
+  "scripts": {},
+  "dependencies": {
+    "@kb/wiki-core": "*"
+  }
 }
