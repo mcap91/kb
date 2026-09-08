@@ -1,4 +1,4 @@
-import type { DashboardData, Phase, PhaseTask, LogEntry, FailureEntry } from './schema.js';
+import type { DashboardData, Phase, PhaseTask, LogEntry, FailureEntry, TaskMatrix } from './schema.js';
 import { laneOf, summarize, sourceLatestDate } from './util.js';
 
 export function parseTracker(
@@ -31,9 +31,64 @@ export function parseTracker(
     workItems: [],
     completedLog: parseCompletedLog(content),
     failureLog: parseFailureLog(content),
+    taskMatrix: buildTaskMatrix(phases, tasksByPhase),
     dataDate: sourceLatestDate(content),
     source: `wiki/plans/${record.id}/execution/tracker.md`,
   };
+}
+
+function stationPhrase(desc: string): string {
+  const clean = desc
+    .replace(/\*\*[^*]*\*\*\.?\s*/g, '')
+    .replace(/^(?:pre-)?S\d+:\s*(?:NEW\s+)?/i, '')
+    .trim();
+  return clean.split(/[(.,:;—]/)[0].trim() || desc.split(/[(.,:;—]/)[0].trim();
+}
+
+function buildTaskMatrix(
+  phases: Phase[],
+  tasksByPhase: Record<string, PhaseTask[]>,
+): TaskMatrix | null {
+  const columns = phases.map(p => p.id);
+  const phaseIndex = new Map(columns.map((id, i) => [id, i]));
+
+  // Invert: taskId → { phaseId → scope, description }
+  const taskMap = new Map<string, { desc: string; phases: Map<string, string> }>();
+  for (const [phaseId, tasks] of Object.entries(tasksByPhase)) {
+    if (!phaseIndex.has(phaseId)) continue;
+    for (const t of tasks) {
+      let entry = taskMap.get(t.id);
+      if (!entry) {
+        entry = { desc: t.description, phases: new Map() };
+        taskMap.set(t.id, entry);
+      }
+      entry.phases.set(phaseId, t.scope);
+    }
+  }
+
+  if (taskMap.size === 0) return null;
+
+  const rows = [...taskMap.entries()]
+    .map(([taskId, entry]) => {
+      const indices = [...entry.phases.keys()]
+        .map(pid => phaseIndex.get(pid)!)
+        .filter(i => i !== undefined);
+      const firstIdx = Math.min(...indices);
+      const lastIdx = Math.max(...indices);
+
+      const cells = columns.map((colId, ci) => {
+        const scope = entry.phases.get(colId);
+        if (scope !== undefined) return scope || 'NEW';
+        if (ci >= firstIdx && ci <= lastIdx) return '·';
+        return '';
+      });
+
+      return { taskId, station: stationPhrase(entry.desc), cells, firstIdx };
+    })
+    .sort((a, b) => a.firstIdx - b.firstIdx || a.taskId.localeCompare(b.taskId, undefined, { numeric: true }))
+    .map(({ taskId, station, cells }) => ({ taskId, station, cells }));
+
+  return { columns, rows };
 }
 
 function extractSection(content: string, heading: string): string {
