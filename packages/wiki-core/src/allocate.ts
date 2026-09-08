@@ -2,7 +2,7 @@
  * ID allocation module.
  *
  * Allocates sequential IDs for manifest-driven wiki record types.
- * Validates prefix against contract/manifest.json, rejects HO and unknown prefixes.
+ * Validates prefix against contract/manifest.json, rejects unknown prefixes.
  * Uses atomic write (write-to-temp-then-rename) for concurrency safety.
  */
 
@@ -46,7 +46,7 @@ function findTypeByPrefix(
 /**
  * Allocate the next sequential ID for a given prefix.
  *
- * - Validates the prefix against the manifest (rejects HO and unknown prefixes)
+ * - Validates the prefix against the manifest (rejects unknown prefixes)
  * - Reads wiki/.id-state.json
  * - Increments the `next` counter and appends to `allocated`
  * - Writes the state atomically (write-to-temp-then-rename)
@@ -68,7 +68,7 @@ export async function allocate(
   }
   const manifest = manifestResult.data;
 
-  // Check excluded prefixes (HO is explicitly excluded)
+  // Check excluded prefixes
   if (manifest.excludedPrefixes.includes(prefix)) {
     return fail(
       'INVALID_PREFIX',

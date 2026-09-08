@@ -29,6 +29,7 @@ export type DispatchErrorCode =
   | 'ENVIRONMENT_UNSUPPORTED'
   | 'BACKGROUND_LAUNCH_FAILED'
   | 'WAIT_TIMEOUT'
+  | 'ALLOCATION_FAILED'
   // --- v2 dispatch pipeline (PLN-0004 S0) ---
   | 'BAD_RECORD'
   | 'MISSING_WRITE_SCOPE'

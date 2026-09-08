@@ -520,6 +520,7 @@ export async function search(
 
   for (const entry of index.entries) {
     if (opts.prefix && entry.prefix !== opts.prefix) continue;
+    if (!opts.prefix && entry.prefix === 'HO') continue;
     if (opts.status && entry.status !== opts.status) continue;
 
     let score = 0;
