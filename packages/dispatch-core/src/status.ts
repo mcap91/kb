@@ -1,40 +1,14 @@
 import { readFile, readdir } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 
-import type { ActiveLaunchInfo, StatusResult, TokenInfo, DispatchToken } from './types.js';
+import type { ActiveLaunchInfo, RunInfo, StatusResult, TokenInfo, DispatchToken } from './types.js';
 import type { DispatchResult } from './errors.js';
 import { ok, fail } from './errors.js';
 import { getTokenDir, type TokenState } from './paths.js';
 import { readRunArtifacts } from './lookup.js';
+import { isAlive, isRecordedProcessAlive } from './run-state.js';
 
 const ACTIVE_HEARTBEAT_GRACE_MS = 5 * 60 * 1000;
-
-function isAlive(target: number): boolean {
-  try {
-    process.kill(target, 0);
-    return true;
-  } catch (err) {
-    if (typeof err === 'object' && err !== null && 'code' in err && err.code === 'ESRCH') {
-      return false;
-    }
-    return true;
-  }
-}
-
-function isRecordedProcessAlive(pid: number, pgid: number): boolean {
-  if (process.platform !== 'win32' && pgid > 0) {
-    try {
-      process.kill(-pgid, 0);
-      return true;
-    } catch (err) {
-      if (!(typeof err === 'object' && err !== null && 'code' in err && err.code === 'ESRCH')) {
-        return true;
-      }
-    }
-  }
-
-  return pid > 0 ? isAlive(pid) : false;
-}
 
 async function listTerminalRunReviewIds(repoRoot: string): Promise<Set<string>> {
   const runsDir = join(repoRoot, '.agent-runs', 'runs');
@@ -212,6 +186,180 @@ async function listTokensInState(state: TokenState): Promise<TokenInfo[]> {
   return tokens;
 }
 
+// ---------------------------------------------------------------------------
+// v2 status runs[] (PLN-0004 S1 Wave 3, s1-rulings ruling 6). ADDITIVE ONLY —
+// nothing above this line changes. Dual-layout scan of `.agent-runs/runs/`:
+// v1 run dirs carry `metadata/state.json` (schema_version 1 or absent); v2 run
+// dirs carry ONE `state.json` at the run root (schema_version 2). Both feed
+// the same repo-wide `RunInfo[]` view; readers never need to know which
+// layout a given run used.
+// ---------------------------------------------------------------------------
+
+const STALE_HEARTBEAT_THRESHOLD_SECS = 300;
+const LOG_TAIL_LINES = 10;
+const MAX_TERMINAL_RUNS = 10;
+
+/** Both v1 and v2 use 'launching'/'running' as their only non-terminal statuses. */
+function isTerminalRunStatus(runStatus: string): boolean {
+  return runStatus !== 'launching' && runStatus !== 'running';
+}
+
+async function listAllRunDirs(repoRoot: string): Promise<Array<{ handoffId: string; runId: string }>> {
+  const runsDir = join(repoRoot, '.agent-runs', 'runs');
+  const found: Array<{ handoffId: string; runId: string }> = [];
+
+  let handoffDirs: string[];
+  try {
+    handoffDirs = await readdir(runsDir);
+  } catch {
+    return found;
+  }
+
+  for (const handoffId of handoffDirs) {
+    let runIds: string[];
+    try {
+      runIds = await readdir(join(runsDir, handoffId));
+    } catch {
+      continue;
+    }
+    for (const runId of runIds) {
+      found.push({ handoffId, runId });
+    }
+  }
+
+  return found;
+}
+
+async function tryReadJsonRecord(path: string): Promise<Record<string, unknown> | null> {
+  try {
+    return JSON.parse(await readFile(path, 'utf-8')) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+/** Last `lines` lines of `pi-output.log`, or null if it does not exist (v1 runs never write one). */
+async function readLogTail(runDir: string, lines: number): Promise<string[] | null> {
+  let raw: string;
+  try {
+    raw = await readFile(join(runDir, 'pi-output.log'), 'utf-8');
+  } catch {
+    return null;
+  }
+
+  const allLines = raw.split('\n');
+  if (allLines.length > 0 && allLines[allLines.length - 1] === '') {
+    allLines.pop(); // drop the single trailing newline's empty segment, keep real blank lines
+  }
+  return allLines.slice(-lines);
+}
+
+async function buildRunInfo(
+  repoRoot: string,
+  handoffId: string,
+  runId: string,
+  now: number,
+): Promise<RunInfo | null> {
+  const runDir = join(repoRoot, '.agent-runs', 'runs', handoffId, runId);
+
+  const v2State = await tryReadJsonRecord(join(runDir, 'state.json'));
+  const isV2 = v2State !== null && v2State.schema_version === 2;
+  const state = isV2 ? v2State : await tryReadJsonRecord(join(runDir, 'metadata', 'state.json'));
+  if (!state) return null;
+
+  const runStatus = typeof state.status === 'string' ? state.status : 'unknown';
+  const startedAt = typeof state.started_at === 'string' ? state.started_at : null;
+  const heartbeatAt = typeof state.heartbeat_at === 'string' ? state.heartbeat_at : null;
+  const pid = typeof state.pid === 'number' ? state.pid : null;
+  const pgid = typeof state.pgid === 'number' ? state.pgid : pid;
+  const terminal = isTerminalRunStatus(runStatus);
+
+  // v2's state.json carries `completed_at` directly. v1's `metadata/state.json`
+  // never gained that field (it lives in `metadata/meta.json` instead, out of
+  // scope for this read); v1's terminal write sets `heartbeat_at` to the same
+  // timestamp it uses for `completed_at` (launch.ts's `finalize()`), so
+  // `heartbeat_at` doubles as v1's terminal timestamp here.
+  const completedAtRaw = isV2
+    ? (typeof state.completed_at === 'string' ? state.completed_at : null)
+    : (terminal ? heartbeatAt : null);
+
+  let runtimeSecs: number | null = null;
+  const startedMs = startedAt ? Date.parse(startedAt) : NaN;
+  if (Number.isFinite(startedMs)) {
+    if (terminal) {
+      const completedMs = completedAtRaw ? Date.parse(completedAtRaw) : NaN;
+      if (Number.isFinite(completedMs)) {
+        runtimeSecs = Math.max(0, (completedMs - startedMs) / 1000);
+      }
+    } else {
+      runtimeSecs = Math.max(0, (now - startedMs) / 1000);
+    }
+  }
+
+  let heartbeatAgeSecs: number | null = null;
+  if (!terminal && heartbeatAt) {
+    const heartbeatMs = Date.parse(heartbeatAt);
+    if (Number.isFinite(heartbeatMs)) {
+      heartbeatAgeSecs = Math.max(0, (now - heartbeatMs) / 1000);
+    }
+  }
+
+  const processAlive = pid !== null && isRecordedProcessAlive(pid, pgid ?? pid);
+  // ruling 6: stale = heartbeatAgeSecs > 300 && !processAlive. Naturally false
+  // for terminal runs since heartbeatAgeSecs is null above.
+  const stale = heartbeatAgeSecs !== null && heartbeatAgeSecs > STALE_HEARTBEAT_THRESHOLD_SECS && !processAlive;
+
+  // Log tail: active v2 runs only (ruling 6) — terminal runs have a response
+  // doc to read instead, and v1 runs never grew a pi-output.log.
+  const logTail = isV2 && !terminal ? await readLogTail(runDir, LOG_TAIL_LINES) : null;
+
+  return {
+    runId,
+    handoffId,
+    model: isV2 && typeof state.model === 'string' ? state.model : null,
+    status: runStatus,
+    startedAt,
+    runtimeSecs,
+    heartbeatAt,
+    heartbeatAgeSecs,
+    stale,
+    deliveryStatus: isV2 && typeof state.delivery_status === 'string' ? state.delivery_status : null,
+    branch: isV2 && typeof state.branch === 'string' ? state.branch : null,
+    logTail,
+    schemaVersion: isV2 ? 2 : 1,
+  };
+}
+
+/**
+ * Repo-wide run view: all active (non-terminal) runs plus the 10 most recent
+ * terminal runs by `started_at` (ruling 6 — `status` itself takes no
+ * selection params; the single-run query is `wait-for-run`). Never throws —
+ * a malformed or half-written run dir is skipped rather than failing the
+ * whole `status()` call.
+ */
+async function buildRuns(repoRoot: string): Promise<RunInfo[]> {
+  const runDirs = await listAllRunDirs(repoRoot);
+  const now = Date.now();
+
+  const infos: RunInfo[] = [];
+  for (const { handoffId, runId } of runDirs) {
+    try {
+      const info = await buildRunInfo(repoRoot, handoffId, runId, now);
+      if (info) infos.push(info);
+    } catch {
+      // Skip unreadable/malformed run dirs.
+    }
+  }
+
+  const active = infos.filter((info) => !isTerminalRunStatus(info.status));
+  const terminal = infos
+    .filter((info) => isTerminalRunStatus(info.status))
+    .sort((a, b) => (b.startedAt ?? '').localeCompare(a.startedAt ?? ''))
+    .slice(0, MAX_TERMINAL_RUNS);
+
+  return [...active, ...terminal];
+}
+
 export async function status(dir: string): Promise<DispatchResult<StatusResult>> {
   const repoRoot = resolve(dir);
   try {
@@ -250,6 +398,8 @@ export async function status(dir: string): Promise<DispatchResult<StatusResult>>
       reviewCount = 0;
     }
 
+    const runs = await buildRuns(repoRoot);
+
     return ok({
       repoRoot,
       pending,
@@ -259,6 +409,7 @@ export async function status(dir: string): Promise<DispatchResult<StatusResult>>
       rejected,
       runCount,
       reviewCount,
+      runs,
     });
   } catch (err) {
     return fail('STATUS_ERROR', 'Failed to compute dispatch status.', err);

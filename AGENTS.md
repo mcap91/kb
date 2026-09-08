@@ -490,6 +490,10 @@ wsl bash -lc 'cd ~/projects/kb && rsync -a --delete --exclude node_modules --exc
 
 Report the actual output for each platform; if one was not run, say so explicitly.
 
+### WSL2 command quoting from Windows
+
+When running commands inside WSL2 from a Windows shell (Git Bash / MSYS), always use `wsl -d Ubuntu -- bash -lc "..."`. Bare `wsl -- cat ~/path` silently mangles paths through MSYS path translation (`~` → `C:/Users/...`, forward slashes converted). The generated dispatch scripts handle this correctly; ad-hoc diagnostic commands must too.
+
 ## What Not To Do
 
 - **Do not add HO to the manifest.** HO-\* is dispatch-owned, not manifest-driven.

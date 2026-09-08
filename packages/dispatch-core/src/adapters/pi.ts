@@ -61,6 +61,13 @@ export interface PiResult {
   usage: PiUsage;
   /** Raw parsed JSON-lines events, in stream order. */
   events: unknown[];
+  /**
+   * Needed access/decisions the worker reported under a `## Needs` heading in
+   * its own text output (rev-5 §5; assemble.ts's framing instructs this on
+   * non-`completed` outcomes). Parsed from accumulated `text_delta` content;
+   * `[]` when no such section is present.
+   */
+  needs: string[];
 }
 
 // New v2 error code produced by this module; will be merged into the shared
@@ -142,6 +149,37 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
+ * Scan accumulated worker text for a `## Needs` heading and parse the bullet
+ * list beneath it (rev-5 §5 response-header requirement; assemble.ts:92-97
+ * instructs the worker to report this on non-`completed` outcomes).
+ * Line-based, consistent with this codebase's other hand-rolled parsers
+ * (ho.ts's frontmatter reader, delivery.ts's marker sections) — no markdown
+ * library. Collects bullet (`- ...`) lines immediately following the
+ * heading, tolerating blank lines between them; stops at the first
+ * non-bullet, non-blank line (the next section or trailing prose). Returns
+ * `[]` when no heading is found.
+ */
+function extractNeeds(text: string): string[] {
+  const lines = text.split('\n');
+  const headingIndex = lines.findIndex((line) => /^\s*##\s*needs\s*$/i.test(line));
+  if (headingIndex === -1) return [];
+
+  const needs: string[] = [];
+  for (let i = headingIndex + 1; i < lines.length; i++) {
+    const line = lines[i]!;
+    const bulletMatch = line.match(/^\s*-\s+(.*)$/);
+    if (bulletMatch) {
+      const value = bulletMatch[1]!.trim();
+      if (value) needs.push(value);
+      continue;
+    }
+    if (line.trim() === '') continue;
+    break;
+  }
+  return needs;
+}
+
+/**
  * Parse Pi's JSON-lines stdout. Non-JSON lines are skipped (Pi's `--mode json`
  * output is pure JSON-lines, but the adapter tolerates stray banner/log lines
  * rather than failing the whole run over one bad line). Returns ADAPTER_FAILED
@@ -167,17 +205,22 @@ export function parsePiOutput(stdout: string): DispatchResult<PiResult> {
   }
 
   if (events.length === 0) {
-    return ok({ outcome: 'failed', stopReason: 'empty_stream', hasAgentEnd: false, usage: { totalTokens: 0, costUsd: 0 }, events: [] });
+    return ok({ outcome: 'failed', stopReason: 'empty_stream', hasAgentEnd: false, usage: { totalTokens: 0, costUsd: 0 }, events: [], needs: [] });
   }
 
   let totalTokens = 0;
   let costUsd = 0;
   let sawError = false;
   let stopReason: string | undefined;
+  let accumulatedText = '';
 
   for (const event of events) {
     if (!isRecord(event)) continue;
     const type = event.type;
+
+    if (type === 'text_delta' && isRecord(event.message) && typeof event.message.content === 'string') {
+      accumulatedText += event.message.content;
+    }
 
     if (type === 'message_end' || type === 'turn_end') {
       if (event.stopReason === 'error') {
@@ -216,5 +259,7 @@ export function parsePiOutput(stdout: string): DispatchResult<PiResult> {
     stopReason = 'truncated_stream';
   }
 
-  return ok({ outcome, stopReason, hasAgentEnd, usage: { totalTokens, costUsd }, events });
+  const needs = extractNeeds(accumulatedText);
+
+  return ok({ outcome, stopReason, hasAgentEnd, usage: { totalTokens, costUsd }, events, needs });
 }
