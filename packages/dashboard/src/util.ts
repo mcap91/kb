@@ -1,6 +1,7 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
-import type { WorkItem, Dependency, Lane, Summary, DependencyDag, DagNode } from './schema.js';
+import dagre from 'dagre';
+import type { WorkItem, Dependency, Lane, Summary, DependencyDag, DagNode, DagEdge } from './schema.js';
 
 export function parseFrontmatter(content: string): Record<string, string> {
   const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
@@ -108,31 +109,53 @@ export function buildDependencyDag(items: WorkItem[]): DependencyDag | null {
   const hasAnyDeps = items.some(w => w.allDeps.some(d => ids.has(d)));
   if (!hasAnyDeps) return null;
 
-  const layers = new Map<string, number>();
-  function assignLayer(id: string, visited: Set<string>): number {
-    if (layers.has(id)) return layers.get(id)!;
-    if (visited.has(id)) return 0;
-    visited.add(id);
-    const item = items.find(w => w.id === id);
-    if (!item) { layers.set(id, 0); return 0; }
-    const depLayers = item.allDeps.filter(d => ids.has(d)).map(d => assignLayer(d, visited));
-    const layer = depLayers.length ? Math.max(...depLayers) + 1 : 0;
-    layers.set(id, layer);
-    return layer;
+  const NODE_W = 160;
+  const NODE_H = 40;
+
+  const g = new dagre.graphlib.Graph();
+  g.setGraph({ rankdir: 'LR', nodesep: 16, ranksep: 40, marginx: 16, marginy: 16 });
+  g.setDefaultEdgeLabel(() => ({}));
+
+  for (const w of items) {
+    g.setNode(w.id, { width: NODE_W, height: NODE_H });
   }
-  for (const w of items) assignLayer(w.id, new Set());
+  for (const w of items) {
+    for (const dep of w.allDeps) {
+      if (ids.has(dep)) g.setEdge(dep, w.id);
+    }
+  }
 
-  const maxLayer = Math.max(...layers.values(), 0);
-  const nodes: DagNode[] = items.map(w => ({
-    id: w.id,
-    title: w.title,
-    lane: w.lane,
-    layer: layers.get(w.id) || 0,
-    deps: w.allDeps.filter(d => ids.has(d)),
-  }));
-  nodes.sort((a, b) => a.layer - b.layer || a.id.localeCompare(b.id));
+  dagre.layout(g);
 
-  return { nodes, maxLayer };
+  const graphInfo = g.graph();
+  const nodes: DagNode[] = items.map(w => {
+    const n = g.node(w.id);
+    return {
+      id: w.id,
+      title: w.title,
+      lane: w.lane,
+      layer: 0,
+      deps: w.allDeps.filter(d => ids.has(d)),
+      x: n.x - NODE_W / 2,
+      y: n.y - NODE_H / 2,
+      width: NODE_W,
+      height: NODE_H,
+    };
+  });
+
+  const edges: DagEdge[] = g.edges().map(e => {
+    const edge = g.edge(e);
+    return { from: e.v, to: e.w, points: edge.points };
+  });
+
+  const maxLayer = 0;
+  return {
+    nodes,
+    edges,
+    width: graphInfo.width ?? 0,
+    height: graphInfo.height ?? 0,
+    maxLayer,
+  };
 }
 
 /** Latest YYYY-MM-DD present in the text; '' if none. Deterministic — no wall clock. */
