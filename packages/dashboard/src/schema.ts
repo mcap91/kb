@@ -14,10 +14,22 @@ export interface DashboardData {
   workItems: WorkItem[];
   completedLog: LogEntry[];
   failureLog: FailureEntry[];
+  taskMatrix: TaskMatrix | null;
   /** Latest date (YYYY-MM-DD) found in the source; '' if none. Deterministic. */
   dataDate: string;
   /** Human-readable source path the dashboard was built from. */
   source: string;
+}
+
+export interface TaskMatrix {
+  columns: string[];
+  rows: TaskMatrixRow[];
+}
+
+export interface TaskMatrixRow {
+  taskId: string;
+  station: string;
+  cells: string[];
 }
 
 export interface RecordInfo {

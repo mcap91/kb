@@ -24,6 +24,7 @@ export function parseInitiative(repoRoot: string, id: string): DashboardData {
     workItems,
     completedLog: [],
     failureLog: [],
+    taskMatrix: null,
     dataDate: sourceLatestDate(content),
     source: `wiki/initiatives/${id}.md`,
   };

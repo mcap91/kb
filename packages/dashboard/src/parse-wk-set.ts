@@ -31,6 +31,7 @@ export function parseWkSet(repoRoot: string, ids: string[]): DashboardData {
     workItems,
     completedLog: [],
     failureLog: [],
+    taskMatrix: null,
     dataDate: dates.at(-1) || '',
     source: `wiki/issues/ (${ids.length} records)`,
   };
