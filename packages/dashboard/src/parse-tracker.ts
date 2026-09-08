@@ -32,6 +32,7 @@ export function parseTracker(
     completedLog: parseCompletedLog(content),
     failureLog: parseFailureLog(content),
     taskMatrix: buildTaskMatrix(phases, tasksByPhase),
+    dependencyDag: null,
     dataDate: sourceLatestDate(content),
     source: `wiki/plans/${record.id}/execution/tracker.md`,
   };

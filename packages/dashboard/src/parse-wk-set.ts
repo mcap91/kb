@@ -1,7 +1,7 @@
 import { readdirSync, existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { DashboardData } from './schema.js';
-import { readWkRecord, summarize, sourceLatestDate } from './util.js';
+import { readWkRecord, summarize, sourceLatestDate, buildDependencyDag } from './util.js';
 
 // Reads a set of WK records and produces a status rollup with blocked-by resolution.
 export function parseWkSet(repoRoot: string, ids: string[]): DashboardData {
@@ -32,6 +32,7 @@ export function parseWkSet(repoRoot: string, ids: string[]): DashboardData {
     completedLog: [],
     failureLog: [],
     taskMatrix: null,
+    dependencyDag: buildDependencyDag(workItems),
     dataDate: dates.at(-1) || '',
     source: `wiki/issues/ (${ids.length} records)`,
   };

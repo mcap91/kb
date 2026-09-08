@@ -1,6 +1,6 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
-import type { WorkItem, Dependency, Lane, Summary } from './schema.js';
+import type { WorkItem, Dependency, Lane, Summary, DependencyDag, DagNode } from './schema.js';
 
 export function parseFrontmatter(content: string): Record<string, string> {
   const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
@@ -21,9 +21,11 @@ export function parseFrontmatter(content: string): Record<string, string> {
 export function parseFmArray(content: string, key: string): string[] {
   const fm = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
   if (!fm) return [];
-  const m = fm[1].match(new RegExp(`^${key}:\\s*\\[([^\\]]*)\\]\\s*$`, 'm'));
-  if (!m) return [];
-  return m[1].split(',').map(s => s.trim().replace(/^["']|["']$/g, '')).filter(Boolean);
+  const inline = fm[1].match(new RegExp(`^${key}:\\s*\\[([^\\]]*)\\]\\s*$`, 'm'));
+  if (inline) return inline[1].split(',').map(s => s.trim().replace(/^["']|["']$/g, '')).filter(Boolean);
+  const block = fm[1].match(new RegExp(`^${key}:\\s*\\n((?:\\s+-\\s+.+\\n?)*)`, 'm'));
+  if (block) return block[1].split('\n').map(l => l.replace(/^\s+-\s+/, '').trim()).filter(Boolean);
+  return [];
 }
 
 const RECORD_DIRS: Record<string, string> = { WK: 'issues', PLN: 'plans', IN: 'initiatives' };
@@ -71,7 +73,8 @@ export function readWkRecord(repoRoot: string, id: string): WorkItem | null {
   if (!existsSync(path)) return null;
   const content = readFileSync(path, 'utf-8');
   const fm = parseFrontmatter(content);
-  const blockedBy = resolveDependencies(repoRoot, parseFmArray(content, 'depends_on')).filter(d => !d.met);
+  const allDeps = parseFmArray(content, 'depends_on');
+  const blockedBy = resolveDependencies(repoRoot, allDeps).filter(d => !d.met);
   const status = fm['status'] || 'unknown';
   return {
     id,
@@ -80,6 +83,7 @@ export function readWkRecord(repoRoot: string, id: string): WorkItem | null {
     lane: laneOf(status, blockedBy.length > 0),
     priority: fm['priority'] || '',
     blockedBy,
+    allDeps,
   };
 }
 
@@ -89,6 +93,38 @@ export function extractWkReferences(content: string): string[] {
   let match;
   while ((match = regex.exec(content)) !== null) refs.add(match[0]);
   return [...refs].sort();
+}
+
+export function buildDependencyDag(items: WorkItem[]): DependencyDag | null {
+  const ids = new Set(items.map(w => w.id));
+  const hasAnyDeps = items.some(w => w.allDeps.some(d => ids.has(d)));
+  if (!hasAnyDeps) return null;
+
+  const layers = new Map<string, number>();
+  function assignLayer(id: string, visited: Set<string>): number {
+    if (layers.has(id)) return layers.get(id)!;
+    if (visited.has(id)) return 0;
+    visited.add(id);
+    const item = items.find(w => w.id === id);
+    if (!item) { layers.set(id, 0); return 0; }
+    const depLayers = item.allDeps.filter(d => ids.has(d)).map(d => assignLayer(d, visited));
+    const layer = depLayers.length ? Math.max(...depLayers) + 1 : 0;
+    layers.set(id, layer);
+    return layer;
+  }
+  for (const w of items) assignLayer(w.id, new Set());
+
+  const maxLayer = Math.max(...layers.values(), 0);
+  const nodes: DagNode[] = items.map(w => ({
+    id: w.id,
+    title: w.title,
+    lane: w.lane,
+    layer: layers.get(w.id) || 0,
+    deps: w.allDeps.filter(d => ids.has(d)),
+  }));
+  nodes.sort((a, b) => a.layer - b.layer || a.id.localeCompare(b.id));
+
+  return { nodes, maxLayer };
 }
 
 /** Latest YYYY-MM-DD present in the text; '' if none. Deterministic — no wall clock. */
