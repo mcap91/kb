@@ -129,6 +129,9 @@ describe('dashboard', () => {
       expect(laneOf('in_progress', false)).toBe('in_progress');
       expect(laneOf('not_started', false)).toBe('queued');
       expect(laneOf('in_progress', true)).toBe('blocked');
+      expect(laneOf('done', true)).toBe('done');
+      expect(laneOf('inbox', true)).toBe('queued');
+      expect(laneOf('blocked', false)).toBe('blocked');
     });
 
     it('summarize counts lanes', () => {
