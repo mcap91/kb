@@ -1,0 +1,6 @@
+{
+  "name": "@kb/dashboard",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module"
+}

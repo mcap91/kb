@@ -11,6 +11,7 @@
     { "path": "packages/wiki-core" },
     { "path": "packages/dispatch-core" },
     { "path": "packages/dispatch-mcp" },
-    { "path": "packages/graph-explore" }
+    { "path": "packages/graph-explore" },
+    { "path": "packages/dashboard" }
   ]
 }
