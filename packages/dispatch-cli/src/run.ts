@@ -7,21 +7,22 @@ import {
   createHandoff,
   initConfig,
   launch,
+  launchDispatchBackground,
   review,
   reviewAndLaunch,
-  runDispatch,
   status,
+  waitForRun,
 } from '@kb/dispatch-core';
 
 import type {
   CheckEnvironmentResult,
   CleanupReport,
   CreateHandoffResult,
-  DispatchResult2,
   LaunchEvent,
   ReviewResult,
   RunResult,
   StatusResult,
+  WaitForRunResult,
 } from '@kb/dispatch-core';
 
 function getFlag(args: string[], flag: string): boolean {
@@ -111,6 +112,7 @@ Commands:
   cleanup                    Clean up stale dispatch state
   status                     Show current dispatch state
   dispatch                   Run the v2 dispatch pipeline
+  wait-for-run               Wait for a run to reach terminal status
 
 Global Options:
   --help                     Show this help text
@@ -165,11 +167,23 @@ Command Options:
   status
     --dir <path>             Repository root directory (defaults to cwd)
 
-  dispatch                   Run the v2 dispatch pipeline
+  dispatch                   Run the v2 dispatch pipeline (always backgrounds)
     --dir <path>             Repository root directory (required)
     --handoff <rel-path>     Relative path to handoff file (required)
     --model <alias>          Model alias from registry (required)
+    --effort <level>         Effort/reasoning level (refused if unsupported)
     --no-preflight           Skip bwrap preflight check
+    --wait                   Block until the run reaches terminal status
+    --json                   Print machine-readable output
+    --verbose                Verbose stderr progress
+
+  wait-for-run
+    --dir <path>             Repository root directory (required)
+    --run-id <id>            Run ID (required for v2 runs)
+    --review-id <id>         Review ID (alternative, v1 runs)
+    --timeout-seconds <n>    Timeout in seconds (default: 1800, no cap)
+    --poll-interval-ms <n>   Poll interval in ms (default: 1000)
+    --json                   Print machine-readable output
 `.trim();
 
 async function cmdInitConfig(args: string[]): Promise<number> {
@@ -446,6 +460,24 @@ async function cmdStatus(args: string[]): Promise<number> {
   console.log(`Rejected tokens: ${data.rejected.length}`);
   console.log(`Runs in repo: ${data.runCount}`);
   console.log(`Review bundles in repo: ${data.reviewCount}`);
+
+  if (data.runs && data.runs.length > 0) {
+    console.log(`\nRuns (${data.runs.length}):`);
+    for (const run of data.runs) {
+      const runtime = run.runtimeSecs !== null ? `${Math.round(run.runtimeSecs)}s` : '-';
+      const hbAge = run.heartbeatAgeSecs !== null ? `${Math.round(run.heartbeatAgeSecs)}s` : '-';
+      const stale = run.stale ? ' STALE' : '';
+      const delivery = run.deliveryStatus ? ` delivery=${run.deliveryStatus}` : '';
+      const branch = run.branch ? ` branch=${run.branch}` : '';
+      console.log(`  ${run.runId} [${run.status}] ${run.handoffId} model=${run.model ?? '-'} runtime=${runtime} hb_age=${hbAge}${stale}${delivery}${branch}`);
+      if (run.logTail && run.logTail.length > 0) {
+        for (const line of run.logTail) {
+          console.log(`    | ${line}`);
+        }
+      }
+    }
+  }
+
   return 0;
 }
 
@@ -453,35 +485,109 @@ async function cmdDispatch(args: string[]): Promise<number> {
   const dir = getFlagValue(args, '--dir');
   const handoff = getFlagValue(args, '--handoff');
   const model = getFlagValue(args, '--model');
+  const effort = getFlagValue(args, '--effort');
   const noPreflight = getFlag(args, '--no-preflight');
   const verbose = getFlag(args, '--verbose');
+  const json = getFlag(args, '--json');
+  const wait = getFlag(args, '--wait');
 
   if (!dir || !handoff || !model) {
     console.error('Error: --dir, --handoff, and --model are required');
     return 1;
   }
 
-  const result = await runDispatch({
-    dir,
-    handoff,
-    model,
-    preflight: !noPreflight,
-    verbose,
+  const result = await launchDispatchBackground({
+    dir, handoff, model, effort,
+    preflight: !noPreflight, verbose,
   });
 
   if (!result.ok) {
-    console.error(`Dispatch failed: [${result.error}] ${result.message}`);
+    if (json) {
+      console.log(JSON.stringify({ ok: false, error: result.error, message: result.message }, null, 2));
+    } else {
+      console.error(`Dispatch failed: [${result.error}] ${result.message}`);
+    }
     return 1;
   }
 
-  const data: DispatchResult2 = result.data;
-  console.log('Dispatch succeeded.');
-  console.log(`  Run ID:    ${data.runId}`);
+  if (json) {
+    console.log(JSON.stringify(result.data, null, 2));
+  } else {
+    console.log(`Dispatch started.`);
+    console.log(`  Run ID:    ${result.data.runId}`);
+    console.log(`  Handoff:   ${result.data.handoffId}`);
+    console.log(`  Model:     ${result.data.model}`);
+    console.log(`  State:     ${result.data.statePath}`);
+    console.log(`  Log:       ${result.data.logPath}`);
+    console.log(`  Response:  ${result.data.responsePath}`);
+  }
+
+  if (wait) {
+    // --wait chains wait-for-run with a long timeout (a blocking primitive for
+    // live-gate/debug use — S1's ruling 1 keeps `dispatch` itself always-background).
+    const waitResult = await waitForRun({
+      dir, runId: result.data.runId,
+      timeoutSeconds: 1800,
+    });
+    if (!waitResult.ok) {
+      console.error(`Wait failed: [${waitResult.error}] ${waitResult.message}`);
+      return 1;
+    }
+    if (json) {
+      console.log(JSON.stringify(waitResult.data, null, 2));
+    } else {
+      // s1-rulings ruling 10: a delivery refusal is DATA, not a launch failure —
+      // print the outcome and keep exit 0; the response doc's `outcome` field
+      // (and --json's full envelope) carry the orchestration signal.
+      console.log(`Dispatch completed. Delivery: ${(waitResult.data as any).status ?? 'unknown'}`);
+    }
+  }
+
+  return 0;
+}
+
+async function cmdWaitForRun(args: string[]): Promise<number> {
+  const dir = getFlagValue(args, '--dir');
+  const runId = getFlagValue(args, '--run-id');
+  const reviewId = getFlagValue(args, '--review-id');
+  const timeoutSecondsRaw = getFlagValue(args, '--timeout-seconds');
+  const pollIntervalMsRaw = getFlagValue(args, '--poll-interval-ms');
+  const json = getFlag(args, '--json');
+
+  if (!dir || (!runId && !reviewId)) {
+    console.error('Error: --dir and one of --run-id or --review-id are required');
+    return 1;
+  }
+
+  const result = await waitForRun({
+    dir,
+    runId,
+    reviewId,
+    timeoutSeconds: timeoutSecondsRaw !== undefined ? Number(timeoutSecondsRaw) : undefined,
+    pollIntervalMs: pollIntervalMsRaw !== undefined ? Number(pollIntervalMsRaw) : undefined,
+  });
+
+  if (!result.ok) {
+    if (json) {
+      console.log(JSON.stringify({ ok: false, error: result.error, message: result.message }, null, 2));
+    } else {
+      console.error(`Wait failed: [${result.error}] ${result.message}`);
+    }
+    return 1;
+  }
+
+  if (json) {
+    console.log(JSON.stringify(result.data, null, 2));
+    return 0;
+  }
+
+  const data: WaitForRunResult = result.data;
+  console.log(`Run ${data.runId} status: ${data.status}`);
   console.log(`  Handoff:   ${data.handoffId}`);
-  console.log(`  Model:     ${data.model}`);
   console.log(`  Run dir:   ${data.runDir}`);
-  console.log(`  Response:  ${data.responsePath}`);
-  console.log(`  Delivery:  ${data.delivery.status}`);
+  console.log(`  Started:   ${data.startedAt ?? 'n/a'}`);
+  console.log(`  Heartbeat: ${data.heartbeatAt ?? 'n/a'}`);
+  console.log(`  Completed: ${data.completedAt ?? 'n/a'}`);
   return 0;
 }
 
@@ -519,6 +625,8 @@ export async function run(args: string[]): Promise<number> {
       return cmdStatus(args);
     case 'dispatch':
       return cmdDispatch(args);
+    case 'wait-for-run':
+      return cmdWaitForRun(args);
     default:
       console.error(`Unknown command: ${command}`);
       console.error('Run with --help to see available commands.');

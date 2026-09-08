@@ -42,7 +42,9 @@ export type DispatchErrorCode =
   | 'DELIVERY_FAILED'
   | 'CAPTURE_FAILED'
   | 'PREFLIGHT_FAILED'
-  | 'PIPELINE_FAILED';
+  | 'PIPELINE_FAILED'
+  // --- v2 background dispatch (PLN-0004 S1) ---
+  | 'ACTIVE_RUN_EXISTS';
 
 /**
  * Discriminated union result type for dispatch-core operations.

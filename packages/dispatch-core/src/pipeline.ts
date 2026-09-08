@@ -23,7 +23,7 @@
  * (no clone has been created yet at that point).
  */
 import { randomUUID } from 'node:crypto';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 
 import type { DispatchResult } from './errors.js';
@@ -45,7 +45,7 @@ import {
   parseDeliveryOutput,
   type DeliveryOutcome,
 } from './delivery.js';
-import { writeResponseDoc } from './capture.js';
+import { writeResponseDoc, buildProvenanceWriteBack } from './capture.js';
 import { runPreflight } from './preflight.js';
 import { getRunDir } from './paths.js';
 
@@ -58,6 +58,8 @@ const WORKER_TIMEOUT_MS = WORKER_TIMEOUT_SECS * 1000;
 const PI_WORKER_DIR = '.pi-agent';
 const WORKER_INFRA_PREFIXES = [PI_WORKER_DIR];
 
+const VALID_RUN_ID = /^RUN-[0-9a-f-]{36}$/i;
+
 export interface DispatchOpts {
   /** Windows path to the mother repo */
   dir: string;
@@ -65,6 +67,8 @@ export interface DispatchOpts {
   handoff: string;
   /** Model alias from the registry (e.g. 'deepseek', 'qwen3:8b') */
   model: string;
+  /** Pre-minted run id (background controller injects this; standalone callers omit). */
+  runId?: string;
   /** Run preflight before dispatch? (default: true) */
   preflight?: boolean;
   /** Verbose output */
@@ -111,10 +115,13 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
   const model = modelResult.data;
   const canonicalModel = `${model.provider}/${model.modelId}`;
 
-  // 5. Generate run ID
-  const runId = `RUN-${randomUUID()}`;
+  // 5. Run ID — injected by the background controller, or minted here for standalone callers.
+  const runId = opts.runId ?? `RUN-${randomUUID()}`;
+  if (!VALID_RUN_ID.test(runId)) {
+    return fail('PIPELINE_FAILED', `Invalid run id format: ${runId}`);
+  }
 
-  // 6. Create run dir
+  // 6. Create run dir (idempotent — controller may have already created it)
   const runDir = getRunDir(dir, handoff.id, runId);
   try {
     await mkdir(runDir, { recursive: true });
@@ -336,8 +343,46 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       piResult: { outcome: piParsed.data.outcome, usage: piParsed.data.usage },
       model: canonicalModel,
       isolationBackend: 'bwrap-wsl2',
+      needs: piParsed.data.needs,
     });
     if (!captureResult.ok) return captureResult;
+
+    // 20b. Canonical response copy (T7-full closure item 2, S1). The run-dir
+    // copy above is dispatch's own staging evidence; the response doc's
+    // canonical home is `wiki/handoffs/HO-XXXX.response.md` in the mother
+    // repo (spec §5). Best-effort — dispatch does not own the wiki dir
+    // structure, and a write failure here must never fail an otherwise
+    // successful run.
+    const canonicalDir = join(dir, 'wiki', 'handoffs');
+    const canonicalPath = join(canonicalDir, `${handoff.id}.response.md`);
+    try {
+      await mkdir(canonicalDir, { recursive: true });
+      await writeFile(canonicalPath, captureResult.data.responseContent, 'utf8');
+    } catch (err) {
+      logVerbose(verbose, `warning: could not write canonical response to ${canonicalPath}: ${err}`);
+    }
+
+    // 20c. Provenance write-back (T7-full closure item 3, S1): merge
+    // buildProvenanceWriteBack's fields into the HO's own frontmatter.
+    // Write-back dirt rule (s1-rulings.md): dispatch writes the pair +
+    // frontmatter but NEVER commits to the mother repo — this is file I/O
+    // only. Best-effort, same as the canonical copy above.
+    const provenance = buildProvenanceWriteBack({
+      runDir,
+      handoff: { id: handoff.id, title: handoff.title, mode: handoff.mode },
+      delivery,
+      model: canonicalModel,
+      isolationBackend: 'bwrap-wsl2',
+      needs: piParsed.data.needs,
+    });
+    const hoPath = join(dir, opts.handoff);
+    try {
+      const hoContent = await readFile(hoPath, 'utf8');
+      const updated = mergeProvenanceFrontmatter(hoContent, provenance.fields);
+      await writeFile(hoPath, updated, 'utf8');
+    } catch (err) {
+      logVerbose(verbose, `warning: could not write provenance to ${hoPath}: ${err}`);
+    }
 
     // 22. Return result
     return ok({
@@ -353,4 +398,60 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
     // safety net if this itself fails to run (never rejects, but belt+suspenders).
     await removeClone(clonePath, runDir).catch(() => undefined);
   }
+}
+
+// ---------------------------------------------------------------------------
+// T7-full closure (S1): provenance frontmatter write-back merge helper. Not
+// part of the package's public surface (src/index.ts exports only
+// DispatchOpts/DispatchResult2/runDispatch from this module) — exported here
+// at module scope only so tests can import it directly, the same way this
+// codebase's other v2 modules are unit-tested (see tests/dispatch-v2-*.test.ts).
+// ---------------------------------------------------------------------------
+
+function formatFrontmatterValue(value: string | boolean | string[]): string {
+  if (Array.isArray(value)) {
+    return `[${value.map((entry) => JSON.stringify(entry)).join(', ')}]`;
+  }
+  return String(value);
+}
+
+/**
+ * Merge provenance write-back fields (`buildProvenanceWriteBack`'s output)
+ * into an HO record's existing YAML frontmatter. A field that already has a
+ * `key: value` line (e.g. `run_id` from a prior run on the same HO) is
+ * replaced in place; a field with no existing line is appended just before
+ * the closing `---`, so the HO's original field order and body are otherwise
+ * untouched. Returns `content` unchanged if it has no recognizable
+ * `---`-delimited frontmatter block, rather than guessing at a malformed
+ * file's structure (mirrors ho.ts's splitFrontmatter tolerance).
+ */
+export function mergeProvenanceFrontmatter(
+  content: string,
+  fields: Record<string, string | boolean | string[]>,
+): string {
+  const normalized = content.replace(/\r\n/g, '\n');
+  const match = normalized.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
+  if (!match) return content;
+
+  const frontmatterText = match[1] ?? '';
+  const body = match[2] ?? '';
+  const lines = frontmatterText.split('\n');
+  const remainingKeys = new Set(Object.keys(fields));
+
+  const updatedLines = lines.map((line) => {
+    const kvMatch = line.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*:/);
+    if (!kvMatch) return line;
+    const key = kvMatch[1]!;
+    if (!Object.prototype.hasOwnProperty.call(fields, key)) return line;
+    remainingKeys.delete(key);
+    return `${key}: ${formatFrontmatterValue(fields[key]!)}`;
+  });
+
+  for (const key of Object.keys(fields)) {
+    if (remainingKeys.has(key)) {
+      updatedLines.push(`${key}: ${formatFrontmatterValue(fields[key]!)}`);
+    }
+  }
+
+  return `---\n${updatedLines.join('\n')}\n---\n${body}`;
 }
