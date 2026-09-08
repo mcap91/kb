@@ -14,10 +14,10 @@ catch (e) { document.documentElement.dataset.theme = 'dark'; }
   --bg:#0a0c10; --surface:#12151c; --surface-2:#171b24;
   --border:#232834; --border-strong:#313846;
   --ink:#e6e9ef; --ink-2:#9aa4b2; --ink-3:#626c7d;
-  --done:#3fb865; --prog:#4d9dff; --blocked:#ff6b5e; --queued:#6b7688;
+  --done:#3fb865; --prog:#4d9dff; --blocked:#ff6b5e; --queued:#8b95a5;
   --accent:#f0a831;
   --done-bg:rgba(63,184,101,.10); --prog-bg:rgba(77,157,255,.10);
-  --blocked-bg:rgba(255,107,94,.10); --queued-bg:rgba(107,118,136,.10);
+  --blocked-bg:rgba(255,107,94,.10); --queued-bg:rgba(139,149,165,.10);
   --accent-bg:rgba(240,168,49,.12);
   --shadow:0 1px 0 rgba(0,0,0,.35), 0 10px 26px -14px rgba(0,0,0,.7);
   --mono:ui-monospace,'Cascadia Code','JetBrains Mono','SF Mono',Consolas,monospace;
@@ -112,7 +112,7 @@ h1{font-family:var(--sans); font-size:26px; font-weight:750; letter-spacing:-.02
 .node .rail{position:absolute; top:15px; height:2px; width:100%; left:-50%; background:var(--border-strong)}
 .node:first-child .rail{display:none}
 .node .rail.done{background:var(--done)}
-.node .rail.active{background:linear-gradient(90deg,var(--done),var(--accent))}
+.node .rail.active{background:linear-gradient(90deg,var(--done),var(--prog))}
 .node .dot{
   width:32px; height:32px; border-radius:50%; display:grid; place-items:center; z-index:1;
   background:var(--surface); border:2px solid var(--c); color:var(--c); font-size:13px; box-shadow:var(--shadow);
@@ -155,9 +155,11 @@ h1{font-family:var(--sans); font-size:26px; font-weight:750; letter-spacing:-.02
 .card .cmeta{margin-top:7px; font-size:11px; color:var(--ink-3); display:flex; gap:12px; flex-wrap:wrap}
 .blocked-on{margin-top:8px; display:flex; flex-direction:column; gap:4px}
 .blocked-on .bl{display:flex; gap:6px; align-items:baseline; font-size:11px; color:var(--ink-2)}
-.blocked-on .bl .w{color:var(--blocked); font-weight:700; white-space:nowrap}
+.blocked-on .bl .w{font-weight:700; white-space:nowrap; color:var(--c)}
+.blocked-on .bl.dep-met .t{color:var(--ink-3)}
 .blocked-on .bl .t{color:var(--ink-2); overflow:hidden; text-overflow:ellipsis}
-.blocked-on .lead{font-size:10px; text-transform:uppercase; letter-spacing:.1em; color:var(--blocked)}
+.blocked-on .dep-icon{font-size:10px; color:var(--c)}
+.blocked-on .lead{font-size:10px; text-transform:uppercase; letter-spacing:.1em; color:var(--ink-2)}
 
 /* native disclosure for the demoted agent-language detail */
 details.raw{margin-top:9px; border-top:1px dashed var(--border); padding-top:8px}
@@ -166,6 +168,7 @@ details.raw>summary::-webkit-details-marker{display:none}
 details.raw>summary::before{content:'▸'; color:var(--accent); transition:transform .15s}
 details.raw[open]>summary::before{transform:rotate(90deg)}
 details.raw .rawbody{margin-top:8px; font-size:11px; color:var(--ink-2); line-height:1.55; white-space:pre-wrap; word-break:break-word}
+details.raw .rawbody .wk-ref{color:var(--ink); font-weight:800}
 details.raw .gate{color:var(--ink-3); font-size:11px; margin-bottom:8px}
 details.raw .gate .ck{color:var(--done)} details.raw .gate .uck{color:var(--queued)}
 
@@ -175,7 +178,7 @@ details.raw .gate .ck{color:var(--done)} details.raw .gate .uck{color:var(--queu
 .queued-strip>summary .g{color:var(--queued)}
 .queued-list{display:flex; flex-wrap:wrap; gap:7px; padding:2px 0 14px}
 .qchip{font-size:11px; color:var(--ink-2); background:var(--queued-bg); border:1px solid var(--border); border-radius:5px; padding:4px 9px}
-.qchip b{color:var(--ink); font-weight:600}
+.qchip b{color:var(--ink); font-weight:700}
 
 /* ── Issues (failures) ── */
 .issue{background:var(--surface); border:1px solid var(--border); border-left:3px solid var(--c); border-radius:var(--r); padding:11px 13px; margin-bottom:9px}
@@ -256,6 +259,7 @@ const LANE_LABEL = {done:'Done', in_progress:'In progress', blocked:'Blocked', q
 const LANE_ORDER = ['in_progress','blocked','done'];
 
 function esc(s){const e=document.createElement('span'); e.textContent=(s==null?'':String(s)); return e.innerHTML;}
+function linkWkRefs(html){return html.replace(/(WK-\d{4})/g,'<span class="wk-ref">$1</span>');}
 function lb(s){return String(s||'').replace(/_/g,' ');}
 let _i = 0; const nextI = () => _i++;
 
@@ -347,15 +351,17 @@ function phaseCard(p){
 }
 
 function wkCard(w){
-  const blk = w.blockedBy && w.blockedBy.length ? `<div class="blocked-on">
-    <span class="lead">waiting on</span>
-    ${w.blockedBy.map(b=>`<span class="bl"><span class="w">${esc(b.id)}</span><span class="t">${esc(b.title)}</span></span>`).join('')}
+  const deps = w.resolvedDeps && w.resolvedDeps.length ? w.resolvedDeps : [];
+  const depHtml = deps.length ? `<div class="blocked-on">
+    <span class="lead">depends on</span>
+    ${deps.map(b=>`<span class="bl ${b.met?'dep-met':'dep-unmet'} l-${laneOfStatus(b.status)}"><span class="dep-icon">${b.met?'✓':'⚠'}</span><span class="w">${esc(b.id)}</span><span class="t">${esc(b.title)}</span></span>`).join('')}
   </div>` : '';
+  const raw = w.body ? `<details class="raw"><summary>detail</summary><div class="rawbody">${linkWkRefs(esc(w.body))}</div></details>` : '';
   return `<div class="card l-${w.lane} anim" style="--i:${nextI()}">
     <div class="top"><span class="cid">${esc(w.id)}</span>${w.priority?`<span class="prio">${esc(w.priority)}</span>`:''}</div>
     <div class="ctitle">${esc(w.title)}</div>
     <div class="cmeta">${badge(w.lane,w.status)}</div>
-    ${blk}
+    ${depHtml}${raw}
   </div>`;
 }
 
@@ -446,6 +452,17 @@ function renderDag(dag){
     </svg></div></div>`;
 }
 
+function renderQueued(d){
+  const isPhase = d.phases.length>0;
+  const cards = isPhase ? d.phases : d.workItems;
+  const queued = cards.filter(c=>c.lane==='queued');
+  if(!queued.length) return '';
+  return `<div class="section"><details class="queued-strip">
+    <summary><span class="g">${GLYPH.queued}</span>${queued.length} queued</summary>
+    <div class="queued-list">${queued.map(c=>`<span class="qchip"><b>${esc(c.id)}</b> ${esc(isPhase?(c.label||''):c.title)}</span>`).join('')}</div>
+  </details></div>`;
+}
+
 function renderLanes(d){
   const isPhase = d.phases.length>0;
   const cards = isPhase ? d.phases : d.workItems;
@@ -460,14 +477,8 @@ function renderLanes(d){
     </div>`;
   }).join('');
 
-  const queued = byLane('queued');
-  const qStrip = queued.length ? `<details class="queued-strip">
-    <summary><span class="g">${GLYPH.queued}</span>${queued.length} queued</summary>
-    <div class="queued-list">${queued.map(c=>`<span class="qchip"><b>${esc(c.id)}</b> ${esc(isPhase?(c.label||''):c.title)}</span>`).join('')}</div>
-  </details>` : '';
-
   return `<div class="section"><div class="section-title">Status board</div>
-    <div class="lanes">${cols}</div>${qStrip}</div>`;
+    <div class="lanes">${cols}</div></div>`;
 }
 
 function renderIssues(failures){
@@ -550,7 +561,7 @@ function render(){
   document.title = `${d.record.id} — ${d.record.title}`;
   document.getElementById('app').innerHTML =
     renderHead(d) + renderSummary(d) + renderPipeline(d.phases) + renderMatrix(d.taskMatrix) +
-    renderDag(d.dependencyDag) + renderLanes(d) + renderIssues(d.failureLog) +
+    renderDag(d.dependencyDag) + renderQueued(d) + renderLanes(d) + renderIssues(d.failureLog) +
     renderActivity(d.completedLog) + renderFoot(d);
   paintToggle();
 }

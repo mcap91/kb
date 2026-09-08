@@ -51,11 +51,14 @@ export function isDependencyMet(status: string): boolean {
   return MET_STATUSES.has(status);
 }
 
-/** Single source of truth for status -> lane. An item with any unmet dependency is blocked. */
+const TERMINAL_STATUSES = new Set(['done', 'cancelled', 'superseded', 'wont_do', 'duplicate', 'deprecated']);
+
+/** Single source of truth for status -> lane. Explicit statuses are authoritative; unmet deps only block active work. */
 export function laneOf(status: string, hasUnmetDeps: boolean): Lane {
-  if (hasUnmetDeps) return 'blocked';
-  if (status === 'done') return 'done';
-  if (status === 'in_progress' || status === 'active' || status === 'review') return 'in_progress';
+  if (TERMINAL_STATUSES.has(status)) return 'done';
+  if (status === 'in_progress' || status === 'active' || status === 'review') {
+    return hasUnmetDeps ? 'blocked' : 'in_progress';
+  }
   if (status === 'blocked') return 'blocked';
   return 'queued';
 }
@@ -74,8 +77,11 @@ export function readWkRecord(repoRoot: string, id: string): WorkItem | null {
   const content = readFileSync(path, 'utf-8');
   const fm = parseFrontmatter(content);
   const allDeps = parseFmArray(content, 'depends_on');
-  const blockedBy = resolveDependencies(repoRoot, allDeps).filter(d => !d.met);
+  const resolved = resolveDependencies(repoRoot, allDeps);
+  const blockedBy = resolved.filter(d => !d.met);
   const status = fm['status'] || 'unknown';
+  const bodyMatch = content.match(/^---\r?\n[\s\S]*?\r?\n---\r?\n([\s\S]*)/);
+  const body = bodyMatch ? bodyMatch[1].trim() : '';
   return {
     id,
     title: fm['title'] || id,
@@ -84,6 +90,8 @@ export function readWkRecord(repoRoot: string, id: string): WorkItem | null {
     priority: fm['priority'] || '',
     blockedBy,
     allDeps,
+    resolvedDeps: resolved,
+    body,
   };
 }
 

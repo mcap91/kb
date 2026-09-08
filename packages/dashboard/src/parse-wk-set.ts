@@ -13,7 +13,7 @@ export function parseWkSet(repoRoot: string, ids: string[]): DashboardData {
     })
     .filter(Boolean) as NonNullable<ReturnType<typeof readWkRecord>>[];
 
-  const label = ids.length === 1 ? ids[0] : `${ids[0]}--${ids[ids.length - 1]}`;
+  const label = ids.length === 1 ? ids[0] : `from-${ids[0]}`;
 
   // dataDate = latest date across the set's source files (deterministic, no clock).
   const dates = workItems
@@ -25,7 +25,7 @@ export function parseWkSet(repoRoot: string, ids: string[]): DashboardData {
     .sort();
 
   return {
-    record: { id: label, title: `Work items: ${label}`, status: '', type: 'WK-set' },
+    record: { id: label, title: `Work items: ${label} (${ids.length} records)`, status: '', type: 'WK-set' },
     summary: summarize(workItems.map(w => w.lane)),
     phases: [],
     workItems,

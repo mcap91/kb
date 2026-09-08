@@ -83,6 +83,10 @@ export interface WorkItem {
   blockedBy: Dependency[];
   /** All dependencies (met + unmet) for DAG rendering. */
   allDeps: string[];
+  /** All dependencies resolved to title+status+met for card rendering. */
+  resolvedDeps: Dependency[];
+  /** Record body (post-frontmatter) for detail expand. */
+  body: string;
 }
 
 export interface Dependency {

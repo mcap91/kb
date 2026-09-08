@@ -56,7 +56,7 @@ switch (prefix) {
   case 'WK': {
     const ids = args.flatMap(a => a.includes('..') ? expandRange(a, repoRoot) : [a]);
     if (ids.length === 0) { console.error('No matching WK records found'); process.exit(1); }
-    const label = ids.length === 1 ? ids[0] : `${ids[0]}--${ids[ids.length - 1]}`;
+    const label = ids.length === 1 ? ids[0] : `from-${ids[0]}`;
     const data = parseWkSet(repoRoot, ids);
     console.log(emit(repoRoot, label, data));
     break;
