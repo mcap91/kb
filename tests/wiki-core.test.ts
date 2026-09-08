@@ -654,13 +654,13 @@ describe('allocation', () => {
     }
   });
 
-  it('rejects HO prefix', async () => {
+  it('accepts HO prefix', async () => {
     tmp = await createBootstrappedRepo();
 
     const result = await allocate({ dir: tmp.dir, prefix: 'HO' as WikiPrefix });
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.error).toBe('INVALID_PREFIX');
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.data.id).toBe('HO-0001');
     }
   });
 
@@ -798,14 +798,14 @@ describe('create', () => {
     );
   });
 
-  it('rejects HO with INVALID_PREFIX error', async () => {
+  it('accepts HO prefix and creates handoff record', async () => {
     tmp = await createBootstrappedRepo();
     const result = await create({ dir: tmp.dir, prefix: 'HO', title: 'Test handoff' });
 
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.error).toBe('INVALID_PREFIX');
-      expect(result.message).toContain('HO');
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.data.id).toBe('HO-0001');
+      expect(result.data.path).toContain('wiki/handoffs/HO-0001.md');
     }
   });
 
@@ -1627,20 +1627,19 @@ describe('lint', () => {
     }
   });
 
-  it('excludes wiki/handoffs/', async () => {
+  it('excludes wiki/handoffs/ from linting', async () => {
     tmp = await createBootstrappedRepo();
 
-    // Place a file in wiki/handoffs/
     writeRecord(tmp.dir, 'wiki/handoffs/HO-0001.md', {
       id: 'HO-0001',
       title: 'Handoff',
-      status: 'open',
+      mode: 'implement',
+      status: 'draft',
     });
 
     const result = await lint({ dir: tmp.dir });
     expect(result.ok).toBe(true);
     if (result.ok) {
-      // Handoff file should not appear in diagnostics
       const handoffDiags = result.data.diagnostics.filter(d =>
         d.file.includes('handoffs'),
       );
@@ -1701,19 +1700,17 @@ describe('generate', () => {
   it('excludes wiki/handoffs/ content', async () => {
     tmp = await createBootstrappedRepo();
 
-    // Place a handoff record in wiki/handoffs/
     writeRecord(tmp.dir, 'wiki/handoffs/HO-0001.md', {
       id: 'HO-0001',
       title: 'Some handoff',
-      status: 'in_progress',
+      mode: 'implement',
+      status: 'draft',
     });
 
-    // Also create a real record
     await create({ dir: tmp.dir, prefix: 'WK', title: 'Real item' });
 
     await generate({ dir: tmp.dir });
 
-    // Handoff should not appear in any generated views
     const catalog = readText(tmp.dir, 'wiki/catalog.md');
     expect(catalog).not.toContain('HO-0001');
 
@@ -1914,14 +1911,14 @@ describe('search', () => {
     expect(paths).not.toContain('wiki/archive.md');
   });
 
-  it('build index excludes wiki/handoffs/', async () => {
+  it('build index includes wiki/handoffs/', async () => {
     tmp = await createBootstrappedRepo();
 
-    // Place a handoff file
     writeRecord(tmp.dir, 'wiki/handoffs/HO-0001.md', {
       id: 'HO-0001',
       title: 'A handoff',
-      status: 'pending',
+      mode: 'implement',
+      status: 'draft',
     });
 
     await buildSearchIndex({ dir: tmp.dir });
@@ -1929,7 +1926,47 @@ describe('search', () => {
     const index = readJson<{ entries: Array<{ path: string }> }>(tmp.dir, 'wiki/.search-index.json');
     const paths = index.entries.map(e => e.path);
     const handoffPaths = paths.filter(p => p.includes('handoffs'));
-    expect(handoffPaths.length).toBe(0);
+    expect(handoffPaths.length).toBe(1);
+  });
+
+  it('default search excludes HO prefix', async () => {
+    tmp = await createBootstrappedRepo();
+
+    writeRecord(tmp.dir, 'wiki/handoffs/HO-0001.md', {
+      id: 'HO-0001',
+      title: 'A handoff task',
+      mode: 'implement',
+      status: 'draft',
+    });
+
+    await buildSearchIndex({ dir: tmp.dir });
+
+    const result = await search({ dir: tmp.dir, query: 'handoff' });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const hoHits = result.data.hits.filter(h => h.prefix === 'HO');
+      expect(hoHits.length).toBe(0);
+    }
+  });
+
+  it('search includes HO when prefix filter is set', async () => {
+    tmp = await createBootstrappedRepo();
+
+    writeRecord(tmp.dir, 'wiki/handoffs/HO-0001.md', {
+      id: 'HO-0001',
+      title: 'A handoff task',
+      mode: 'implement',
+      status: 'draft',
+    });
+
+    await buildSearchIndex({ dir: tmp.dir });
+
+    const result = await search({ dir: tmp.dir, query: 'handoff', prefix: 'HO' as WikiPrefix });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const hoHits = result.data.hits.filter(h => h.prefix === 'HO');
+      expect(hoHits.length).toBe(1);
+    }
   });
 
   it('build index excludes .agent-runs/, scratch_space/, node_modules/, dist/', async () => {

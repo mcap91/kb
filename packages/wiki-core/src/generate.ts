@@ -138,6 +138,8 @@ function collectRecords(
   const entries: RecordEntry[] = [];
 
   for (const [typeKey, typeDef] of Object.entries(manifest.types)) {
+    if (typeDef.prefix === 'HO') continue;
+
     const dir = path.join(targetDir, typeDef.directory.replace(/\//g, path.sep));
     const files = listMarkdownFiles(dir);
 

@@ -1,8 +1,7 @@
 /**
  * Record creation module.
  *
- * Creates new wiki records for all manifest-driven types (WK, IN, DEC, SRC, AREA, PLN, VAL).
- * Rejects HO prefix with INVALID_PREFIX error.
+ * Creates new wiki records for all manifest-driven types.
  * Allocates IDs via allocate(), loads templates, fills frontmatter, writes files.
  */
 
@@ -124,7 +123,6 @@ function getGitUserName(cwd: string): string | undefined {
  * Create a new wiki record.
  *
  * - Validates prefix against manifest
- * - Rejects HO prefix with INVALID_PREFIX
  * - Allocates ID (for allocated strategy) or derives slug (for slug strategy)
  * - Loads and fills template
  * - Writes record file to the correct directory
@@ -139,15 +137,7 @@ export async function create(
 
   debug(`create: prefix=${prefix}, title="${opts.title}", dir=${opts.dir}`);
 
-  // 1. Explicit HO rejection
-  if (prefix === 'HO') {
-    return fail(
-      'INVALID_PREFIX',
-      'HO prefix is dispatch-owned and cannot be used with wiki create',
-    );
-  }
-
-  // 2. Load manifest and find the type definition
+  // 1. Load manifest and find the type definition
   const manifestResult = loadManifest();
   if (!manifestResult.ok) {
     return fail('CONTRACT_NOT_FOUND', manifestResult.message);
