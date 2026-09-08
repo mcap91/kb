@@ -1,7 +1,7 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import type { DashboardData } from './schema.js';
-import { parseFrontmatter, readWkRecord, extractWkReferences, summarize, sourceLatestDate } from './util.js';
+import { parseFrontmatter, readWkRecord, extractWkReferences, summarize, sourceLatestDate, buildDependencyDag } from './util.js';
 
 // Reads IN frontmatter + resolves linked WK records (status, lane, blocked-by).
 export function parseInitiative(repoRoot: string, id: string): DashboardData {
@@ -25,6 +25,7 @@ export function parseInitiative(repoRoot: string, id: string): DashboardData {
     completedLog: [],
     failureLog: [],
     taskMatrix: null,
+    dependencyDag: buildDependencyDag(workItems),
     dataDate: sourceLatestDate(content),
     source: `wiki/initiatives/${id}.md`,
   };

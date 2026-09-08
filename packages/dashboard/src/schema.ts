@@ -15,6 +15,7 @@ export interface DashboardData {
   completedLog: LogEntry[];
   failureLog: FailureEntry[];
   taskMatrix: TaskMatrix | null;
+  dependencyDag: DependencyDag | null;
   /** Latest date (YYYY-MM-DD) found in the source; '' if none. Deterministic. */
   dataDate: string;
   /** Human-readable source path the dashboard was built from. */
@@ -80,6 +81,8 @@ export interface WorkItem {
   priority: string;
   /** Unmet dependencies resolved to title+status -- the deterministic "why blocked". */
   blockedBy: Dependency[];
+  /** All dependencies (met + unmet) for DAG rendering. */
+  allDeps: string[];
 }
 
 export interface Dependency {
@@ -87,6 +90,19 @@ export interface Dependency {
   title: string;
   status: string;
   met: boolean;
+}
+
+export interface DagNode {
+  id: string;
+  title: string;
+  lane: Lane;
+  layer: number;
+  deps: string[];
+}
+
+export interface DependencyDag {
+  nodes: DagNode[];
+  maxLayer: number;
 }
 
 export interface LogEntry {
