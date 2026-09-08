@@ -12,6 +12,7 @@
     "dispatch": "node --import tsx packages/dispatch-cli/src/index.ts",
     "dispatch:mcp": "node --import tsx packages/dispatch-mcp/src/server.ts",
     "graph": "node --import tsx packages/graph-explore/src/extract.ts",
+    "dashboard": "node --import tsx packages/dashboard/src/cli.ts",
     "setup:test-kb": "node scripts/setup-test-kb.mjs",
     "test": "vitest run",
     "typecheck": "tsc --build"
