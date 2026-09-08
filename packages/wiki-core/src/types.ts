@@ -88,7 +88,7 @@ export type OperatorAssessment =
   | 'not_reviewed';
 
 /** Manifest-driven wiki record prefixes. */
-export type WikiPrefix = 'WK' | 'IN' | 'DEC' | 'SRC' | 'AREA' | 'PLN' | 'VAL';
+export type WikiPrefix = 'WK' | 'IN' | 'DEC' | 'SRC' | 'AREA' | 'PLN' | 'VAL' | 'HO';
 
 // ---------------------------------------------------------------------------
 // Frontmatter interfaces for manifest-driven record types
