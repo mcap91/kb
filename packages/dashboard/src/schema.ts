@@ -102,10 +102,23 @@ export interface DagNode {
   lane: Lane;
   layer: number;
   deps: string[];
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface DagEdge {
+  from: string;
+  to: string;
+  points: { x: number; y: number }[];
 }
 
 export interface DependencyDag {
   nodes: DagNode[];
+  edges: DagEdge[];
+  width: number;
+  height: number;
   maxLayer: number;
 }
 

@@ -23,5 +23,9 @@
     "typescript": "^6.0.3",
     "vitest": "^4.1.5",
     "zod": "^4.4.3"
+  },
+  "dependencies": {
+    "@types/dagre": "^0.7.54",
+    "dagre": "^0.8.5"
   }
 }

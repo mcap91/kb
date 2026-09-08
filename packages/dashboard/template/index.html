@@ -400,47 +400,28 @@ function renderMatrix(mx){
 
 function renderDag(dag){
   if(!dag || !dag.nodes.length) return '';
-  const COL_W = 220, ROW_H = 56, PAD_X = 20, PAD_Y = 30, NODE_W = 180, NODE_H = 40, R = 6;
-  const byLayer = {};
-  dag.nodes.forEach(n=>{ (byLayer[n.layer] = byLayer[n.layer]||[]).push(n); });
-  const cols = dag.maxLayer + 1;
-  const maxPerCol = Math.max(...Object.values(byLayer).map(a=>a.length));
-  const svgW = cols * COL_W + PAD_X * 2;
-  const svgH = maxPerCol * ROW_H + PAD_Y * 2;
-
-  const pos = {};
-  for(let layer=0; layer<cols; layer++){
-    const items = byLayer[layer]||[];
-    items.forEach((n,i)=>{
-      pos[n.id] = { x: PAD_X + layer * COL_W, y: PAD_Y + i * ROW_H };
-    });
-  }
-
+  const R = 6;
+  const svgW = dag.width || 800;
+  const svgH = dag.height || 400;
   const laneColor = {done:'var(--done)', in_progress:'var(--prog)', blocked:'var(--blocked)', queued:'var(--queued)'};
 
-  let edges = '';
-  dag.nodes.forEach(n=>{
-    const to = pos[n.id];
-    if(!to) return;
-    n.deps.forEach(depId=>{
-      const from = pos[depId];
-      if(!from) return;
-      const x1 = from.x + NODE_W, y1 = from.y + NODE_H/2;
-      const x2 = to.x, y2 = to.y + NODE_H/2;
-      const mx = (x1 + x2) / 2;
-      edges += `<path d="M${x1},${y1} C${mx},${y1} ${mx},${y2} ${x2},${y2}" fill="none" stroke="var(--border-strong)" stroke-width="2" marker-end="url(#arrow)"/>`;
-    });
+  let edgePaths = '';
+  (dag.edges||[]).forEach(e=>{
+    const pts = e.points;
+    if(!pts || pts.length < 2) return;
+    const first = pts[0], last = pts[pts.length-1];
+    const midX = (first.x + last.x) / 2;
+    const d = `M${first.x},${first.y} L${midX},${first.y} L${midX},${last.y} L${last.x},${last.y}`;
+    edgePaths += `<path d="${d}" fill="none" stroke="var(--border-strong)" stroke-width="1.5" marker-end="url(#arrow)"/>`;
   });
 
   let boxes = '';
   dag.nodes.forEach(n=>{
-    const p = pos[n.id];
-    if(!p) return;
     const c = laneColor[n.lane]||laneColor.queued;
     boxes += `<g>
-      <rect x="${p.x}" y="${p.y}" width="${NODE_W}" height="${NODE_H}" rx="${R}" fill="var(--surface)" stroke="${c}" stroke-width="2"/>
-      <text x="${p.x+8}" y="${p.y+16}" fill="${c}" font-size="11" font-weight="700" font-family="var(--mono)">${esc(n.id)}</text>
-      <text x="${p.x+8}" y="${p.y+31}" fill="var(--ink-2)" font-size="10" font-family="var(--sans)"><tspan>${esc(n.title.length>24 ? n.title.slice(0,24)+'…' : n.title)}</tspan></text>
+      <rect x="${n.x}" y="${n.y}" width="${n.width}" height="${n.height}" rx="${R}" fill="var(--surface)" stroke="${c}" stroke-width="2"/>
+      <text x="${n.x+8}" y="${n.y+16}" fill="${c}" font-size="11" font-weight="700" font-family="var(--mono)">${esc(n.id)}</text>
+      <text x="${n.x+8}" y="${n.y+31}" fill="var(--ink-2)" font-size="10" font-family="var(--sans)"><tspan>${esc(n.title.length>24 ? n.title.slice(0,24)+'…' : n.title)}</tspan></text>
     </g>`;
   });
 
@@ -450,7 +431,7 @@ function renderDag(dag){
       <defs><marker id="arrow" viewBox="0 0 10 8" refX="10" refY="4" markerWidth="8" markerHeight="6" orient="auto-start-reverse">
         <path d="M0,0 L10,4 L0,8 Z" fill="var(--border-strong)"/>
       </marker></defs>
-      ${edges}${boxes}
+      ${edgePaths}${boxes}
     </svg></div></div>`;
 }
 
