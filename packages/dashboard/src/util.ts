@@ -25,7 +25,7 @@ export function parseFmArray(content: string, key: string): string[] {
   const inline = fm[1].match(new RegExp(`^${key}:\\s*\\[([^\\]]*)\\]\\s*$`, 'm'));
   if (inline) return inline[1].split(',').map(s => s.trim().replace(/^["']|["']$/g, '')).filter(Boolean);
   const block = fm[1].match(new RegExp(`^${key}:\\s*\\n((?:\\s+-\\s+.+\\n?)*)`, 'm'));
-  if (block) return block[1].split('\n').map(l => l.replace(/^\s+-\s+/, '').trim()).filter(Boolean);
+  if (block) return block[1].split('\n').map(l => l.replace(/^\s+-\s+/, '').trim().replace(/^["']|["']$/g, '')).filter(Boolean);
   return [];
 }
 
