@@ -1,4 +1,4 @@
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import dagre from 'dagre';
 import type { WorkItem, Dependency, Lane, Summary, DependencyDag, DagNode, DagEdge } from './schema.js';
@@ -104,11 +104,39 @@ export function extractWkReferences(content: string): string[] {
   return [...refs].sort();
 }
 
-export function buildDependencyDag(items: WorkItem[]): DependencyDag | null {
-  const ids = new Set(items.map(w => w.id));
-  const hasAnyDeps = items.some(w => w.allDeps.some(d => ids.has(d)));
-  if (!hasAnyDeps) return null;
+/**
+ * WK ids whose own frontmatter declares `initiative: <inId>` (scans wiki/issues/*.md).
+ * Deterministic directory read, sorted for stable output. Part of IN membership (WK-0078).
+ */
+export function findWkByInitiative(repoRoot: string, inId: string): string[] {
+  const issuesDir = join(repoRoot, 'wiki', 'issues');
+  if (!existsSync(issuesDir)) return [];
+  const ids: string[] = [];
+  for (const file of readdirSync(issuesDir)) {
+    if (!file.endsWith('.md')) continue;
+    const fm = parseFrontmatter(readFileSync(join(issuesDir, file), 'utf-8'));
+    if (fm['initiative'] === inId) ids.push(file.replace(/\.md$/, ''));
+  }
+  return ids.sort();
+}
 
+/**
+ * WK ids appearing as markdown links, e.g. `[WK-0072](...)`. Plain-text/backticked mentions
+ * are intentionally excluded -- this is what keeps prose references (e.g. a cross-repo
+ * "bioinfo `WK-0050`" mention) from being pulled in as IN members (WK-0078).
+ */
+export function extractLinkedWkReferences(content: string): string[] {
+  const refs = new Set<string>();
+  const regex = /\[(WK-\d{4})\]\([^)]*\)/g;
+  let match;
+  while ((match = regex.exec(content)) !== null) refs.add(match[1]);
+  return [...refs].sort();
+}
+
+export function buildDependencyDag(items: WorkItem[]): DependencyDag | null {
+  if (items.length === 0) return null;
+
+  const ids = new Set(items.map(w => w.id));
   const NODE_W = 160;
   const NODE_H = 40;
 

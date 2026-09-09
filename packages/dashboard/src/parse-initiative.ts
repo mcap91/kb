@@ -1,7 +1,7 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import type { DashboardData } from './schema.js';
-import { parseFrontmatter, readWkRecord, extractWkReferences, summarize, sourceLatestDate, buildDependencyDag } from './util.js';
+import { parseFrontmatter, parseFmArray, readWkRecord, findWkByInitiative, extractLinkedWkReferences, summarize, sourceLatestDate, buildDependencyDag } from './util.js';
 
 // Reads IN frontmatter + resolves linked WK records (status, lane, blocked-by).
 export function parseInitiative(repoRoot: string, id: string): DashboardData {
@@ -13,7 +13,18 @@ export function parseInitiative(repoRoot: string, id: string): DashboardData {
 
   const content = readFileSync(inPath, 'utf-8');
   const fm = parseFrontmatter(content);
-  const wkIds = extractWkReferences(content);
+
+  // Membership = union of: (1) WK records that declare initiative: <id> in their own
+  // frontmatter, (2) WK ids in this IN's frontmatter arrays, (3) WK ids markdown-linked
+  // in the IN body. Plain-text/backticked mentions are NOT members -- keeps cross-repo
+  // prose references out of the graph (WK-0078).
+  const declared = findWkByInitiative(repoRoot, id);
+  const arrayRefs = ['related', 'depends_on', 'blocks']
+    .flatMap(key => parseFmArray(content, key))
+    .filter(ref => /^WK-\d{4}$/.test(ref));
+  const linked = extractLinkedWkReferences(content);
+  const wkIds = [...new Set([...declared, ...arrayRefs, ...linked])].sort();
+
   const workItems = wkIds.map(wkId => readWkRecord(repoRoot, wkId)).filter(Boolean) as
     NonNullable<ReturnType<typeof readWkRecord>>[];
 

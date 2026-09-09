@@ -11,7 +11,8 @@ export function emit(repoRoot: string, id: string, data: DashboardData): string 
   if (!existsSync(outDir)) mkdirSync(outDir, { recursive: true });
 
   const template = readFileSync(TEMPLATE_PATH, 'utf-8');
-  const html = template.replace('__DASHBOARD_DATA__', JSON.stringify(data, null, 2));
+  const json = JSON.stringify(data, null, 2);
+  const html = template.replace('__DASHBOARD_DATA__', () => json);
 
   const outPath = join(outDir, `${id}.html`);
   writeFileSync(outPath, html, 'utf-8');

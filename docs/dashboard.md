@@ -16,7 +16,7 @@ npm run dashboard -- <ID> [--dir <path>]
 | Input | What it renders |
 |-------|----------------|
 | `PLN-0004` | Plan: pipeline spine, task×phase matrix, triage lanes |
-| `IN-0004` | Initiative: linked WK rollup, dependency DAG, triage lanes |
+| `IN-0004` | Initiative: member WK rollup, dependency DAG, triage lanes |
 | `WK-0070..WK-0077` | WK range: dependency DAG, triage lanes |
 | `WK-0070 WK-0072` | WK list (variadic): same as range |
 
@@ -58,6 +58,23 @@ Output is gitignored (`wiki/dashboard/`). Regenerate anytime.
     (green=done, blue=in_progress, red=blocked, white=queued)
   - Expandable `detail` with record body text (WK refs highlighted)
 
+## IN membership
+
+An initiative dashboard's WK set is the union of three sources — a WK needs to match
+only one to be included:
+
+1. **Declared** — the WK's own frontmatter has `initiative: <IN id>` (scanned across
+   all of `wiki/issues/*.md`; quoted or unquoted, CRLF-tolerant).
+2. **Referenced** — the WK id appears in the IN's own frontmatter arrays (`related`,
+   `depends_on`, `blocks`).
+3. **Linked** — the WK id appears as a markdown link (`[WK-NNNN](...)`) in the IN body.
+
+Plain-text or backticked mentions with no markdown link (e.g. a cross-repo prose
+reference like "bioinfo `WK-0050`") are **not** members — this keeps incidental or
+cross-repo mentions out of the graph. A WK that only declares `initiative:` and is
+never mentioned in the IN body is still a member, and appears in the dependency DAG
+as a node (WK-0078).
+
 ## Lane logic
 
 `laneOf(status, hasUnmetDeps)` — single source of truth:
@@ -78,15 +95,3 @@ blocked — unmet deps on an inbox item don't make it blocked, just queued.
 - **dagre** — directed graph layout, used at generation time only. Not shipped
   in the HTML output.
 
-## Test fixtures
-
-Mock wiki records in `test_kb` repo (`test-dashboard` branch, merged to main):
-
-| Fixture | Records | Shape |
-|---------|---------|-------|
-| WK-0001..WK-0006 | 6 WK | Diamond: fan-out, fan-in, chain |
-| IN-0001 + WK-0007..WK-0010 | 1 IN + 4 WK | Simple diamond |
-| IN-0002 + WK-0011..WK-0022 | 1 IN + 12 WK | Complex: multi-layer fan-out/fan-in, 4-way gate |
-| PLN-0001 | 1 PLN + tracker | Hybrid vertical/horizontal task mapping |
-
-Regenerate: `npm run dashboard -- <ID> --dir C:\Users\mcap9\projects\test_kb`

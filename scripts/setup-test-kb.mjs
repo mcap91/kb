@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Idempotent setup for the test_kb mock consuming-repo fixture.
 // Run from the kb repo root: `npm run setup:test-kb`
-// Full rationale and manual steps: docs/test-kb.md
+// Scaffolds a mock consuming repo at ../test_kb for integration testing.
 //
 // Encodes the exact commands verified by hand when test_kb was first created.
 // If ../test_kb already exists, this is a no-op.
@@ -44,7 +44,7 @@ for (const s of SURFACES) {
 writeFileSync(
   resolve(TEST_KB, 'README.md'),
   '# test_kb\n\nMock consuming-repo fixture for the kb toolkit. Recreate with ' +
-    '`npm run setup:test-kb` from a kb checkout. See `kb/docs/test-kb.md`.\n',
+    '`npm run setup:test-kb` from a kb checkout.\n',
 );
 
 sh(`git -C "${TEST_KB}" init -b main`);
@@ -52,7 +52,7 @@ sh(`git -C "${TEST_KB}" add -A`);
 sh(`git -C "${TEST_KB}" commit -m "chore: bootstrap test_kb mock consuming-repo fixture"`);
 
 if (!quiet('gh --version')) {
-  console.log('gh not found — created test_kb locally only. Create the remote per docs/test-kb.md.');
+  console.log('gh not found — created test_kb locally only. Push to a remote manually if needed.');
   process.exit(0);
 }
 
