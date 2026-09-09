@@ -1,6 +1,14 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import { parseTracker } from '../packages/dashboard/src/parse-tracker.js';
-import { laneOf, summarize, parseFrontmatter, sourceLatestDate } from '../packages/dashboard/src/util.js';
+import {
+  laneOf, summarize, parseFrontmatter, sourceLatestDate,
+  buildDependencyDag, extractLinkedWkReferences, findWkByInitiative,
+} from '../packages/dashboard/src/util.js';
+import { parseInitiative } from '../packages/dashboard/src/parse-initiative.js';
+import type { WorkItem } from '../packages/dashboard/src/schema.js';
+import { createTmpDir, writeRecord, type TmpRepo } from './helpers/tmp-repo.js';
 
 const MINIMAL_TRACKER = `
 ## Phase Status Table
@@ -148,6 +156,107 @@ describe('dashboard', () => {
     it('sourceLatestDate extracts latest date', () => {
       expect(sourceLatestDate('started 2026-01-01, completed 2026-03-15')).toBe('2026-03-15');
       expect(sourceLatestDate('no dates here')).toBe('');
+    });
+  });
+
+  describe('IN membership (WK-0078)', () => {
+    let tmp: TmpRepo;
+
+    afterEach(() => {
+      tmp?.cleanup();
+    });
+
+    it('findWkByInitiative matches quoted, unquoted, and CRLF frontmatter', () => {
+      tmp = createTmpDir();
+      writeRecord(tmp.dir, 'wiki/issues/WK-9001.md', {
+        id: 'WK-9001', title: 'Quoted LF', type: 'task', status: 'inbox',
+        priority: 'medium', owner: 'test', created: '2026-01-01', updated: '2026-01-01',
+        initiative: 'IN-9001',
+      });
+      // Real records mix quoted/unquoted `initiative:` values and CRLF line endings
+      // (WK-0078 evidence) -- write this one by hand to exercise that exact shape.
+      fs.writeFileSync(
+        path.join(tmp.dir, 'wiki', 'issues', 'WK-9002.md'),
+        '---\r\nid: "WK-9002"\r\ntitle: "Unquoted CRLF"\r\ntype: task\r\nstatus: inbox\r\n' +
+          'priority: medium\r\nowner: test\r\ncreated: 2026-01-01\r\nupdated: 2026-01-01\r\n' +
+          'initiative: IN-9001\r\n---\r\n\r\nBody.\r\n',
+        'utf-8',
+      );
+      writeRecord(tmp.dir, 'wiki/issues/WK-9003.md', {
+        id: 'WK-9003', title: 'Different initiative', type: 'task', status: 'inbox',
+        priority: 'medium', owner: 'test', created: '2026-01-01', updated: '2026-01-01',
+        initiative: 'IN-9999',
+      });
+
+      expect(findWkByInitiative(tmp.dir, 'IN-9001')).toEqual(['WK-9001', 'WK-9002']);
+    });
+
+    it('a WK with initiative: declared but never mentioned in the IN body is a member (DAG + lane)', () => {
+      tmp = createTmpDir();
+      writeRecord(tmp.dir, 'wiki/initiatives/IN-9001.md', {
+        id: 'IN-9001', title: 'Test initiative', status: 'in_progress',
+        owner: 'test', created: '2026-01-01', updated: '2026-01-01',
+        related: [], depends_on: [], blocks: [],
+      }, 'No WK ids are mentioned anywhere in this body.\n');
+      writeRecord(tmp.dir, 'wiki/issues/WK-9001.md', {
+        id: 'WK-9001', title: 'Declared member', type: 'task', status: 'inbox',
+        priority: 'medium', owner: 'test', created: '2026-01-01', updated: '2026-01-01',
+        initiative: 'IN-9001', depends_on: [],
+      });
+
+      const data = parseInitiative(tmp.dir, 'IN-9001');
+
+      expect(data.workItems.map(w => w.id)).toEqual(['WK-9001']);
+      expect(data.workItems[0].lane).toBe('queued');
+      expect(data.dependencyDag!.nodes.map(n => n.id)).toEqual(['WK-9001']);
+    });
+
+    it('a markdown-linked WK is a member; a plain-text/backticked mention is not', () => {
+      tmp = createTmpDir();
+      writeRecord(tmp.dir, 'wiki/initiatives/IN-9002.md', {
+        id: 'IN-9002', title: 'Test initiative', status: 'in_progress',
+        owner: 'test', created: '2026-01-01', updated: '2026-01-01',
+      }, 'Linked: [WK-9101](../issues/WK-9101.md).\n\n' +
+        'Cross-repo prose (not a link): bioinfo `WK-9102`, also plain WK-9102 text.\n');
+      writeRecord(tmp.dir, 'wiki/issues/WK-9101.md', {
+        id: 'WK-9101', title: 'Linked member', type: 'task', status: 'inbox',
+        priority: 'medium', owner: 'test', created: '2026-01-01', updated: '2026-01-01',
+      });
+      writeRecord(tmp.dir, 'wiki/issues/WK-9102.md', {
+        id: 'WK-9102', title: 'Cross-repo false positive', type: 'task', status: 'inbox',
+        priority: 'medium', owner: 'test', created: '2026-01-01', updated: '2026-01-01',
+      });
+
+      const data = parseInitiative(tmp.dir, 'IN-9002');
+
+      expect(data.workItems.map(w => w.id)).toEqual(['WK-9101']);
+    });
+
+    it('extractLinkedWkReferences includes markdown links, excludes plain-text/backticked mentions', () => {
+      const body = 'See [WK-9101](../issues/WK-9101.md). Also bioinfo `WK-9102` and plain WK-9103 text.';
+      expect(extractLinkedWkReferences(body)).toEqual(['WK-9101']);
+    });
+  });
+
+  describe('buildDependencyDag (WK-0078)', () => {
+    function mkWorkItem(id: string, allDeps: string[] = []): WorkItem {
+      return {
+        id, title: id, status: 'inbox', lane: 'queued', priority: '',
+        blockedBy: [], allDeps, resolvedDeps: [], body: '',
+      };
+    }
+
+    it('a member set with zero in-set edges renders a node-only graph', () => {
+      const items = [mkWorkItem('WK-9001'), mkWorkItem('WK-9002'), mkWorkItem('WK-9003')];
+      const dag = buildDependencyDag(items)!;
+
+      expect(dag).not.toBeNull();
+      expect(dag.nodes.map(n => n.id).sort()).toEqual(['WK-9001', 'WK-9002', 'WK-9003']);
+      expect(dag.edges).toEqual([]);
+    });
+
+    it('an empty member set renders no graph', () => {
+      expect(buildDependencyDag([])).toBeNull();
     });
   });
 });
