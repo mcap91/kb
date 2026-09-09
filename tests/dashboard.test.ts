@@ -3,7 +3,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { parseTracker } from '../packages/dashboard/src/parse-tracker.js';
 import {
-  laneOf, summarize, parseFrontmatter, sourceLatestDate,
+  laneOf, summarize, parseFrontmatter, parseFmArray, sourceLatestDate,
   buildDependencyDag, extractLinkedWkReferences, findWkByInitiative,
 } from '../packages/dashboard/src/util.js';
 import { parseInitiative } from '../packages/dashboard/src/parse-initiative.js';
@@ -156,6 +156,16 @@ describe('dashboard', () => {
     it('sourceLatestDate extracts latest date', () => {
       expect(sourceLatestDate('started 2026-01-01, completed 2026-03-15')).toBe('2026-03-15');
       expect(sourceLatestDate('no dates here')).toBe('');
+    });
+
+    it('parseFmArray strips YAML quotes from block-style list items', () => {
+      const content = '---\ndepends_on:\n  - "WK-0047"\n  - \'WK-0048\'\n  - WK-0049\n---\n';
+      expect(parseFmArray(content, 'depends_on')).toEqual(['WK-0047', 'WK-0048', 'WK-0049']);
+    });
+
+    it('parseFmArray strips YAML quotes from inline array items', () => {
+      const content = '---\ndepends_on: ["WK-0047", \'WK-0048\', WK-0049]\n---\n';
+      expect(parseFmArray(content, 'depends_on')).toEqual(['WK-0047', 'WK-0048', 'WK-0049']);
     });
   });
 
