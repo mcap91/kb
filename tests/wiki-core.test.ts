@@ -1231,6 +1231,116 @@ describe('validatePlan', () => {
       expect(result.data.issues).toEqual([]);
     }
   });
+
+  // -------------------------------------------------------------------------
+  // WK-0082 tracker body format contract (WK-0083 enforcement)
+  // -------------------------------------------------------------------------
+
+  it('warns on an invalid Phase Status Table column name (PLN_INVALID_PHASE_COLUMN)', async () => {
+    tmp = await createBootstrappedRepo();
+    await create({ dir: tmp.dir, prefix: 'PLN', title: 'Bad phase column' });
+
+    const trackerPath = path.join(tmp.dir, 'wiki/plans/PLN-0001/execution/tracker.md');
+    const tracker = fs.readFileSync(trackerPath, 'utf-8');
+    const broken = tracker.replace(
+      '| Slice | Status | Started | Completed | Notes |\n|-------|--------|---------|-----------|-------|',
+      '| Stage | Status | Started | Completed | Notes |\n|-------|--------|---------|-----------|-------|',
+    );
+    fs.writeFileSync(trackerPath, broken, 'utf-8');
+
+    const result = await validatePlan({ dir: tmp.dir, plan: 'PLN-0001' });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.data.valid).toBe(true);
+      const invalid = result.data.issues.filter(i => i.code === 'PLN_INVALID_PHASE_COLUMN');
+      expect(invalid.length).toBe(1);
+      expect(invalid[0].severity).toBe('warning');
+    }
+  });
+
+  it('warns on an invalid Phase Status Table status value (PLN_INVALID_PHASE_STATUS)', async () => {
+    tmp = await createBootstrappedRepo();
+    await create({ dir: tmp.dir, prefix: 'PLN', title: 'Bad phase status' });
+
+    const trackerPath = path.join(tmp.dir, 'wiki/plans/PLN-0001/execution/tracker.md');
+    const tracker = fs.readFileSync(trackerPath, 'utf-8');
+    const broken = tracker.replace('| S1 | todo | | | |', '| S1 | active | | | |');
+    fs.writeFileSync(trackerPath, broken, 'utf-8');
+
+    const result = await validatePlan({ dir: tmp.dir, plan: 'PLN-0001' });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.data.valid).toBe(true);
+      const invalid = result.data.issues.filter(i => i.code === 'PLN_INVALID_PHASE_STATUS');
+      expect(invalid.length).toBe(1);
+      expect(invalid[0].severity).toBe('warning');
+    }
+  });
+
+  it('does not warn on legacy "complete"/"not_started" Phase Status Table values', async () => {
+    tmp = await createBootstrappedRepo();
+    await create({ dir: tmp.dir, prefix: 'PLN', title: 'Legacy phase status' });
+
+    const trackerPath = path.join(tmp.dir, 'wiki/plans/PLN-0001/execution/tracker.md');
+    const tracker = fs.readFileSync(trackerPath, 'utf-8');
+    const legacy = tracker.replace(
+      '| S1 | todo | | | |',
+      '| S1 | complete | | | |\n| S2 | not_started | | | |',
+    );
+    fs.writeFileSync(trackerPath, legacy, 'utf-8');
+
+    const result = await validatePlan({ dir: tmp.dir, plan: 'PLN-0001' });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.data.issues.some(i => i.code === 'PLN_INVALID_PHASE_STATUS')).toBe(false);
+    }
+  });
+
+  it('warns on a gate ID that does not match [SP]\\d+ (PLN_INVALID_GATE_ID)', async () => {
+    tmp = await createBootstrappedRepo();
+    await create({ dir: tmp.dir, prefix: 'PLN', title: 'Bad gate id' });
+
+    const trackerPath = path.join(tmp.dir, 'wiki/plans/PLN-0001/execution/tracker.md');
+    const tracker = fs.readFileSync(trackerPath, 'utf-8');
+    const broken = tracker.replace('**S1 gate (skeleton):**', '**pre-S1 gate (skeleton):**');
+    fs.writeFileSync(trackerPath, broken, 'utf-8');
+
+    const result = await validatePlan({ dir: tmp.dir, plan: 'PLN-0001' });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.data.valid).toBe(true);
+      const invalid = result.data.issues.filter(i => i.code === 'PLN_INVALID_GATE_ID');
+      expect(invalid.length).toBe(1);
+      expect(invalid[0].severity).toBe('warning');
+    }
+  });
+
+  it('warns on an invalid Task-to-Phase Mapping column name (PLN_INVALID_TASK_MAPPING_COLUMN)', async () => {
+    tmp = await createBootstrappedRepo();
+    await create({ dir: tmp.dir, prefix: 'PLN', title: 'Bad mapping column' });
+
+    const trackerPath = path.join(tmp.dir, 'wiki/plans/PLN-0001/execution/tracker.md');
+    const tracker = fs.readFileSync(trackerPath, 'utf-8');
+    const broken = tracker.replace(
+      '| Task | Slice | Description | parallelizable | user_interaction |',
+      '| Task | Stage | Description | parallelizable | user_interaction |',
+    );
+    fs.writeFileSync(trackerPath, broken, 'utf-8');
+
+    const result = await validatePlan({ dir: tmp.dir, plan: 'PLN-0001' });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.data.valid).toBe(true);
+      const invalid = result.data.issues.filter(i => i.code === 'PLN_INVALID_TASK_MAPPING_COLUMN');
+      expect(invalid.length).toBe(1);
+      expect(invalid[0].severity).toBe('warning');
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------

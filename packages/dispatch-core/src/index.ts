@@ -2,7 +2,7 @@ export const VERSION = '0.0.1';
 
 // Error types and helpers
 export type { DispatchErrorCode, DispatchResult } from './errors.js';
-export { ok, fail } from './errors.js';
+export { ok, fail, V2_REFUSAL_CODES } from './errors.js';
 
 // Dispatch types
 export type {
@@ -181,7 +181,7 @@ export { parseHandoff, parseHandoffContent } from './ho.js';
 export type { AdmissionResult } from './admission.js';
 export { checkAdmission } from './admission.js';
 
-// Model registry (T23 S0 seed)
+// Model registry (T23 S0 seed) — deprecated; superseded by resolveModelFromConfig (S3 block below)
 export type { ModelEntry, ModelRegistry } from './model-registry.js';
 export { getDefaultRegistry, resolveModel } from './model-registry.js';
 
@@ -234,3 +234,44 @@ export { runDispatch } from './pipeline.js';
 
 export type { DispatchBackgroundOpts, DispatchBackgroundResult } from './dispatch-background.js';
 export { launchDispatchBackground } from './dispatch-background.js';
+
+// ---------------------------------------------------------------------------
+// V2 repo-local dispatch config (S3) — wiki/.dispatch/ models.json, backends.json,
+// profiles.json loaders + types
+// ---------------------------------------------------------------------------
+
+export type { BackendEntry, ModelTableEntry, ProfileEntry, ProfilesConfig, RepoDispatchConfig } from './repo-config.js';
+export { loadModelsTable, loadBackendsTable, loadProfilesConfig } from './repo-config.js';
+
+// ---------------------------------------------------------------------------
+// V2 credential resolution (S3)
+// ---------------------------------------------------------------------------
+
+export type { CredentialResolution, InjectionScriptLines } from './credentials.js';
+export {
+  resolveCredentials,
+  checkCredentialPolicy,
+  buildInjectionScript,
+  buildInjectedValueScanFragment,
+  parseInjectedValueScanOutput,
+} from './credentials.js';
+
+// ---------------------------------------------------------------------------
+// V2 model registry resolution + harness version gate + backend fingerprint (S3)
+// ---------------------------------------------------------------------------
+
+export type { ResolvedModel, VersionGateResult, BackendFingerprint } from './model-registry.js';
+export { PI_HARNESS_INFO } from './model-registry.js';
+export {
+  resolveModelFromConfig,
+  checkHarnessVersion,
+  buildFingerprintFragment,
+  parseFingerprintOutput,
+} from './model-registry.js';
+
+// ---------------------------------------------------------------------------
+// init-dispatch (S3 ruling 11) — scaffolds blank wiki/.dispatch/ tables + README
+// ---------------------------------------------------------------------------
+
+export type { InitDispatchOpts, InitDispatchResult } from './init-dispatch.js';
+export { initDispatch } from './init-dispatch.js';

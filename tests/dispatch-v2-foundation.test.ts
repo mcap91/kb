@@ -118,6 +118,7 @@ function makeHandoff(overrides: Partial<Handoff> = {}): Handoff {
     credentials: [],
     data_mounts: [],
     read_first: ['README.md'],
+    vars: [],
     acceptance: ['AC-1: example'],
     validation: ['node --test test/'],
     status: 'draft',
