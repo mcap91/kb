@@ -56,11 +56,13 @@ const TERMINAL_STATUSES = new Set(['done', 'cancelled', 'superseded', 'wont_do',
 
 /** Single source of truth for status -> lane. Explicit statuses are authoritative; unmet deps only block active work. */
 export function laneOf(status: string, hasUnmetDeps: boolean): Lane {
+  if (status === 'complete') return 'done';
   if (TERMINAL_STATUSES.has(status)) return 'done';
-  if (status === 'in_progress' || status === 'active' || status === 'review') {
+  if (status === 'in_progress' || status === 'review') {
     return hasUnmetDeps ? 'blocked' : 'in_progress';
   }
   if (status === 'blocked') return 'blocked';
+  // 'not_started' and any other unknown status fall through to queued.
   return 'queued';
 }
 

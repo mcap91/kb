@@ -320,6 +320,127 @@ function getSectionContent(content: string, sectionName: string): string {
     : content.slice(start, nextHeading);
 }
 
+// ---------------------------------------------------------------------------
+// Tracker body format contract validation (WK-0082 grammar, WK-0083 enforcement)
+// ---------------------------------------------------------------------------
+
+/** Column names accepted for the Phase Status Table / Task-to-Phase Mapping slice column. */
+const VALID_PHASE_COLUMNS = new Set(['Slice', 'Phase', 'Slice (phase)']);
+
+/** WK (issue) status enum, contract/manifest.json enumFrontMatter.status. */
+const VALID_WK_STATUSES = new Set([
+  'inbox', 'todo', 'in_progress', 'blocked', 'review', 'done',
+  'parked', 'cancelled', 'deprecated', 'duplicate', 'superseded', 'wont_do',
+]);
+
+/** Pre-contract values that still map correctly in the dashboard's laneOf() -- accepted without warning. */
+const LEGACY_PHASE_STATUS_ALIASES = new Set(['complete', 'not_started']);
+
+/** Slice ID grammar (WK-0082): `[SP]\d+` -- no letters, no `pre-`, no `+` suffixes. */
+const GATE_ID_RE = /^[sp]\d+$/i;
+
+interface ParsedMdTable {
+  headers: string[];
+  rows: string[][];
+}
+
+function splitTableRow(line: string): string[] {
+  return line.split('|').map(c => c.trim()).filter((_, i, a) => i > 0 && i < a.length - 1);
+}
+
+/** Parse a section's markdown table into a header row + data rows (mirrors dashboard's parseMarkdownTable). */
+function parseSectionTable(section: string): ParsedMdTable {
+  const lines = section.split('\n').filter(l => l.trim().startsWith('|'));
+  if (lines.length < 3) return { headers: [], rows: [] };
+  return { headers: splitTableRow(lines[0]), rows: lines.slice(2).map(splitTableRow) };
+}
+
+/** PLN_INVALID_PHASE_COLUMN + PLN_INVALID_PHASE_STATUS. */
+function validatePhaseStatusTable(
+  content: string,
+  trackerRelPath: string,
+  issues: ValidatePlanIssue[],
+): void {
+  const section = getSectionContent(content, 'Phase Status Table');
+  const { headers, rows } = parseSectionTable(section);
+  if (headers.length === 0) return;
+
+  const firstColumn = headers[0];
+  if (!VALID_PHASE_COLUMNS.has(firstColumn)) {
+    addIssue(
+      issues,
+      'PLN_INVALID_PHASE_COLUMN',
+      `Phase Status Table first column must be one of Slice, Phase, Slice (phase) (found "${firstColumn}")`,
+      trackerRelPath,
+      'warning',
+    );
+  }
+
+  const statusIdx = headers.findIndex(h => h === 'Status');
+  if (statusIdx === -1) return;
+  for (const row of rows) {
+    const status = (row[statusIdx] || '').trim();
+    if (!status) continue;
+    if (VALID_WK_STATUSES.has(status) || LEGACY_PHASE_STATUS_ALIASES.has(status)) continue;
+    addIssue(
+      issues,
+      'PLN_INVALID_PHASE_STATUS',
+      `Phase Status Table status "${status}" is not a recognized WK status value`,
+      trackerRelPath,
+      'warning',
+    );
+  }
+}
+
+/** PLN_INVALID_GATE_ID. */
+function validateGateHeadings(
+  content: string,
+  trackerRelPath: string,
+  issues: ValidatePlanIssue[],
+): void {
+  const section = getSectionContent(content, 'Gates');
+  if (!section.trim()) return;
+
+  const lineRe = /^- \[([ xX])\] (.+)$/gm;
+  let match;
+  while ((match = lineRe.exec(section)) !== null) {
+    const text = match[2].replace(/\*\*/g, '').trim();
+    const idMatch = text.match(/^(\S+)\s+gate\b/i);
+    if (!idMatch) continue;
+    if (!GATE_ID_RE.test(idMatch[1])) {
+      addIssue(
+        issues,
+        'PLN_INVALID_GATE_ID',
+        `Gate ID "${idMatch[1]}" does not match the slice ID grammar [SP]\\d+ (e.g. S0, S1, P1)`,
+        trackerRelPath,
+        'warning',
+      );
+    }
+  }
+}
+
+/** PLN_INVALID_TASK_MAPPING_COLUMN. */
+function validateTaskMappingColumns(
+  content: string,
+  trackerRelPath: string,
+  issues: ValidatePlanIssue[],
+): void {
+  const section = getSectionContent(content, 'Task-to-Phase Mapping');
+  const { headers } = parseSectionTable(section);
+  if (headers.length < 2) return;
+
+  const phaseColumn = headers[1];
+  if (!VALID_PHASE_COLUMNS.has(phaseColumn)) {
+    addIssue(
+      issues,
+      'PLN_INVALID_TASK_MAPPING_COLUMN',
+      `Task-to-Phase Mapping second column must be one of Slice, Phase, Slice (phase) (found "${phaseColumn}")`,
+      trackerRelPath,
+      'warning',
+    );
+  }
+}
+
 function validateTrackerContent(
   targetDir: string,
   planId: string,
@@ -407,4 +528,11 @@ function validateTrackerContent(
       }
     }
   }
+
+  // WK-0082 tracker body format contract (WK-0083 enforcement):
+  // Phase Status Table columns + status vocabulary, Gates ID grammar,
+  // Task-to-Phase Mapping columns.
+  validatePhaseStatusTable(content, trackerRelPath, issues);
+  validateGateHeadings(content, trackerRelPath, issues);
+  validateTaskMappingColumns(content, trackerRelPath, issues);
 }
