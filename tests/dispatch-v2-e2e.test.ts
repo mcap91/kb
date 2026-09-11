@@ -493,4 +493,31 @@ describe('preflight.ts — parsePreflightOutput (T27, pure parsing)', () => {
     expect(result.appArmorRestriction).toBe(true);
     expect(result.remediationNeeded).toBe(true);
   });
+
+  it('captures piVersion when PI_VERSION is present (S3 ruling 7)', () => {
+    const stdout = [
+      'BWRAP_PATH=/usr/bin/bwrap',
+      'BWRAP_VERSION=bubblewrap 0.8.0',
+      'PI_VERSION=1.2.3',
+      'UNSHARE_USER=OK',
+      'APPARMOR_USERNS=0',
+    ].join('\n');
+
+    const result = parsePreflightOutput(stdout);
+    expect(result.piVersion).toBe('1.2.3');
+  });
+
+  it('omits piVersion when PI_VERSION=MISSING', () => {
+    const stdout = [
+      'BWRAP_PATH=/usr/bin/bwrap',
+      'BWRAP_VERSION=bubblewrap 0.8.0',
+      'PI_VERSION=MISSING',
+      'UNSHARE_USER=OK',
+      'APPARMOR_USERNS=0',
+    ].join('\n');
+
+    const result = parsePreflightOutput(stdout);
+    expect(result.piVersion).toBeUndefined();
+    expect('piVersion' in result).toBe(false);
+  });
 });

@@ -22,6 +22,8 @@ export interface PreflightResult {
   appArmorRestriction: boolean;
   remediationNeeded: boolean;
   remediationText?: string;
+  /** Pi harness version (`pi --version`), for the S3 ruling-7 version gate. Absent when the probe reported MISSING. */
+  piVersion?: string;
 }
 
 /**
@@ -36,6 +38,8 @@ const PREFLIGHT_SCRIPT = [
   '#!/bin/bash',
   'echo "BWRAP_PATH=$(which bwrap 2>/dev/null || echo MISSING)"',
   'echo "BWRAP_VERSION=$(bwrap --version 2>/dev/null || echo MISSING)"',
+  // Rides the existing preflight script rather than a dedicated probe (S3 ruling 7) — same KEY=value convention, one fewer WSL2 round trip.
+  'echo "PI_VERSION=$(pi --version 2>/dev/null || echo MISSING)"',
   '',
   '# Live unshare-user probe',
   'if bwrap --unshare-user --ro-bind / / true 2>/dev/null; then',
@@ -91,6 +95,7 @@ export function parsePreflightOutput(stdout: string): PreflightResult {
   const bwrapPath = getFieldValue(lines, 'BWRAP_PATH');
   const unshareUser = getFieldValue(lines, 'UNSHARE_USER');
   const apparmorUserns = getFieldValue(lines, 'APPARMOR_USERNS');
+  const piVersion = getFieldValue(lines, 'PI_VERSION');
 
   const bwrapAvailable = bwrapPath !== undefined && bwrapPath !== '' && bwrapPath !== 'MISSING';
   const unshareUserWorks = unshareUser === 'OK';
@@ -103,6 +108,7 @@ export function parsePreflightOutput(stdout: string): PreflightResult {
     appArmorRestriction,
     remediationNeeded,
     ...(remediationNeeded ? { remediationText: REMEDIATION_TEXT } : {}),
+    ...(piVersion !== undefined && piVersion !== 'MISSING' ? { piVersion } : {}),
   };
 }
 

@@ -181,7 +181,7 @@ export { parseHandoff, parseHandoffContent } from './ho.js';
 export type { AdmissionResult } from './admission.js';
 export { checkAdmission } from './admission.js';
 
-// Model registry (T23 S0 seed)
+// Model registry (T23 S0 seed) — deprecated; superseded by resolveModelFromConfig (S3 block below)
 export type { ModelEntry, ModelRegistry } from './model-registry.js';
 export { getDefaultRegistry, resolveModel } from './model-registry.js';
 
@@ -249,3 +249,16 @@ export { loadModelsTable, loadBackendsTable, loadProfilesConfig } from './repo-c
 
 export type { CredentialResolution, InjectionScriptLines } from './credentials.js';
 export { resolveCredentials, checkCredentialPolicy, buildInjectionScript, buildInjectedValueScanFragment } from './credentials.js';
+
+// ---------------------------------------------------------------------------
+// V2 model registry resolution + harness version gate + backend fingerprint (S3)
+// ---------------------------------------------------------------------------
+
+export type { ResolvedModel, VersionGateResult, BackendFingerprint } from './model-registry.js';
+export { PI_HARNESS_INFO } from './model-registry.js';
+export {
+  resolveModelFromConfig,
+  checkHarnessVersion,
+  buildFingerprintFragment,
+  parseFingerprintOutput,
+} from './model-registry.js';
