@@ -73,7 +73,7 @@ describe('dispatch MCP tool', () => {
     // runtime introspection of the same z.object({...}) shape tools.ts builds.
     const shape = (dispatchTool?.inputSchema as unknown as { shape: Record<string, unknown> }).shape;
     expect(Object.keys(shape).sort()).toEqual(
-      ['dir', 'effort', 'handoff', 'model', 'preflight', 'verbose'].sort(),
+      ['backend', 'dir', 'effort', 'handoff', 'model', 'preflight', 'verbose'].sort(),
     );
   });
 
@@ -84,14 +84,51 @@ describe('dispatch MCP tool', () => {
       dir: repoRoot,
       handoff: 'wiki/handoffs/HO-0004.md',
       model: 'deepseek',
+      backend: 'openrouter',
     });
     expect(valid.success).toBe(true);
 
     const missingModel = dispatchTool.inputSchema.safeParse({
       dir: repoRoot,
       handoff: 'wiki/handoffs/HO-0004.md',
+      backend: 'openrouter',
     });
     expect(missingModel.success).toBe(false);
+
+    const missingBackend = dispatchTool.inputSchema.safeParse({
+      dir: repoRoot,
+      handoff: 'wiki/handoffs/HO-0004.md',
+      model: 'deepseek',
+    });
+    expect(missingBackend.success).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// init-dispatch MCP tool (S3 ruling 11)
+// ---------------------------------------------------------------------------
+
+describe('init-dispatch MCP tool', () => {
+  it('is registered with a {dir, force?} input schema', () => {
+    const initDispatchTool = tools.find((t) => t.name === 'init-dispatch');
+    expect(initDispatchTool).toBeTruthy();
+    expect(initDispatchTool?.description).toBeTruthy();
+    expect(typeof initDispatchTool?.handler).toBe('function');
+
+    const shape = (initDispatchTool?.inputSchema as unknown as { shape: Record<string, unknown> }).shape;
+    expect(Object.keys(shape).sort()).toEqual(['dir', 'force'].sort());
+  });
+
+  it('scaffolds wiki/.dispatch/ (blank tables + README) when invoked through the tool handler', async () => {
+    const initDispatchTool = tools.find((t) => t.name === 'init-dispatch')!;
+    const result = (await initDispatchTool.handler({ dir: repoRoot })) as {
+      ok: boolean;
+      data?: { created: string[]; updated: string[] };
+    };
+    expect(result.ok).toBe(true);
+    expect(result.data?.created.sort()).toEqual(
+      ['README.md', 'backends.json', 'models.json', 'profiles.json'].sort(),
+    );
   });
 });
 

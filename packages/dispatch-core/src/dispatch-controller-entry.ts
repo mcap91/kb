@@ -65,6 +65,7 @@ export interface ControllerArgv {
   dir: string;
   handoff: string;
   model: string;
+  backend: string;
   runId?: string;
   effort?: string;
   preflight: boolean;
@@ -75,6 +76,7 @@ export function parseControllerArgv(argv: string[]): ControllerArgv {
   let dir = '';
   let handoff = '';
   let model = '';
+  let backend = '';
   let runId: string | undefined;
   let effort: string | undefined;
   let preflight = true;
@@ -90,6 +92,9 @@ export function parseControllerArgv(argv: string[]): ControllerArgv {
     } else if (arg === '--model' && argv[i + 1]) {
       model = argv[i + 1]!;
       i++;
+    } else if (arg === '--backend' && argv[i + 1]) {
+      backend = argv[i + 1]!;
+      i++;
     } else if (arg === '--run-id' && argv[i + 1]) {
       runId = argv[i + 1]!;
       i++;
@@ -101,14 +106,14 @@ export function parseControllerArgv(argv: string[]): ControllerArgv {
     }
   }
 
-  if (!dir || !handoff || !model) {
+  if (!dir || !handoff || !model || !backend) {
     console.error(
-      'Usage: dispatch-controller-entry --dir <path> --handoff <rel-path> --model <alias> [--run-id <id>] [--effort <level>] [--no-preflight]',
+      'Usage: dispatch-controller-entry --dir <path> --handoff <rel-path> --model <alias> --backend <name> [--run-id <id>] [--effort <level>] [--no-preflight]',
     );
     process.exit(2);
   }
 
-  return { dir, handoff, model, runId, effort, preflight };
+  return { dir, handoff, model, backend, runId, effort, preflight };
 }
 
 /** Build the initial `running` state.json payload. Exported for direct unit testing. */
@@ -236,11 +241,6 @@ async function main(): Promise<void> {
   const parsedArgv = parseControllerArgv(process.argv.slice(2));
   const dir = resolve(parsedArgv.dir);
   const { handoff, model, preflight } = parsedArgv;
-  // `effort` is accepted (argv symmetry with the eventual MCP/CLI surface —
-  // s1-rulings ruling 1) but not yet threaded into `DispatchOpts`: pipeline.ts
-  // has no `effort` field and this wave does not modify pipeline.ts. Honoring
-  // it on open-model backends is S6 adapter territory (explicitly out of S1).
-  void parsedArgv.effort;
 
   const parsedHandoff = await parseHandoff(join(dir, handoff));
   if (!parsedHandoff.ok) {
@@ -290,7 +290,16 @@ async function main(): Promise<void> {
   let thrown: unknown = null;
 
   try {
-    pipelineResult = await runDispatch({ dir, handoff, model, runId, preflight, verbose: false });
+    pipelineResult = await runDispatch({
+      dir,
+      handoff,
+      model,
+      backend: parsedArgv.backend,
+      effort: parsedArgv.effort,
+      runId,
+      preflight,
+      verbose: false,
+    });
   } catch (err) {
     thrown = err;
   } finally {

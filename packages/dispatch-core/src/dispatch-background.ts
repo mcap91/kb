@@ -22,7 +22,7 @@ import type { DispatchResult } from './errors.js';
 import { ok, fail } from './errors.js';
 import { parseHandoff } from './ho.js';
 import { checkAdmission } from './admission.js';
-import { getDefaultRegistry, resolveModel } from './model-registry.js';
+import { resolveModelFromConfig } from './model-registry.js';
 import { getRunDir } from './paths.js';
 import { isAlive } from './run-state.js';
 
@@ -41,6 +41,8 @@ export interface DispatchBackgroundOpts {
   handoff: string;
   /** Model alias from the registry (e.g. 'deepseek', 'qwen3:8b'). */
   model: string;
+  /** Backend name from the registry (e.g. 'openrouter', 'ollama'). Required at S3. */
+  backend: string;
   effort?: string;
   /** Run preflight before dispatch? (default: true) */
   preflight?: boolean;
@@ -222,7 +224,7 @@ export async function launchDispatchBackground(
   const admission = await checkAdmission(parsed.data, repoRoot);
   if (!admission.ok) return admission;
 
-  const modelResult = resolveModel(getDefaultRegistry(), opts.model);
+  const modelResult = await resolveModelFromConfig(repoRoot, opts.model, opts.backend);
   if (!modelResult.ok) return modelResult;
 
   const activeCheck = await checkActiveRunExists(repoRoot, handoffId);
@@ -246,6 +248,7 @@ export async function launchDispatchBackground(
       '--dir', repoRoot,
       '--handoff', opts.handoff,
       '--model', opts.model,
+      '--backend', opts.backend,
       '--run-id', runId,
       ...effortArgs,
       ...preflightArgs,

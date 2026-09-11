@@ -17,7 +17,7 @@
  * filesystem tests use temp dirs. The seeded secret fixture uses AWS's own
  * documented example-only placeholder key, never a real-looking live key.
  */
-import { describe, expect, it, beforeEach, afterEach } from 'vitest';
+import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -41,6 +41,8 @@ import {
 } from '../packages/dispatch-core/src/delivery.js';
 import { writeResponseDoc } from '../packages/dispatch-core/src/capture.js';
 import { parsePreflightOutput } from '../packages/dispatch-core/src/preflight.js';
+import * as preflightModule from '../packages/dispatch-core/src/preflight.js';
+import { runDispatch } from '../packages/dispatch-core/src/pipeline.js';
 
 // ---------------------------------------------------------------------------
 // Fixture — a small, purpose-built HO-TEST.md (distinct from the frozen
@@ -519,5 +521,174 @@ describe('preflight.ts — parsePreflightOutput (T27, pure parsing)', () => {
     const result = parsePreflightOutput(stdout);
     expect(result.piVersion).toBeUndefined();
     expect('piVersion' in result).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PLN-0004 S3 Wave 3 — pipeline.ts integration: synchronous refusal gates.
+//
+// Each scenario below calls the REAL `runDispatch()`, but every one of them
+// refuses before the pipeline ever creates a clone or touches WSL2/bwrap/Pi
+// (the effort gate, credential resolution, and credential policy check all
+// run before "5. Run ID" / "9. Clone" in pipeline.ts) — so these stay
+// fake-tier despite exercising the real integrated pipeline, not simulated
+// stdout like the chain test above. No personal/absolute paths in fixtures
+// (WK-0043 rule); all filesystem tests use temp dirs.
+// ---------------------------------------------------------------------------
+
+interface S3RepoOpts {
+  credentials?: string[];
+  web?: boolean;
+  vars?: string[];
+  models?: Record<string, unknown>;
+  backends?: Record<string, unknown>;
+  profiles?: Record<string, unknown>;
+}
+
+/** A clean, committed temp repo with an HO fixture + wiki/.dispatch/ tables (S3 ruling 1). */
+async function setupS3Repo(opts: S3RepoOpts = {}): Promise<string> {
+  const repoRoot = await createTempDir('kb-e2e-s3-repo-');
+  execFileSync('git', ['init'], { cwd: repoRoot });
+  execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: repoRoot });
+  execFileSync('git', ['config', 'user.name', 'Test User'], { cwd: repoRoot });
+
+  const { credentials = [], web = false, vars = [] } = opts;
+  const hoContent = `---
+id: HO-S3TEST
+title: S3 wave 3 refusal-gate fixture
+mode: implement
+write_scope: ["src/"]
+base_ref: null
+web: ${web}
+credentials: ${JSON.stringify(credentials)}
+data_mounts: []
+read_first: []
+vars: ${JSON.stringify(vars)}
+acceptance:
+  - "AC-1: placeholder — this HO is never actually dispatched to a worker"
+validation: ["node --test test/"]
+status: draft
+---
+
+## Task
+Placeholder fixture. Every S3 wave 3 refusal-gate test returns before any
+clone/jail/worker step runs, so this body is never read by a worker.
+`;
+
+  await mkdir(join(repoRoot, 'wiki', 'handoffs'), { recursive: true });
+  await writeFile(join(repoRoot, 'wiki', 'handoffs', 'HO-S3TEST.md'), hoContent, 'utf8');
+  await writeFile(join(repoRoot, 'README.md'), 'kb-e2e-s3-fixture: a minimal fixture repo.\n', 'utf8');
+
+  await mkdir(join(repoRoot, 'wiki', '.dispatch'), { recursive: true });
+  const models = opts.models ?? {
+    deepseek: { available_on: ['openrouter'], model_id: 'deepseek/deepseek-v4-flash-0731' },
+  };
+  const backends = opts.backends ?? {
+    openrouter: { base_url: 'https://openrouter.ai/api/v1', api_key_env: 'OPENROUTER_API_KEY', secrets_file: null },
+  };
+  const profiles = opts.profiles ?? { schema_version: 1 };
+  await writeFile(join(repoRoot, 'wiki', '.dispatch', 'models.json'), JSON.stringify(models, null, 2), 'utf8');
+  await writeFile(join(repoRoot, 'wiki', '.dispatch', 'backends.json'), JSON.stringify(backends, null, 2), 'utf8');
+  await writeFile(join(repoRoot, 'wiki', '.dispatch', 'profiles.json'), JSON.stringify(profiles, null, 2), 'utf8');
+
+  execFileSync('git', ['add', '-A'], { cwd: repoRoot });
+  execFileSync('git', ['commit', '-m', 'initial commit'], { cwd: repoRoot });
+  return repoRoot;
+}
+
+describe('dispatch v2 e2e (fake-tier) — S3 wave 3 refusal gates (real runDispatch())', () => {
+  it('refuses EFFORT_UNSUPPORTED when effort is requested and the resolved model/backend cannot carry it', async () => {
+    const repoRoot = await setupS3Repo();
+    try {
+      const result = await runDispatch({
+        dir: repoRoot,
+        handoff: 'wiki/handoffs/HO-S3TEST.md',
+        model: 'deepseek',
+        backend: 'openrouter',
+        effort: 'high',
+        preflight: false,
+      });
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error).toBe('EFFORT_UNSUPPORTED');
+    } finally {
+      await rm(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses CREDENTIALS_WITH_WEB when a granted credential profile is combined with web:true', async () => {
+    const repoRoot = await setupS3Repo({
+      credentials: ['hf'],
+      web: true,
+      profiles: { schema_version: 1, hf: { inject: { HF_TOKEN: '/home/operator/.secrets/hf-token.env' } } },
+    });
+    try {
+      const result = await runDispatch({
+        dir: repoRoot,
+        handoff: 'wiki/handoffs/HO-S3TEST.md',
+        model: 'deepseek',
+        backend: 'openrouter',
+        preflight: false,
+      });
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error).toBe('CREDENTIALS_WITH_WEB');
+    } finally {
+      await rm(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses UNKNOWN_PROFILE when the handoff names a profile absent from profiles.json', async () => {
+    const repoRoot = await setupS3Repo({ credentials: ['nonexistent'] });
+    try {
+      const result = await runDispatch({
+        dir: repoRoot,
+        handoff: 'wiki/handoffs/HO-S3TEST.md',
+        model: 'deepseek',
+        backend: 'openrouter',
+        preflight: false,
+      });
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error).toBe('UNKNOWN_PROFILE');
+      expect(result.message).toContain('nonexistent');
+    } finally {
+      await rm(repoRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('dispatch v2 e2e (fake-tier) — S3 wave 3 harness version gate (mocked preflight)', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('refuses PREFLIGHT_FAILED when the probed Pi version is below the known-good floor', async () => {
+    vi.spyOn(preflightModule, 'runPreflight').mockResolvedValue({
+      ok: true,
+      data: {
+        bwrapAvailable: true,
+        unshareUserWorks: true,
+        appArmorRestriction: false,
+        remediationNeeded: false,
+        piVersion: '0.80.0',
+      },
+    });
+
+    const repoRoot = await setupS3Repo();
+    try {
+      const result = await runDispatch({
+        dir: repoRoot,
+        handoff: 'wiki/handoffs/HO-S3TEST.md',
+        model: 'deepseek',
+        backend: 'openrouter',
+      });
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error).toBe('PREFLIGHT_FAILED');
+      expect(result.message).toContain('0.80.0');
+    } finally {
+      await rm(repoRoot, { recursive: true, force: true });
+    }
   });
 });
