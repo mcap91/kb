@@ -5,17 +5,28 @@
  * `runDispatch()` wires them, WITHOUT any real WSL2/bwrap/Pi (a "fake tier"):
  * parseHandoff -> checkAdmission -> resolveModel -> assemblePrompt ->
  * buildInvocation -> buildJailArgs -> buildEnumerateScript -> checkWriteScope
- * -> scanSecrets -> buildDeliveryScript -> parseDeliveryOutput ->
+ * -> injected-value scan -> buildDeliveryScript -> parseDeliveryOutput ->
  * writeResponseDoc. The two points that would normally run inside WSL2
  * (enumerate + delivery) are simulated by hand-constructing the exact stdout
  * shape their scripts produce and feeding it through the real parsers — this
  * validates the ORCHESTRATION/wiring, not a live host. `runDispatch()` itself
- * is never called here (it needs a live WSL2/bwrap/Pi host); that live gate
- * is a separate, manually-run proof (execution/s0-rulings.md).
+ * is never called here for these two legs (it needs a live WSL2/bwrap/Pi
+ * host); that live gate is a separate, manually-run proof
+ * (execution/s0-rulings.md).
+ *
+ * S3 (s3-rulings.md freeze correction) removed the S0-era pattern-only
+ * `scanSecrets()` leg from pipeline.ts's delivery gate and replaced it with a
+ * deterministic scan for granted credentials' literal values
+ * (`buildInjectedValueScanFragment` / `parseInjectedValueScanOutput`,
+ * credentials.ts): the fragment is spliced onto the SAME enumerate script
+ * pipeline.ts already runs, and reports `SECRET_HIT=<VAR_NAME>` — names only,
+ * never values. `scanSecrets()` itself is unchanged and still directly
+ * unit-tested in dispatch-v2-delivery.test.ts; it is simply no longer wired
+ * into pipeline.ts's own delivery-gate decision.
  *
  * No personal/absolute paths appear in fixtures (WK-0043 rule); all
- * filesystem tests use temp dirs. The seeded secret fixture uses AWS's own
- * documented example-only placeholder key, never a real-looking live key.
+ * filesystem tests use temp dirs. The seeded credential-value fixture below
+ * is an obvious placeholder string, never a real-looking live token.
  */
 import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
@@ -34,11 +45,15 @@ import {
   buildEnumerateScript,
   parseEnumerateOutput,
   checkWriteScope,
-  scanSecrets,
   buildDeliveryScript,
   parseDeliveryOutput,
   type DeliveryOutcome,
 } from '../packages/dispatch-core/src/delivery.js';
+import {
+  buildInjectedValueScanFragment,
+  parseInjectedValueScanOutput,
+  type CredentialResolution,
+} from '../packages/dispatch-core/src/credentials.js';
 import { writeResponseDoc } from '../packages/dispatch-core/src/capture.js';
 import { parsePreflightOutput } from '../packages/dispatch-core/src/preflight.js';
 import * as preflightModule from '../packages/dispatch-core/src/preflight.js';
@@ -188,11 +203,14 @@ describe('dispatch v2 e2e (fake-tier) — full pipeline chain', () => {
       expect(enumerated.untrackedFiles).toEqual(['src/greet.mjs', 'test/greet.test.mjs']);
       const allChangedFiles = [...enumerated.changedFiles, ...enumerated.untrackedFiles];
 
-      // 17. Write scope + secret checks — both clean
+      // 17. Write scope + injected-value scan — both clean. HO-TEST grants no
+      // credentials, so pipeline.ts would never splice scan lines onto the
+      // enumerate script for this run at all; parseInjectedValueScanOutput
+      // correctly reports no hits against this fake stdout either way.
       const scopeCheck = checkWriteScope(allChangedFiles, handoff.write_scope);
       expect(scopeCheck.ok).toBe(true);
-      const secretCheck = scanSecrets(enumerated.diff);
-      expect(secretCheck.ok).toBe(true);
+      const secretHits = parseInjectedValueScanOutput(fakeEnumerateStdout);
+      expect(secretHits).toEqual([]);
 
       // 18. Delivery script shape
       const deliveryScript = buildDeliveryScript({
@@ -320,7 +338,7 @@ describe('dispatch v2 e2e (fake-tier) — full pipeline chain', () => {
     }
   });
 
-  it('secret scan catches a seeded key pattern from a simulated enumerate, and the refusal produces a well-formed response doc', async () => {
+  it('injected-value scan (S3) catches a granted credential value from a simulated enumerate, and the refusal produces a well-formed response doc', async () => {
     const runDir = await createTempDir('kb-e2e-secret-');
     try {
       const parsed = await parseHandoff(join(repoRoot, 'wiki', 'handoffs', 'HO-TEST.md'));
@@ -328,12 +346,25 @@ describe('dispatch v2 e2e (fake-tier) — full pipeline chain', () => {
       if (!parsed.ok) return;
       const handoff = parsed.data;
 
-      // Seeded with AWS's own documented example-only placeholder key — never a
-      // real-looking live key (matches the wave-2 delivery test convention).
-      const fakeDiff = [
-        'diff --git a/src/greet.mjs b/src/greet.mjs',
-        '+const key = "AKIAIOSFODNN7EXAMPLE"; // seeded example-only key',
-      ].join('\n');
+      // Exercise the REAL builder pipeline.ts calls — proves the fragment
+      // this test simulates the output of is the one wiring actually
+      // produces, not a hand-rolled stand-in (dispatch-v2-credentials.test.ts
+      // pins its exact line shape at the unit level; this proves the WIRING).
+      const resolution: CredentialResolution = {
+        granted: ['hf'],
+        injections: [{ profileName: 'hf', varName: 'HF_TOKEN', filePath: '/home/operator/.secrets/hf-token.env' }],
+        backendApiKeyEnv: null,
+        backendSecretsFile: null,
+      };
+      const valueScanLines = buildInjectedValueScanFragment(resolution);
+      expect(valueScanLines.length).toBeGreaterThan(0);
+
+      // Simulate the WSL2-side enumerate script's stdout as if the spliced
+      // fragment above ran against a diff containing the granted credential's
+      // value: a `SECRET_HIT=<VAR_NAME>` line, name only, appended after the
+      // marker-delimited sections (exactly where pipeline.ts's splice puts
+      // it). The diff body uses an obvious placeholder string, never a
+      // real-looking live token.
       const fakeEnumerateStdout = [
         '---STATUS-START---',
         ' M src/greet.mjs',
@@ -341,10 +372,12 @@ describe('dispatch v2 e2e (fake-tier) — full pipeline chain', () => {
         '---RENAME-START---',
         '---RENAME-END---',
         '---DIFF-START---',
-        fakeDiff,
+        'diff --git a/src/greet.mjs b/src/greet.mjs',
+        '+const token = "hf_seeded_example_placeholder_only";',
         '---DIFF-END---',
         '---UNTRACKED-START---',
         '---UNTRACKED-END---',
+        'SECRET_HIT=HF_TOKEN',
       ].join('\n');
       const enumerated = parseEnumerateOutput(fakeEnumerateStdout);
       const allChangedFiles = [...enumerated.changedFiles, ...enumerated.untrackedFiles];
@@ -352,14 +385,15 @@ describe('dispatch v2 e2e (fake-tier) — full pipeline chain', () => {
       const scopeCheck = checkWriteScope(allChangedFiles, handoff.write_scope);
       expect(scopeCheck.ok).toBe(true);
 
-      const secretCheck = scanSecrets(enumerated.diff);
-      expect(secretCheck.ok).toBe(false);
-      if (secretCheck.ok) return;
-      expect(secretCheck.patterns).toContain('aws_access_key_id');
+      // The trailing SECRET_HIT line coexists with the marker-delimited
+      // sections in the same stdout string without corrupting either parse —
+      // the exact invariant pipeline.ts relies on.
+      const secretHits = parseInjectedValueScanOutput(fakeEnumerateStdout);
+      expect(secretHits).toEqual(['HF_TOKEN']);
 
       const quarantinePath = join(runDir, 'quarantine.diff');
       await writeFile(quarantinePath, enumerated.diff, 'utf8');
-      const delivery: DeliveryOutcome = { status: 'secret_in_diff', patterns: secretCheck.patterns, quarantinePath };
+      const delivery: DeliveryOutcome = { status: 'secret_in_diff', patterns: secretHits, quarantinePath };
 
       const captureResult = await writeResponseDoc({
         runDir,
@@ -369,7 +403,7 @@ describe('dispatch v2 e2e (fake-tier) — full pipeline chain', () => {
       expect(captureResult.ok).toBe(true);
       if (!captureResult.ok) return;
       expect(captureResult.data.responseContent).toContain('outcome: refused');
-      expect(captureResult.data.responseContent).toContain('aws_access_key_id');
+      expect(captureResult.data.responseContent).toContain('HF_TOKEN');
     } finally {
       await rm(runDir, { recursive: true, force: true });
     }
