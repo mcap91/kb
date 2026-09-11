@@ -2,7 +2,7 @@ export const VERSION = '0.0.1';
 
 // Error types and helpers
 export type { DispatchErrorCode, DispatchResult } from './errors.js';
-export { ok, fail } from './errors.js';
+export { ok, fail, V2_REFUSAL_CODES } from './errors.js';
 
 // Dispatch types
 export type {
@@ -234,3 +234,11 @@ export { runDispatch } from './pipeline.js';
 
 export type { DispatchBackgroundOpts, DispatchBackgroundResult } from './dispatch-background.js';
 export { launchDispatchBackground } from './dispatch-background.js';
+
+// ---------------------------------------------------------------------------
+// V2 repo-local dispatch config (S3) — wiki/.dispatch/ models.json, backends.json,
+// profiles.json loaders + types
+// ---------------------------------------------------------------------------
+
+export type { BackendEntry, ModelTableEntry, ProfileEntry, ProfilesConfig, RepoDispatchConfig } from './repo-config.js';
+export { loadModelsTable, loadBackendsTable, loadProfilesConfig } from './repo-config.js';

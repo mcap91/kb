@@ -454,7 +454,8 @@
         "updated",
         "tags",
         "related",
-        "needs"
+        "needs",
+        "vars"
       ],
       "arrayFrontMatter": [
         "write_scope",
@@ -466,7 +467,8 @@
         "credentials_granted",
         "tags",
         "related",
-        "needs"
+        "needs",
+        "vars"
       ],
       "enumFrontMatter": {
         "mode": ["implement", "code_review", "redteam", "research"],
