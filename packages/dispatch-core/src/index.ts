@@ -242,3 +242,10 @@ export { launchDispatchBackground } from './dispatch-background.js';
 
 export type { BackendEntry, ModelTableEntry, ProfileEntry, ProfilesConfig, RepoDispatchConfig } from './repo-config.js';
 export { loadModelsTable, loadBackendsTable, loadProfilesConfig } from './repo-config.js';
+
+// ---------------------------------------------------------------------------
+// V2 credential resolution (S3)
+// ---------------------------------------------------------------------------
+
+export type { CredentialResolution, InjectionScriptLines } from './credentials.js';
+export { resolveCredentials, checkCredentialPolicy, buildInjectionScript, buildInjectedValueScanFragment } from './credentials.js';
