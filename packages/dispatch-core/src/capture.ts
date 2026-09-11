@@ -34,6 +34,16 @@ export interface CaptureOpts {
   isolationBackend?: string;
   /** Needed access/decisions the worker reported on a non-completed outcome (rev-5 §5); parsed from Pi output. */
   needs?: string[];
+  /** Credential profile names granted for this run (names only; S3 T10). */
+  credentialsGranted?: string[];
+  /** Resolved backend base_url actually used (never the {{WIN_HOST}} template; S3 ruling 8). */
+  baseUrl?: string;
+  /** Resolved backend name (S3 ruling 1/8). */
+  backend?: string;
+  /** Pi harness version captured by preflight's PI_VERSION probe (S3 ruling 7). */
+  piVersion?: string;
+  /** Best-effort backend server version fingerprint (S3 ruling 8; absent when unprobeable). */
+  backendFingerprint?: string;
 }
 
 export interface CaptureResult {
@@ -135,6 +145,7 @@ export async function writeResponseDoc(opts: CaptureOpts): Promise<DispatchResul
   const totalTokens = piResult?.usage.totalTokens ?? 0;
   const costUsd = piResult?.usage.costUsd ?? 0;
   const changedFilesYaml = `[${changedFiles.map((file) => JSON.stringify(file)).join(', ')}]`;
+  const credentialsGrantedYaml = `[${(opts.credentialsGranted ?? []).map((name) => JSON.stringify(name)).join(', ')}]`;
   const hasNeeds = !!needs && needs.length > 0;
 
   const frontmatterLines = [
@@ -147,11 +158,19 @@ export async function writeResponseDoc(opts: CaptureOpts): Promise<DispatchResul
     `cost_usd: ${costUsd}`,
     `branch: ${branch}`,
     `changed_files: ${changedFilesYaml}`,
+    `credentials_granted: ${credentialsGrantedYaml}`,
   ];
   if (hasNeeds) {
     const needsYaml = `[${needs!.map((entry) => JSON.stringify(entry)).join(', ')}]`;
     frontmatterLines.push(`needs: ${needsYaml}`);
   }
+  // Resolved-value provenance (S3 ruling 8): stamped only when the caller has
+  // them (e.g. never for the delivery-gate refusal callers, which pass no
+  // model/backend at all) — RESOLVED runtime values only, never a template.
+  if (opts.baseUrl) frontmatterLines.push(`base_url: ${opts.baseUrl}`);
+  if (opts.backend) frontmatterLines.push(`backend: ${opts.backend}`);
+  if (opts.piVersion) frontmatterLines.push(`pi_version: ${opts.piVersion}`);
+  if (opts.backendFingerprint) frontmatterLines.push(`backend_fingerprint: ${opts.backendFingerprint}`);
   frontmatterLines.push('---', '');
   const frontmatter = frontmatterLines.join('\n');
 
@@ -193,8 +212,10 @@ export async function writeResponseDoc(opts: CaptureOpts): Promise<DispatchResul
  * orchestrator sets separately as part of the broader lifecycle). `run_id`
  * is the run dir's basename — v1's proven convention
  * (`paths.ts`: `.../runs/<handoffId>/RUN-<uuid>/`) that v2 keeps (spec §8
- * capture: "run dirs keep today's proven layout"). `credentials_granted` is
- * always `[]` in S0 — credential profiles are S3 (T10) territory.
+ * capture: "run dirs keep today's proven layout"). `credentials_granted`
+ * (S3 T10) is the caller-supplied list of granted profile names — names
+ * only, never values — defaulting to `[]` when the caller doesn't pass one
+ * (e.g. no credentials were requested).
  */
 export function buildProvenanceWriteBack(opts: CaptureOpts): ProvenanceWriteBack {
   const { runDir, handoff, delivery, model, isolationBackend, needs } = opts;
@@ -207,12 +228,18 @@ export function buildProvenanceWriteBack(opts: CaptureOpts): ProvenanceWriteBack
     isolation_backend: isolationBackend ?? '',
     branch: deriveBranch(handoff.id, delivery),
     response: `${handoff.id}.response.md`,
-    credentials_granted: [],
+    credentials_granted: opts.credentialsGranted ?? [],
   };
 
   if (needs && needs.length > 0) {
     fields.needs = needs;
   }
+  // Resolved-value provenance (S3 ruling 8) — same RESOLVED-only invariant as
+  // writeResponseDoc above; present only when the caller supplied them.
+  if (opts.baseUrl) fields.base_url = opts.baseUrl;
+  if (opts.backend) fields.backend = opts.backend;
+  if (opts.piVersion) fields.pi_version = opts.piVersion;
+  if (opts.backendFingerprint) fields.backend_fingerprint = opts.backendFingerprint;
 
   return { fields };
 }

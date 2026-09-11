@@ -186,6 +186,7 @@ describe('parseControllerArgv', () => {
       '--dir', 'C:\\repo',
       '--handoff', 'wiki/handoffs/HO-0004.md',
       '--model', 'deepseek',
+      '--backend', 'openrouter',
       '--run-id', 'RUN-abc-123',
       '--effort', 'high',
       '--no-preflight',
@@ -194,6 +195,7 @@ describe('parseControllerArgv', () => {
       dir: 'C:\\repo',
       handoff: 'wiki/handoffs/HO-0004.md',
       model: 'deepseek',
+      backend: 'openrouter',
       runId: 'RUN-abc-123',
       effort: 'high',
       preflight: false,
@@ -201,10 +203,16 @@ describe('parseControllerArgv', () => {
   });
 
   it('defaults preflight to true, leaves effort and runId undefined when omitted', () => {
-    const parsed = parseControllerArgv(['--dir', 'C:\\repo', '--handoff', 'HO-1.md', '--model', 'qwen3:8b']);
+    const parsed = parseControllerArgv([
+      '--dir', 'C:\\repo',
+      '--handoff', 'HO-1.md',
+      '--model', 'qwen3:8b',
+      '--backend', 'ollama',
+    ]);
     expect(parsed.preflight).toBe(true);
     expect(parsed.effort).toBeUndefined();
     expect(parsed.runId).toBeUndefined();
+    expect(parsed.backend).toBe('ollama');
   });
 });
 

@@ -30,7 +30,14 @@ import type { DispatchResult } from './errors.js';
 import { ok, fail } from './errors.js';
 import { parseHandoff } from './ho.js';
 import { checkAdmission } from './admission.js';
-import { getDefaultRegistry, resolveModel } from './model-registry.js';
+import {
+  resolveModelFromConfig,
+  checkHarnessVersion,
+  buildFingerprintFragment,
+  parseFingerprintOutput,
+  type ResolvedModel,
+  type ModelEntry,
+} from './model-registry.js';
 import { assemblePrompt } from './assemble.js';
 import { buildInvocation, parsePiOutput } from './adapters/pi.js';
 import { execViaWsl2, windowsToWslPath, resolveWinHostIp } from './wsl2.js';
@@ -40,7 +47,6 @@ import {
   buildEnumerateScript,
   parseEnumerateOutput,
   checkWriteScope,
-  scanSecrets,
   buildDeliveryScript,
   parseDeliveryOutput,
   type DeliveryOutcome,
@@ -48,6 +54,14 @@ import {
 import { writeResponseDoc, buildProvenanceWriteBack } from './capture.js';
 import { runPreflight } from './preflight.js';
 import { getRunDir } from './paths.js';
+import { loadProfilesConfig } from './repo-config.js';
+import {
+  resolveCredentials,
+  checkCredentialPolicy,
+  buildInjectionScript,
+  buildInjectedValueScanFragment,
+  parseInjectedValueScanOutput,
+} from './credentials.js';
 
 const WORKER_TIMEOUT_SECS = 1800;
 const WORKER_TIMEOUT_MS = WORKER_TIMEOUT_SECS * 1000;
@@ -67,6 +81,10 @@ export interface DispatchOpts {
   handoff: string;
   /** Model alias from the registry (e.g. 'deepseek', 'qwen3:8b') */
   model: string;
+  /** Backend name from the registry (e.g. 'openrouter', 'ollama'). Required at S3. */
+  backend: string;
+  /** Effort/reasoning level. Refused with EFFORT_UNSUPPORTED when the model cannot carry it. */
+  effort?: string;
   /** Pre-minted run id (background controller injects this; standalone callers omit). */
   runId?: string;
   /** Run preflight before dispatch? (default: true) */
@@ -108,12 +126,41 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
   const admission = await checkAdmission(handoff, dir);
   if (!admission.ok) return admission;
 
-  // 3. Resolve model
-  logVerbose(verbose, `resolving model alias "${opts.model}"`);
-  const modelResult = resolveModel(getDefaultRegistry(), opts.model);
+  // 3. Resolve model (repo-local two-table config — S3 ruling 1; supersedes the S0 seed registry)
+  logVerbose(verbose, `resolving model "${opts.model}" on backend "${opts.backend}"`);
+  const modelResult = await resolveModelFromConfig(dir, opts.model, opts.backend);
   if (!modelResult.ok) return modelResult;
   const model = modelResult.data;
-  const canonicalModel = `${model.provider}/${model.modelId}`;
+  const canonicalModel = `${model.backend}/${model.modelId}`;
+
+  // 3b. Effort gate (S3 ruling 9) — refuse pre-spawn when the resolved model/backend
+  // cannot carry an effort/reasoning parameter.
+  if (opts.effort && !model.supportsEffort) {
+    return fail(
+      'EFFORT_UNSUPPORTED',
+      `Model "${opts.model}" on backend "${opts.backend}" does not support effort/reasoning parameters.`,
+    );
+  }
+
+  // 3c. Credential resolution + policy (S3 T10/T12) — after admission+model resolution,
+  // before spawn (S1 ruling 2 order: synchronous gate checks run before any clone/jail work).
+  logVerbose(verbose, 'resolving credential profiles');
+  const profilesResult = await loadProfilesConfig(dir);
+  if (!profilesResult.ok) {
+    // Malformed profiles.json refuses credentialed dispatches only (ruling 1); an
+    // uncredentialed dispatch proceeds with an empty profiles config below.
+    if (handoff.credentials.length > 0) return profilesResult;
+  }
+  const profilesConfig = profilesResult.ok ? profilesResult.data : { schemaVersion: 1 as const, profiles: {} };
+  const credResult = resolveCredentials(handoff, profilesConfig, {
+    base_url: model.baseUrl,
+    api_key_env: model.apiKeyEnv,
+    secrets_file: model.secretsFile,
+  });
+  if (!credResult.ok) return credResult;
+
+  const policyResult = checkCredentialPolicy(handoff, credResult.data);
+  if (!policyResult.ok) return policyResult;
 
   // 5. Run ID — injected by the background controller, or minted here for standalone callers.
   const runId = opts.runId ?? `RUN-${randomUUID()}`;
@@ -130,6 +177,7 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
   }
 
   // 4. Run preflight (if enabled) — gate BEFORE any clone/jail work is done.
+  let piVersion: string | undefined;
   if (opts.preflight !== false) {
     logVerbose(verbose, 'running T27 host preflight (bwrap presence / live unshare-user / AppArmor userns)');
     const preflight = await runPreflight(runDir);
@@ -140,6 +188,19 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
         preflight.data.remediationText ?? 'Preflight failed: bwrap user namespace support is unavailable.',
         preflight.data,
       );
+    }
+
+    // Harness version gate (S3 ruling 7) — refuse-below/warn-above/fail-closed,
+    // gated against the in-code PI_HARNESS_INFO constant (model-registry.ts).
+    piVersion = preflight.data.piVersion;
+    if (piVersion) {
+      const versionGate = checkHarnessVersion(piVersion);
+      if (versionGate.status === 'refuse') {
+        return fail('PREFLIGHT_FAILED', versionGate.message);
+      }
+      if (versionGate.status === 'warn') {
+        logVerbose(verbose, `version warning: ${versionGate.message}`);
+      }
     }
   }
 
@@ -173,7 +234,21 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
     // so anywhere Pi needs to write must live under the one writable bind.
     const workerDir = `${clonePath}/${PI_WORKER_DIR}`;
     const promptPathWsl = windowsToWslPath(promptPath);
-    const invocation = buildInvocation(promptPathWsl, model, clonePath, workerDir);
+    // adapters/pi.ts still expects the legacy ModelEntry shape; build one from the
+    // resolved two-table model (S3 ruling 1) rather than widening the adapter's
+    // facts-only interface (D10) for a single-slice-old type.
+    const piModelEntry: ModelEntry = {
+      provider: model.backend,
+      modelId: model.modelId,
+      displayName: `${model.slug} (${model.backend})`,
+      baseUrl: model.baseUrl,
+      api: 'openai-completions',
+      apiKeyEnv: model.apiKeyEnv,
+      contextWindow: 131072,
+      maxTokens: 8192,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    };
+    const invocation = buildInvocation(promptPathWsl, piModelEntry, clonePath, workerDir);
 
     // 12. Build jail args
     const jailArgs = buildJailArgs({ clonePath });
@@ -189,6 +264,16 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
     // env, so a sourced secret reaches the jailed pi process unchanged).
     const bwrapCommand = [...jailArgs.argv, invocation.cmd, ...invocation.args].map(shQuote).join(' ');
     const runDirWsl = windowsToWslPath(runDir);
+
+    // Selective credential injection (S3 ruling 2 / freeze correction: SCRIPT-SIDE,
+    // Linux-only — secret values are read from their named files IN-SHELL and never
+    // exist in Windows process memory or in this script's own text). Retires the
+    // blanket `set -a; . secrets.env; set +a` block: only the resolved backend's
+    // api_key_env plus granted profiles' inject vars reach the worker.
+    const injectionScript = buildInjectionScript(credResult.data, handoff.vars);
+    // Backend fingerprint (S3 ruling 8) — best-effort, facts-only, never gating.
+    const fingerprintLines = buildFingerprintFragment(model);
+
     const executionScript = [
       '#!/usr/bin/env bash',
       'set -euo pipefail',
@@ -196,12 +281,12 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       '# Non-interactive shells skip .bashrc; ensure npm-global and local bins are reachable',
       'export PATH="$HOME/.npm-global-wsl/bin:$HOME/.local/bin:$PATH"',
       '',
-      '# Source secrets (if needed)',
-      'if [ -f ~/.config/kb-dispatch/secrets.env ]; then',
-      '  set -a',
-      '  . ~/.config/kb-dispatch/secrets.env',
-      '  set +a',
-      'fi',
+      '# Selective credential injection (S3 ruling 2): existence checks first (early',
+      '# exit with CREDENTIAL_NOT_CONFIGURED on a missing cred), then export only the',
+      '# resolved backend key + granted profile vars, then HO vars literals.',
+      ...injectionScript.existenceCheckLines,
+      ...injectionScript.exportLines,
+      ...injectionScript.varsExportLines,
       '',
       `export PI_CODING_AGENT_DIR=${shQuote(workerDir)}`,
       'export PI_OFFLINE=1',
@@ -213,6 +298,8 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       '',
       `WIN_HOST=$(${resolveWinHostIp()})`,
       'sed -i "s/{{WIN_HOST}}/$WIN_HOST/g" "$PI_CODING_AGENT_DIR/models.json"',
+      '',
+      ...fingerprintLines,
       '',
       `PI_LOG=${shQuote(`${runDirWsl}/pi-output.log`)}`,
       `WORKER_TIMEOUT_SECS=${WORKER_TIMEOUT_SECS}`,
@@ -230,12 +317,27 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
     });
     if (!execResult.ok) return execResult;
     if (execResult.data.exitCode !== 0 && execResult.data.exitCode !== 124) {
+      // The existenceCheckLines fragment (S3 ruling 3) exits 1 with this exact
+      // signal BEFORE the worker ever spawns when a granted credential's file/var
+      // is missing — surface it as CREDENTIAL_NOT_CONFIGURED, not a generic failure.
+      const credNotConfigured = execResult.data.stdout.match(/CREDENTIAL_NOT_CONFIGURED:(\S+)/);
+      if (credNotConfigured) {
+        return fail(
+          'CREDENTIAL_NOT_CONFIGURED',
+          `Credential variable "${credNotConfigured[1]}" is not configured (missing from its named source file).`,
+          execResult.data,
+        );
+      }
       return fail(
         'PIPELINE_FAILED',
         `Dispatch execution script exited with code ${execResult.data.exitCode} (killedBySignal=${execResult.data.killedBySignal}).`,
         execResult.data,
       );
     }
+
+    // Backend fingerprint (S3 ruling 8) — parsed from the same execution-script
+    // stdout the Pi JSON-lines output rode in on; best-effort, facts-only.
+    const fingerprint = parseFingerprintOutput(execResult.data.stdout);
 
     // 15. Parse Pi output (exit 124 = watchdog timeout; recoverable only if
     // Pi wrote agent_end before the reap — the pi#4303 post-completion flavor)
@@ -256,12 +358,33 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
     }
     logVerbose(verbose, `pi outcome: ${piParsed.data.outcome}`);
 
-    // 16. Enumerate changes
+    // 16. Enumerate changes. The injected-value scan fragment (S3 ruling 2 /
+    // s3-rulings.md freeze correction — replaces the removed pattern-based
+    // scanSecrets() leg) is spliced onto the END of this SAME script: it
+    // reuses the enumerate script's own `$GIT`/`$CLONE_PATH` shell scope to
+    // re-diff into a throwaway `$DIFF_FILE` and grep it for each granted
+    // credential's literal value, entirely WSL2-side (one exec round trip,
+    // no diff content ever written to Windows disk for this check). Only var
+    // NAMES (`SECRET_HIT=<VAR_NAME>`) cross back into this stdout — the
+    // resolved values themselves never reach Windows process memory or this
+    // script's own text. Every injection scanned here already passed the
+    // execution script's existenceCheckLines earlier in this same run (step
+    // 13/14), so the grep is guaranteed to find a value under `set -e`.
     logVerbose(verbose, 'enumerating changes in the clone');
     const enumerateScript = buildEnumerateScript(clonePath);
+    const valueScanLines = buildInjectedValueScanFragment(credResult.data);
+    const enumerateScriptContent = valueScanLines.length === 0
+      ? enumerateScript.scriptContent
+      : [
+          enumerateScript.scriptContent,
+          'DIFF_FILE=$(mktemp)',
+          '$GIT diff HEAD > "$DIFF_FILE" 2>/dev/null || true',
+          ...valueScanLines,
+          'rm -f "$DIFF_FILE"',
+        ].join('\n');
     const enumerateExec = await execViaWsl2({
       runDir,
-      scriptContent: enumerateScript.scriptContent,
+      scriptContent: enumerateScriptContent,
       scriptName: enumerateScript.scriptName,
       timeoutMs: 120_000,
     });
@@ -274,6 +397,7 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       );
     }
     const enumerated = parseEnumerateOutput(enumerateExec.data.stdout);
+    const secretHits = parseInjectedValueScanOutput(enumerateExec.data.stdout);
     const isWorkerInfra = (p: string): boolean =>
       WORKER_INFRA_PREFIXES.some(pfx => p === pfx || p.startsWith(pfx + '/'));
     const allChangedFiles = [
@@ -281,10 +405,13 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       ...enumerated.untrackedFiles.filter(f => !isWorkerInfra(f)),
     ];
 
-    // 17. Check write scope, scan secrets — refusals are DATA (a DeliveryOutcome
-    // variant), not a DispatchResult failure; the pipeline ran correctly.
+    // 17. Check write scope, check the injected-value scan hits captured
+    // above — refusals are DATA (a DeliveryOutcome variant), not a
+    // DispatchResult failure; the pipeline ran correctly. (S3: the
+    // deterministic injected-value scan replaces the removed pattern-based
+    // scanSecrets() leg — it checks only the exact values the worker was
+    // granted, not heuristic patterns, so it is fully deterministic.)
     const scopeCheck = checkWriteScope(allChangedFiles, handoff.write_scope);
-    const secretCheck = scanSecrets(enumerated.diff);
 
     let delivery: DeliveryOutcome;
 
@@ -297,15 +424,15 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       }
       logVerbose(verbose, `refused: out-of-scope paths ${scopeCheck.offendingPaths.join(', ')}`);
       delivery = { status: 'refused_out_of_scope', offendingPaths: scopeCheck.offendingPaths, quarantinePath };
-    } else if (!secretCheck.ok) {
+    } else if (secretHits.length > 0) {
       const quarantinePath = join(runDir, 'quarantine.diff');
       try {
         await writeFile(quarantinePath, enumerated.diff, 'utf8');
       } catch (err) {
         return fail('CAPTURE_FAILED', `Failed to write quarantine diff: ${quarantinePath}`, err);
       }
-      logVerbose(verbose, `refused: secret pattern(s) ${secretCheck.patterns.join(', ')}`);
-      delivery = { status: 'secret_in_diff', patterns: secretCheck.patterns, quarantinePath };
+      logVerbose(verbose, `refused: granted credential value(s) found in diff: ${secretHits.join(', ')}`);
+      delivery = { status: 'secret_in_diff', patterns: secretHits, quarantinePath };
     } else {
       // 18. Deliver (clean: land the scope-checked commit)
       logVerbose(verbose, 'delivering scope-checked commit');
@@ -344,6 +471,11 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       model: canonicalModel,
       isolationBackend: 'bwrap-wsl2',
       needs: piParsed.data.needs,
+      credentialsGranted: credResult.data.granted,
+      baseUrl: model.baseUrl,
+      backend: model.backend,
+      piVersion,
+      backendFingerprint: fingerprint?.serverVersion ?? undefined,
     });
     if (!captureResult.ok) return captureResult;
 
@@ -374,6 +506,11 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       model: canonicalModel,
       isolationBackend: 'bwrap-wsl2',
       needs: piParsed.data.needs,
+      credentialsGranted: credResult.data.granted,
+      baseUrl: model.baseUrl,
+      backend: model.backend,
+      piVersion,
+      backendFingerprint: fingerprint?.serverVersion ?? undefined,
     });
     const hoPath = join(dir, opts.handoff);
     try {

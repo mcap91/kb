@@ -45,7 +45,12 @@ export type DispatchErrorCode =
   | 'PREFLIGHT_FAILED'
   | 'PIPELINE_FAILED'
   // --- v2 background dispatch (PLN-0004 S1) ---
-  | 'ACTIVE_RUN_EXISTS';
+  | 'ACTIVE_RUN_EXISTS'
+  // --- v2 credential/registry gates (PLN-0004 S3) ---
+  | 'EFFORT_UNSUPPORTED'
+  | 'CREDENTIALS_WITH_WEB'
+  | 'UNKNOWN_PROFILE'
+  | 'CREDENTIAL_NOT_CONFIGURED';
 
 /**
  * Discriminated union result type for dispatch-core operations.
@@ -53,6 +58,26 @@ export type DispatchErrorCode =
 export type DispatchResult<T> =
   | { ok: true; data: T }
   | { ok: false; error: DispatchErrorCode; message: string; detail?: unknown };
+
+/**
+ * Every v2 `DispatchErrorCode` the MCP `dispatch` tool can return as a synchronous
+ * refusal (i.e. before a worker is spawned). Single source for the MCP instructions'
+ * refusal-code list and a pinning test (PLN-0004 S3 D7) — the codes here are the
+ * hand-maintained ground truth; nothing else should hand-list them.
+ */
+export const V2_REFUSAL_CODES = [
+  'BAD_RECORD',
+  'MISSING_WRITE_SCOPE',
+  'DIRTY_REPO',
+  'ADMISSION_FAILED',
+  'MODEL_NOT_FOUND',
+  'PREFLIGHT_FAILED',
+  'ACTIVE_RUN_EXISTS',
+  'EFFORT_UNSUPPORTED',
+  'CREDENTIALS_WITH_WEB',
+  'UNKNOWN_PROFILE',
+  'CREDENTIAL_NOT_CONFIGURED',
+] as const satisfies readonly DispatchErrorCode[];
 
 /**
  * Create a success result.

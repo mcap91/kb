@@ -37,6 +37,7 @@ export interface Handoff {
   credentials: string[];
   data_mounts: string[];
   read_first: string[];
+  vars: string[]; // Array of "KEY=value" strings; non-secret literal env for the worker
   acceptance: string[];
   validation: string[];
   status: string;
@@ -222,6 +223,10 @@ export function parseHandoffContent(content: string, filename: string): Dispatch
     return fail('Handoff read_first must be an array of strings.');
   }
 
+  if (raw.vars !== undefined && (!Array.isArray(raw.vars) || !raw.vars.every((entry) => typeof entry === 'string'))) {
+    return fail('Handoff vars must be an array of "KEY=value" strings.');
+  }
+
   const handoff: Handoff = {
     id,
     title,
@@ -232,6 +237,7 @@ export function parseHandoffContent(content: string, filename: string): Dispatch
     credentials: Array.isArray(raw.credentials) ? (raw.credentials as string[]) : [],
     data_mounts: Array.isArray(raw.data_mounts) ? (raw.data_mounts as string[]) : [],
     read_first: Array.isArray(raw.read_first) ? (raw.read_first as string[]) : [],
+    vars: Array.isArray(raw.vars) ? (raw.vars as string[]) : [],
     acceptance: raw.acceptance as string[],
     validation: raw.validation as string[],
     status,

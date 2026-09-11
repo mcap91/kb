@@ -68,6 +68,8 @@ h1{font-family:var(--sans); font-size:26px; font-weight:750; letter-spacing:-.02
 .head-meta{display:flex; align-items:center; flex-wrap:wrap; gap:8px 14px; font-size:11.5px; color:var(--ink-3)}
 .head-meta .sep{color:var(--border-strong)}
 .asof{color:var(--ink-2)} .asof b{color:var(--ink); font-weight:600}
+.head-meta .dashlink{color:var(--accent); text-decoration:none; font-weight:600}
+.head-meta .dashlink:hover{text-decoration:underline}
 .toggle{
   flex-shrink:0; font-family:var(--mono); font-size:11px; color:var(--ink-2); cursor:pointer;
   background:var(--surface); border:1px solid var(--border); border-radius:6px; padding:7px 11px;
@@ -135,6 +137,18 @@ h1{font-family:var(--sans); font-size:26px; font-weight:750; letter-spacing:-.02
 .sd-gate .ck{color:var(--done)} .sd-gate .uck{color:var(--queued)}
 .sd-notes{font-size:11.5px; color:var(--ink-3); line-height:1.55; white-space:pre-wrap; word-break:break-word; max-height:150px; overflow:auto; border-left:2px solid var(--border); padding-left:10px; margin-bottom:9px}
 .sd-tasks{display:flex; flex-wrap:wrap; gap:6px}
+
+/* ── Linked plans (WK-0084) — distinct from .card: dashed outline, no lane-colored rail ── */
+.plan-nodes{display:flex; flex-direction:column; gap:9px}
+.plan-node{
+  display:flex; align-items:center; gap:10px; text-decoration:none; color:inherit;
+  background:var(--surface); border:1.5px dashed var(--border-strong); border-radius:var(--r);
+  padding:10px 13px; box-shadow:var(--shadow); transition:transform .12s,border-color .12s;
+}
+a.plan-node:hover{transform:translateY(-2px); border-color:var(--accent)}
+.plan-node.no-link{cursor:default}
+.plan-node .pid{font-size:11px; font-weight:700; color:var(--accent); flex-shrink:0}
+.plan-node .ptitle{font-family:var(--sans); font-size:13.5px; font-weight:600; color:var(--ink); letter-spacing:-.01em; flex:1; min-width:0}
 
 /* ── Lanes ── */
 .lanes{display:grid; grid-template-columns:repeat(3,1fr); gap:14px}
@@ -271,6 +285,14 @@ function badge(lane, status){
 
 function renderHead(d){
   const t = {PLN:'Plan', IN:'Initiative', 'WK-set':'Work set'}[d.record.type] || 'Record';
+  // Cross-dashboard back-links (WK-0084): parent IN <- PLN, and IN -> linked PLNs.
+  // Both directions only link when the target HTML was confirmed to exist at generation
+  // time (resolved server-side in cli.ts -- the template itself has no filesystem access).
+  const parentLink = (d.record.type === 'PLN' && d.record.parentInitiative && d.record.parentDashboardExists)
+    ? `<a class="dashlink" href="${esc(d.record.parentInitiative)}.html">&larr; ${esc(d.record.parentInitiative)}</a>`
+    : '';
+  const planLinks = (d.planItems || []).filter(p => p.dashboardExists)
+    .map(p => `<a class="dashlink" href="${esc(p.id)}.html">${esc(p.id)} &rarr;</a>`).join('');
   return `<div class="head">
     <div class="head-main">
       <div class="eyebrow">${esc(t)} <span class="id">/ ${esc(d.record.id)}</span></div>
@@ -280,6 +302,8 @@ function renderHead(d){
         ${d.dataDate ? `<span class="asof">as of <b>${esc(d.dataDate)}</b></span>` : ''}
         <span class="sep">/</span>
         <span title="source of truth">${esc(d.source)}</span>
+        ${parentLink ? `<span class="sep">/</span>${parentLink}` : ''}
+        ${planLinks ? `<span class="sep">/</span>${planLinks}` : ''}
       </div>
     </div>
     <button class="toggle" onclick="toggleTheme()"><span id="themeGlyph"></span><span id="themeLabel"></span></button>
@@ -308,6 +332,18 @@ function renderSummary(d){
   return `<div class="summary">${tiles}</div>
     <div class="meter">${seg||'<span class="l-queued" style="flex:1"></span>'}</div>
     <div class="meter-cap"><b>${s.done}</b> of <b>${s.total}</b> ${unit} done${s.blocked?` &middot; <b style="color:var(--blocked)">${s.blocked}</b> blocked`:''}</div>`;
+}
+
+function renderPlanItems(items){
+  if(!items || !items.length) return '';
+  const nodes = items.map(p=>{
+    const inner = `<span class="pid">${esc(p.id)}</span><span class="ptitle">${esc(p.title)}</span>${badge(p.lane,p.status)}`;
+    return p.dashboardExists
+      ? `<a class="plan-node anim" style="--i:${nextI()}" href="${esc(p.id)}.html">${inner}</a>`
+      : `<div class="plan-node no-link anim" style="--i:${nextI()}">${inner}</div>`;
+  }).join('');
+  return `<div class="section"><div class="section-title">Linked plans</div>
+    <div class="plan-nodes">${nodes}</div></div>`;
 }
 
 function renderPipeline(phases){
@@ -543,7 +579,7 @@ function render(){
   const d = DATA;
   document.title = `${d.record.id} — ${d.record.title}`;
   document.getElementById('app').innerHTML =
-    renderHead(d) + renderSummary(d) + renderPipeline(d.phases) + renderMatrix(d.taskMatrix) +
+    renderHead(d) + renderSummary(d) + renderPlanItems(d.planItems) + renderPipeline(d.phases) + renderMatrix(d.taskMatrix) +
     renderDag(d.dependencyDag) + renderQueued(d) + renderLanes(d) + renderIssues(d.failureLog) +
     renderActivity(d.completedLog) + renderFoot(d);
   paintToggle();
