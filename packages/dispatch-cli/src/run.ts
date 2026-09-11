@@ -171,6 +171,7 @@ Command Options:
     --dir <path>             Repository root directory (required)
     --handoff <rel-path>     Relative path to handoff file (required)
     --model <alias>          Model alias from registry (required)
+    --backend <name>         Backend name from registry, e.g. openrouter, ollama (required)
     --effort <level>         Effort/reasoning level (refused if unsupported)
     --no-preflight           Skip bwrap preflight check
     --wait                   Block until the run reaches terminal status
@@ -485,19 +486,20 @@ async function cmdDispatch(args: string[]): Promise<number> {
   const dir = getFlagValue(args, '--dir');
   const handoff = getFlagValue(args, '--handoff');
   const model = getFlagValue(args, '--model');
+  const backend = getFlagValue(args, '--backend');
   const effort = getFlagValue(args, '--effort');
   const noPreflight = getFlag(args, '--no-preflight');
   const verbose = getFlag(args, '--verbose');
   const json = getFlag(args, '--json');
   const wait = getFlag(args, '--wait');
 
-  if (!dir || !handoff || !model) {
-    console.error('Error: --dir, --handoff, and --model are required');
+  if (!dir || !handoff || !model || !backend) {
+    console.error('Error: --dir, --handoff, --model, and --backend are required');
     return 1;
   }
 
   const result = await launchDispatchBackground({
-    dir, handoff, model, effort,
+    dir, handoff, model, backend, effort,
     preflight: !noPreflight, verbose,
   });
 

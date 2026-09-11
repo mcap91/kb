@@ -36,6 +36,14 @@ export interface CaptureOpts {
   needs?: string[];
   /** Credential profile names granted for this run (names only; S3 T10). */
   credentialsGranted?: string[];
+  /** Resolved backend base_url actually used (never the {{WIN_HOST}} template; S3 ruling 8). */
+  baseUrl?: string;
+  /** Resolved backend name (S3 ruling 1/8). */
+  backend?: string;
+  /** Pi harness version captured by preflight's PI_VERSION probe (S3 ruling 7). */
+  piVersion?: string;
+  /** Best-effort backend server version fingerprint (S3 ruling 8; absent when unprobeable). */
+  backendFingerprint?: string;
 }
 
 export interface CaptureResult {
@@ -156,6 +164,13 @@ export async function writeResponseDoc(opts: CaptureOpts): Promise<DispatchResul
     const needsYaml = `[${needs!.map((entry) => JSON.stringify(entry)).join(', ')}]`;
     frontmatterLines.push(`needs: ${needsYaml}`);
   }
+  // Resolved-value provenance (S3 ruling 8): stamped only when the caller has
+  // them (e.g. never for the delivery-gate refusal callers, which pass no
+  // model/backend at all) — RESOLVED runtime values only, never a template.
+  if (opts.baseUrl) frontmatterLines.push(`base_url: ${opts.baseUrl}`);
+  if (opts.backend) frontmatterLines.push(`backend: ${opts.backend}`);
+  if (opts.piVersion) frontmatterLines.push(`pi_version: ${opts.piVersion}`);
+  if (opts.backendFingerprint) frontmatterLines.push(`backend_fingerprint: ${opts.backendFingerprint}`);
   frontmatterLines.push('---', '');
   const frontmatter = frontmatterLines.join('\n');
 
@@ -219,6 +234,12 @@ export function buildProvenanceWriteBack(opts: CaptureOpts): ProvenanceWriteBack
   if (needs && needs.length > 0) {
     fields.needs = needs;
   }
+  // Resolved-value provenance (S3 ruling 8) — same RESOLVED-only invariant as
+  // writeResponseDoc above; present only when the caller supplied them.
+  if (opts.baseUrl) fields.base_url = opts.baseUrl;
+  if (opts.backend) fields.backend = opts.backend;
+  if (opts.piVersion) fields.pi_version = opts.piVersion;
+  if (opts.backendFingerprint) fields.backend_fingerprint = opts.backendFingerprint;
 
   return { fields };
 }

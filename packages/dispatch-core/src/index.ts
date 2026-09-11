@@ -262,3 +262,10 @@ export {
   buildFingerprintFragment,
   parseFingerprintOutput,
 } from './model-registry.js';
+
+// ---------------------------------------------------------------------------
+// init-dispatch (S3 ruling 11) — scaffolds blank wiki/.dispatch/ tables + README
+// ---------------------------------------------------------------------------
+
+export type { InitDispatchOpts, InitDispatchResult } from './init-dispatch.js';
+export { initDispatch } from './init-dispatch.js';
