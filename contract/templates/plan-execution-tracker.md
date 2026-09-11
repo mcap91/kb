@@ -9,19 +9,33 @@ zero prior context must be able to execute the plan from this document alone.
 Required sections (validate-plan checks for these):
   1. How to Use This Tracker — keep the boilerplate below
   2. Project Context         — repo, branch, target files, test command
-  3. Gates                   — checkable criteria per phase
-  4. Task-to-Phase Mapping   — table with: Task, Phase, Description, parallelizable, user_interaction
+  3. Gates                   — checkable criteria per slice; heading grammar below
+  4. Task-to-Phase Mapping   — table with: Task, Slice, Description, parallelizable, user_interaction
+                                (alias: Phase — WK-0082)
   5. How to Dispatch         — Target file, Test command, Worktree isolation, Critical Rules
-  6. Phase Status Table      — Phase, Status, Started, Completed, Notes
-  7. Completed Log           — date, task ID, summary, follow-up
-  8. Failure Log             — date, task ID, what failed, root cause, remediation
+  6. Phase Status Table      — Slice, Status, Started, Completed, Notes
+                                (alias: Phase — WK-0082)
+  7. Completed Log           — table (preferred) or bullet list; see format examples below
+  8. Failure Log             — ### YYYY-MM-DD subsections; see format example below
 
 user_interaction column values: none | required | recommended
   none        — agent can complete without human input
   required    — must pause for human input before proceeding
   recommended — agent should attempt, but flag for human review
 
-Phase status values: not_started | in_progress | done | blocked
+Slice status values: uses the WK (issue) status enum from contract/manifest.json.
+  Common values: todo | in_progress | done | blocked | parked
+  (`complete` and `not_started` are NOT valid — use `done` and `todo`)
+
+Slice/task ID grammar:
+  Slice IDs: [SP]\d+ — e.g. S0, S1, S2, P1, P2. Pick one prefix per plan.
+  Task IDs:  T\d+    — e.g. T1, T2, T3.
+  No letters, no `pre-`, no `+` suffixes.
+
+Gate heading grammar (## Gates section), one line per gate:
+  - [ ] **<ID> gate (<label>):** <description>
+  <ID> is a slice ID ([SP]\d+). The (<label>) parenthetical is lifted as the
+  human-readable slice label downstream.
 
 Do NOT read other PLN tracker files for examples. This template is self-contained.
 -->
@@ -44,14 +58,14 @@ in the respective logs at the bottom.
 
 ## Gates
 
-- [ ] Phase 1 gate: <!-- describe -->
-- [ ] Phase 2 gate: <!-- describe -->
+- [ ] **S1 gate (skeleton):** <!-- describe -->
+- [ ] **S2 gate (<label>):** <!-- describe -->
 
 ## Task-to-Phase Mapping
 
-| Task | Phase | Description | parallelizable | user_interaction |
+| Task | Slice | Description | parallelizable | user_interaction |
 |------|-------|-------------|----------------|------------------|
-| T1 | P1 | Example task | no | none |
+| T1 | S1 | Example task | no | none |
 
 ## How to Dispatch
 
@@ -67,14 +81,32 @@ Use this template when dispatching a subagent for a task in this plan.
 
 ## Phase Status Table
 
-| Phase | Status | Started | Completed | Notes |
+| Slice | Status | Started | Completed | Notes |
 |-------|--------|---------|-----------|-------|
-| P1 | not_started | | | |
+| S1 | todo | | | |
 
 ## Completed Log
 
-<!-- Record completed tasks: date, task ID, summary, any follow-up -->
+<!--
+Record completed tasks here. Two accepted formats — table is preferred for new trackers.
+
+Table (preferred):
+| Date | Task | Summary |
+|------|------|---------|
+| 2026-09-06 | T1 | Description |
+
+Bullet list (also accepted):
+- 2026-09-06 — WK-NNNN: summary
+- 2026-09-07 — T1: summary
+-->
 
 ## Failure Log
 
-<!-- Record failures: date, task ID, what failed, root cause, remediation -->
+<!--
+Record failures as ### subsections — HTML comments (like this one) are NOT failure
+entries and must be ignored by tooling.
+
+### YYYY-MM-DD — <failure title>
+What failed, root cause, remediation. A failure is resolved when its body contains
+resolution text (e.g. `RESOLUTION:`, `**resolved**`) or is superseded by a later entry.
+-->
