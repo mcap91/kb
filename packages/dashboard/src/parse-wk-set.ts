@@ -29,6 +29,7 @@ export function parseWkSet(repoRoot: string, ids: string[]): DashboardData {
     summary: summarize(workItems.map(w => w.lane)),
     phases: [],
     workItems,
+    planItems: [],
     completedLog: [],
     failureLog: [],
     taskMatrix: null,

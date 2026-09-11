@@ -12,6 +12,8 @@ export interface DashboardData {
   summary: Summary;
   phases: Phase[];
   workItems: WorkItem[];
+  /** PLN records linked from an IN's frontmatter arrays (WK-0084). Empty for PLN/WK-set dashboards. */
+  planItems: PlanItem[];
   completedLog: LogEntry[];
   failureLog: FailureEntry[];
   taskMatrix: TaskMatrix | null;
@@ -38,6 +40,20 @@ export interface RecordInfo {
   title: string;
   status: string;
   type: 'PLN' | 'IN' | 'WK-set';
+  /** Parent initiative id (PLN only), from the PLN's own `initiative:` frontmatter field. */
+  parentInitiative?: string;
+  /** Whether wiki/dashboard/<parentInitiative>.html existed at generation time (PLN only). */
+  parentDashboardExists?: boolean;
+}
+
+/** A PLN record linked from an IN's frontmatter arrays, rendered as a distinct node (WK-0084). */
+export interface PlanItem {
+  id: string;
+  title: string;
+  status: string;
+  lane: Lane;
+  /** Whether wiki/dashboard/<id>.html existed at generation time. */
+  dashboardExists: boolean;
 }
 
 /** Lane counts, computed deterministically from phases (PLN) or workItems (IN/WK). */

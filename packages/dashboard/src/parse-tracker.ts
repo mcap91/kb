@@ -3,7 +3,13 @@ import { laneOf, summarize, sourceLatestDate } from './util.js';
 
 export function parseTracker(
   content: string,
-  record: { id: string; title: string; status: string },
+  record: {
+    id: string; title: string; status: string;
+    /** Parent initiative id (WK-0084), if the PLN's own frontmatter declares `initiative:`. */
+    parentInitiative?: string;
+    /** Whether wiki/dashboard/<parentInitiative>.html existed at generation time. */
+    parentDashboardExists?: boolean;
+  },
 ): DashboardData {
   const phases = parsePhaseTable(content);
   const gates = parseGates(content);
@@ -29,6 +35,7 @@ export function parseTracker(
     summary: summarize(phases.map(p => p.lane)),
     phases,
     workItems: [],
+    planItems: [],
     completedLog: parseCompletedLog(content),
     failureLog: parseFailureLog(content),
     taskMatrix: buildTaskMatrix(phases, tasksByPhase),
@@ -121,7 +128,7 @@ function splitRow(line: string): string[] {
 function parsePhaseTable(content: string): Phase[] {
   const section = extractSection(content, 'Phase Status Table');
   return parseMarkdownTable(section).map(row => {
-    const id = (row['Slice (phase)'] || row['Phase'] || Object.values(row)[0] || '').trim();
+    const id = (row['Slice'] || row['Slice (phase)'] || row['Phase'] || Object.values(row)[0] || '').trim();
     const status = (row['Status'] || '').trim();
     return {
       id,
@@ -146,7 +153,7 @@ function parseGates(content: string): GateItem[] {
   let match;
   while ((match = regex.exec(section)) !== null) {
     const text = match[2].replace(/\*\*/g, '').trim();
-    const m = text.match(/^(pre-s\d+|s\d+)\s+gate\s*(?:\(([^)]+)\))?/i);
+    const m = text.match(/^([sp]\d+)\s+gate\s*(?:\(([^)]+)\))?/i);
     items.push({
       sliceId: m ? m[1] : '',
       label: m && m[2] ? m[2].trim() : '',
@@ -164,7 +171,7 @@ function parseTaskMapping(content: string): Record<string, PhaseTask[]> {
 
   for (const row of rows) {
     const taskId = (row['Task'] || '').trim();
-    const phaseRaw = row['Slice (phase)'] || row['Phase'] || '';
+    const phaseRaw = row['Slice'] || row['Slice (phase)'] || row['Phase'] || '';
     const description = (row['Description'] || '').trim();
     const interaction = (row['user_interaction'] || '').trim();
 
@@ -181,18 +188,35 @@ function parseTaskMapping(content: string): Record<string, PhaseTask[]> {
 
 function parseCompletedLog(content: string): LogEntry[] {
   const section = extractSection(content, 'Completed Log');
-  return parseMarkdownTable(section).map(row => ({
-    date: (row['Date'] || '').trim(),
-    task: (row['Task'] || '').trim(),
-    summary: (row['Summary'] || '').trim(),
-  }));
+  const tableRows = parseMarkdownTable(section);
+  if (tableRows.length > 0) {
+    return tableRows.map(row => ({
+      date: (row['Date'] || '').trim(),
+      task: (row['Task'] || '').trim(),
+      summary: (row['Summary'] || '').trim(),
+    }));
+  }
+
+  // Bullet-list fallback (WK-0082 accepted format): "- 2026-09-06 — WK-0001: summary".
+  const entries: LogEntry[] = [];
+  const regex = /^- (\d{4}-\d{2}-\d{2})\s*[—-]\s*((?:WK-\d{4}|T\d+)):?\s*(.*)$/gm;
+  let match;
+  while ((match = regex.exec(section)) !== null) {
+    entries.push({ date: match[1], task: match[2], summary: match[3].trim() });
+  }
+  return entries;
 }
 
 function parseFailureLog(content: string): FailureEntry[] {
   const section = extractSection(content, 'Failure Log');
   if (!section) return [];
 
-  const raw = section.split(/^###\s+/m).filter(s => s.trim()).map(part => {
+  // HTML comments (e.g. the template's authoring-guide block) are not failure
+  // entries and must be ignored (WK-0082 / bug 5) -- strip them before parsing.
+  const cleaned = section.replace(/<!--[\s\S]*?-->/g, '');
+  if (!cleaned.trim()) return [];
+
+  const raw = cleaned.split(/^###\s+/m).filter(s => s.trim()).map(part => {
     const nl = part.indexOf('\n');
     return {
       title: (nl === -1 ? part : part.slice(0, nl)).trim(),
