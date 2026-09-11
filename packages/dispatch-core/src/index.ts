@@ -248,7 +248,13 @@ export { loadModelsTable, loadBackendsTable, loadProfilesConfig } from './repo-c
 // ---------------------------------------------------------------------------
 
 export type { CredentialResolution, InjectionScriptLines } from './credentials.js';
-export { resolveCredentials, checkCredentialPolicy, buildInjectionScript, buildInjectedValueScanFragment } from './credentials.js';
+export {
+  resolveCredentials,
+  checkCredentialPolicy,
+  buildInjectionScript,
+  buildInjectedValueScanFragment,
+  parseInjectedValueScanOutput,
+} from './credentials.js';
 
 // ---------------------------------------------------------------------------
 // V2 model registry resolution + harness version gate + backend fingerprint (S3)

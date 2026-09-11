@@ -47,7 +47,6 @@ import {
   buildEnumerateScript,
   parseEnumerateOutput,
   checkWriteScope,
-  scanSecrets,
   buildDeliveryScript,
   parseDeliveryOutput,
   type DeliveryOutcome,
@@ -56,7 +55,13 @@ import { writeResponseDoc, buildProvenanceWriteBack } from './capture.js';
 import { runPreflight } from './preflight.js';
 import { getRunDir } from './paths.js';
 import { loadProfilesConfig } from './repo-config.js';
-import { resolveCredentials, checkCredentialPolicy, buildInjectionScript } from './credentials.js';
+import {
+  resolveCredentials,
+  checkCredentialPolicy,
+  buildInjectionScript,
+  buildInjectedValueScanFragment,
+  parseInjectedValueScanOutput,
+} from './credentials.js';
 
 const WORKER_TIMEOUT_SECS = 1800;
 const WORKER_TIMEOUT_MS = WORKER_TIMEOUT_SECS * 1000;
@@ -353,12 +358,33 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
     }
     logVerbose(verbose, `pi outcome: ${piParsed.data.outcome}`);
 
-    // 16. Enumerate changes
+    // 16. Enumerate changes. The injected-value scan fragment (S3 ruling 2 /
+    // s3-rulings.md freeze correction — replaces the removed pattern-based
+    // scanSecrets() leg) is spliced onto the END of this SAME script: it
+    // reuses the enumerate script's own `$GIT`/`$CLONE_PATH` shell scope to
+    // re-diff into a throwaway `$DIFF_FILE` and grep it for each granted
+    // credential's literal value, entirely WSL2-side (one exec round trip,
+    // no diff content ever written to Windows disk for this check). Only var
+    // NAMES (`SECRET_HIT=<VAR_NAME>`) cross back into this stdout — the
+    // resolved values themselves never reach Windows process memory or this
+    // script's own text. Every injection scanned here already passed the
+    // execution script's existenceCheckLines earlier in this same run (step
+    // 13/14), so the grep is guaranteed to find a value under `set -e`.
     logVerbose(verbose, 'enumerating changes in the clone');
     const enumerateScript = buildEnumerateScript(clonePath);
+    const valueScanLines = buildInjectedValueScanFragment(credResult.data);
+    const enumerateScriptContent = valueScanLines.length === 0
+      ? enumerateScript.scriptContent
+      : [
+          enumerateScript.scriptContent,
+          'DIFF_FILE=$(mktemp)',
+          '$GIT diff HEAD > "$DIFF_FILE" 2>/dev/null || true',
+          ...valueScanLines,
+          'rm -f "$DIFF_FILE"',
+        ].join('\n');
     const enumerateExec = await execViaWsl2({
       runDir,
-      scriptContent: enumerateScript.scriptContent,
+      scriptContent: enumerateScriptContent,
       scriptName: enumerateScript.scriptName,
       timeoutMs: 120_000,
     });
@@ -371,6 +397,7 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       );
     }
     const enumerated = parseEnumerateOutput(enumerateExec.data.stdout);
+    const secretHits = parseInjectedValueScanOutput(enumerateExec.data.stdout);
     const isWorkerInfra = (p: string): boolean =>
       WORKER_INFRA_PREFIXES.some(pfx => p === pfx || p.startsWith(pfx + '/'));
     const allChangedFiles = [
@@ -378,10 +405,13 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       ...enumerated.untrackedFiles.filter(f => !isWorkerInfra(f)),
     ];
 
-    // 17. Check write scope, scan secrets — refusals are DATA (a DeliveryOutcome
-    // variant), not a DispatchResult failure; the pipeline ran correctly.
+    // 17. Check write scope, check the injected-value scan hits captured
+    // above — refusals are DATA (a DeliveryOutcome variant), not a
+    // DispatchResult failure; the pipeline ran correctly. (S3: the
+    // deterministic injected-value scan replaces the removed pattern-based
+    // scanSecrets() leg — it checks only the exact values the worker was
+    // granted, not heuristic patterns, so it is fully deterministic.)
     const scopeCheck = checkWriteScope(allChangedFiles, handoff.write_scope);
-    const secretCheck = scanSecrets(enumerated.diff);
 
     let delivery: DeliveryOutcome;
 
@@ -394,15 +424,15 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       }
       logVerbose(verbose, `refused: out-of-scope paths ${scopeCheck.offendingPaths.join(', ')}`);
       delivery = { status: 'refused_out_of_scope', offendingPaths: scopeCheck.offendingPaths, quarantinePath };
-    } else if (!secretCheck.ok) {
+    } else if (secretHits.length > 0) {
       const quarantinePath = join(runDir, 'quarantine.diff');
       try {
         await writeFile(quarantinePath, enumerated.diff, 'utf8');
       } catch (err) {
         return fail('CAPTURE_FAILED', `Failed to write quarantine diff: ${quarantinePath}`, err);
       }
-      logVerbose(verbose, `refused: secret pattern(s) ${secretCheck.patterns.join(', ')}`);
-      delivery = { status: 'secret_in_diff', patterns: secretCheck.patterns, quarantinePath };
+      logVerbose(verbose, `refused: granted credential value(s) found in diff: ${secretHits.join(', ')}`);
+      delivery = { status: 'secret_in_diff', patterns: secretHits, quarantinePath };
     } else {
       // 18. Deliver (clean: land the scope-checked commit)
       logVerbose(verbose, 'delivering scope-checked commit');

@@ -187,3 +187,20 @@ export function buildInjectedValueScanFragment(resolution: CredentialResolution)
   }
   return lines;
 }
+
+/**
+ * Parse `SECRET_HIT=<VAR_NAME>` lines out of the combined stdout of whatever
+ * script `buildInjectedValueScanFragment`'s lines were spliced into (mirrors
+ * `model-registry.ts`'s `buildFingerprintFragment`/`parseFingerprintOutput`
+ * build+parse pairing). Names only, in the order emitted — never values
+ * (s3-rulings.md freeze correction: the resolved secret values are grepped
+ * entirely Linux-side and never cross back into this TS-side result).
+ */
+export function parseInjectedValueScanOutput(stdout: string): string[] {
+  return stdout
+    .replace(/\r\n/g, '\n')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.startsWith('SECRET_HIT='))
+    .map((line) => line.slice('SECRET_HIT='.length).trim());
+}
