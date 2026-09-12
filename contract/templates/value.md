@@ -101,10 +101,13 @@ Cost — the ROI cost side (leave blank if value-usage returned unavailable; bla
 
 Output — observed (all from value-report):                                         [tool]
   span_days         calendar span (inclusive). Secondary context only.
-  work_days         count of distinct calendar dates carrying ≥1 in-span commit (git author
-                    dates). THE leverage denominator — the same instrument the 260 rate was
-                    calibrated with, so numerator and denominator share one unit
-                    (operator-active-days) and git-invisible time cancels in the ratio.
+  work_days         count of distinct calendar dates carrying ≥1 in-span commit that touches
+                    a file outside wiki/ or docs/ (WK-0085). Dates where every committed file
+                    is wiki-only or docs-only are excluded — they inflate the denominator without
+                    contributing to replication value. THE leverage denominator — the same
+                    instrument the 260 rate was calibrated with, so numerator and denominator
+                    share one unit (operator-active-days) and git-invisible time cancels in the
+                    ratio.
   cocomo_kloc, cocomo_pm_nominal  COCOMO II nominal ceiling (frozen constants, Boehm 2000).
                     Display-only external reference (DEC-0003) — NEVER enters any estimate
                     arithmetic; printed as the ceiling reference line after the ROI line.

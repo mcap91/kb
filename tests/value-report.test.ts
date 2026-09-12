@@ -1074,6 +1074,37 @@ describe('§WK-0040 work_days — git-derived work time (WK-0058 dropped work_ho
     expect(result.data.work_days).toBeGreaterThanOrEqual(1);
   });
 
+  it('wiki/docs-only dates excluded: dates where all commits touch only wiki/ or docs/ do not count', async () => {
+    tmp = createTmpDir();
+    initRepo(tmp.dir);
+
+    // Day 1: code commit → counts
+    const base = commitFile(tmp.dir, 'src/a.ts', 'export const a = 1;\n', 'code day 1',
+      '2026-01-01T10:00:00');
+    // Day 2: wiki-only commit → excluded
+    commitFile(tmp.dir, 'wiki/issues/WK-0001.md', '---\nid: WK-0001\n---\n', 'wiki only day',
+      '2026-01-02T10:00:00');
+    // Day 3: docs-only commit → excluded
+    commitFile(tmp.dir, 'docs/guide.md', '# Guide\n', 'docs only day',
+      '2026-01-03T10:00:00');
+    // Day 4: code commit → counts
+    commitFile(tmp.dir, 'src/b.ts', 'export const b = 2;\n', 'code day 4',
+      '2026-01-04T10:00:00');
+    // Day 5: wiki + code on same date → counts (has non-wiki file)
+    commitFile(tmp.dir, 'wiki/issues/WK-0002.md', '---\nid: WK-0002\n---\n', 'wiki day 5',
+      '2026-01-05T10:00:00');
+    commitFile(tmp.dir, 'src/c.ts', 'export const c = 3;\n', 'code day 5',
+      '2026-01-05T10:00:00');
+
+    const result = await computeValueReport({ dir: tmp.dir, since: base });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    // 5 distinct commit dates, but days 2 and 3 are wiki/docs-only → work_days = 3
+    expect(result.data.span_days).toBe(5);
+    expect(result.data.work_days).toBe(3);
+  });
+
   it('span_days is still emitted and equals the inclusive calendar span (regression: existing behavior retained)', async () => {
     // WHY: span_days is the secondary context field (cadence/chain); it must be preserved
     // alongside the new work_days field, not replaced by it.

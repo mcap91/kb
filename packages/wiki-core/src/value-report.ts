@@ -658,20 +658,71 @@ function computeCocomo(codeOnlyNetLoc: number): { cocomo_kloc: number; cocomo_pm
 }
 
 /**
+ * Path prefixes whose commits are excluded from the work_days denominator: dates where every
+ * committed file falls under one of these prefixes do not count as a work day (the operator was
+ * active but produced no countable output — e.g. wiki-only or docs-only permission-blocked days).
+ */
+const WORK_DAY_EXCLUDE_PREFIXES = ['wiki/', 'docs/'];
+
+/**
+ * Build a date→files map from git log --name-only for the commit range. Used by computeWorkTime
+ * to filter out dates where every committed file is wiki/docs-only.
+ */
+function getFilesPerDate(
+  dir: string,
+  baseSha: string,
+  headSha: string,
+  inclusive: boolean,
+): Map<string, Set<string>> {
+  const rangeArg = resolveLogRangeArg(dir, baseSha, headSha, inclusive);
+  const out = git(dir, 'log', rangeArg, '--format=COMMIT_MARK%x09%ai', '--name-only', '--no-merges');
+  if (!out) return new Map();
+
+  const result = new Map<string, Set<string>>();
+  let currentDate = '';
+
+  for (const line of out.split('\n')) {
+    if (line.startsWith('COMMIT_MARK\t')) {
+      currentDate = line.slice('COMMIT_MARK\t'.length).trim().slice(0, 10);
+      continue;
+    }
+    const trimmed = line.trim();
+    if (!trimmed || !currentDate) continue;
+    if (!result.has(currentDate)) result.set(currentDate, new Set());
+    result.get(currentDate)!.add(trimmed);
+  }
+  return result;
+}
+
+/**
  * Compute git-derived work time from the in-span commit set.
  *
- * - work_days: count of distinct calendar dates (YYYY-MM-DD from git author date) carrying ≥1 commit.
+ * - work_days: count of distinct calendar dates carrying ≥1 commit that touches a file outside
+ *   the WORK_DAY_EXCLUDE_PREFIXES (wiki/, docs/). Dates where every committed file is wiki/docs
+ *   only are excluded — they inflate the denominator without contributing to replication value.
  *
  * No clamping; falsifiability is the point. (WK-0058 dropped the work_hours proxy — it never
  * entered the estimate arithmetic; DEC-0003 §3 amendment.)
  */
-function computeWorkTime(commits: Array<{ authorDate: string }>): { work_days: number } {
+function computeWorkTime(
+  commits: Array<{ authorDate: string }>,
+  filesPerDate: Map<string, Set<string>>,
+): { work_days: number } {
   const byDate = new Set<string>();
   for (const c of commits) {
     if (!c.authorDate) continue;
     byDate.add(c.authorDate);
   }
-  return { work_days: byDate.size };
+
+  let count = 0;
+  for (const date of byDate) {
+    const files = filesPerDate.get(date);
+    if (!files || files.size === 0) continue;
+    if ([...files].some(f => !WORK_DAY_EXCLUDE_PREFIXES.some(p => f.startsWith(p)))) {
+      count++;
+    }
+  }
+  return { work_days: count };
 }
 
 // ---------------------------------------------------------------------------
@@ -933,9 +984,10 @@ export async function computeValueReport(opts: ValueReportOpts): Promise<Result<
     }
   }
 
-  // Git-derived work time (WK-0040): work_days. Computed over the SAME in-span commit set
-  // (commits array). No re-derivation of watermark. (WK-0058 dropped work_hours/hours_per_work_day.)
-  const { work_days } = computeWorkTime(commits);
+  // Git-derived work time (WK-0040): work_days. Dates where every committed file is under
+  // wiki/ or docs/ are excluded — they don't produce valued output.
+  const filesPerDate = getFilesPerDate(dir, baseSha, resolvedHead, inclusive);
+  const { work_days } = computeWorkTime(commits, filesPerDate);
 
   // Window dates
   let windowStart = '';

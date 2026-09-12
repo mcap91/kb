@@ -249,7 +249,7 @@ export interface ValueFrontmatter {
   agents?: string[];
   // Output — observed (tool-filled by value-report)
   span_days?: number;
-  /** Count of distinct calendar dates carrying ≥1 in-span commit. Primary leverage denominator. */
+  /** Count of distinct calendar dates carrying ≥1 non-wiki/docs commit (WK-0085). Primary leverage denominator. */
   work_days?: number;
   /**
    * COCOMO II nominal reference ceiling: code-only net added LOC / 1000.
@@ -496,8 +496,8 @@ export interface ValueMetrics {
   /** Calendar span (inclusive: first→last in-span commit date). Secondary context field. */
   span_days: number;
   /**
-   * Count of distinct calendar dates carrying ≥1 in-span commit (git author dates).
-   * Primary work-time denominator for leverage. Excludes idle days entirely.
+   * Count of distinct calendar dates carrying ≥1 commit that touches a file outside wiki/ or
+   * docs/ (WK-0085). Wiki/docs-only dates are excluded. Primary leverage denominator.
    */
   work_days: number;
   /**
