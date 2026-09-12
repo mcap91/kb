@@ -1,11 +1,12 @@
 /**
- * §5 HO frontmatter parsing (dispatch v2, PLN-0004 S0).
+ * §5 HO frontmatter parsing (dispatch v2, PLN-0004 S0; mode gate removed at S4).
  *
  * This is a NEW record shape, distinct from v1's `HandoffFrontmatter` (types.ts).
  * It lives alongside v1 and does not replace it — v1 stays live until the S7 cutover
- * (DEC-0008 D17). Only `mode: implement` is supported in S0; the other three modes
- * are valid frontmatter values but are refused here as `BAD_RECORD` until later slices
- * wire up their framings (S6, T30).
+ * (DEC-0008 D17). All four §6 modes are valid frontmatter values and parse
+ * successfully here — this module validates SCHEMA only. Which modes can actually
+ * EXECUTE is a pipeline concern (S4 admission's envelope-ceiling checks, plus the
+ * S6 mode-execution guard in pipeline.ts), not a parse-time one.
  *
  * No `yaml` package is available in this workspace (verified: not a declared
  * dependency anywhere in the monorepo) and this file may not add one — package.json
@@ -19,7 +20,7 @@ import { basename } from 'node:path';
 import type { DispatchResult } from './errors.js';
 import { ok } from './errors.js';
 
-/** The four §6 mode ceilings. S0 only executes `implement`. */
+/** The four §6 mode ceilings — all valid at parse time; execution support is a pipeline concern. */
 export type HandoffMode = 'implement' | 'code_review' | 'redteam' | 'research';
 
 const VALID_MODES: readonly HandoffMode[] = ['implement', 'code_review', 'redteam', 'research'];
@@ -176,12 +177,6 @@ export function parseHandoffContent(content: string, filename: string): Dispatch
   const mode = raw.mode;
   if (typeof mode !== 'string' || !VALID_MODES.includes(mode as HandoffMode)) {
     return fail(`Handoff mode must be one of ${VALID_MODES.join(', ')}; got: ${String(mode)}`);
-  }
-
-  // S0 only executes implement; the other three modes are valid frontmatter but
-  // unsupported until later slices (S6/T30 wires code_review/redteam/research framings).
-  if (mode !== 'implement') {
-    return fail(`S0 only supports mode=implement; got mode=${mode} (handoff ${id}).`);
   }
 
   if (!Array.isArray(raw.write_scope) || !raw.write_scope.every((entry) => typeof entry === 'string')) {

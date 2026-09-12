@@ -182,13 +182,12 @@ describe('ho.ts — §5 HO frontmatter parsing', () => {
     expect(result.message).toContain('title');
   });
 
-  it('rejects a mode mismatch (mode: redteam unsupported in S0)', () => {
+  it('parses mode: redteam (ho.ts validates schema only; mode-execution support is gated in admission/pipeline as of S4)', () => {
     const content = HO_0002_CONTENT.replace('mode: implement', 'mode: redteam');
     const result = parseHandoffContent(content, 'HO-0002.md');
-    expect(result.ok).toBe(false);
-    if (result.ok) return;
-    expect(result.error).toBe('BAD_RECORD');
-    expect(result.message).toContain('redteam');
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.mode).toBe('redteam');
   });
 
   it('rejects an id/filename mismatch', () => {

@@ -121,10 +121,19 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
   if (!parsed.ok) return parsed;
   const handoff = parsed.data;
 
-  // 2. Admission (bad_record-lite, missing_write_scope, dirty_repo; resolves base_sha)
+  // 2. Admission — full §7 gate (PLN-0004 S4): bad_record, envelope_exceeds_mode,
+  // missing/stale_write_scope, missing_read_first, dirty_repo, bad_base_ref,
+  // bad_data_mount; resolves base_sha.
   logVerbose(verbose, `running admission checks for ${handoff.id}`);
   const admission = await checkAdmission(handoff, dir);
   if (!admission.ok) return admission;
+
+  // 2b. Mode-execution guard — replaces the restriction ho.ts used to enforce at
+  // parse time (removed at S4). Admission validates the envelope for all four §6
+  // modes; only `implement` has an execution path wired up before S6.
+  if (handoff.mode !== 'implement') {
+    return fail('BAD_RECORD', `mode ${handoff.mode} execution not yet supported (S6); handoff ${handoff.id}.`);
+  }
 
   // 3. Resolve model (repo-local two-table config — S3 ruling 1; supersedes the S0 seed registry)
   logVerbose(verbose, `resolving model "${opts.model}" on backend "${opts.backend}"`);
@@ -208,6 +217,17 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
   logVerbose(verbose, 'assembling worker prompt');
   const assembled = await assemblePrompt(handoff, dir);
   if (!assembled.ok) return assembled;
+
+  // 7b. Context budget gate (§7.13) — runs post-assembly (not in admission.ts)
+  // because it needs the real measured size; refuse with the measured size
+  // rather than truncating silently.
+  if (assembled.data.tokenEstimate > model.contextWindow) {
+    return fail(
+      'CONTEXT_BUDGET_EXCEEDED',
+      `Assembled prompt for handoff ${handoff.id} is an estimated ${assembled.data.tokenEstimate} tokens, exceeding model "${opts.model}" on backend "${opts.backend}"'s context window of ${model.contextWindow} tokens.`,
+      { tokenEstimate: assembled.data.tokenEstimate, contextWindow: model.contextWindow },
+    );
+  }
 
   // 8. Write prompt to run dir
   const promptPath = join(runDir, 'prompt.txt');
