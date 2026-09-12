@@ -619,7 +619,8 @@ directly against a real temp git repo and a real WSL2 clone.
        */
       async function runEgressProbe(): Promise<EgressProbeResult> {
         const stubPort = nextStubPort++;
-        const tunnelSocketWsl = `${runDirWsl}/${TUNNEL_SOCKET_NAME}`;
+        // Socket on ext4 (clonePath), not DrvFS (runDirWsl) — AF_UNIX ENOTSUP.
+        const tunnelSocketWsl = `${clonePath}/${TUNNEL_SOCKET_NAME}`;
         const relayScriptWsl = `${runDirWsl}/relay.js`;
         const tunnelConfig: TunnelConfig = {
           socketPath: tunnelSocketWsl,
@@ -638,7 +639,7 @@ directly against a real temp git repo and a real WSL2 clone.
 
         const innerScript = [
           ...tunnelBash.inJailPrefix,
-          `ALLOWED_CODE=$(curl -s -o /tmp/allowed-body -w '%{http_code}' http://127.0.0.1:${TUNNEL_RELAY_PORT}/v1/probe)`,
+          `ALLOWED_CODE=$(curl --noproxy '*' -s -o /tmp/allowed-body -w '%{http_code}' http://127.0.0.1:${TUNNEL_RELAY_PORT}/v1/probe)`,
           'echo "ALLOWED_CODE=$ALLOWED_CODE"',
           'echo "ALLOWED_BODY=$(cat /tmp/allowed-body 2>/dev/null)"',
           `DENIED_CODE=$(curl -s -o /dev/null -w '%{http_code}' -x http://127.0.0.1:${TUNNEL_RELAY_PORT} http://example.com/)`,
