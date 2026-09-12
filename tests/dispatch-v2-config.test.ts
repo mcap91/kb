@@ -35,7 +35,7 @@ describe('errors.ts — V2_REFUSAL_CODES', () => {
     expect(V2_REFUSAL_CODES.length).toBeGreaterThan(0);
   });
 
-  it('contains exactly the S0/S1/S3/S4 pre-spawn refusal codes', () => {
+  it('contains exactly the S0/S1/S3/S4/S5 pre-spawn refusal codes', () => {
     const expected: DispatchErrorCode[] = [
       'BAD_RECORD',
       'MISSING_WRITE_SCOPE',
@@ -54,6 +54,7 @@ describe('errors.ts — V2_REFUSAL_CODES', () => {
       'BAD_BASE_REF',
       'CONTEXT_BUDGET_EXCEEDED',
       'BAD_DATA_MOUNT',
+      'NO_ISOLATION_ROUTE',
     ];
     expect([...V2_REFUSAL_CODES].sort()).toEqual([...expected].sort());
   });

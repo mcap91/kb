@@ -57,7 +57,9 @@ export type DispatchErrorCode =
   | 'MISSING_READ_FIRST'
   | 'BAD_BASE_REF'
   | 'CONTEXT_BUDGET_EXCEEDED'
-  | 'BAD_DATA_MOUNT';
+  | 'BAD_DATA_MOUNT'
+  // --- v2 required enforcement (PLN-0004 S5) ---
+  | 'NO_ISOLATION_ROUTE';
 
 /**
  * Discriminated union result type for dispatch-core operations.
@@ -90,6 +92,7 @@ export const V2_REFUSAL_CODES = [
   'BAD_BASE_REF',
   'CONTEXT_BUDGET_EXCEEDED',
   'BAD_DATA_MOUNT',
+  'NO_ISOLATION_ROUTE',
 ] as const satisfies readonly DispatchErrorCode[];
 
 /**
