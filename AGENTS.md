@@ -35,6 +35,8 @@ the initial retrieval pass.
   an id (it allocates and writes the record atomically). Repeated identical ids are correct, not a bug.
 - Dispatch: prefer the `kb-dispatch` MCP tools or the kb CLI.
 - Graph: kb CLI (`npm run graph -- --dir <this repo>`).
+- Dashboard: `npm run dashboard -- <ID> --dir <this repo>` generates a self-contained HTML tracker
+  for PLN, IN, or WK-set records. Output: `wiki/dashboard/<ID>.html`. See `docs/dashboard.md`.
 - Always pass `dir` pointing at this repository; run kb from its own checkout, not this repo root.
 - Do not create `HO-*` via `wiki create` — handoffs are dispatch-owned under `wiki/handoffs/`.
 - If wiki records and code/tests disagree, report the mismatch rather than trusting a grep-first conclusion.
