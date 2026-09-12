@@ -35,7 +35,7 @@ describe('errors.ts — V2_REFUSAL_CODES', () => {
     expect(V2_REFUSAL_CODES.length).toBeGreaterThan(0);
   });
 
-  it('contains exactly the S0/S1/S3 pre-spawn refusal codes', () => {
+  it('contains exactly the S0/S1/S3/S4 pre-spawn refusal codes', () => {
     const expected: DispatchErrorCode[] = [
       'BAD_RECORD',
       'MISSING_WRITE_SCOPE',
@@ -48,6 +48,12 @@ describe('errors.ts — V2_REFUSAL_CODES', () => {
       'CREDENTIALS_WITH_WEB',
       'UNKNOWN_PROFILE',
       'CREDENTIAL_NOT_CONFIGURED',
+      'ENVELOPE_EXCEEDS_MODE',
+      'STALE_WRITE_SCOPE',
+      'MISSING_READ_FIRST',
+      'BAD_BASE_REF',
+      'CONTEXT_BUDGET_EXCEEDED',
+      'BAD_DATA_MOUNT',
     ];
     expect([...V2_REFUSAL_CODES].sort()).toEqual([...expected].sort());
   });
