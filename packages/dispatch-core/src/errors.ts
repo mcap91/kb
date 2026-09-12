@@ -50,7 +50,14 @@ export type DispatchErrorCode =
   | 'EFFORT_UNSUPPORTED'
   | 'CREDENTIALS_WITH_WEB'
   | 'UNKNOWN_PROFILE'
-  | 'CREDENTIAL_NOT_CONFIGURED';
+  | 'CREDENTIAL_NOT_CONFIGURED'
+  // --- v2 full admission gate (PLN-0004 S4) ---
+  | 'ENVELOPE_EXCEEDS_MODE'
+  | 'STALE_WRITE_SCOPE'
+  | 'MISSING_READ_FIRST'
+  | 'BAD_BASE_REF'
+  | 'CONTEXT_BUDGET_EXCEEDED'
+  | 'BAD_DATA_MOUNT';
 
 /**
  * Discriminated union result type for dispatch-core operations.
@@ -62,8 +69,8 @@ export type DispatchResult<T> =
 /**
  * Every v2 `DispatchErrorCode` the MCP `dispatch` tool can return as a synchronous
  * refusal (i.e. before a worker is spawned). Single source for the MCP instructions'
- * refusal-code list and a pinning test (PLN-0004 S3 D7) — the codes here are the
- * hand-maintained ground truth; nothing else should hand-list them.
+ * refusal-code list and a pinning test (PLN-0004 S3 D7; extended at S4) — the codes
+ * here are the hand-maintained ground truth; nothing else should hand-list them.
  */
 export const V2_REFUSAL_CODES = [
   'BAD_RECORD',
@@ -77,6 +84,12 @@ export const V2_REFUSAL_CODES = [
   'CREDENTIALS_WITH_WEB',
   'UNKNOWN_PROFILE',
   'CREDENTIAL_NOT_CONFIGURED',
+  'ENVELOPE_EXCEEDS_MODE',
+  'STALE_WRITE_SCOPE',
+  'MISSING_READ_FIRST',
+  'BAD_BASE_REF',
+  'CONTEXT_BUDGET_EXCEEDED',
+  'BAD_DATA_MOUNT',
 ] as const satisfies readonly DispatchErrorCode[];
 
 /**
