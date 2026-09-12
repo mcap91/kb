@@ -45,6 +45,7 @@ export function buildJailArgs(opts: JailOpts): JailArgs {
       'bwrap',
       '--ro-bind', '/', '/',
       '--proc', '/proc',
+      '--dev', '/dev',
       '--die-with-parent',
       '--bind', opts.clonePath, opts.clonePath,
       '--chdir', cwd,

@@ -43,6 +43,7 @@ function makeResolvedModel(overrides: Partial<ResolvedModel> = {}): ResolvedMode
     secretsFile: '/home/operator/.config/kb-dispatch/secrets.env',
     availableOn: ['openrouter'],
     supportsEffort: false,
+    contextWindow: 128000,
     ...overrides,
   };
 }
@@ -100,6 +101,7 @@ describe('model-registry.ts — resolveModelFromConfig', () => {
       secretsFile: '/home/operator/.config/kb-dispatch/secrets.env',
       availableOn: ['openrouter'],
       supportsEffort: false,
+      contextWindow: 128000,
     });
   });
 

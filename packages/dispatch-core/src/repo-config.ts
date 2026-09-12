@@ -27,6 +27,8 @@ export interface ModelTableEntry {
   available_on: string[];
   model_id: string;
   notes?: string;
+  /** §7.13 context-budget gate input (tokens); model-registry.ts defaults when absent. */
+  context_window?: number;
 }
 
 export interface ProfileEntry {
@@ -112,7 +114,7 @@ function validateBackendEntry(name: string, raw: unknown): DispatchResult<Backen
   return ok(entry);
 }
 
-const MODEL_TABLE_ENTRY_KNOWN_KEYS = new Set(['available_on', 'model_id', 'notes']);
+const MODEL_TABLE_ENTRY_KNOWN_KEYS = new Set(['available_on', 'model_id', 'notes', 'context_window']);
 
 function validateModelTableEntry(slug: string, raw: unknown): DispatchResult<ModelTableEntry> {
   if (!isPlainObject(raw)) {
@@ -127,12 +129,16 @@ function validateModelTableEntry(slug: string, raw: unknown): DispatchResult<Mod
   if (typeof raw.model_id !== 'string') {
     return fail('BAD_RECORD', `Model "${slug}" in models.json must have a string "model_id".`);
   }
+  if (raw.context_window !== undefined && typeof raw.context_window !== 'number') {
+    return fail('BAD_RECORD', `Model "${slug}" in models.json must have "context_window" as a number when present.`);
+  }
 
   const entry: ModelTableEntry = {
     available_on: raw.available_on as string[],
     model_id: raw.model_id,
   };
   if (typeof raw.notes === 'string') entry.notes = raw.notes;
+  if (typeof raw.context_window === 'number') entry.context_window = raw.context_window;
   return ok(entry);
 }
 
