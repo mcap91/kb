@@ -18,6 +18,7 @@ import { basename, join } from 'node:path';
 import type { DispatchResult } from './errors.js';
 import { fail, ok } from './errors.js';
 import type { DeliveryOutcome } from './delivery.js';
+import type { BackendFingerprint } from './model-registry.js';
 
 export interface CaptureOpts {
   /** Windows path to the run dir */
@@ -42,8 +43,8 @@ export interface CaptureOpts {
   backend?: string;
   /** Pi harness version captured by preflight's PI_VERSION probe (S3 ruling 7). */
   piVersion?: string;
-  /** Best-effort backend server version fingerprint (S3 ruling 8; absent when unprobeable). */
-  backendFingerprint?: string;
+  /** Best-effort backend fingerprint — host/model always present when probed, serverVersion null when the backend has no version endpoint (S3 ruling 8). */
+  backendFingerprint?: BackendFingerprint;
 }
 
 export interface CaptureResult {
@@ -132,6 +133,18 @@ function formatUsageSection(piResult: CaptureOpts['piResult']): string {
 }
 
 /**
+ * Serialize a `BackendFingerprint` for the `backend_fingerprint` provenance
+ * field. host/model are written even when `serverVersion` is null (no
+ * version endpoint for this backend kind, or the probe failed) — losing
+ * host/model just because the version half is unprobeable throws away real
+ * signal (this was the bug: the caller used to narrow to `serverVersion`
+ * alone and drop the whole fingerprint whenever it was null).
+ */
+function formatBackendFingerprint(fingerprint: BackendFingerprint): string {
+  return `${fingerprint.host}|${fingerprint.model}|${fingerprint.serverVersion ?? 'unknown'}`;
+}
+
+/**
  * Build the `HO-XXXX.response.md` content and write it into the run dir.
  * Structured frontmatter header (outcome/model/isolation/usage/branch/changed
  * files) followed by a free-form findings body (spec §5).
@@ -170,7 +183,7 @@ export async function writeResponseDoc(opts: CaptureOpts): Promise<DispatchResul
   if (opts.baseUrl) frontmatterLines.push(`base_url: ${opts.baseUrl}`);
   if (opts.backend) frontmatterLines.push(`backend: ${opts.backend}`);
   if (opts.piVersion) frontmatterLines.push(`pi_version: ${opts.piVersion}`);
-  if (opts.backendFingerprint) frontmatterLines.push(`backend_fingerprint: ${opts.backendFingerprint}`);
+  if (opts.backendFingerprint) frontmatterLines.push(`backend_fingerprint: ${formatBackendFingerprint(opts.backendFingerprint)}`);
   frontmatterLines.push('---', '');
   const frontmatter = frontmatterLines.join('\n');
 
@@ -239,7 +252,7 @@ export function buildProvenanceWriteBack(opts: CaptureOpts): ProvenanceWriteBack
   if (opts.baseUrl) fields.base_url = opts.baseUrl;
   if (opts.backend) fields.backend = opts.backend;
   if (opts.piVersion) fields.pi_version = opts.piVersion;
-  if (opts.backendFingerprint) fields.backend_fingerprint = opts.backendFingerprint;
+  if (opts.backendFingerprint) fields.backend_fingerprint = formatBackendFingerprint(opts.backendFingerprint);
 
   return { fields };
 }

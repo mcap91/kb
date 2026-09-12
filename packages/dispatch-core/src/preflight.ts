@@ -36,6 +36,10 @@ export interface PreflightResult {
  */
 const PREFLIGHT_SCRIPT = [
   '#!/bin/bash',
+  '',
+  '# Non-interactive shells skip .bashrc; ensure npm-global and local bins are reachable',
+  'export PATH="$HOME/.npm-global-wsl/bin:$HOME/.local/bin:$PATH"',
+  '',
   'echo "BWRAP_PATH=$(which bwrap 2>/dev/null || echo MISSING)"',
   'echo "BWRAP_VERSION=$(bwrap --version 2>/dev/null || echo MISSING)"',
   // Rides the existing preflight script rather than a dedicated probe (S3 ruling 7) — same KEY=value convention, one fewer WSL2 round trip.

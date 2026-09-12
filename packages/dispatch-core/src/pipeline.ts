@@ -475,7 +475,7 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       baseUrl: model.baseUrl,
       backend: model.backend,
       piVersion,
-      backendFingerprint: fingerprint?.serverVersion ?? undefined,
+      backendFingerprint: fingerprint ?? undefined,
     });
     if (!captureResult.ok) return captureResult;
 
@@ -510,7 +510,7 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       baseUrl: model.baseUrl,
       backend: model.backend,
       piVersion,
-      backendFingerprint: fingerprint?.serverVersion ?? undefined,
+      backendFingerprint: fingerprint ?? undefined,
     });
     const hoPath = join(dir, opts.handoff);
     try {
