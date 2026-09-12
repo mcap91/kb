@@ -726,3 +726,58 @@ describe('dispatch v2 e2e (fake-tier) — S3 wave 3 harness version gate (mocked
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// PLN-0004 S5 Wave 2 — pipeline.ts tier-resolution integration: honest
+// isolationBackend provenance (T16), not a hardcoded 'bwrap-wsl2' string.
+//
+// This is the one S5 wiring point that genuinely needs a real `runDispatch()`
+// call rather than a pure string-content test against `buildExecutionScript`
+// (see tests/dispatch-v2-pipeline-s5.test.ts for those) — it proves tier
+// resolution reads REAL preflight data and that `checkIsolationRoute`'s
+// refusal is actually reachable through the integrated pipeline, mirroring
+// the harness-version-gate test above (same `vi.spyOn(preflightModule, ...)`
+// technique). `remediationNeeded: false` in the mock is a deliberate
+// isolation trick, not a realistic preflight output: it holds the EARLIER
+// preflight-remediation gate open so only the NEW tier-resolution gate is
+// under test here. Cross-platform-safe by construction: `bwrapAvailable:
+// false` yields `no_isolation_route` whether this suite runs on a Windows
+// host (routed through the Windows+WSL2 branch, which reads this exact
+// field) or on native Linux (routed through the native-Linux branch, whose
+// own probes this pipeline does not yet wire up positively at all — see
+// pipeline.ts's tier resolution comment — so it refuses there too).
+// ---------------------------------------------------------------------------
+
+describe('dispatch v2 e2e (fake-tier) — S5 tier resolution (mocked preflight)', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('refuses NO_ISOLATION_ROUTE when preflight reports bwrap unavailable, proving tier resolution is wired for real', async () => {
+    vi.spyOn(preflightModule, 'runPreflight').mockResolvedValue({
+      ok: true,
+      data: {
+        bwrapAvailable: false,
+        unshareUserWorks: false,
+        appArmorRestriction: false,
+        remediationNeeded: false, // isolates the tier-resolution gate from the earlier preflight-remediation gate
+        piVersion: '0.85.1',
+      },
+    });
+
+    const repoRoot = await setupS3Repo();
+    try {
+      const result = await runDispatch({
+        dir: repoRoot,
+        handoff: 'wiki/handoffs/HO-S3TEST.md',
+        model: 'deepseek',
+        backend: 'openrouter',
+      });
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error).toBe('NO_ISOLATION_ROUTE');
+    } finally {
+      await rm(repoRoot, { recursive: true, force: true });
+    }
+  });
+});

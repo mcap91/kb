@@ -41,7 +41,7 @@ import {
 import { assemblePrompt } from './assemble.js';
 import { buildInvocation, parsePiOutput } from './adapters/pi.js';
 import { execViaWsl2, windowsToWslPath, resolveWinHostIp } from './wsl2.js';
-import { buildJailArgs } from './jail.js';
+import { buildJailArgs, classifyWikiShape, type WikiShape } from './jail.js';
 import { createClone, removeClone } from './clone.js';
 import {
   buildEnumerateScript,
@@ -52,7 +52,7 @@ import {
   type DeliveryOutcome,
 } from './delivery.js';
 import { writeResponseDoc, buildProvenanceWriteBack } from './capture.js';
-import { runPreflight } from './preflight.js';
+import { runPreflight, type PreflightResult } from './preflight.js';
 import { getRunDir } from './paths.js';
 import { loadProfilesConfig } from './repo-config.js';
 import {
@@ -61,7 +61,16 @@ import {
   buildInjectionScript,
   buildInjectedValueScanFragment,
   parseInjectedValueScanOutput,
+  type InjectionScriptLines,
 } from './credentials.js';
+import {
+  buildTunnelBashLines,
+  TUNNEL_RELAY_PORT,
+  TUNNEL_SOCKET_NAME,
+  type TunnelConfig,
+  type TunnelBashLines,
+} from './tunnel.js';
+import { resolveTier, checkIsolationRoute, type TierProbeInputs } from './tier.js';
 
 const WORKER_TIMEOUT_SECS = 1800;
 const WORKER_TIMEOUT_MS = WORKER_TIMEOUT_SECS * 1000;
@@ -187,10 +196,12 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
 
   // 4. Run preflight (if enabled) — gate BEFORE any clone/jail work is done.
   let piVersion: string | undefined;
+  let preflightData: PreflightResult | undefined;
   if (opts.preflight !== false) {
     logVerbose(verbose, 'running T27 host preflight (bwrap presence / live unshare-user / AppArmor userns)');
     const preflight = await runPreflight(runDir);
     if (!preflight.ok) return preflight;
+    preflightData = preflight.data;
     if (preflight.data.remediationNeeded) {
       return fail(
         'PREFLIGHT_FAILED',
@@ -212,6 +223,29 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       }
     }
   }
+
+  // 4b. Tier resolution + no_isolation_route (T16 S5; spec §7.11/§11). Windows
+  // routed into WSL2 is the only tier this pipeline actually probes today
+  // (S0-S4 proved it live); tier.ts itself already generalizes to
+  // bwrap-direct (native Linux) and pod-attested (WK-0034), but wiring real
+  // container/native-Linux probes through is a later slice — those two
+  // branches resolve from tier.ts's own conservative "not detected" defaults
+  // below until then. `enforced:false` bare-host dispatch is retired (spec
+  // §11 D14): if no route resolves, this refuses instead of falling back to
+  // an unenforced run.
+  const tierProbes: TierProbeInputs = {
+    isWindows: process.platform === 'win32',
+    wsl2Available: true, // if we got here, preflight ran via WSL2 successfully
+    bwrapAvailable: opts.preflight !== false ? (preflightData?.bwrapAvailable ?? false) : true,
+    unshareUserWorks: opts.preflight !== false ? (preflightData?.unshareUserWorks ?? false) : true,
+    isContainer: false, // container detection is a future tier
+    containerAttested: false,
+    isNativeLinux: process.platform === 'linux',
+  };
+  const tierResolution = resolveTier(tierProbes);
+  const tierCheck = checkIsolationRoute(tierResolution);
+  if (!tierCheck.ok) return tierCheck;
+  const { isolationBackend } = tierCheck.data;
 
   // 7. Assemble prompt
   logVerbose(verbose, 'assembling worker prompt');
@@ -237,6 +271,26 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
     return fail('PIPELINE_FAILED', `Failed to write prompt file: ${promptPath}`, err);
   }
 
+  // 8b. Wiki shape probe (T25/D19 dual-shape read axis) — before the clone is
+  // created, probe whether wiki/ is git-tracked in the MOTHER repo (a fresh
+  // clone at the same lineage carries the identical tracked-file set, so this
+  // need not wait for the clone to exist). Best-effort: a failed probe
+  // degrades to the fail-safe 'nested-private' default (no wiki bind at all)
+  // rather than refusing the whole dispatch over a soft probe.
+  const wikiProbeResult = await execViaWsl2({
+    runDir,
+    scriptContent: [
+      '#!/bin/bash',
+      `cd ${shQuote(windowsToWslPath(dir))}`,
+      'git ls-files wiki/ 2>/dev/null',
+    ].join('\n'),
+    scriptName: 'wiki-probe.sh',
+    timeoutMs: 30_000,
+  });
+  const wikiShape: WikiShape = wikiProbeResult.ok
+    ? classifyWikiShape(wikiProbeResult.data.stdout)
+    : 'nested-private'; // fail-safe: assume no wiki in clone
+
   // 9. Clone (ephemeral full clone @ pinned base_sha, WSL2 ext4)
   logVerbose(verbose, `cloning mother repo at base_sha ${admission.data.baseSha}`);
   const cloneResult = await createClone({
@@ -248,12 +302,40 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
   const { clonePath } = cloneResult.data;
 
   try {
+    // 9b. Pre-create skeleton dirs for write_scope sparse binds — bwrap
+    // cannot mkdir a new path under a ro-bound root (jail.ts's own module
+    // doc), so every write_scope path must already exist on disk before
+    // buildJailArgs's bind list is handed to bwrap.
+    if (handoff.write_scope.length > 0) {
+      const mkdirScript = [
+        '#!/bin/bash',
+        ...handoff.write_scope
+          .map((rel) => {
+            const trimmed = rel.replace(/^\/+/, '').replace(/\/+$/, '');
+            if (!trimmed) return '';
+            return `mkdir -p ${shQuote(`${clonePath}/${trimmed}`)}`;
+          })
+          .filter(Boolean),
+      ].join('\n');
+      const mkdirResult = await execViaWsl2({ runDir, scriptContent: mkdirScript, scriptName: 'mkdir-scope.sh', timeoutMs: 30_000 });
+      if (!mkdirResult.ok) return mkdirResult;
+    }
+
     // 10. Build Pi invocation. workerDir (PI_CODING_AGENT_DIR) is nested INSIDE
     // clonePath: jail.ts's S0-minimum bwrap only remounts clonePath writable
     // (bwrap cannot bind a path that doesn't already exist under the ro root),
     // so anywhere Pi needs to write must live under the one writable bind.
     const workerDir = `${clonePath}/${PI_WORKER_DIR}`;
     const promptPathWsl = windowsToWslPath(promptPath);
+    const runDirWsl = windowsToWslPath(runDir);
+
+    // S5 T26: the worker's own baseUrl now points at the in-jail relay
+    // loopback — the forwarder (started pre-jail, outside bwrap) is the only
+    // process that actually reaches the real endpoint; the worker itself runs
+    // under --unshare-net and can reach nothing but 127.0.0.1. This retires
+    // the {{WIN_HOST}} template from models.json entirely; WIN_HOST is still
+    // resolved below, but only to feed the tunnel's own targetUrl.
+    const piBaseUrl = `http://127.0.0.1:${TUNNEL_RELAY_PORT}`;
     // adapters/pi.ts still expects the legacy ModelEntry shape; build one from the
     // resolved two-table model (S3 ruling 1) rather than widening the adapter's
     // facts-only interface (D10) for a single-slice-old type.
@@ -261,7 +343,7 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       provider: model.backend,
       modelId: model.modelId,
       displayName: `${model.slug} (${model.backend})`,
-      baseUrl: model.baseUrl,
+      baseUrl: piBaseUrl,
       api: 'openai-completions',
       apiKeyEnv: model.apiKeyEnv,
       contextWindow: 131072,
@@ -270,20 +352,80 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
     };
     const invocation = buildInvocation(promptPathWsl, piModelEntry, clonePath, workerDir);
 
-    // 12. Build jail args
-    const jailArgs = buildJailArgs({ clonePath });
+    // 10b. Resolve the tunnel's real target endpoint (T26/D21). This runs as
+    // its OWN early WSL2 round trip rather than an inline `WIN_HOST=$(...)`
+    // bash line inside the execution script: tunnel.ts's buildTunnelBashLines
+    // deliberately single-quotes `targetUrl` when embedding it into the
+    // forwarder's argv (shQuote), so a bash variable reference baked into
+    // that string would reach the forwarder as the literal, unexpanded text
+    // "$WIN_HOST" rather than an expanded address. Resolving it here in JS,
+    // before the tunnel config is built, sidesteps that entirely — by the
+    // time `tunnelConfig.targetUrl` exists it is already a concrete URL.
+    // Skipped for backends with no {{WIN_HOST}} template (e.g. a real HTTPS
+    // endpoint like OpenRouter) to avoid a pointless round trip.
+    let resolvedTargetUrl = model.baseUrl;
+    if (model.baseUrl.includes('{{WIN_HOST}}')) {
+      const winHostResult = await execViaWsl2({
+        runDir,
+        scriptContent: ['#!/bin/bash', `echo "WIN_HOST=$(${resolveWinHostIp()})"`].join('\n'),
+        scriptName: 'win-host-resolve.sh',
+        timeoutMs: 30_000,
+      });
+      if (!winHostResult.ok) return winHostResult;
+      const winHostMatch = winHostResult.data.stdout.match(/WIN_HOST=(\S+)/);
+      if (!winHostMatch) {
+        return fail(
+          'PIPELINE_FAILED',
+          'Failed to resolve WIN_HOST from inside WSL2 (needed to build the tunnel target URL).',
+          winHostResult.data,
+        );
+      }
+      resolvedTargetUrl = model.baseUrl.replace(/\{\{WIN_HOST\}\}/g, winHostMatch[1]!);
+    }
 
-    // 13. Build the full execution script: source secrets -> set up
-    // PI_CODING_AGENT_DIR -> write models.json (still carrying the literal
-    // {{WIN_HOST}} placeholder, since Pi's own $VAR apiKey interpolation must
-    // stay unexpanded through this step) -> resolve WIN_HOST and substitute it
-    // in place -> run bwrap+pi. The models.json body is written via a
-    // quote-delimited heredoc so no shell expansion touches Pi's own $VAR
-    // apiKey placeholders (Pi resolves those itself, from its OWN process env,
-    // once secrets.env has been sourced — bwrap's S0 jail args do not clear
-    // env, so a sourced secret reaches the jailed pi process unchanged).
-    const bwrapCommand = [...jailArgs.argv, invocation.cmd, ...invocation.args].map(shQuote).join(' ');
-    const runDirWsl = windowsToWslPath(runDir);
+    // 11. Tunnel config (T26/D21) — the socket/relay/log all live under the
+    // run dir on ext4 (never inside the clone: they are dispatch
+    // infrastructure, not worker output, and must never appear in
+    // enumerate/delivery). web:true widens the forwarder's own destination
+    // policy (s5-rulings.md ruling 4) — the flag itself is the grant.
+    const tunnelSocketWsl = `${runDirWsl}/${TUNNEL_SOCKET_NAME}`;
+    const relayScriptWsl = `${runDirWsl}/relay.js`;
+    const tunnelConfig: TunnelConfig = {
+      socketPath: tunnelSocketWsl,
+      targetUrl: resolvedTargetUrl,
+      webEnabled: handoff.web,
+      relayPort: TUNNEL_RELAY_PORT,
+      logPath: `${runDirWsl}/tunnel-destinations.log`,
+    };
+    const tunnelBash = buildTunnelBashLines(tunnelConfig, runDirWsl);
+
+    // Mother wiki path for the nested-private + redteam/research bind (T25/D19).
+    const motherWikiWsl = windowsToWslPath(join(dir, 'wiki'));
+
+    // 12. Build full jail args (T15/T25/T26 full §11 recipe). data_mounts
+    // needs a format bridge here: admission.ts validates the spec-canonical
+    // SUFFIX shape (`<windows-absolute-path>:ro`/`:rw` — spec §6, mirrored by
+    // admission.ts's own `mountPathOf`), but jail.ts's `parseDataMount`
+    // expects the PREFIX shape (`ro:<path>`/`rw:<path>`) with a path already
+    // usable as a bwrap bind target (i.e. WSL2-side, not a Windows path).
+    // jail.ts cannot fail (`parseDataMount` silently drops anything it
+    // doesn't recognize), so passing admission-validated entries through
+    // unconverted would make every declared data mount a silent no-op —
+    // validated at admission, then never actually bound. toJailDataMount
+    // bridges both gaps in one step: strip the suffix, convert the bare
+    // Windows path to its `/mnt/<drive>/...` WSL2 equivalent, reassemble as
+    // the prefix form jail.ts parses.
+    const jailArgs = buildJailArgs({
+      clonePath,
+      writeScope: handoff.write_scope,
+      wikiShape,
+      mode: handoff.mode,
+      motherWikiPath: motherWikiWsl,
+      dataMounts: handoff.data_mounts.map(toJailDataMount),
+      unshareNet: true,
+      tunnelSocketPath: tunnelSocketWsl,
+      relayScriptPath: relayScriptWsl,
+    });
 
     // Selective credential injection (S3 ruling 2 / freeze correction: SCRIPT-SIDE,
     // Linux-only — secret values are read from their named files IN-SHELL and never
@@ -294,38 +436,23 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
     // Backend fingerprint (S3 ruling 8) — best-effort, facts-only, never gating.
     const fingerprintLines = buildFingerprintFragment(model);
 
-    const executionScript = [
-      '#!/usr/bin/env bash',
-      'set -euo pipefail',
-      '',
-      '# Non-interactive shells skip .bashrc; ensure npm-global and local bins are reachable',
-      'export PATH="$HOME/.npm-global-wsl/bin:$HOME/.local/bin:$PATH"',
-      '',
-      '# Selective credential injection (S3 ruling 2): existence checks first (early',
-      '# exit with CREDENTIAL_NOT_CONFIGURED on a missing cred), then export only the',
-      '# resolved backend key + granted profile vars, then HO vars literals.',
-      ...injectionScript.existenceCheckLines,
-      ...injectionScript.exportLines,
-      ...injectionScript.varsExportLines,
-      '',
-      `export PI_CODING_AGENT_DIR=${shQuote(workerDir)}`,
-      'export PI_OFFLINE=1',
-      'mkdir -p "$PI_CODING_AGENT_DIR"',
-      '',
-      `cat <<'DISPATCH_MODELS_JSON_EOF' > "$PI_CODING_AGENT_DIR/models.json"`,
-      invocation.modelsJsonContent,
-      'DISPATCH_MODELS_JSON_EOF',
-      '',
-      `WIN_HOST=$(${resolveWinHostIp()})`,
-      'sed -i "s/{{WIN_HOST}}/$WIN_HOST/g" "$PI_CODING_AGENT_DIR/models.json"',
-      '',
-      ...fingerprintLines,
-      '',
-      `PI_LOG=${shQuote(`${runDirWsl}/pi-output.log`)}`,
-      `WORKER_TIMEOUT_SECS=${WORKER_TIMEOUT_SECS}`,
-      `timeout --signal=TERM --kill-after=30s "$WORKER_TIMEOUT_SECS" ${bwrapCommand} < /dev/null 2>&1 | tee "$PI_LOG"`,
-      '',
-    ].join('\n');
+    // 13. Build the full execution script (T26 tunnel splice + lockfile-gated
+    // dependency provisioning — see buildExecutionScript's own doc for the
+    // exact section order and why the bwrap invocation now wraps a `bash -c`
+    // inner script instead of a bare worker command).
+    const executionScript = buildExecutionScript({
+      injectionScript,
+      workerDir,
+      modelsJsonContent: invocation.modelsJsonContent,
+      fingerprintLines,
+      runDirWsl,
+      clonePath,
+      jailArgv: jailArgs.argv,
+      workerCmd: invocation.cmd,
+      workerArgs: invocation.args,
+      tunnelBash,
+      workerTimeoutSecs: WORKER_TIMEOUT_SECS,
+    });
 
     // 14. Execute via execViaWsl2
     logVerbose(verbose, `invoking ${canonicalModel} via bwrap+pi in the WSL2 clone`);
@@ -489,10 +616,15 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       delivery,
       piResult: { outcome: piParsed.data.outcome, usage: piParsed.data.usage },
       model: canonicalModel,
-      isolationBackend: 'bwrap-wsl2',
+      isolationBackend,
       needs: piParsed.data.needs,
       credentialsGranted: credResult.data.granted,
-      baseUrl: model.baseUrl,
+      // Resolved-value provenance (S3 ruling 8): the real endpoint the tunnel
+      // forwarder was configured to reach — never `model.baseUrl`'s raw
+      // {{WIN_HOST}} template, which the old models.json-only sed substitution
+      // never actually resolved at the JS level (WK gap fixed incidentally
+      // here since S5 already resolves this value for the tunnel config).
+      baseUrl: resolvedTargetUrl,
       backend: model.backend,
       piVersion,
       backendFingerprint: fingerprint ?? undefined,
@@ -524,10 +656,15 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       handoff: { id: handoff.id, title: handoff.title, mode: handoff.mode },
       delivery,
       model: canonicalModel,
-      isolationBackend: 'bwrap-wsl2',
+      isolationBackend,
       needs: piParsed.data.needs,
       credentialsGranted: credResult.data.granted,
-      baseUrl: model.baseUrl,
+      // Resolved-value provenance (S3 ruling 8): the real endpoint the tunnel
+      // forwarder was configured to reach — never `model.baseUrl`'s raw
+      // {{WIN_HOST}} template, which the old models.json-only sed substitution
+      // never actually resolved at the JS level (WK gap fixed incidentally
+      // here since S5 already resolves this value for the tunnel config).
+      baseUrl: resolvedTargetUrl,
       backend: model.backend,
       piVersion,
       backendFingerprint: fingerprint ?? undefined,
@@ -555,6 +692,198 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
     // safety net if this itself fails to run (never rejects, but belt+suspenders).
     await removeClone(clonePath, runDir).catch(() => undefined);
   }
+}
+
+// ---------------------------------------------------------------------------
+// S5 T26 (W2): data_mounts format bridge. Not part of the package's public
+// surface — module-scope only, same convention as the other pipeline-private
+// helpers below.
+// ---------------------------------------------------------------------------
+
+/**
+ * Bridge admission.ts's spec-canonical `data_mounts` shape (§6:
+ * `<absolute-path>:ro` / `<absolute-path>:rw`, SUFFIX form — see admission.ts's
+ * own `mountPathOf`) into the shape jail.ts's `parseDataMount`/`buildJailArgs`
+ * expect (`ro:<path>` / `rw:<path>`, PREFIX form, path already usable as a
+ * bwrap bind target). Also converts the admission-validated WINDOWS absolute
+ * path to its `/mnt/<drive>/...` WSL2 equivalent in the same step — bwrap runs
+ * inside WSL2 and cannot bind a Windows-style path at all.
+ *
+ * jail.ts is deliberately "cannot fail" (`parseDataMount` returns null and
+ * `buildJailArgs` silently skips anything it doesn't recognize), so leaving
+ * this conversion undone would not error — it would just make every declared
+ * data mount a silent no-op: validated at admission, then never actually
+ * bound into the jail. An entry with no recognizable `:ro`/`:rw` suffix
+ * (already tolerated leniently by admission's own `mountPathOf`) is returned
+ * unchanged and is silently dropped downstream by `parseDataMount`, the same
+ * as any other entry jail.ts doesn't recognize.
+ *
+ * Exported at module scope only so tests can assert on it directly (mirrors
+ * `mergeProvenanceFrontmatter` below) — not part of the package's public
+ * surface (src/index.ts does not re-export it).
+ */
+export function toJailDataMount(entry: string): string {
+  const match = /^(.*):(ro|rw)$/.exec(entry);
+  if (!match) return entry;
+  const [, hostPath, access] = match;
+  return `${access}:${windowsToWslPath(hostPath!)}`;
+}
+
+// ---------------------------------------------------------------------------
+// S5 T26 (W2): full execution script assembly. Not part of the package's
+// public surface — exported at module scope only so tests can assert on its
+// string content directly (mirrors `mergeProvenanceFrontmatter` below), the
+// intended way to cover the S5 wiring (tunnel splice, lockfile-gated
+// dependency provisioning, unshare-net) without a live WSL2/bwrap host.
+// ---------------------------------------------------------------------------
+
+export interface BuildExecutionScriptOpts {
+  /** Script-side selective credential injection fragments (S3 ruling 2). */
+  injectionScript: InjectionScriptLines;
+  /** PI_CODING_AGENT_DIR — nested inside clonePath (S0 bwrap constraint). */
+  workerDir: string;
+  /** Already-resolved models.json body — baseUrl is already concrete (the in-jail loopback), no {{WIN_HOST}} left to substitute. */
+  modelsJsonContent: string;
+  /** Backend fingerprint probe lines (S3 ruling 8). */
+  fingerprintLines: string[];
+  /** WSL2 path to the run dir — PI_LOG and the tunnel's scripts/socket/log all live here. */
+  runDirWsl: string;
+  /** WSL2 path to the ephemeral clone — the lockfile-gated npm ci/rebuild target. */
+  clonePath: string;
+  /** The bwrap argv from `buildJailArgs` (caller appends the worker invocation after it). */
+  jailArgv: string[];
+  /** Worker command (e.g. 'pi'). */
+  workerCmd: string;
+  /** Worker argv (e.g. ['-p', '--mode', 'json', ...]). */
+  workerArgs: string[];
+  /** Tunnel bash line groups from `buildTunnelBashLines` (T26/D21). */
+  tunnelBash: TunnelBashLines;
+  /** Worker watchdog timeout, in seconds. */
+  workerTimeoutSecs: number;
+}
+
+/**
+ * Build the full worker execution script text (S5 T26 integration). Pure and
+ * synchronous — assembles the exact bash script `runDispatch()` hands to
+ * `execViaWsl2` from already-resolved inputs only (no I/O, no WSL2/bwrap
+ * access of its own).
+ *
+ * Section order:
+ *   1. shebang / `set -euo pipefail` / PATH export (non-interactive shells skip .bashrc)
+ *   2. selective credential injection (S3 ruling 2): existence checks, then exports
+ *   3. PI_CODING_AGENT_DIR + models.json heredoc (baseUrl is already resolved by
+ *      the caller — the in-jail loopback for the tunnel path — so no
+ *      {{WIN_HOST}} substitution runs here any more; the tunnel's own target
+ *      resolution is a separate, earlier step in runDispatch())
+ *   4. backend fingerprint probe (S3 ruling 8, best-effort, never gating)
+ *   5. tunnel preJailLines (T26/D21): stage forwarder.js/relay.js, start the
+ *      host-side forwarder, export HTTP_PROXY/HTTPS_PROXY for the worker's own
+ *      bash tools
+ *   6. lockfile-gated PRE-bwrap `npm ci --ignore-scripts` (s5-rulings.md ruling
+ *      2; Linux-side, same platform as the jail — never Windows-side, which
+ *      would fetch the wrong platform binaries)
+ *   7. the bwrap invocation itself, now wrapping a `bash -c` inner script
+ *      (rather than a bare worker command) so the in-jail relay can start/stop
+ *      around the worker: inJailPrefix (bring up lo, start the relay, `npm
+ *      rebuild` under containment when a lockfile is present) -> the worker
+ *      command -> capture its exit code -> inJailSuffix (kill the relay) ->
+ *      re-exit with that captured code, so a `timeout`-imposed 124 (or any
+ *      other real worker exit code) still reaches the caller unchanged
+ *      through the extra shell layer
+ *   8. capture the outer bwrap/timeout pipeline's own exit code (guarded by an
+ *      if/else rather than a bare `$?` — under `set -e`+`pipefail`, a bare
+ *      `$?` capture on the line right after a failing pipeline never runs,
+ *      since the shell would already have aborted) and tear down the
+ *      host-side forwarder (tunnel postJailLines) UNCONDITIONALLY before the
+ *      script exits — nothing else ever reaps that process, since it runs
+ *      outside bwrap and `--die-with-parent` does not reach it
+ */
+export function buildExecutionScript(opts: BuildExecutionScriptOpts): string {
+  const {
+    injectionScript,
+    workerDir,
+    modelsJsonContent,
+    fingerprintLines,
+    runDirWsl,
+    clonePath,
+    jailArgv,
+    workerCmd,
+    workerArgs,
+    tunnelBash,
+    workerTimeoutSecs,
+  } = opts;
+
+  const lockfilePath = `${clonePath}/package-lock.json`;
+
+  // Runs INSIDE bwrap via `bash -c` — built as one atomic shQuote'd argv
+  // element below, so any single quotes tunnel.ts's own lines embed (e.g.
+  // `node '<path>' '<arg>' ...`) are escaped exactly once, at the outermost
+  // layer, and survive intact.
+  const innerScriptLines = [
+    ...tunnelBash.inJailPrefix,
+    `if [ -f ${shQuote(lockfilePath)} ]; then`,
+    `  cd ${shQuote(clonePath)} && npm rebuild 2>&1 && cd - > /dev/null || true`,
+    'fi',
+    [workerCmd, ...workerArgs].map(shQuote).join(' '),
+    'EXIT_CODE=$?',
+    ...tunnelBash.inJailSuffix,
+    'exit $EXIT_CODE',
+  ].join('\n');
+
+  const bwrapCommand = [...jailArgv, 'bash', '-c', innerScriptLines].map(shQuote).join(' ');
+
+  return [
+    '#!/usr/bin/env bash',
+    'set -euo pipefail',
+    '',
+    '# Non-interactive shells skip .bashrc; ensure npm-global and local bins are reachable',
+    'export PATH="$HOME/.npm-global-wsl/bin:$HOME/.local/bin:$PATH"',
+    '',
+    '# Selective credential injection (S3 ruling 2): existence checks first (early',
+    '# exit with CREDENTIAL_NOT_CONFIGURED on a missing cred), then export only the',
+    '# resolved backend key + granted profile vars, then HO vars literals.',
+    ...injectionScript.existenceCheckLines,
+    ...injectionScript.exportLines,
+    ...injectionScript.varsExportLines,
+    '',
+    `export PI_CODING_AGENT_DIR=${shQuote(workerDir)}`,
+    'export PI_OFFLINE=1',
+    'mkdir -p "$PI_CODING_AGENT_DIR"',
+    '',
+    `cat <<'DISPATCH_MODELS_JSON_EOF' > "$PI_CODING_AGENT_DIR/models.json"`,
+    modelsJsonContent,
+    'DISPATCH_MODELS_JSON_EOF',
+    '',
+    ...fingerprintLines,
+    '',
+    ...tunnelBash.preJailLines,
+    '',
+    `PI_LOG=${shQuote(`${runDirWsl}/pi-output.log`)}`,
+    `WORKER_TIMEOUT_SECS=${workerTimeoutSecs}`,
+    '',
+    '# Lockfile-gated dependency provisioning (s5-rulings.md ruling 2): npm ci',
+    '# --ignore-scripts PRE-bwrap on the Linux side (same platform as the jail —',
+    '# never Windows-side, wrong platform binaries); lifecycle scripts stay',
+    '# disabled here and run instead under containment (see the `npm rebuild`',
+    '# line inside the bwrap inner script above/below). No lockfile -> no',
+    '# provisioning step at all.',
+    `if [ -f ${shQuote(lockfilePath)} ]; then`,
+    `  cd ${shQuote(clonePath)}`,
+    '  npm ci --ignore-scripts 2>&1 || true',
+    '  cd -',
+    'fi',
+    '',
+    `if timeout --signal=TERM --kill-after=30s "$WORKER_TIMEOUT_SECS" ${bwrapCommand} < /dev/null 2>&1 | tee "$PI_LOG"; then`,
+    '  DISPATCH_EXIT_CODE=0',
+    'else',
+    '  DISPATCH_EXIT_CODE=$?',
+    'fi',
+    '',
+    ...tunnelBash.postJailLines,
+    '',
+    'exit "$DISPATCH_EXIT_CODE"',
+    '',
+  ].join('\n');
 }
 
 // ---------------------------------------------------------------------------
