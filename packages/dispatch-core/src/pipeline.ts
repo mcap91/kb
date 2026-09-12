@@ -388,7 +388,9 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
     // infrastructure, not worker output, and must never appear in
     // enumerate/delivery). web:true widens the forwarder's own destination
     // policy (s5-rulings.md ruling 4) — the flag itself is the grant.
-    const tunnelSocketWsl = `${runDirWsl}/${TUNNEL_SOCKET_NAME}`;
+    // Socket MUST be on ext4 — DrvFS (/mnt/c/...) returns ENOTSUP on AF_UNIX.
+    // clonePath is always ext4 (~/.kb-dispatch/clones/RUN-xxx/).
+    const tunnelSocketWsl = `${clonePath}/${TUNNEL_SOCKET_NAME}`;
     const relayScriptWsl = `${runDirWsl}/relay.js`;
     const tunnelConfig: TunnelConfig = {
       socketPath: tunnelSocketWsl,
