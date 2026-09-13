@@ -59,7 +59,9 @@ export type DispatchErrorCode =
   | 'CONTEXT_BUDGET_EXCEEDED'
   | 'BAD_DATA_MOUNT'
   // --- v2 required enforcement (PLN-0004 S5) ---
-  | 'NO_ISOLATION_ROUTE';
+  | 'NO_ISOLATION_ROUTE'
+  // --- v2 structured review response header (PLN-0004 S6a, ruling 3) ---
+  | 'REVIEW_PARSE_FAILED';
 
 /**
  * Discriminated union result type for dispatch-core operations.

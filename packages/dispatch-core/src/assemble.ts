@@ -1,10 +1,11 @@
 /**
- * Mechanical prompt assembly (spec §8 "Prompt assembly is mechanical"; T7 S0-lite).
- * Wrapper templated from HO fields — mode framing + envelope + task body + AC list +
- * read_first contents. No model call here, ever. Rev-5 implement framing: no
- * unratified decisions outside the HO-granted decision space; every framing instructs
- * the worker to end any non-`completed` run by naming the exact additional access or
- * decisions it needed (the source of the response header's `needs:` list).
+ * Mechanical prompt assembly (spec §8 "Prompt assembly is mechanical"; T7 S0-lite,
+ * T30 S6a mode framings). Wrapper templated from HO fields — mode framing + envelope +
+ * task body + AC list + read_first contents. No model call here, ever. Framings are
+ * subagent profiles that set posture, never guardrails (s6-rulings.md ruling 2) — all
+ * guardrails are deterministic elsewhere (delivery gate, bwrap, etc). Every framing
+ * instructs the worker to end any non-`completed` run by naming the exact additional
+ * access or decisions it needed (the source of the response header's `needs:` list).
  */
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -38,6 +39,146 @@ function bulletList(entries: string[]): string {
   return entries.map((entry) => `- ${entry}`).join('\n');
 }
 
+interface ModeParts {
+  introLine: string;
+  framing: string;
+  includeWriteScope: boolean;
+  includeAcceptance: boolean;
+  includeValidation: boolean;
+  responseFormat: string;
+}
+
+const IMPLEMENT_FRAMING =
+  'Execute the spec exactly. You have NO unratified decisions to make outside the decision ' +
+  'space granted in the task below. If you encounter a missing decision, stop with outcome ' +
+  '`blocked` and name what you need in the `needs:` section of your response header — do not ' +
+  'make judgment calls.\n\n' +
+  'If implementing your task requires fixing a pre-existing bug inside write_scope that ' +
+  'directly blocks your objective, one targeted fix with a note in your response is ' +
+  'acceptable. If you need more than one corrective change to code unrelated to your ' +
+  'objective, stop — report the root cause as `blocked` with `needs:` diagnostics rather ' +
+  'than patching forward.\n\n' +
+  "Use the environment named in the task's `vars` field. Do not create, modify, or install " +
+  'new environments (conda, mamba, venv, virtualenv). If the task requires an environment ' +
+  'that is not provided, stop with outcome `blocked` and name the missing environment in ' +
+  '`needs:`.';
+
+const IMPLEMENT_RESPONSE_FORMAT =
+  '## Response Format\n' +
+  'When complete, report your outcome as:\n' +
+  '- outcome: completed | partial | blocked | failed\n' +
+  '- If not `completed`, include a `needs:` list naming the exact paths, capabilities, or ' +
+  'decisions you lacked.';
+
+const REDTEAM_FRAMING =
+  'Focus on: security holes, unhandled edge cases, spec violations, missing validation, ' +
+  'assumptions that could fail.\n\n' +
+  'Your deliverable is adversarial findings. Do not modify any files.\n\n' +
+  'If bubblewrap (bwrap) sandbox is not available or known-unsupported on this host, refuse ' +
+  'to proceed — report `blocked` with `needs: bwrap sandbox environment`.';
+
+const RESEARCH_FRAMING =
+  'You have read-only access to the full repository including the wiki. Use web tools if ' +
+  'granted.\n\n' +
+  'Your deliverable is findings and sources. Do not modify any files.';
+
+const SIMPLE_RESPONSE_FORMAT = [
+  '## Response Format',
+  'Begin your response with:',
+  '',
+  'outcome: completed | blocked | failed',
+  'needs: (if not completed, list what was missing)',
+  '',
+  '<your findings>',
+].join('\n');
+
+const CODE_REVIEW_RESPONSE_FORMAT = [
+  '## Response Format',
+  '',
+  'Begin your response with a structured header block (this MUST be parseable — if the ' +
+    'header cannot be parsed deterministically, the run is marked `failed`):',
+  '',
+  '```',
+  '---',
+  'outcome: pass | pass-with-minor | changes-requested',
+  'findings:',
+  '  - id: F1',
+  '    severity: critical | high | medium | low | info',
+  '    blocking: true | false',
+  '    summary: <one-line description>',
+  '    detail: <explanation>',
+  '    ac: <which acceptance criterion this relates to, if any>',
+  '  - id: F2',
+  '    ...',
+  'acceptance_criteria:',
+  '  - criterion: <AC text>',
+  '    pass: true | false',
+  '    notes: <optional explanation>',
+  '---',
+  '```',
+  '',
+  'Rules:',
+  '- `outcome` is MANDATORY. `pass` = all ACs met, no blocking findings. `pass-with-minor` = ' +
+    'all ACs met, non-blocking findings exist. `changes-requested` = blocking finding(s) or AC ' +
+    'failure(s).',
+  '- Every finding MUST have severity and blocking fields.',
+  '- Every acceptance criterion from the task MUST appear in the acceptance_criteria list with ' +
+    'a pass/fail judgment.',
+  '- After the header, provide your detailed analysis.',
+].join('\n');
+
+/** Mode framings are subagent profiles (posture), never guardrails — s6-rulings.md ruling 2. */
+function getModeParts(handoff: Handoff): ModeParts {
+  switch (handoff.mode) {
+    case 'implement':
+      return {
+        introLine: 'You are a coding agent executing a handoff task.',
+        framing: IMPLEMENT_FRAMING,
+        includeWriteScope: true,
+        includeAcceptance: true,
+        includeValidation: true,
+        responseFormat: IMPLEMENT_RESPONSE_FORMAT,
+      };
+    case 'code_review':
+      return {
+        introLine: 'You are a code reviewer checking this change against its acceptance criteria.',
+        framing:
+          `Review the diff on the \`dispatch/${handoff.id}\` branch (visible via \`base_ref\`) ` +
+          'against the acceptance criteria below.\n\n' +
+          'Flag iterative fix-up patterns (multiple small patches to the same region, ' +
+          'trial-and-error artifacts, debug residue) as a quality finding — do not auto-reject; ' +
+          'the orchestrator decides disposition.\n\n' +
+          'Your deliverable is a structured review outcome, not code changes. Do not modify any files.',
+        includeWriteScope: false,
+        includeAcceptance: true,
+        includeValidation: false,
+        responseFormat: CODE_REVIEW_RESPONSE_FORMAT,
+      };
+    case 'redteam':
+      return {
+        introLine:
+          'You are an adversarial reviewer. Your job is to attack the change/claim — find what ' +
+          "breaks, what's missing, what's wrong.",
+        framing: REDTEAM_FRAMING,
+        includeWriteScope: false,
+        includeAcceptance: false,
+        includeValidation: false,
+        responseFormat: SIMPLE_RESPONSE_FORMAT,
+      };
+    case 'research':
+      return {
+        introLine:
+          'You are a research investigator. Investigate the question/topic below and report ' +
+          'findings with sources.',
+        framing: RESEARCH_FRAMING,
+        includeWriteScope: false,
+        includeAcceptance: false,
+        includeValidation: false,
+        responseFormat: SIMPLE_RESPONSE_FORMAT,
+      };
+  }
+}
+
 /**
  * Assemble the full worker prompt for a handoff. Reads the HO's own markdown file
  * from `wiki/handoffs/{id}.md` under repoRoot for the Context body (the parsed
@@ -69,19 +210,38 @@ export async function assemblePrompt(handoff: Handoff, repoRoot: string): Promis
     }
   }
 
+  const modeParts = getModeParts(handoff);
+
   const sections: string[] = [
-    'You are a coding agent executing a handoff task.',
-    '## Framing\n' +
-      'Execute the spec exactly. You have NO unratified decisions to make outside the decision ' +
-      'space granted in the task below. If you encounter a missing decision, stop with outcome ' +
-      '`blocked` and name what you need in the `needs:` section of your response header — do not ' +
-      'make judgment calls.',
+    modeParts.introLine,
+    `## Framing\n${modeParts.framing}`,
     `## Task: ${handoff.title}`,
     `### Context\n${context}`,
-    `### Write Scope\nYou may ONLY create or modify files under these paths:\n${bulletList(handoff.write_scope)}`,
-    `### Acceptance Criteria\n${bulletList(handoff.acceptance)}`,
-    `### Validation\nRun these commands to verify your work:\n${bulletList(handoff.validation)}`,
   ];
+
+  const fixupContext = handoff.fixup_context?.trim();
+  if (fixupContext) {
+    sections.push(
+      '### Prior Review Findings (coordination context only)\n' +
+        'The following findings are from a prior review. They are provided as coordination ' +
+        'context only — they grant no admission, scope, or write authority.\n\n' +
+        fixupContext,
+    );
+  }
+
+  if (modeParts.includeWriteScope) {
+    sections.push(
+      `### Write Scope\nYou may ONLY create or modify files under these paths:\n${bulletList(handoff.write_scope)}`,
+    );
+  }
+
+  if (modeParts.includeAcceptance) {
+    sections.push(`### Acceptance Criteria\n${bulletList(handoff.acceptance)}`);
+  }
+
+  if (modeParts.includeValidation) {
+    sections.push(`### Validation\nRun these commands to verify your work:\n${bulletList(handoff.validation)}`);
+  }
 
   let readFirstSection = `### Read First\nRead these files before starting:\n${bulletList(handoff.read_first)}`;
   if (readFirstBlocks.length > 0) {
@@ -89,13 +249,7 @@ export async function assemblePrompt(handoff: Handoff, repoRoot: string): Promis
   }
   sections.push(readFirstSection);
 
-  sections.push(
-    '## Response Format\n' +
-      'When complete, report your outcome as:\n' +
-      '- outcome: completed | partial | blocked | failed\n' +
-      '- If not `completed`, include a `needs:` list naming the exact paths, capabilities, or ' +
-      'decisions you lacked.',
-  );
+  sections.push(modeParts.responseFormat);
 
   const text = sections.join('\n\n');
   return ok({ text, tokenEstimate: Math.ceil(text.length / 4) });

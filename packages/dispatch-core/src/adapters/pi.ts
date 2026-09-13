@@ -68,6 +68,16 @@ export interface PiResult {
    * `[]` when no such section is present.
    */
   needs: string[];
+  /**
+   * Full accumulated `text_delta` content across the stream, in stream order
+   * — the worker's raw response text. `''` when the stream carried no
+   * text_delta events (e.g. the empty-stream fallback). S6a's structured
+   * review-header parser (`response-header.ts`'s `parseReviewHeader`) reads
+   * from this rather than re-deriving the same event walk itself, keeping
+   * the JSON-lines accumulation in exactly one place (this adapter, D10
+   * facts-only).
+   */
+  accumulatedText: string;
 }
 
 // New v2 error code produced by this module; will be merged into the shared
@@ -205,7 +215,7 @@ export function parsePiOutput(stdout: string): DispatchResult<PiResult> {
   }
 
   if (events.length === 0) {
-    return ok({ outcome: 'failed', stopReason: 'empty_stream', hasAgentEnd: false, usage: { totalTokens: 0, costUsd: 0 }, events: [], needs: [] });
+    return ok({ outcome: 'failed', stopReason: 'empty_stream', hasAgentEnd: false, usage: { totalTokens: 0, costUsd: 0 }, events: [], needs: [], accumulatedText: '' });
   }
 
   let totalTokens = 0;
@@ -261,5 +271,5 @@ export function parsePiOutput(stdout: string): DispatchResult<PiResult> {
 
   const needs = extractNeeds(accumulatedText);
 
-  return ok({ outcome, stopReason, hasAgentEnd, usage: { totalTokens, costUsd }, events, needs });
+  return ok({ outcome, stopReason, hasAgentEnd, usage: { totalTokens, costUsd }, events, needs, accumulatedText });
 }
