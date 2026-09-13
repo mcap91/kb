@@ -275,3 +275,19 @@ export {
 
 export type { InitDispatchOpts, InitDispatchResult } from './init-dispatch.js';
 export { initDispatch } from './init-dispatch.js';
+
+// ---------------------------------------------------------------------------
+// V2 required enforcement — tier resolution + tunnel + jail S5 (PLN-0004 S5)
+// ---------------------------------------------------------------------------
+
+// Tier resolution (§11 platform matrix; §7.11 no_isolation_route)
+export type { HostTier, TierResolution, TierProbeInputs, TierEnvironmentInfo } from './tier.js';
+export { resolveTier, checkIsolationRoute, buildTierEnvironmentInfo } from './tier.js';
+
+// Network egress tunnel (§11 D21; T26)
+export type { TunnelConfig, TunnelScripts, TunnelBashLines } from './tunnel.js';
+export { buildTunnelScripts, buildTunnelBashLines, TUNNEL_RELAY_PORT, TUNNEL_SOCKET_NAME } from './tunnel.js';
+
+// jail.ts S5 exports (T15/T25 — buildJailArgs already exported above at S0)
+export type { WikiShape, ParsedDataMount } from './jail.js';
+export { classifyWikiShape, parseDataMount } from './jail.js';
