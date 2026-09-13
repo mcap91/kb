@@ -291,3 +291,13 @@ export { buildTunnelScripts, buildTunnelBashLines, TUNNEL_RELAY_PORT, TUNNEL_SOC
 // jail.ts S5 exports (T15/T25 — buildJailArgs already exported above at S0)
 export type { WikiShape, ParsedDataMount } from './jail.js';
 export { classifyWikiShape, parseDataMount } from './jail.js';
+
+// ---------------------------------------------------------------------------
+// Structured review response header (PLN-0004 S6a, ruling 3 —
+// execution/s6-rulings.md): deterministic parse-or-fail contract for a
+// code_review worker's response header (outcome enum + per-finding
+// severity/blocking + per-AC pass/fail).
+// ---------------------------------------------------------------------------
+
+export type { ReviewOutcome, FindingSeverity, ReviewFinding, ACResult, StructuredReviewResult } from './response-header.js';
+export { parseReviewHeader } from './response-header.js';

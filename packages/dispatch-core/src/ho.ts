@@ -39,6 +39,7 @@ export interface Handoff {
   data_mounts: string[];
   read_first: string[];
   vars: string[]; // Array of "KEY=value" strings; non-secret literal env for the worker
+  fixup_context?: string; // Prior review findings injected verbatim as coordination context (s6-rulings.md ruling 3)
   acceptance: string[];
   validation: string[];
   status: string;
@@ -222,6 +223,10 @@ export function parseHandoffContent(content: string, filename: string): Dispatch
     return fail('Handoff vars must be an array of "KEY=value" strings.');
   }
 
+  if (raw.fixup_context !== undefined && raw.fixup_context !== null && typeof raw.fixup_context !== 'string') {
+    return fail('Handoff fixup_context must be a string.');
+  }
+
   const handoff: Handoff = {
     id,
     title,
@@ -238,6 +243,7 @@ export function parseHandoffContent(content: string, filename: string): Dispatch
     status,
   };
 
+  if (typeof raw.fixup_context === 'string') handoff.fixup_context = raw.fixup_context;
   if (typeof raw.run_id === 'string') handoff.run_id = raw.run_id;
   if (typeof raw.agent === 'string') handoff.agent = raw.agent;
   if (typeof raw.model === 'string') handoff.model = raw.model;

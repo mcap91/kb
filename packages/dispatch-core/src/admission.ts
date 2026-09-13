@@ -247,10 +247,17 @@ export async function checkAdmission(handoff: Handoff, repoRoot: string): Promis
 
   let baseSha: string;
   try {
-    const { stdout } = await execFile('git', ['rev-parse', 'HEAD'], { cwd: repoRoot });
+    const args = handoff.base_ref !== null ? ['rev-parse', '--verify', handoff.base_ref] : ['rev-parse', 'HEAD'];
+    const { stdout } = await execFile('git', args, { cwd: repoRoot });
     baseSha = stdout.trim();
   } catch (err) {
-    return fail('ADMISSION_FAILED', `Failed to resolve HEAD via "git rev-parse HEAD" in ${repoRoot}.`, err);
+    return fail(
+      'ADMISSION_FAILED',
+      handoff.base_ref !== null
+        ? `Failed to resolve base_ref "${handoff.base_ref}" via "git rev-parse --verify" in ${repoRoot}.`
+        : `Failed to resolve HEAD via "git rev-parse HEAD" in ${repoRoot}.`,
+      err,
+    );
   }
 
   return ok({ handoff, repoRoot, baseSha });

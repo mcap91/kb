@@ -19,6 +19,7 @@ import type { DispatchResult } from './errors.js';
 import { fail, ok } from './errors.js';
 import type { DeliveryOutcome } from './delivery.js';
 import type { BackendFingerprint } from './model-registry.js';
+import type { StructuredReviewResult } from './response-header.js';
 
 export interface CaptureOpts {
   /** Windows path to the run dir */
@@ -45,6 +46,13 @@ export interface CaptureOpts {
   piVersion?: string;
   /** Best-effort backend fingerprint — host/model always present when probed, serverVersion null when the backend has no version endpoint (S3 ruling 8). */
   backendFingerprint?: BackendFingerprint;
+  /**
+   * Parsed structured review header (S6a ruling 3) for `code_review` mode
+   * responses. Rendered as a `## Structured Review` section when present.
+   * Absent for non-review modes, or when the header failed to parse
+   * (pipeline logs a warning; capture proceeds without this section).
+   */
+  reviewResult?: StructuredReviewResult;
 }
 
 export interface CaptureResult {
@@ -133,6 +141,39 @@ function formatUsageSection(piResult: CaptureOpts['piResult']): string {
 }
 
 /**
+ * Render the `## Structured Review` section (S6a ruling 3) for a
+ * `code_review` mode response carrying a deterministically-parsed
+ * `StructuredReviewResult`. Only called when `opts.reviewResult` is present
+ * — the outcome enum and per-finding/per-AC tables are rendered verbatim
+ * from the already-validated parse, never re-derived from prose.
+ */
+function formatStructuredReviewSection(review: StructuredReviewResult): string[] {
+  const lines: string[] = ['## Structured Review', '', `**Outcome:** ${review.outcome}`, '', '### Findings'];
+
+  if (review.findings.length === 0) {
+    lines.push('(none)');
+  } else {
+    lines.push('| ID | Severity | Blocking | Summary |', '|----|----------|----------|---------|');
+    for (const finding of review.findings) {
+      lines.push(`| ${finding.id} | ${finding.severity} | ${finding.blocking ? 'yes' : 'no'} | ${finding.summary} |`);
+    }
+  }
+
+  lines.push('', '### Acceptance Criteria');
+  if (review.acceptanceCriteria.length === 0) {
+    lines.push('(none)');
+  } else {
+    lines.push('| Criterion | Pass | Notes |', '|-----------|------|-------|');
+    for (const ac of review.acceptanceCriteria) {
+      lines.push(`| ${ac.criterion} | ${ac.pass ? 'yes' : 'no'} | ${ac.notes ?? ''} |`);
+    }
+  }
+  lines.push('');
+
+  return lines;
+}
+
+/**
  * Serialize a `BackendFingerprint` for the `backend_fingerprint` provenance
  * field. host/model are written even when `serverVersion` is null (no
  * version endpoint for this backend kind, or the probe failed) — losing
@@ -205,6 +246,9 @@ export async function writeResponseDoc(opts: CaptureOpts): Promise<DispatchResul
     formatUsageSection(piResult),
     '',
   );
+  if (opts.reviewResult) {
+    bodyLines.push(...formatStructuredReviewSection(opts.reviewResult));
+  }
   const body = bodyLines.join('\n');
 
   const responseContent = `${frontmatter}\n${body}`;

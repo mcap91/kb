@@ -71,6 +71,7 @@ import {
   type TunnelBashLines,
 } from './tunnel.js';
 import { resolveTier, checkIsolationRoute, type TierProbeInputs } from './tier.js';
+import { parseReviewHeader, type StructuredReviewResult } from './response-header.js';
 
 const WORKER_TIMEOUT_SECS = 1800;
 const WORKER_TIMEOUT_MS = WORKER_TIMEOUT_SECS * 1000;
@@ -109,6 +110,14 @@ export interface DispatchResult2 {
   delivery: DeliveryOutcome;
   responsePath: string;
   runDir: string;
+  /**
+   * Parsed structured review header (S6a ruling 3) — present only for a
+   * `code_review` mode run whose worker response header parsed
+   * deterministically. Absent (never a pipeline failure) when the mode isn't
+   * `code_review` or the header failed to parse; a parse failure is
+   * informational for the orchestrator, logged verbose-only below.
+   */
+  reviewResult?: StructuredReviewResult;
 }
 
 /** Single-quote a value for safe embedding in generated bash (mirrors delivery.ts's private helper). */
@@ -136,13 +145,6 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
   logVerbose(verbose, `running admission checks for ${handoff.id}`);
   const admission = await checkAdmission(handoff, dir);
   if (!admission.ok) return admission;
-
-  // 2b. Mode-execution guard — replaces the restriction ho.ts used to enforce at
-  // parse time (removed at S4). Admission validates the envelope for all four §6
-  // modes; only `implement` has an execution path wired up before S6.
-  if (handoff.mode !== 'implement') {
-    return fail('BAD_RECORD', `mode ${handoff.mode} execution not yet supported (S6); handoff ${handoff.id}.`);
-  }
 
   // 3. Resolve model (repo-local two-table config — S3 ruling 1; supersedes the S0 seed registry)
   logVerbose(verbose, `resolving model "${opts.model}" on backend "${opts.backend}"`);
@@ -243,6 +245,9 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
     isNativeLinux: process.platform === 'linux',
   };
   const tierResolution = resolveTier(tierProbes);
+  // S6a: redteam fail-closed — all modes require a valid isolation tier
+  // (spec §7.11 + s6-rulings.md). The v1 agent-name-string check in
+  // environment.ts:406-426 is retired; tier resolution is capability-keyed.
   const tierCheck = checkIsolationRoute(tierResolution);
   if (!tierCheck.ok) return tierCheck;
   const { isolationBackend } = tierCheck.data;
@@ -507,108 +512,175 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
     }
     logVerbose(verbose, `pi outcome: ${piParsed.data.outcome}`);
 
-    // 16. Enumerate changes. The injected-value scan fragment (S3 ruling 2 /
-    // s3-rulings.md freeze correction — replaces the removed pattern-based
-    // scanSecrets() leg) is spliced onto the END of this SAME script: it
-    // reuses the enumerate script's own `$GIT`/`$CLONE_PATH` shell scope to
-    // re-diff into a throwaway `$DIFF_FILE` and grep it for each granted
-    // credential's literal value, entirely WSL2-side (one exec round trip,
-    // no diff content ever written to Windows disk for this check). Only var
-    // NAMES (`SECRET_HIT=<VAR_NAME>`) cross back into this stdout — the
-    // resolved values themselves never reach Windows process memory or this
-    // script's own text. Every injection scanned here already passed the
-    // execution script's existenceCheckLines earlier in this same run (step
-    // 13/14), so the grep is guaranteed to find a value under `set -e`.
-    logVerbose(verbose, 'enumerating changes in the clone');
-    const enumerateScript = buildEnumerateScript(clonePath);
-    const valueScanLines = buildInjectedValueScanFragment(credResult.data);
-    const enumerateScriptContent = valueScanLines.length === 0
-      ? enumerateScript.scriptContent
-      : [
-          enumerateScript.scriptContent,
-          'DIFF_FILE=$(mktemp)',
-          '$GIT diff HEAD > "$DIFF_FILE" 2>/dev/null || true',
-          ...valueScanLines,
-          'rm -f "$DIFF_FILE"',
-        ].join('\n');
-    const enumerateExec = await execViaWsl2({
-      runDir,
-      scriptContent: enumerateScriptContent,
-      scriptName: enumerateScript.scriptName,
-      timeoutMs: 120_000,
-    });
-    if (!enumerateExec.ok) return enumerateExec;
-    if (enumerateExec.data.exitCode !== 0) {
-      return fail(
-        'PIPELINE_FAILED',
-        `Enumerate script exited with code ${enumerateExec.data.exitCode}.`,
-        enumerateExec.data,
-      );
-    }
-    const enumerated = parseEnumerateOutput(enumerateExec.data.stdout);
-    const secretHits = parseInjectedValueScanOutput(enumerateExec.data.stdout);
+    // 16. Enumerate changes / advisory delivery branch (S6a T30,
+    // execution/s6-rulings.md gate item: "advisory-mode file mutations
+    // discarded with a warning"). Only `implement` mode lands a
+    // scope-checked commit; code_review/redteam/research are advisory —
+    // their §6 envelope grants no write authority at all (their
+    // assemble.ts framings each instruct "do not modify any files"), and
+    // the worker's own findings/review ARE the deliverable, captured below
+    // as the response doc rather than a git delta. `isWorkerInfra` is
+    // shared by both branches: the worker's own `.pi-agent/` config dir must
+    // never count as a "mutation" in either one (WK-0075).
     const isWorkerInfra = (p: string): boolean =>
       WORKER_INFRA_PREFIXES.some(pfx => p === pfx || p.startsWith(pfx + '/'));
-    const allChangedFiles = [
-      ...enumerated.changedFiles.filter(f => !isWorkerInfra(f)),
-      ...enumerated.untrackedFiles.filter(f => !isWorkerInfra(f)),
-    ];
-
-    // 17. Check write scope, check the injected-value scan hits captured
-    // above — refusals are DATA (a DeliveryOutcome variant), not a
-    // DispatchResult failure; the pipeline ran correctly. (S3: the
-    // deterministic injected-value scan replaces the removed pattern-based
-    // scanSecrets() leg — it checks only the exact values the worker was
-    // granted, not heuristic patterns, so it is fully deterministic.)
-    const scopeCheck = checkWriteScope(allChangedFiles, handoff.write_scope);
 
     let delivery: DeliveryOutcome;
 
-    if (!scopeCheck.ok) {
-      const quarantinePath = join(runDir, 'quarantine.diff');
-      try {
-        await writeFile(quarantinePath, enumerated.diff, 'utf8');
-      } catch (err) {
-        return fail('CAPTURE_FAILED', `Failed to write quarantine diff: ${quarantinePath}`, err);
-      }
-      logVerbose(verbose, `refused: out-of-scope paths ${scopeCheck.offendingPaths.join(', ')}`);
-      delivery = { status: 'refused_out_of_scope', offendingPaths: scopeCheck.offendingPaths, quarantinePath };
-    } else if (secretHits.length > 0) {
-      const quarantinePath = join(runDir, 'quarantine.diff');
-      try {
-        await writeFile(quarantinePath, enumerated.diff, 'utf8');
-      } catch (err) {
-        return fail('CAPTURE_FAILED', `Failed to write quarantine diff: ${quarantinePath}`, err);
-      }
-      logVerbose(verbose, `refused: granted credential value(s) found in diff: ${secretHits.join(', ')}`);
-      delivery = { status: 'secret_in_diff', patterns: secretHits, quarantinePath };
-    } else {
-      // 18. Deliver (clean: land the scope-checked commit)
-      logVerbose(verbose, 'delivering scope-checked commit');
-      const deliveryScript = buildDeliveryScript({
-        clonePath,
-        motherRepoWsl: windowsToWslPath(dir),
-        handoffId: handoff.id,
-        baseSha: admission.data.baseSha,
-        excludePrefixes: WORKER_INFRA_PREFIXES,
-      });
-      const deliveryExec = await execViaWsl2({
+    if (handoff.mode === 'implement') {
+      // The injected-value scan fragment (S3 ruling 2 / s3-rulings.md freeze
+      // correction — replaces the removed pattern-based scanSecrets() leg)
+      // is spliced onto the END of this SAME script: it reuses the
+      // enumerate script's own `$GIT`/`$CLONE_PATH` shell scope to re-diff
+      // into a throwaway `$DIFF_FILE` and grep it for each granted
+      // credential's literal value, entirely WSL2-side (one exec round
+      // trip, no diff content ever written to Windows disk for this check).
+      // Only var NAMES (`SECRET_HIT=<VAR_NAME>`) cross back into this
+      // stdout — the resolved values themselves never reach Windows process
+      // memory or this script's own text. Every injection scanned here
+      // already passed the execution script's existenceCheckLines earlier
+      // in this same run (step 13/14), so the grep is guaranteed to find a
+      // value under `set -e`.
+      logVerbose(verbose, 'enumerating changes in the clone');
+      const enumerateScript = buildEnumerateScript(clonePath);
+      const valueScanLines = buildInjectedValueScanFragment(credResult.data);
+      const enumerateScriptContent = valueScanLines.length === 0
+        ? enumerateScript.scriptContent
+        : [
+            enumerateScript.scriptContent,
+            'DIFF_FILE=$(mktemp)',
+            '$GIT diff HEAD > "$DIFF_FILE" 2>/dev/null || true',
+            ...valueScanLines,
+            'rm -f "$DIFF_FILE"',
+          ].join('\n');
+      const enumerateExec = await execViaWsl2({
         runDir,
-        scriptContent: deliveryScript.scriptContent,
-        scriptName: deliveryScript.scriptName,
+        scriptContent: enumerateScriptContent,
+        scriptName: enumerateScript.scriptName,
         timeoutMs: 120_000,
       });
-      if (!deliveryExec.ok) return deliveryExec;
-      if (deliveryExec.data.exitCode !== 0) {
+      if (!enumerateExec.ok) return enumerateExec;
+      if (enumerateExec.data.exitCode !== 0) {
         return fail(
-          'DELIVERY_FAILED',
-          `Delivery script exited with code ${deliveryExec.data.exitCode}.`,
-          deliveryExec.data,
+          'PIPELINE_FAILED',
+          `Enumerate script exited with code ${enumerateExec.data.exitCode}.`,
+          enumerateExec.data,
         );
       }
-      // 19. Parse delivery output
-      delivery = parseDeliveryOutput(deliveryExec.data.stdout);
-      logVerbose(verbose, `delivery outcome: ${delivery.status}`);
+      const enumerated = parseEnumerateOutput(enumerateExec.data.stdout);
+      const secretHits = parseInjectedValueScanOutput(enumerateExec.data.stdout);
+      const allChangedFiles = [
+        ...enumerated.changedFiles.filter(f => !isWorkerInfra(f)),
+        ...enumerated.untrackedFiles.filter(f => !isWorkerInfra(f)),
+      ];
+
+      // 17. Check write scope, check the injected-value scan hits captured
+      // above — refusals are DATA (a DeliveryOutcome variant), not a
+      // DispatchResult failure; the pipeline ran correctly. (S3: the
+      // deterministic injected-value scan replaces the removed
+      // pattern-based scanSecrets() leg — it checks only the exact values
+      // the worker was granted, not heuristic patterns, so it is fully
+      // deterministic.)
+      const scopeCheck = checkWriteScope(allChangedFiles, handoff.write_scope);
+
+      if (!scopeCheck.ok) {
+        const quarantinePath = join(runDir, 'quarantine.diff');
+        try {
+          await writeFile(quarantinePath, enumerated.diff, 'utf8');
+        } catch (err) {
+          return fail('CAPTURE_FAILED', `Failed to write quarantine diff: ${quarantinePath}`, err);
+        }
+        logVerbose(verbose, `refused: out-of-scope paths ${scopeCheck.offendingPaths.join(', ')}`);
+        delivery = { status: 'refused_out_of_scope', offendingPaths: scopeCheck.offendingPaths, quarantinePath };
+      } else if (secretHits.length > 0) {
+        const quarantinePath = join(runDir, 'quarantine.diff');
+        try {
+          await writeFile(quarantinePath, enumerated.diff, 'utf8');
+        } catch (err) {
+          return fail('CAPTURE_FAILED', `Failed to write quarantine diff: ${quarantinePath}`, err);
+        }
+        logVerbose(verbose, `refused: granted credential value(s) found in diff: ${secretHits.join(', ')}`);
+        delivery = { status: 'secret_in_diff', patterns: secretHits, quarantinePath };
+      } else {
+        // 18. Deliver (clean: land the scope-checked commit)
+        logVerbose(verbose, 'delivering scope-checked commit');
+        const deliveryScript = buildDeliveryScript({
+          clonePath,
+          motherRepoWsl: windowsToWslPath(dir),
+          handoffId: handoff.id,
+          baseSha: admission.data.baseSha,
+          excludePrefixes: WORKER_INFRA_PREFIXES,
+        });
+        const deliveryExec = await execViaWsl2({
+          runDir,
+          scriptContent: deliveryScript.scriptContent,
+          scriptName: deliveryScript.scriptName,
+          timeoutMs: 120_000,
+        });
+        if (!deliveryExec.ok) return deliveryExec;
+        if (deliveryExec.data.exitCode !== 0) {
+          return fail(
+            'DELIVERY_FAILED',
+            `Delivery script exited with code ${deliveryExec.data.exitCode}.`,
+            deliveryExec.data,
+          );
+        }
+        // 19. Parse delivery output
+        delivery = parseDeliveryOutput(deliveryExec.data.stdout);
+        logVerbose(verbose, `delivery outcome: ${delivery.status}`);
+      }
+    } else {
+      // Advisory path (code_review/redteam/research; spec §8: "response
+      // only, mutations discarded with a warning"). These three modes never
+      // land a commit, so there is no write-scope/secret-scan gate to run —
+      // the enumerate below is best-effort DETECTION only, never a gate:
+      // the ephemeral clone is torn down in `finally` regardless, so a
+      // mutation an advisory worker made anyway never reaches the mother
+      // repo either way. A failed probe (WSL2 exec error or non-zero exit)
+      // never blocks capture — the response doc is this mode's real
+      // deliverable and does not depend on this check.
+      logVerbose(verbose, `mode ${handoff.mode} is advisory — skipping delivery, checking for stray mutations`);
+      const advisoryEnumerateScript = buildEnumerateScript(clonePath);
+      const advisoryEnumerateExec = await execViaWsl2({
+        runDir,
+        scriptContent: advisoryEnumerateScript.scriptContent,
+        scriptName: advisoryEnumerateScript.scriptName,
+        timeoutMs: 120_000,
+      });
+      if (advisoryEnumerateExec.ok && advisoryEnumerateExec.data.exitCode === 0) {
+        const enumResult = parseEnumerateOutput(advisoryEnumerateExec.data.stdout);
+        const mutatedFiles = [
+          ...enumResult.changedFiles.filter(f => !isWorkerInfra(f)),
+          ...enumResult.untrackedFiles.filter(f => !isWorkerInfra(f)),
+        ];
+        if (mutatedFiles.length > 0) {
+          logVerbose(
+            verbose,
+            `warning: advisory-mode worker (${handoff.mode}) modified ${mutatedFiles.length} file(s) — mutations discarded: ${mutatedFiles.join(', ')}`,
+          );
+        }
+      }
+      delivery = { status: 'no_changes' };
+    }
+
+    // 19b. Structured review header (S6a ruling 3) — code_review mode only.
+    // Parsed from the worker's own accumulated response text and threaded
+    // into capture below so `writeResponseDoc` can render the `## Structured
+    // Review` section. Ruling 3's "parses deterministically or the run is
+    // failed" governs the ORCHESTRATOR's downstream merge decision (merge
+    // iff outcome === 'pass'), not this pipeline call: a parse failure here
+    // is informational (logged verbose-only), never a pipeline-level
+    // failure — `reviewResult` simply stays absent, and the response doc
+    // renders without the structured section (the worker's free-form text
+    // is still captured either way).
+    let reviewResult: StructuredReviewResult | undefined;
+    if (handoff.mode === 'code_review' && piParsed.data.accumulatedText) {
+      const reviewParsed = parseReviewHeader(piParsed.data.accumulatedText);
+      if (reviewParsed.ok) {
+        reviewResult = reviewParsed.data;
+      } else {
+        logVerbose(verbose, `warning: review header parse failed: ${reviewParsed.message}`);
+      }
     }
 
     // 20. Capture
@@ -621,6 +693,7 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       isolationBackend,
       needs: piParsed.data.needs,
       credentialsGranted: credResult.data.granted,
+      reviewResult,
       // Resolved-value provenance (S3 ruling 8): the real endpoint the tunnel
       // forwarder was configured to reach — never `model.baseUrl`'s raw
       // {{WIN_HOST}} template, which the old models.json-only sed substitution
@@ -688,6 +761,7 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       delivery,
       responsePath: captureResult.data.responsePath,
       runDir,
+      reviewResult,
     });
   } finally {
     // 21. Remove clone — best-effort; clone.ts's 24h orphan sweep is the
