@@ -147,12 +147,26 @@ async function runWsl(
  * target for probes that don't need an actual git clone (Groups 2-3). Lives
  * under a distinct `.kb-dispatch-test` root — never the real
  * `~/.kb-dispatch/clones` a live operator run would be using concurrently.
+ *
+ * Also pre-creates `.dispatch-out/` under it (S6a W4): every Group 2/3 probe
+ * below calls `buildJailArgs` with S5 options, which now unconditionally
+ * binds `<clonePath>/.dispatch-out` — bwrap refuses to bind a target that
+ * doesn't already exist on disk, so a scratch dir without it would break
+ * every probe in both groups at the bwrap-invocation level, not just a JS
+ * assertion.
  */
 async function createScratchDir(runDir: string, label: string): Promise<string> {
   const dirName = `kb-dispatch-test-${label}-${randomUUID()}`;
   const result = await runWsl(
     runDir,
-    ['#!/bin/bash', 'set -euo pipefail', `DIR="$HOME/.kb-dispatch-test/${dirName}"`, 'mkdir -p "$DIR"', 'echo "$DIR"'].join('\n'),
+    [
+      '#!/bin/bash',
+      'set -euo pipefail',
+      `DIR="$HOME/.kb-dispatch-test/${dirName}"`,
+      'mkdir -p "$DIR"',
+      'mkdir -p "$DIR/.dispatch-out"',
+      'echo "$DIR"',
+    ].join('\n'),
     'mk-scratch.sh',
     30_000,
   );
@@ -205,6 +219,7 @@ describe('buildJailArgs — wiki-shape x mode matrix gap-fill (T25/D19; compleme
       '--tmpfs', '/tmp',
       '--die-with-parent',
       '--bind', clonePath, clonePath,
+      '--bind', `${clonePath}/.dispatch-out`, `${clonePath}/.dispatch-out`,
       '--chdir', clonePath,
       '--',
     ]);
@@ -223,6 +238,7 @@ describe('buildJailArgs — wiki-shape x mode matrix gap-fill (T25/D19; compleme
       '--tmpfs', '/tmp',
       '--die-with-parent',
       '--bind', clonePath, clonePath,
+      '--bind', `${clonePath}/.dispatch-out`, `${clonePath}/.dispatch-out`,
       '--chdir', clonePath,
       '--',
     ]);
@@ -239,6 +255,7 @@ describe('buildJailArgs — wiki-shape x mode matrix gap-fill (T25/D19; compleme
       '--tmpfs', '/tmp',
       '--die-with-parent',
       '--bind', clonePath, clonePath,
+      '--bind', `${clonePath}/.dispatch-out`, `${clonePath}/.dispatch-out`,
       '--ro-bind', motherWikiPath, `${clonePath}/wiki`,
       '--chdir', clonePath,
       '--',

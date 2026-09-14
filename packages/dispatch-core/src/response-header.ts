@@ -1,16 +1,21 @@
 /**
- * Structured review response header parser (PLN-0004 S6a, ruling 3 —
- * `wiki/plans/PLN-0004/execution/s6-rulings.md`). AgentChassis-mirror
- * adoption: the DESIGN of a structured, machine-checkable reviewer verdict is
- * mirrored (ELv2 — design only, never code); this parser is fresh kb code.
+ * Structured review verdict parser (PLN-0004 S6a, ruling 3 —
+ * `wiki/plans/PLN-0004/execution/s6-rulings.md`; re-platformed onto a file
+ * artifact at S6a W4). AgentChassis-mirror adoption: the DESIGN of a
+ * structured, machine-checkable reviewer verdict is mirrored (ELv2 — design
+ * only, never code); this parser is fresh kb code.
  *
- * A `code_review` worker's response begins with a YAML-like header block
- * between `---` delimiters carrying an outcome enum, per-finding
- * severity/blocking, and per-acceptance-criterion pass/fail. Ruling 3's
- * contract: **the header parses deterministically or the run is `failed`** —
- * prose is never authority, and outcome is never inferred from narrative.
- * That is why this module has no fallback path that scans the free-form body
- * for words like "pass" — a header that doesn't parse, or that fails
+ * A `code_review` worker writes its verdict to `.dispatch-out/review.yaml`
+ * (assemble.ts's `CODE_REVIEW_RESPONSE_FORMAT` instructs this) — an outcome
+ * enum, per-finding severity/blocking, and per-acceptance-criterion
+ * pass/fail. Ruling 3's contract: **the file parses deterministically or the
+ * run is `failed`** — chat prose is never authority, and outcome is never
+ * inferred from narrative. W4 sharpens that further: the verdict no longer
+ * lives inside a larger chat response at all, so there is no extraction step
+ * left to get wrong — no `---` delimiters, no code fences, no scan window to
+ * miss because an agentic reviewer narrated before producing it. The
+ * worker's chat response is free-form narrative for the operator; it is
+ * never parsed for control flow. A file that doesn't parse, or that fails
  * cross-field validation, is a hard `REVIEW_PARSE_FAILED`, full stop. The
  * eventual orchestration merge rule (§10) becomes mechanical downstream of
  * this: merge iff `outcome === 'pass'`.
@@ -21,7 +26,6 @@
  * because the schema is small and fixed:
  *
  * ```
- * ---
  * outcome: changes-requested
  * findings:
  *   - id: F1
@@ -34,7 +38,6 @@
  *   - criterion: "AC-1: parses valid header"
  *     pass: true
  *     notes: "optional"
- * ---
  * ```
  */
 import type { DispatchResult } from './errors.js';
@@ -103,48 +106,6 @@ function parseKeyValue(line: string): { key: string; value: string } | null {
     }
   }
   return { key, value };
-}
-
-/**
- * Extracts the lines strictly between the first `---` delimiter (which must
- * appear within the first 5 lines — blank/whitespace lines before it are
- * tolerated, they just count against that budget) and the next `---`.
- * Anything after the closing delimiter (the free-form findings prose) is not
- * this function's concern.
- */
-function extractHeaderBlock(responseText: string): DispatchResult<string[]> {
-  const allLines = responseText.split('\n').map((line) => line.replace(/\r$/, ''));
-
-  const searchWindow = Math.min(5, allLines.length);
-  let startIdx = -1;
-  for (let i = 0; i < searchWindow; i++) {
-    if (allLines[i]!.trim() === '---') {
-      startIdx = i;
-      break;
-    }
-  }
-  if (startIdx === -1) {
-    return fail(
-      'REVIEW_PARSE_FAILED',
-      `No opening '---' header delimiter found in the first ${searchWindow} line(s) of the response.`,
-    );
-  }
-
-  let endIdx = -1;
-  for (let i = startIdx + 1; i < allLines.length; i++) {
-    if (allLines[i]!.trim() === '---') {
-      endIdx = i;
-      break;
-    }
-  }
-  if (endIdx === -1) {
-    return fail(
-      'REVIEW_PARSE_FAILED',
-      "No closing '---' header delimiter found after the opening delimiter.",
-    );
-  }
-
-  return ok(allLines.slice(startIdx + 1, endIdx));
 }
 
 /** Fields collected off a single `  - ...` array item, before typed/validated conversion. */
@@ -302,19 +263,22 @@ function buildACResult(raw: RawFields, index: number): DispatchResult<ACResult> 
 }
 
 /**
- * Parse the structured review header from a `code_review` worker's response
- * (s6-rulings.md ruling 3). Returns `ok` with the parsed, fully-validated
- * result, or `fail('REVIEW_PARSE_FAILED', ...)` describing exactly what was
- * wrong — malformed/missing delimiters, malformed YAML, missing required
- * fields, an invalid enum value, or a cross-field contradiction between
- * `outcome` and the findings' `blocking` flags. There is no partial-success
- * shape: either every rule below holds, or the run is `failed`.
+ * Parse a `code_review` worker's structured review verdict from raw
+ * `.dispatch-out/review.yaml` file content (s6-rulings.md ruling 3, S6a W4).
+ * Returns `ok` with the parsed, fully-validated result, or
+ * `fail('REVIEW_PARSE_FAILED', ...)` describing exactly what was wrong —
+ * malformed YAML, missing required fields, an invalid enum value, or a
+ * cross-field contradiction between `outcome` and the findings' `blocking`
+ * flags. There is no partial-success shape: either every rule below holds,
+ * or the run is `failed`. `content` is the ENTIRE file — no delimiters to
+ * find, no larger response to extract it from (that extraction layer is
+ * gone; see the module doc above).
  */
-export function parseReviewHeader(responseText: string): DispatchResult<StructuredReviewResult> {
-  const blockResult = extractHeaderBlock(responseText);
-  if (!blockResult.ok) return blockResult;
+export function parseReviewFile(content: string): DispatchResult<StructuredReviewResult> {
+  const normalized = content.replace(/\r\n/g, '\n');
+  const lines = normalized.split('\n').map((line) => line.replace(/\r$/, ''));
 
-  const parsed = parseHeaderLines(blockResult.data);
+  const parsed = parseHeaderLines(lines);
   if (!parsed.ok) return parsed;
   const { outcome: outcomeRaw, findings: rawFindings, acceptanceCriteria: rawAC } = parsed.data;
 

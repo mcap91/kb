@@ -599,8 +599,11 @@ describe('adapters/pi.ts — facts-only Pi adapter', () => {
   // shapes below (role, content array, block `type`s) are the real shape
   // verified against a captured pi-output.log — see the golden fixture
   // describe block further down for the real-capture proof, and
-  // tests/dispatch-v2-s6a.test.ts for the parseReviewHeader integration
-  // proof of the S6a lastAssistantText/review-header bug and fix).
+  // tests/dispatch-v2-s6a.test.ts's own extraction-mechanics coverage. S6a
+  // W4 moved review-verdict parsing off these fields entirely, onto
+  // `.dispatch-out/review.yaml` (response-header.ts's `parseReviewFile`,
+  // read directly by pipeline.ts) — accumulatedText/lastAssistantText remain
+  // for the response-doc narrative (`extractNeeds` reads accumulatedText).
   // -------------------------------------------------------------------------
 
   it('parsePiOutput isolates lastAssistantText to only the final assistant message, while accumulatedText spans both turns and excludes thinking/toolCall/toolResult content', () => {
