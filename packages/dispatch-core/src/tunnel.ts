@@ -398,6 +398,8 @@ export function buildTunnelBashLines(config: TunnelConfig, runDirWsl: string): T
     `export HTTPS_PROXY=${shQuote(proxyUrl)}`,
     `export http_proxy=${shQuote(proxyUrl)}`,
     `export https_proxy=${shQuote(proxyUrl)}`,
+    'export no_proxy=127.0.0.1,localhost',
+    'export NO_PROXY=127.0.0.1,localhost',
   ];
 
   const inJailPrefix: string[] = [
