@@ -617,6 +617,12 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       const enumerated = parseEnumerateOutput(enumerateExec.data.stdout);
       const secretHits = parseInjectedValueScanOutput(enumerateExec.data.stdout);
       const allChangedFiles = [...enumerated.changedFiles, ...enumerated.untrackedFiles];
+      // .dispatch-out/ is dispatch-owned infrastructure (outcome.yaml,
+      // review.yaml), already excluded from the delivery commit via
+      // excludePrefixes — exclude from the write_scope check too, so a
+      // compliant worker writing its mandated outcome file doesn't trigger
+      // refused_out_of_scope.
+      const deliverableFiles = allChangedFiles.filter(f => !f.startsWith('.dispatch-out/') && !f.startsWith('.dispatch-out\\'));
 
       // 17. Check write scope, check the injected-value scan hits captured
       // above — refusals are DATA (a DeliveryOutcome variant), not a
@@ -625,7 +631,7 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       // pattern-based scanSecrets() leg — it checks only the exact values
       // the worker was granted, not heuristic patterns, so it is fully
       // deterministic.)
-      const scopeCheck = checkWriteScope(allChangedFiles, handoff.write_scope);
+      const scopeCheck = checkWriteScope(deliverableFiles, handoff.write_scope);
 
       if (!scopeCheck.ok) {
         const quarantinePath = join(runDir, 'quarantine.diff');
