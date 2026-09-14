@@ -71,7 +71,7 @@ import {
   type TunnelBashLines,
 } from './tunnel.js';
 import { resolveTier, checkIsolationRoute, type TierProbeInputs, type HostTier } from './tier.js';
-import { parseReviewHeader, type StructuredReviewResult } from './response-header.js';
+import { parseReviewFile, type StructuredReviewResult } from './response-header.js';
 
 const WORKER_TIMEOUT_SECS = 1800;
 const WORKER_TIMEOUT_MS = WORKER_TIMEOUT_SECS * 1000;
@@ -105,18 +105,23 @@ export interface DispatchResult2 {
   responsePath: string;
   runDir: string;
   /**
-   * Parsed structured review header (S6a ruling 3) — present only for a
-   * `code_review` mode run whose worker response header parsed
-   * deterministically. Absent (never a pipeline failure) when the mode isn't
-   * `code_review` or the header failed to parse; a parse failure is
-   * informational for the orchestrator, surfaced via `reviewParseError`
-   * below (and logged verbose-only) rather than silently dropped.
+   * Parsed structured review verdict (S6a ruling 3, re-platformed onto a
+   * file artifact at S6a W4) — present only for a `code_review` mode run
+   * whose `.dispatch-out/review.yaml` was present and parsed
+   * deterministically. Absent (never a pipeline failure) when the mode
+   * isn't `code_review`, the file was never written, or it failed to parse;
+   * either failure is informational for the orchestrator, surfaced via
+   * `reviewParseError` below (and logged verbose-only) rather than silently
+   * dropped.
    */
   reviewResult?: StructuredReviewResult;
   /**
-   * The parser's own error message when a `code_review` mode run's response
-   * header failed to parse (`response-header.ts`'s `REVIEW_PARSE_FAILED`
-   * message). Absent when the mode isn't `code_review` or parsing
+   * Why `reviewResult` is absent for a `code_review` mode run: the literal
+   * string `'missing_review_artifact'` when the worker never wrote
+   * `.dispatch-out/review.yaml` at all, or
+   * `` `${error}: ${message}` `` (response-header.ts's own
+   * `REVIEW_PARSE_FAILED` code + detail) when the file was present but
+   * failed to parse. Absent when the mode isn't `code_review` or parsing
    * succeeded. Also threaded into the response doc's `## Structured Review`
    * section (capture.ts) so the failure is diagnosable from the artifact
    * itself, not only from this in-memory result or a `--verbose` log line.
@@ -329,6 +334,21 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       const mkdirResult = await execViaWsl2({ runDir, scriptContent: mkdirScript, scriptName: 'mkdir-scope.sh', timeoutMs: 30_000 });
       if (!mkdirResult.ok) return mkdirResult;
     }
+
+    // 9c. Pre-create .dispatch-out/ — dispatch-owned worker-output dir (S6a
+    // W4: review.yaml today, outcome.yaml later). Same bwrap constraint as
+    // the write_scope skeleton dirs above: the path must already exist on
+    // disk before jail.ts's unconditional .dispatch-out bind is handed to
+    // bwrap. Unconditional across every mode, not gated by write_scope —
+    // code_review declares write_scope: [] (its envelope grants no write
+    // authority at all) but still needs somewhere to write its verdict.
+    const dispatchOutMkdirResult = await execViaWsl2({
+      runDir,
+      scriptContent: ['#!/bin/bash', `mkdir -p ${shQuote(`${clonePath}/.dispatch-out`)}`].join('\n'),
+      scriptName: 'mkdir-dispatch-out.sh',
+      timeoutMs: 30_000,
+    });
+    if (!dispatchOutMkdirResult.ok) return dispatchOutMkdirResult;
 
     // 10. Build Pi invocation. workerDir (PI_CODING_AGENT_DIR) is a path
     // INSIDE THE JAIL, not under clonePath: jail.ts's S5 recipe mounts a
@@ -626,13 +646,18 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
         logVerbose(verbose, `refused: granted credential value(s) found in diff: ${secretHits.join(', ')}`);
         delivery = { status: 'secret_in_diff', patterns: secretHits, quarantinePath };
       } else {
-        // 18. Deliver (clean: land the scope-checked commit)
+        // 18. Deliver (clean: land the scope-checked commit). .dispatch-out/
+        // (S6a W4) is dispatch's own worker-output dir, not the worker's
+        // deliverable — excluded from the commit the same way WK-0075
+        // excluded the old .pi-agent/ infra dir (the mechanism outlives that
+        // specific caller; see delivery.ts's own module doc).
         logVerbose(verbose, 'delivering scope-checked commit');
         const deliveryScript = buildDeliveryScript({
           clonePath,
           motherRepoWsl: windowsToWslPath(dir),
           handoffId: handoff.id,
           baseSha: admission.data.baseSha,
+          excludePrefixes: ['.dispatch-out'],
         });
         const deliveryExec = await execViaWsl2({
           runDir,
@@ -683,39 +708,51 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       delivery = { status: 'no_changes' };
     }
 
-    // 19b. Structured review header (S6a ruling 3) — code_review mode only.
-    // Parsed from the worker's LAST assistant message ONLY
-    // (`piParsed.data.lastAssistantText`), never `accumulatedText` (the
-    // whole session). Root cause of the original silent-failure bug: an
-    // agentic code_review worker narrates ("Let me look at the diff...")
-    // and calls tools BEFORE producing its structured header, so the
-    // whole-session text pushes the header's opening `---` past
-    // `extractHeaderBlock`'s 5-line search window. The header is always in
-    // the worker's final message, regardless of how many turns the
-    // reviewer takes or which model/backend/tier served it — isolating
-    // that one message at the source (the adapter, `pi.ts`) fixes the data
-    // flow for every caller, rather than widening the parser's window
-    // (which would make a markdown `---` horizontal rule in the narration
-    // ambiguous with the real header delimiter).
-    //
-    // Ruling 3's "parses deterministically or the run is failed" governs
-    // the ORCHESTRATOR's downstream merge decision (merge iff outcome ===
-    // 'pass'), not this pipeline call: a parse failure here is never a
-    // pipeline-level failure — `reviewResult` simply stays absent. It is,
-    // however, surfaced NON-silently: `reviewParseError` carries the
-    // parser's own message into capture below, so `writeResponseDoc`
-    // renders a `## Structured Review` section explaining the failure
-    // instead of omitting the section with no trace (previously only a
-    // verbose-gated log line, invisible without `--verbose`).
+    // 19b. Structured review verdict (S6a ruling 3, re-platformed onto a
+    // file artifact at S6a W4) — code_review mode only. The verdict is a
+    // FILE the worker writes (`.dispatch-out/review.yaml`,
+    // assemble.ts's CODE_REVIEW_RESPONSE_FORMAT), never parsed from chat
+    // prose — this retires the original silent-failure bug class entirely
+    // (an agentic reviewer narrating before its verdict could push a
+    // delimited header past a fixed scan window; a `---` horizontal rule in
+    // the narration could collide with the real delimiter). Read here,
+    // BEFORE clone teardown in this function's `finally`. A read failure
+    // (missing file, or WSL2 exec trouble reading it) is folded into
+    // "absent" — this is never a pipeline-level failure either way;
+    // `reviewResult` simply stays absent and `reviewParseError` carries why,
+    // non-silently, into capture below (`## Structured Review`).
     let reviewResult: StructuredReviewResult | undefined;
     let reviewParseError: string | undefined;
     if (handoff.mode === 'code_review') {
-      const reviewParsed = parseReviewHeader(piParsed.data.lastAssistantText);
-      if (reviewParsed.ok) {
-        reviewResult = reviewParsed.data;
-      } else {
-        reviewParseError = reviewParsed.message;
-        logVerbose(verbose, `warning: review header parse failed: ${reviewParsed.message}`);
+      logVerbose(verbose, 'reading .dispatch-out/review.yaml from the clone');
+      const reviewFileScript = buildReviewFileReadScript(clonePath);
+      const reviewFileExec = await execViaWsl2({
+        runDir,
+        scriptContent: reviewFileScript.scriptContent,
+        scriptName: reviewFileScript.scriptName,
+        timeoutMs: 30_000,
+      });
+      const readResult = reviewFileExec.ok
+        ? parseReviewFileReadOutput(reviewFileExec.data.stdout)
+        : { present: false, content: '' };
+      const outcome = resolveReviewFileOutcome(readResult);
+      reviewResult = outcome.reviewResult;
+      reviewParseError = outcome.reviewParseError;
+      if (reviewParseError) {
+        logVerbose(verbose, `warning: review file parse failed: ${reviewParseError}`);
+      }
+
+      // Copy the raw artifact into the run dir for forensics (S6a W4),
+      // alongside pi-output.log/state.json — the clone gets deleted in this
+      // function's `finally`; the run dir persists. Copied whenever present,
+      // even if it failed to parse, since it's still evidence of what the
+      // worker wrote.
+      if (readResult.present) {
+        try {
+          await writeFile(join(runDir, 'review.yaml'), readResult.content, 'utf8');
+        } catch (err) {
+          logVerbose(verbose, `warning: could not copy review.yaml to run dir: ${err}`);
+        }
       }
     }
 
@@ -988,10 +1025,13 @@ export interface BuildExecutionScriptOpts {
  *      "$PI_CODING_AGENT_DIR" + the models.json heredoc (moved in here from
  *      step 3 above — PI_CODING_AGENT_DIR resolves to workerDir, i.e.
  *      `/tmp/.pi-agent`, which only exists once bwrap's own tmpfs is mounted)
- *      -> the worker command -> capture its exit code -> inJailSuffix (kill
- *      the relay) -> re-exit with that captured code, so a `timeout`-imposed
- *      124 (or any other real worker exit code) still reaches the caller
- *      unchanged through the extra shell layer
+ *      -> a defensive `mkdir -p .dispatch-out` (S6a W4 — belt-and-suspenders;
+ *      pipeline.ts step 9c already pre-creates this pre-jail, jail.ts binds it
+ *      onto itself the same way it binds write_scope paths) -> the worker
+ *      command -> capture its exit code -> inJailSuffix (kill the relay) ->
+ *      re-exit with that captured code, so a `timeout`-imposed 124 (or any
+ *      other real worker exit code) still reaches the caller unchanged
+ *      through the extra shell layer
  *   8. capture the outer bwrap/timeout pipeline's own exit code (guarded by an
  *      if/else rather than a bare `$?` — under `set -e`+`pipefail`, a bare
  *      `$?` capture on the line right after a failing pipeline never runs,
@@ -1033,6 +1073,13 @@ export function buildExecutionScript(opts: BuildExecutionScriptOpts): string {
     `cat <<'DISPATCH_MODELS_JSON_EOF' > "$PI_CODING_AGENT_DIR/models.json"`,
     modelsJsonContent,
     'DISPATCH_MODELS_JSON_EOF',
+    // S6a W4: defensive in-jail mkdir for .dispatch-out/ (the review.yaml /
+    // future outcome.yaml artifact dir) — belt-and-suspenders in case the
+    // pre-jail mkdir (pipeline.ts step 9c) doesn't persist through the
+    // self-bind; a no-op when it already does. Relative to cwd (bwrap's
+    // --chdir is always the clone root here), so this targets
+    // "<clonePath>/.dispatch-out" regardless of mode.
+    'mkdir -p .dispatch-out',
     `if [ -f ${shQuote(lockfilePath)} ]; then`,
     `  cd ${shQuote(clonePath)} && npm rebuild 2>&1 && cd - > /dev/null || true`,
     'fi',
@@ -1147,4 +1194,99 @@ export function mergeProvenanceFrontmatter(
   }
 
   return `---\n${updatedLines.join('\n')}\n---\n${body}`;
+}
+
+// ---------------------------------------------------------------------------
+// S6a W4: `.dispatch-out/review.yaml` read (the review verdict is a FILE the
+// worker writes, never parsed from chat prose — see response-header.ts's
+// module doc and assemble.ts's CODE_REVIEW_RESPONSE_FORMAT). `clonePath` is a
+// WSL2-only path (the ext4 clone root), never reachable through Node's own
+// `fs` from the Windows-side pipeline process, so — same as
+// buildEnumerateScript/parseEnumerateOutput in delivery.ts — this is a pure
+// script-builder + a pure stdout-parser either side of the one
+// `execViaWsl2` round trip `runDispatch` performs. Exported at module scope
+// only so tests can assert on each half directly (mirrors
+// `mergeProvenanceFrontmatter` above) — not part of the package's public
+// surface (src/index.ts does not re-export them).
+// ---------------------------------------------------------------------------
+
+export interface ReviewFileScript {
+  scriptContent: string;
+  scriptName: string;
+}
+
+export interface ReviewFileReadResult {
+  /** Whether `.dispatch-out/review.yaml` existed in the clone at read time. */
+  present: boolean;
+  /** Raw file content — '' when absent, or when present but genuinely empty. */
+  content: string;
+}
+
+/**
+ * Build the read-only WSL2 script that reports whether
+ * `<clonePath>/.dispatch-out/review.yaml` exists and, if so, its raw
+ * content. Presence is reported via an explicit marker line rather than
+ * inferred from whether any text rode between the content markers, so a
+ * legitimately empty (0-byte) review.yaml still reports PRESENT (with empty
+ * content) rather than being confused with ABSENT. Never mutates the clone.
+ */
+export function buildReviewFileReadScript(clonePath: string): ReviewFileScript {
+  const reviewPath = `${clonePath}/.dispatch-out/review.yaml`;
+  const scriptContent = [
+    '#!/bin/bash',
+    'set -euo pipefail',
+    `FILE=${shQuote(reviewPath)}`,
+    'if [ -f "$FILE" ]; then',
+    '  echo "---REVIEW-YAML-PRESENT---"',
+    'else',
+    '  echo "---REVIEW-YAML-ABSENT---"',
+    'fi',
+    'echo "---REVIEW-YAML-CONTENT-START---"',
+    'cat "$FILE" 2>/dev/null || true',
+    'echo "---REVIEW-YAML-CONTENT-END---"',
+    '',
+  ].join('\n');
+  return { scriptContent, scriptName: 'dispatch-review-file-read.sh' };
+}
+
+/** Extract the text between two literal marker lines (exclusive), or '' if either is absent (mirrors delivery.ts's private extractSection). */
+function extractMarked(text: string, startMarker: string, endMarker: string): string {
+  const startIdx = text.indexOf(startMarker);
+  const endIdx = text.indexOf(endMarker);
+  if (startIdx === -1 || endIdx === -1 || endIdx < startIdx) return '';
+  return text
+    .slice(startIdx + startMarker.length, endIdx)
+    .replace(/^\n/, '')
+    .replace(/\n$/, '');
+}
+
+/** Parse `buildReviewFileReadScript`'s stdout into a `ReviewFileReadResult`. */
+export function parseReviewFileReadOutput(stdout: string): ReviewFileReadResult {
+  const normalized = stdout.replace(/\r\n/g, '\n');
+  const present = normalized.includes('---REVIEW-YAML-PRESENT---');
+  const content = extractMarked(normalized, '---REVIEW-YAML-CONTENT-START---', '---REVIEW-YAML-CONTENT-END---');
+  return { present, content };
+}
+
+/**
+ * Map a `ReviewFileReadResult` to the `reviewResult`/`reviewParseError` pair
+ * `runDispatch` threads into its own return value and into capture.ts's
+ * `## Structured Review` section. Absent file -> the literal
+ * `'missing_review_artifact'` (constraint: no fallback that scans prose when
+ * the file is missing — missing is failed, loudly, not silently). Present
+ * but unparseable -> `` `${error}: ${message}` `` from response-header.ts's
+ * own `REVIEW_PARSE_FAILED` result, so the failure is self-describing without
+ * needing `--verbose`.
+ */
+export function resolveReviewFileOutcome(
+  read: ReviewFileReadResult,
+): { reviewResult?: StructuredReviewResult; reviewParseError?: string } {
+  if (!read.present) {
+    return { reviewParseError: 'missing_review_artifact' };
+  }
+  const parsed = parseReviewFile(read.content);
+  if (parsed.ok) {
+    return { reviewResult: parsed.data };
+  }
+  return { reviewParseError: `${parsed.error}: ${parsed.message}` };
 }

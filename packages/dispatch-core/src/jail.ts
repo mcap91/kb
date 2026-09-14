@@ -28,15 +28,20 @@
  *   7.  clone bind                    ro-bind first if write_scope is
  *                                      sparse, else writable (legacy shape)
  *   8.  write_scope binds             selective rw layered over step 7
- *   9.  wiki read axis (T25/D19)      dual-shape probe result decides mask
+ *   9.  .dispatch-out/ bind (S6a W4)  dispatch-owned worker-output dir —
+ *                                      always writable, unconditional across
+ *                                      every mode (not gated by write_scope);
+ *                                      carries review.yaml today, will carry
+ *                                      outcome.yaml later
+ *   10. wiki read axis (T25/D19)      dual-shape probe result decides mask
  *                                      vs. explicit bind vs. no-op
- *   10. data mounts                   per-HO ro/rw binds (existence/
+ *   11. data mounts                   per-HO ro/rw binds (existence/
  *                                      absoluteness already §7.14-validated
  *                                      by the admission gate)
- *   11. tunnel socket bind (T26/D21)  egress-forwarder unix socket
- *   12. relay script bind (T26/D21)   in-jail relay, read-only
- *   13. --chdir <cwd>
- *   14. --                            terminates bwrap's own argv; the
+ *   12. tunnel socket bind (T26/D21)  egress-forwarder unix socket
+ *   13. relay script bind (T26/D21)   in-jail relay, read-only
+ *   14. --chdir <cwd>
+ *   15. --                            terminates bwrap's own argv; the
  *                                      caller appends the worker invocation
  *
  * ## Backward compatibility
@@ -211,7 +216,18 @@ export function buildJailArgs(opts: JailOpts): JailArgs {
     argv.push('--bind', opts.clonePath, opts.clonePath);
   }
 
-  // 9: dual-shape wiki read axis (T25/D19).
+  // 9: .dispatch-out/ (S6a W4) — dispatch-owned worker-output dir (review.yaml
+  // today, outcome.yaml later). Unconditional and layered AFTER the
+  // write_scope binds above regardless of mode, so it is writable even when
+  // write_scope is empty (code_review's envelope grants no write authority at
+  // all — see assemble.ts's code_review framing). Self-bind, same pattern as
+  // the write_scope binds: pipeline.ts must `mkdir -p` this path in the clone
+  // before calling buildJailArgs (bwrap cannot mkdir a new path under a
+  // ro-bound root — see this module's own doc above).
+  const dispatchOutPath = joinUnderClone(opts.clonePath, '.dispatch-out');
+  argv.push('--bind', dispatchOutPath, dispatchOutPath);
+
+  // 10: dual-shape wiki read axis (T25/D19).
   const wikiPath = joinUnderClone(opts.clonePath, 'wiki');
   if (opts.wikiShape === 'tracked') {
     if (opts.mode !== undefined && WIKI_MASKED_MODES.has(opts.mode)) {
@@ -225,7 +241,7 @@ export function buildJailArgs(opts: JailOpts): JailArgs {
     // implement/code_review (or no motherWikiPath given): clone has no wiki/ at all — nothing to bind.
   }
 
-  // 10: declared data mounts (ro/rw per HO; existence/absoluteness already
+  // 11: declared data mounts (ro/rw per HO; existence/absoluteness already
   // validated by the admission gate's bad_data_mount check, §7.14).
   if (opts.dataMounts) {
     for (const entry of opts.dataMounts) {
@@ -239,17 +255,17 @@ export function buildJailArgs(opts: JailOpts): JailArgs {
     }
   }
 
-  // 11: tunnel socket bind (T26/D21 egress enforcement).
+  // 12: tunnel socket bind (T26/D21 egress enforcement).
   if (opts.tunnelSocketPath) {
     argv.push('--bind', opts.tunnelSocketPath, opts.tunnelSocketPath);
   }
 
-  // 12: in-jail relay script bind (T26/D21), read-only.
+  // 13: in-jail relay script bind (T26/D21), read-only.
   if (opts.relayScriptPath) {
     argv.push('--ro-bind', opts.relayScriptPath, opts.relayScriptPath);
   }
 
-  // 13-14: cwd + terminator (the caller appends the worker invocation after this).
+  // 14-15: cwd + terminator (the caller appends the worker invocation after this).
   argv.push('--chdir', cwd);
   argv.push('--');
 

@@ -74,6 +74,7 @@ describe('buildJailArgs — write_scope sparse binds', () => {
       '--ro-bind', clonePath, clonePath,
       '--bind', `${clonePath}/src`, `${clonePath}/src`,
       '--bind', `${clonePath}/test`, `${clonePath}/test`,
+      '--bind', `${clonePath}/.dispatch-out`, `${clonePath}/.dispatch-out`,
       '--chdir', clonePath,
       '--',
     ]);
@@ -90,7 +91,7 @@ describe('buildJailArgs — write_scope sparse binds', () => {
     expect(result.argv[bindIdx + 2]).toBe(clonePath);
   });
 
-  it('ro-binds the clone with zero write binds when writeScope is an empty array', () => {
+  it('ro-binds the clone with zero write binds when writeScope is an empty array (the code_review shape), but still writably binds .dispatch-out/', () => {
     const result = buildJailArgs({ clonePath, writeScope: [] });
     expect(result.argv).toEqual([
       'bwrap',
@@ -100,9 +101,38 @@ describe('buildJailArgs — write_scope sparse binds', () => {
       '--tmpfs', '/tmp',
       '--die-with-parent',
       '--ro-bind', clonePath, clonePath,
+      '--bind', `${clonePath}/.dispatch-out`, `${clonePath}/.dispatch-out`,
       '--chdir', clonePath,
       '--',
     ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildJailArgs — .dispatch-out/ worker-output bind (S6a W4)
+// ---------------------------------------------------------------------------
+
+describe('buildJailArgs — .dispatch-out/ worker-output bind (S6a W4)', () => {
+  it('is present and writable even when write_scope is empty (code_review: write_scope grants no write authority at all)', () => {
+    const result = buildJailArgs({ clonePath, writeScope: [], mode: 'code_review' });
+    const idx = result.argv.indexOf('--bind', result.argv.indexOf('--ro-bind', result.argv.indexOf('--die-with-parent')));
+    expect(idx).toBeGreaterThan(0);
+    expect(result.argv[idx + 1]).toBe(`${clonePath}/.dispatch-out`);
+    expect(result.argv[idx + 2]).toBe(`${clonePath}/.dispatch-out`);
+  });
+
+  it('is present regardless of mode (unconditional, future-proofed for outcome.yaml)', () => {
+    for (const mode of ['implement', 'code_review', 'redteam', 'research'] as const) {
+      const result = buildJailArgs({ clonePath, wikiShape: 'nested-private', mode });
+      expect(result.argv).toEqual(
+        expect.arrayContaining(['--bind', `${clonePath}/.dispatch-out`, `${clonePath}/.dispatch-out`]),
+      );
+    }
+  });
+
+  it('is absent from the S0-minimum shape (no S5 options set — backward compat)', () => {
+    const result = buildJailArgs({ clonePath });
+    expect(result.argv).not.toContain(`${clonePath}/.dispatch-out`);
   });
 });
 
@@ -121,6 +151,7 @@ describe('buildJailArgs — wiki read axis (T25/D19)', () => {
       '--tmpfs', '/tmp',
       '--die-with-parent',
       '--bind', clonePath, clonePath,
+      '--bind', `${clonePath}/.dispatch-out`, `${clonePath}/.dispatch-out`,
       '--tmpfs', `${clonePath}/wiki`,
       '--chdir', clonePath,
       '--',
@@ -143,6 +174,7 @@ describe('buildJailArgs — wiki read axis (T25/D19)', () => {
       '--tmpfs', '/tmp',
       '--die-with-parent',
       '--bind', clonePath, clonePath,
+      '--bind', `${clonePath}/.dispatch-out`, `${clonePath}/.dispatch-out`,
       '--chdir', clonePath,
       '--',
     ]);
@@ -158,6 +190,7 @@ describe('buildJailArgs — wiki read axis (T25/D19)', () => {
       '--tmpfs', '/tmp',
       '--die-with-parent',
       '--bind', clonePath, clonePath,
+      '--bind', `${clonePath}/.dispatch-out`, `${clonePath}/.dispatch-out`,
       '--chdir', clonePath,
       '--',
     ]);
@@ -179,6 +212,7 @@ describe('buildJailArgs — wiki read axis (T25/D19)', () => {
       '--tmpfs', '/tmp',
       '--die-with-parent',
       '--bind', clonePath, clonePath,
+      '--bind', `${clonePath}/.dispatch-out`, `${clonePath}/.dispatch-out`,
       '--ro-bind', motherWikiPath, `${clonePath}/wiki`,
       '--chdir', clonePath,
       '--',
@@ -195,10 +229,12 @@ describe('buildJailArgs — wiki read axis (T25/D19)', () => {
       '--tmpfs', '/tmp',
       '--die-with-parent',
       '--bind', clonePath, clonePath,
+      '--bind', `${clonePath}/.dispatch-out`, `${clonePath}/.dispatch-out`,
       '--chdir', clonePath,
       '--',
     ]);
-    // Only the mandatory root ro-bind is present — no wiki bind was added.
+    // Only the mandatory root ro-bind is present — no wiki bind was added
+    // (the .dispatch-out/ bind above is a plain --bind, not --ro-bind).
     expect(result.argv.filter((tok) => tok === '--ro-bind').length).toBe(1);
   });
 });
@@ -218,6 +254,7 @@ describe('buildJailArgs — data mounts', () => {
       '--tmpfs', '/tmp',
       '--die-with-parent',
       '--bind', clonePath, clonePath,
+      '--bind', `${clonePath}/.dispatch-out`, `${clonePath}/.dispatch-out`,
       '--ro-bind', '/data/ref', '/data/ref',
       '--chdir', clonePath,
       '--',
@@ -234,6 +271,7 @@ describe('buildJailArgs — data mounts', () => {
       '--tmpfs', '/tmp',
       '--die-with-parent',
       '--bind', clonePath, clonePath,
+      '--bind', `${clonePath}/.dispatch-out`, `${clonePath}/.dispatch-out`,
       '--bind', '/tmp/scratch', '/tmp/scratch',
       '--chdir', clonePath,
       '--',
@@ -250,6 +288,7 @@ describe('buildJailArgs — data mounts', () => {
       '--tmpfs', '/tmp',
       '--die-with-parent',
       '--bind', clonePath, clonePath,
+      '--bind', `${clonePath}/.dispatch-out`, `${clonePath}/.dispatch-out`,
       '--ro-bind', '/data/ref', '/data/ref',
       '--chdir', clonePath,
       '--',
@@ -296,6 +335,7 @@ describe('buildJailArgs — tunnel socket and relay script binds', () => {
       '--tmpfs', '/tmp',
       '--die-with-parent',
       '--bind', clonePath, clonePath,
+      '--bind', `${clonePath}/.dispatch-out`, `${clonePath}/.dispatch-out`,
       '--bind', tunnelSocketPath, tunnelSocketPath,
       '--chdir', clonePath,
       '--',
@@ -313,6 +353,7 @@ describe('buildJailArgs — tunnel socket and relay script binds', () => {
       '--tmpfs', '/tmp',
       '--die-with-parent',
       '--bind', clonePath, clonePath,
+      '--bind', `${clonePath}/.dispatch-out`, `${clonePath}/.dispatch-out`,
       '--ro-bind', relayScriptPath, relayScriptPath,
       '--chdir', clonePath,
       '--',
@@ -354,6 +395,7 @@ describe('buildJailArgs — full combined recipe', () => {
       '--ro-bind', clonePath, clonePath,
       '--bind', `${clonePath}/src`, `${clonePath}/src`,
       '--bind', `${clonePath}/docs/notes.md`, `${clonePath}/docs/notes.md`,
+      '--bind', `${clonePath}/.dispatch-out`, `${clonePath}/.dispatch-out`,
       '--tmpfs', `${clonePath}/wiki`,
       '--ro-bind', '/data/reference', '/data/reference',
       '--bind', '/tmp/scratch-area', '/tmp/scratch-area',

@@ -24,7 +24,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
-  parseReviewHeader,
+  parseReviewFile,
   parseHandoffContent,
   assemblePrompt,
   checkAdmission,
@@ -34,17 +34,24 @@ import {
   type DeliveryOutcome,
   type StructuredReviewResult,
 } from '@kb/dispatch-core';
+import {
+  buildReviewFileReadScript,
+  parseReviewFileReadOutput,
+  resolveReviewFileOutcome,
+} from '../packages/dispatch-core/src/pipeline.js';
 
 async function createTempDir(prefix: string): Promise<string> {
   return mkdtemp(join(tmpdir(), prefix));
 }
 
 // ---------------------------------------------------------------------------
-// response-header.ts — parseReviewHeader (S6a ruling 3)
+// response-header.ts — parseReviewFile (S6a ruling 3; W4 file-artifact
+// re-platform). Fixtures below are raw `.dispatch-out/review.yaml` file
+// content — no `---` delimiters, no code fences, no trailing chat prose: the
+// entire file IS the YAML (assemble.ts's CODE_REVIEW_RESPONSE_FORMAT).
 // ---------------------------------------------------------------------------
 
-const PASS_HEADER = `---
-outcome: pass
+const PASS_HEADER = `outcome: pass
 findings:
   - id: F1
     severity: low
@@ -56,13 +63,9 @@ acceptance_criteria:
   - criterion: "AC-1: parses valid header"
     pass: true
     notes: "Looks good"
----
-
-Detailed prose analysis follows.
 `;
 
-const CHANGES_REQUESTED_HEADER = `---
-outcome: changes-requested
+const CHANGES_REQUESTED_HEADER = `outcome: changes-requested
 findings:
   - id: F1
     severity: high
@@ -73,13 +76,9 @@ findings:
 acceptance_criteria:
   - criterion: "AC-2: handles empty input"
     pass: false
----
-
-Blocking issue found; see finding F1.
 `;
 
-const PASS_WITH_MINOR_HEADER = `---
-outcome: pass-with-minor
+const PASS_WITH_MINOR_HEADER = `outcome: pass-with-minor
 findings:
   - id: F1
     severity: low
@@ -88,15 +87,13 @@ findings:
 acceptance_criteria:
   - criterion: "AC-1: works as specified"
     pass: true
----
-
-All acceptance criteria pass; one minor non-blocking note.
 `;
 
-const NO_DELIMITER_TEXT = 'outcome: pass\nNo header delimiters anywhere in this response, just prose.\n';
+const MALFORMED_CONTENT = 'This review looks fine to me, no changes needed.\n';
 
-const MISSING_OUTCOME_HEADER = `---
-findings:
+const EMPTY_CONTENT = '';
+
+const MISSING_OUTCOME_HEADER = `findings:
   - id: F1
     severity: low
     blocking: false
@@ -104,49 +101,33 @@ findings:
 acceptance_criteria:
   - criterion: "AC-1: something"
     pass: true
----
-
-No outcome field was set above.
 `;
 
-const PASS_WITH_BLOCKING_FINDING = `---
-outcome: pass
+const PASS_WITH_BLOCKING_FINDING = `outcome: pass
 findings:
   - id: F1
     severity: high
     blocking: true
     summary: "This should not be allowed to coexist with outcome: pass"
----
-
-Contradiction: outcome claims pass but a finding is blocking.
 `;
 
-const CHANGES_REQUESTED_WITH_NO_BLOCKING = `---
-outcome: changes-requested
+const CHANGES_REQUESTED_WITH_NO_BLOCKING = `outcome: changes-requested
 findings:
   - id: F1
     severity: low
     blocking: false
     summary: "Not blocking, yet outcome claims changes-requested"
----
-
-Contradiction: outcome claims changes-requested but no finding is blocking.
 `;
 
-const INVALID_SEVERITY_HEADER = `---
-outcome: pass-with-minor
+const INVALID_SEVERITY_HEADER = `outcome: pass-with-minor
 findings:
   - id: F1
     severity: urgent
     blocking: false
     summary: "Severity 'urgent' is not a recognized enum value"
----
-
-Invalid severity value should fail the parse.
 `;
 
-const BOOLEAN_VARIANTS_HEADER = `---
-outcome: changes-requested
+const BOOLEAN_VARIANTS_HEADER = `outcome: changes-requested
 findings:
   - id: F1
     severity: high
@@ -155,23 +136,16 @@ findings:
 acceptance_criteria:
   - criterion: "AC-1: boolean variants are tolerated"
     pass: no
----
-
-Boolean fields spelled as yes/no rather than true/false.
 `;
 
 const LEADING_BLANK_LINES_HEADER = `
 
----
 outcome: pass
----
-
-Blank lines precede the opening delimiter above.
 `;
 
-describe('response-header.ts — parseReviewHeader (S6a ruling 3)', () => {
-  it('parses a valid pass header', () => {
-    const result = parseReviewHeader(PASS_HEADER);
+describe('response-header.ts — parseReviewFile (S6a ruling 3; W4 file artifact)', () => {
+  it('parses a valid pass file', () => {
+    const result = parseReviewFile(PASS_HEADER);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
 
@@ -191,8 +165,8 @@ describe('response-header.ts — parseReviewHeader (S6a ruling 3)', () => {
     ]);
   });
 
-  it('parses a valid changes-requested header with a blocking finding', () => {
-    const result = parseReviewHeader(CHANGES_REQUESTED_HEADER);
+  it('parses a valid changes-requested file with a blocking finding', () => {
+    const result = parseReviewFile(CHANGES_REQUESTED_HEADER);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
 
@@ -201,8 +175,8 @@ describe('response-header.ts — parseReviewHeader (S6a ruling 3)', () => {
     expect(result.data.findings[0].blocking).toBe(true);
   });
 
-  it('parses a valid pass-with-minor header', () => {
-    const result = parseReviewHeader(PASS_WITH_MINOR_HEADER);
+  it('parses a valid pass-with-minor file', () => {
+    const result = parseReviewFile(PASS_WITH_MINOR_HEADER);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
 
@@ -211,43 +185,50 @@ describe('response-header.ts — parseReviewHeader (S6a ruling 3)', () => {
     expect(result.data.findings[0].blocking).toBe(false);
   });
 
-  it('rejects a response with no opening delimiter', () => {
-    const result = parseReviewHeader(NO_DELIMITER_TEXT);
+  it('rejects content that is not key: value shaped (e.g. accidental chat prose written to the file)', () => {
+    const result = parseReviewFile(MALFORMED_CONTENT);
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error).toBe('REVIEW_PARSE_FAILED');
   });
 
-  it('rejects a header missing the outcome field', () => {
-    const result = parseReviewHeader(MISSING_OUTCOME_HEADER);
+  it('rejects an empty file', () => {
+    const result = parseReviewFile(EMPTY_CONTENT);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toBe('REVIEW_PARSE_FAILED');
+  });
+
+  it('rejects a file missing the outcome field', () => {
+    const result = parseReviewFile(MISSING_OUTCOME_HEADER);
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error).toBe('REVIEW_PARSE_FAILED');
   });
 
   it('rejects outcome: pass combined with a blocking finding', () => {
-    const result = parseReviewHeader(PASS_WITH_BLOCKING_FINDING);
+    const result = parseReviewFile(PASS_WITH_BLOCKING_FINDING);
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error).toBe('REVIEW_PARSE_FAILED');
   });
 
   it('rejects outcome: changes-requested with no blocking finding', () => {
-    const result = parseReviewHeader(CHANGES_REQUESTED_WITH_NO_BLOCKING);
+    const result = parseReviewFile(CHANGES_REQUESTED_WITH_NO_BLOCKING);
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error).toBe('REVIEW_PARSE_FAILED');
   });
 
   it('rejects an invalid severity value', () => {
-    const result = parseReviewHeader(INVALID_SEVERITY_HEADER);
+    const result = parseReviewFile(INVALID_SEVERITY_HEADER);
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error).toBe('REVIEW_PARSE_FAILED');
   });
 
   it('tolerates yes/no boolean variants for blocking and pass', () => {
-    const result = parseReviewHeader(BOOLEAN_VARIANTS_HEADER);
+    const result = parseReviewFile(BOOLEAN_VARIANTS_HEADER);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
 
@@ -255,8 +236,8 @@ describe('response-header.ts — parseReviewHeader (S6a ruling 3)', () => {
     expect(result.data.acceptanceCriteria[0].pass).toBe(false);
   });
 
-  it('allows whitespace/blank lines before the opening delimiter', () => {
-    const result = parseReviewHeader(LEADING_BLANK_LINES_HEADER);
+  it('allows leading whitespace/blank lines', () => {
+    const result = parseReviewFile(LEADING_BLANK_LINES_HEADER);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.data.outcome).toBe('pass');
@@ -264,14 +245,17 @@ describe('response-header.ts — parseReviewHeader (S6a ruling 3)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// adapters/pi.ts + response-header.ts — S6a bug fix: the structured review
-// header must be parsed from the worker's LAST assistant message, not the
-// whole-session `accumulatedText`. Reproduces the original silent-failure
-// symptom (narration pushes the header past the 5-line search window) and
-// proves the fix (`lastAssistantText` isolates the final message).
+// adapters/pi.ts — lastAssistantText/accumulatedText extraction (WK-0092/
+// WK-0093). No longer feeds review-verdict parsing (S6a W4 moved that onto
+// `.dispatch-out/review.yaml`, read directly by pipeline.ts — see the
+// `pipeline.ts — .dispatch-out/review.yaml read` describe block below) —
+// these fields still exist in `PiResult` for the response-doc narrative
+// (`extractNeeds` reads `accumulatedText`; see foundation.test.ts's golden
+// fixture describe block for that proof). Kept here as regression coverage
+// for the extraction mechanics themselves, independent of what consumes them.
 // ---------------------------------------------------------------------------
 
-describe('adapters/pi.ts — lastAssistantText isolates the review header (S6a fix)', () => {
+describe('adapters/pi.ts — lastAssistantText/accumulatedText extraction', () => {
   // Six narration lines with no blank lines, deliberately pushing the
   // header's opening '---' to line 7 of the whole-session text — past
   // extractHeaderBlock's 5-line search window (this is the exact bug
@@ -340,31 +324,86 @@ describe('adapters/pi.ts — lastAssistantText isolates the review header (S6a f
     expect(result.data.lastAssistantText).toBe(PASS_HEADER);
     expect(result.data.usage.totalTokens).toBe(55);
   });
+});
 
-  it('reproduces the bug: parseReviewHeader on accumulatedText fails (narration pushes the header past the 5-line window)', () => {
-    const parsed = parsePiOutput(codeReviewStreamLines());
-    expect(parsed.ok).toBe(true);
-    if (!parsed.ok) return;
+// ---------------------------------------------------------------------------
+// pipeline.ts — .dispatch-out/review.yaml read (S6a W4). buildReviewFileReadScript
+// and parseReviewFileReadOutput are pure (script builder / stdout parser)
+// either side of pipeline.ts's one `execViaWsl2` round trip, same pattern as
+// delivery.ts's buildEnumerateScript/parseEnumerateOutput — exercised here
+// without any live WSL2/bwrap host. resolveReviewFileOutcome is the pure
+// mapping from a read result to the reviewResult/reviewParseError pair
+// runDispatch() threads into capture.ts.
+// ---------------------------------------------------------------------------
 
-    const result = parseReviewHeader(parsed.data.accumulatedText);
-    expect(result.ok).toBe(false);
-    if (result.ok) return;
-    expect(result.error).toBe('REVIEW_PARSE_FAILED');
-    expect(result.message).toMatch(/No opening '---' header delimiter found/);
+describe('pipeline.ts — buildReviewFileReadScript / parseReviewFileReadOutput (S6a W4)', () => {
+  it('builds a read-only script that checks for .dispatch-out/review.yaml under the clone', () => {
+    const { scriptContent, scriptName } = buildReviewFileReadScript('/home/user/.kb-dispatch/clones/RUN-1');
+    expect(scriptName).toBe('dispatch-review-file-read.sh');
+    expect(scriptContent).toContain("FILE='/home/user/.kb-dispatch/clones/RUN-1/.dispatch-out/review.yaml'");
+    expect(scriptContent).toContain('---REVIEW-YAML-PRESENT---');
+    expect(scriptContent).toContain('---REVIEW-YAML-ABSENT---');
   });
 
-  it('proves the fix: parseReviewHeader on lastAssistantText parses deterministically', () => {
-    const parsed = parsePiOutput(codeReviewStreamLines());
-    expect(parsed.ok).toBe(true);
-    if (!parsed.ok) return;
+  it('parses PRESENT output with content into { present: true, content }', () => {
+    const stdout = [
+      '---REVIEW-YAML-PRESENT---',
+      '---REVIEW-YAML-CONTENT-START---',
+      'outcome: pass',
+      '---REVIEW-YAML-CONTENT-END---',
+      '',
+    ].join('\n');
+    const result = parseReviewFileReadOutput(stdout);
+    expect(result).toEqual({ present: true, content: 'outcome: pass' });
+  });
 
-    const result = parseReviewHeader(parsed.data.lastAssistantText);
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.data.outcome).toBe('pass');
-    expect(result.data.acceptanceCriteria).toEqual([
-      { criterion: 'AC-1: parses valid header', pass: true, notes: 'Looks good' },
-    ]);
+  it('parses ABSENT output into { present: false, content: "" }', () => {
+    const stdout = [
+      '---REVIEW-YAML-ABSENT---',
+      '---REVIEW-YAML-CONTENT-START---',
+      '---REVIEW-YAML-CONTENT-END---',
+      '',
+    ].join('\n');
+    const result = parseReviewFileReadOutput(stdout);
+    expect(result).toEqual({ present: false, content: '' });
+  });
+
+  it('reports present:true with empty content for a legitimately empty (0-byte) review.yaml', () => {
+    const stdout = [
+      '---REVIEW-YAML-PRESENT---',
+      '---REVIEW-YAML-CONTENT-START---',
+      '---REVIEW-YAML-CONTENT-END---',
+      '',
+    ].join('\n');
+    const result = parseReviewFileReadOutput(stdout);
+    expect(result.present).toBe(true);
+    expect(result.content).toBe('');
+  });
+});
+
+describe('pipeline.ts — resolveReviewFileOutcome (S6a W4)', () => {
+  it('missing file -> reviewParseError is the literal string "missing_review_artifact", no reviewResult', () => {
+    const outcome = resolveReviewFileOutcome({ present: false, content: '' });
+    expect(outcome.reviewResult).toBeUndefined();
+    expect(outcome.reviewParseError).toBe('missing_review_artifact');
+  });
+
+  it('present + valid YAML -> reviewResult set, no reviewParseError', () => {
+    const outcome = resolveReviewFileOutcome({ present: true, content: PASS_HEADER });
+    expect(outcome.reviewParseError).toBeUndefined();
+    expect(outcome.reviewResult?.outcome).toBe('pass');
+  });
+
+  it('present + invalid YAML -> reviewParseError is "REVIEW_PARSE_FAILED: <detail>", no reviewResult', () => {
+    const outcome = resolveReviewFileOutcome({ present: true, content: MALFORMED_CONTENT });
+    expect(outcome.reviewResult).toBeUndefined();
+    expect(outcome.reviewParseError).toMatch(/^REVIEW_PARSE_FAILED: /);
+  });
+
+  it('present + empty content -> reviewParseError is REVIEW_PARSE_FAILED, no reviewResult', () => {
+    const outcome = resolveReviewFileOutcome({ present: true, content: '' });
+    expect(outcome.reviewResult).toBeUndefined();
+    expect(outcome.reviewParseError).toMatch(/^REVIEW_PARSE_FAILED: /);
   });
 });
 

@@ -293,11 +293,11 @@ export type { WikiShape, ParsedDataMount } from './jail.js';
 export { classifyWikiShape, parseDataMount } from './jail.js';
 
 // ---------------------------------------------------------------------------
-// Structured review response header (PLN-0004 S6a, ruling 3 —
-// execution/s6-rulings.md): deterministic parse-or-fail contract for a
-// code_review worker's response header (outcome enum + per-finding
-// severity/blocking + per-AC pass/fail).
+// Structured review verdict (PLN-0004 S6a, ruling 3 — execution/s6-rulings.md;
+// re-platformed onto a file artifact at S6a W4): deterministic parse-or-fail
+// contract for a code_review worker's `.dispatch-out/review.yaml` (outcome
+// enum + per-finding severity/blocking + per-AC pass/fail).
 // ---------------------------------------------------------------------------
 
 export type { ReviewOutcome, FindingSeverity, ReviewFinding, ACResult, StructuredReviewResult } from './response-header.js';
-export { parseReviewHeader } from './response-header.js';
+export { parseReviewFile } from './response-header.js';

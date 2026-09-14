@@ -328,6 +328,18 @@ describe('buildDeliveryScript excludePrefixes — generic git-add exclusion (no 
     expect(scriptContent).toContain("':!.codex'");
     expect(scriptContent).toContain('add -A --');
   });
+
+  it('excludes .dispatch-out/ (S6a W4: pipeline.ts now wires this prefix in for implement-mode delivery — the review.yaml/outcome.yaml artifact dir is dispatch-owned, never the worker\'s deliverable)', () => {
+    const { scriptContent } = buildDeliveryScript({
+      clonePath: '/tmp/run/clone',
+      motherRepoWsl: '/mnt/c/example/projects/kb',
+      handoffId: 'HO-0002',
+      baseSha: 'deadbeef',
+      excludePrefixes: ['.dispatch-out'],
+    });
+
+    expect(scriptContent).toContain("add -A -- ':!.dispatch-out'");
+  });
 });
 
 // ---------------------------------------------------------------------------

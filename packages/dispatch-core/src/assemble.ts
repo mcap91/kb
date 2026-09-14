@@ -95,27 +95,29 @@ const SIMPLE_RESPONSE_FORMAT = [
 const CODE_REVIEW_RESPONSE_FORMAT = [
   '## Response Format',
   '',
-  'Begin your response with a structured header block (this MUST be parseable — if the ' +
-    'header cannot be parsed deterministically, the run is marked `failed`):',
+  'Write your structured review verdict to the file `.dispatch-out/review.yaml` relative to ' +
+    'your working directory. The file must be valid YAML with this exact schema (this MUST be ' +
+    'parseable — if the file is missing or cannot be parsed deterministically, the run is ' +
+    'marked `failed`):',
   '',
-  '```',
-  '---',
+  '```yaml',
   'outcome: pass | pass-with-minor | changes-requested',
   'findings:',
   '  - id: F1',
   '    severity: critical | high | medium | low | info',
   '    blocking: true | false',
-  '    summary: <one-line description>',
+  '    summary: <one-line>',
   '    detail: <explanation>',
-  '    ac: <which acceptance criterion this relates to, if any>',
-  '  - id: F2',
-  '    ...',
+  '    ac: <which AC>',
   'acceptance_criteria:',
   '  - criterion: <AC text>',
   '    pass: true | false',
-  '    notes: <optional explanation>',
-  '---',
+  '    notes: <optional>',
   '```',
+  '',
+  'No `---` delimiters. No code fences. The entire file IS the YAML.',
+  '',
+  'Your chat response is free narrative for the operator — it is never parsed.',
   '',
   'Rules:',
   '- `outcome` is MANDATORY. `pass` = all ACs met, no blocking findings. `pass-with-minor` = ' +
@@ -124,7 +126,6 @@ const CODE_REVIEW_RESPONSE_FORMAT = [
   '- Every finding MUST have severity and blocking fields.',
   '- Every acceptance criterion from the task MUST appear in the acceptance_criteria list with ' +
     'a pass/fail judgment.',
-  '- After the header, provide your detailed analysis.',
 ].join('\n');
 
 /** Mode framings are subagent profiles (posture), never guardrails — s6-rulings.md ruling 2. */
