@@ -217,7 +217,7 @@ export {
 } from './delivery.js';
 
 // Capture (§5/§8 — response doc + provenance write-back fields)
-export type { CaptureOpts, CaptureResult, ProvenanceWriteBack } from './capture.js';
+export type { CaptureOpts, CaptureResult, ProvenanceWriteBack, WorkerOutcomeResult } from './capture.js';
 export { writeResponseDoc, buildProvenanceWriteBack } from './capture.js';
 
 // Host preflight + remediation (T27; DEC-0008 D20)

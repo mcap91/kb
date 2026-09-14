@@ -63,12 +63,27 @@ const IMPLEMENT_FRAMING =
   'that is not provided, stop with outcome `blocked` and name the missing environment in ' +
   '`needs:`.';
 
-const IMPLEMENT_RESPONSE_FORMAT =
-  '## Response Format\n' +
-  'When complete, report your outcome as:\n' +
-  '- outcome: completed | partial | blocked | failed\n' +
+const IMPLEMENT_RESPONSE_FORMAT = [
+  '## Response Format',
+  '',
+  'Write your outcome to `.dispatch-out/outcome.yaml` relative to your working directory. ' +
+    'The file must be valid YAML with this exact schema:',
+  '',
+  '```yaml',
+  'outcome: completed | partial | blocked | failed',
+  'needs:',
+  '  - <what was missing, if not completed>',
+  '```',
+  '',
+  'No `---` delimiters. No code fences. The entire file IS the YAML.',
+  '',
+  'Your chat response is free narrative for the operator — it is never parsed.',
+  '',
+  'Rules:',
+  '- `outcome` is MANDATORY.',
   '- If not `completed`, include a `needs:` list naming the exact paths, capabilities, or ' +
-  'decisions you lacked.';
+    'decisions you lacked.',
+].join('\n');
 
 const REDTEAM_FRAMING =
   'Focus on: security holes, unhandled edge cases, spec violations, missing validation, ' +
@@ -84,12 +99,19 @@ const RESEARCH_FRAMING =
 
 const SIMPLE_RESPONSE_FORMAT = [
   '## Response Format',
-  'Begin your response with:',
   '',
+  'Write your outcome to `.dispatch-out/outcome.yaml` relative to your working directory. ' +
+    'The file must be valid YAML:',
+  '',
+  '```yaml',
   'outcome: completed | blocked | failed',
-  'needs: (if not completed, list what was missing)',
+  'needs:',
+  '  - <what was missing, if not completed>',
+  '```',
   '',
-  '<your findings>',
+  'No `---` delimiters. No code fences. The entire file IS the YAML.',
+  '',
+  'Your chat response is free narrative — findings, sources, analysis.',
 ].join('\n');
 
 const CODE_REVIEW_RESPONSE_FORMAT = [
