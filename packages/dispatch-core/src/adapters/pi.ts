@@ -69,15 +69,42 @@ export interface PiResult {
    */
   needs: string[];
   /**
-   * Full accumulated `text_delta` content across the stream, in stream order
-   * — the worker's raw response text. `''` when the stream carried no
-   * text_delta events (e.g. the empty-stream fallback). S6a's structured
-   * review-header parser (`response-header.ts`'s `parseReviewHeader`) reads
-   * from this rather than re-deriving the same event walk itself, keeping
-   * the JSON-lines accumulation in exactly one place (this adapter, D10
-   * facts-only).
+   * Full accumulated `text_delta` content across the stream, in stream
+   * order — the worker's raw response text, spanning EVERY assistant
+   * message in the run (narration, tool-call commentary, and the final
+   * reply, all concatenated). `''` when the stream carried no text_delta
+   * events (e.g. the empty-stream fallback). Right tool for whole-run scans
+   * such as `extractNeeds`'s `## Needs` heading search, where text before
+   * the heading is expected and harmless. Wrong tool for anything that
+   * expects to see only the worker's FINAL message — see
+   * `lastAssistantText` below.
    */
   accumulatedText: string;
+  /**
+   * Text of the LAST assistant message only — narration and tool-call
+   * commentary from earlier turns excluded — in stream order. Computed by
+   * resetting a per-message buffer every time an assistant `message_end`
+   * fires (committing the just-finished message's text first); an
+   * in-flight buffer that never got a closing `message_end` wins over the
+   * last committed one, so a stream truncated mid-final-message still
+   * surfaces that partial text instead of a stale earlier turn. `''` when
+   * the stream carried no text_delta events at all.
+   *
+   * S6a's structured review-header parser (`response-header.ts`'s
+   * `parseReviewHeader`) reads from THIS field, not `accumulatedText` — an
+   * agentic `code_review` worker narrates ("Let me look at the diff...")
+   * and calls tools before producing its structured header, so the
+   * whole-session text pushes the header's opening `---` past
+   * `extractHeaderBlock`'s 5-line search window. The header is always in
+   * the worker's final message, regardless of how many turns the reviewer
+   * takes or which model/backend/tier served it, so isolating that one
+   * message here (in the one place that already walks the event stream,
+   * D10 facts-only) fixes the data flow for every caller — widening the
+   * parser's window instead would only paper over this one symptom, and
+   * would make a markdown `---` horizontal rule in the narration
+   * ambiguous with the real header delimiter.
+   */
+  lastAssistantText: string;
 }
 
 // New v2 error code produced by this module; will be merged into the shared
@@ -215,7 +242,7 @@ export function parsePiOutput(stdout: string): DispatchResult<PiResult> {
   }
 
   if (events.length === 0) {
-    return ok({ outcome: 'failed', stopReason: 'empty_stream', hasAgentEnd: false, usage: { totalTokens: 0, costUsd: 0 }, events: [], needs: [], accumulatedText: '' });
+    return ok({ outcome: 'failed', stopReason: 'empty_stream', hasAgentEnd: false, usage: { totalTokens: 0, costUsd: 0 }, events: [], needs: [], accumulatedText: '', lastAssistantText: '' });
   }
 
   let totalTokens = 0;
@@ -223,6 +250,15 @@ export function parsePiOutput(stdout: string): DispatchResult<PiResult> {
   let sawError = false;
   let stopReason: string | undefined;
   let accumulatedText = '';
+  // Per-message buffer (S6a fix, see `lastAssistantText`'s doc comment
+  // above): reset every time an assistant message completes, so it
+  // isolates that message's own text from everything streamed before it.
+  // `lastCommittedAssistantText` holds the most recently COMPLETED
+  // assistant message; `currentMessageText` holds whatever has streamed in
+  // since (normally empty right after a commit — non-empty only if the
+  // stream ends mid-message, e.g. a truncated final turn).
+  let currentMessageText = '';
+  let lastCommittedAssistantText = '';
 
   for (const event of events) {
     if (!isRecord(event)) continue;
@@ -230,6 +266,7 @@ export function parsePiOutput(stdout: string): DispatchResult<PiResult> {
 
     if (type === 'text_delta' && isRecord(event.message) && typeof event.message.content === 'string') {
       accumulatedText += event.message.content;
+      currentMessageText += event.message.content;
     }
 
     if (type === 'message_end' || type === 'turn_end') {
@@ -251,8 +288,19 @@ export function parsePiOutput(stdout: string): DispatchResult<PiResult> {
           costUsd += usage.cost.total;
         }
       }
+      // Commit this message's text, then start the next message's buffer
+      // fresh — this is what makes `lastAssistantText` below isolate the
+      // FINAL message instead of accumulating across the whole run.
+      lastCommittedAssistantText = currentMessageText;
+      currentMessageText = '';
     }
   }
+
+  // The in-flight buffer wins when non-empty — a truncated final message
+  // is still more recent than the last cleanly-committed one. Otherwise
+  // fall back to the last message that did get a `message_end` (the normal
+  // case for a completed run).
+  const lastAssistantText = currentMessageText !== '' ? currentMessageText : lastCommittedAssistantText;
 
   // Facts-only: the launcher (not this adapter) owns outcome policy beyond
   // error-detection. `agent_end` presence with no observed error defaults to
@@ -278,5 +326,5 @@ export function parsePiOutput(stdout: string): DispatchResult<PiResult> {
 
   const needs = extractNeeds(accumulatedText);
 
-  return ok({ outcome, stopReason, hasAgentEnd, usage: { totalTokens, costUsd }, events, needs, accumulatedText });
+  return ok({ outcome, stopReason, hasAgentEnd, usage: { totalTokens, costUsd }, events, needs, accumulatedText, lastAssistantText });
 }

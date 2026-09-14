@@ -29,6 +29,7 @@ import {
   assemblePrompt,
   checkAdmission,
   writeResponseDoc,
+  parsePiOutput,
   type Handoff,
   type DeliveryOutcome,
   type StructuredReviewResult,
@@ -259,6 +260,92 @@ describe('response-header.ts — parseReviewHeader (S6a ruling 3)', () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.data.outcome).toBe('pass');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// adapters/pi.ts + response-header.ts — S6a bug fix: the structured review
+// header must be parsed from the worker's LAST assistant message, not the
+// whole-session `accumulatedText`. Reproduces the original silent-failure
+// symptom (narration pushes the header past the 5-line search window) and
+// proves the fix (`lastAssistantText` isolates the final message).
+// ---------------------------------------------------------------------------
+
+describe('adapters/pi.ts — lastAssistantText isolates the review header (S6a fix)', () => {
+  // Six narration lines with no blank lines, deliberately pushing the
+  // header's opening '---' to line 7 of the whole-session text — past
+  // extractHeaderBlock's 5-line search window (this is the exact bug
+  // reproduced: an agentic reviewer narrates and calls tools before
+  // producing its structured header).
+  const NARRATION = [
+    'Let me look at the diff first.',
+    'I will check each changed file for correctness.',
+    'Then I will run the test suite.',
+    'Now checking edge cases.',
+    'Verifying acceptance criteria next.',
+    'Finally, composing the review verdict.',
+  ].join('\n') + '\n';
+
+  function codeReviewStreamLines(): string {
+    return [
+      JSON.stringify({ type: 'agent_start' }),
+      // Turn 1: narration + a tool call (e.g. reading the diff), its own
+      // message_end — this is what a real agentic code_review run does
+      // before it ever produces the structured header.
+      JSON.stringify({ type: 'text_delta', message: { content: NARRATION } }),
+      JSON.stringify({ type: 'toolcall_start', name: 'bash' }),
+      JSON.stringify({ type: 'tool_execution_end', output: 'diff --git a/foo b/foo' }),
+      JSON.stringify({
+        type: 'message_end',
+        message: { role: 'assistant', usage: { totalTokens: 40, cost: { total: 0.0004 } } },
+      }),
+      JSON.stringify({ type: 'turn_end', stopReason: 'tool_calls' }),
+      // Turn 2: the final reply — the structured header lives here, and
+      // ONLY here.
+      JSON.stringify({ type: 'text_delta', message: { content: PASS_HEADER } }),
+      JSON.stringify({
+        type: 'message_end',
+        message: { role: 'assistant', usage: { totalTokens: 15, cost: { total: 0.0001 } } },
+      }),
+      JSON.stringify({ type: 'turn_end', stopReason: 'end_turn' }),
+      JSON.stringify({ type: 'agent_end' }),
+    ].join('\n');
+  }
+
+  it('parsePiOutput separates lastAssistantText (final turn only) from accumulatedText (whole session)', () => {
+    const result = parsePiOutput(codeReviewStreamLines());
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.data.accumulatedText).toBe(NARRATION + PASS_HEADER);
+    expect(result.data.lastAssistantText).toBe(PASS_HEADER);
+    expect(result.data.usage.totalTokens).toBe(55);
+  });
+
+  it('reproduces the bug: parseReviewHeader on accumulatedText fails (narration pushes the header past the 5-line window)', () => {
+    const parsed = parsePiOutput(codeReviewStreamLines());
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+
+    const result = parseReviewHeader(parsed.data.accumulatedText);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toBe('REVIEW_PARSE_FAILED');
+    expect(result.message).toMatch(/No opening '---' header delimiter found/);
+  });
+
+  it('proves the fix: parseReviewHeader on lastAssistantText parses deterministically', () => {
+    const parsed = parsePiOutput(codeReviewStreamLines());
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+
+    const result = parseReviewHeader(parsed.data.lastAssistantText);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.outcome).toBe('pass');
+    expect(result.data.acceptanceCriteria).toEqual([
+      { criterion: 'AC-1: parses valid header', pass: true, notes: 'Looks good' },
+    ]);
   });
 });
 
@@ -571,5 +658,44 @@ describe('capture.ts — Structured Review section rendering (S6a)', () => {
 
     const written = await readFile(result.data.responsePath, 'utf8');
     expect(written).not.toContain('Structured Review');
+  });
+
+  it('renders a ## Structured Review parse-failure notice when reviewParseError is present and reviewResult is absent (S6a non-silent fix)', async () => {
+    const result = await writeResponseDoc({
+      runDir,
+      handoff,
+      delivery,
+      reviewParseError: "No opening '---' header delimiter found in the first 5 line(s) of the response.",
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const written = await readFile(result.data.responsePath, 'utf8');
+    expect(written).toContain('## Structured Review');
+    expect(written).toContain('**Parse failed:**');
+    expect(written).toContain("No opening '---' header delimiter found");
+  });
+
+  it('prefers reviewResult over reviewParseError when both are somehow present', async () => {
+    const reviewResult: StructuredReviewResult = {
+      outcome: 'pass',
+      findings: [],
+      acceptanceCriteria: [{ criterion: 'AC-1: Works', pass: true }],
+    };
+
+    const result = await writeResponseDoc({
+      runDir,
+      handoff,
+      delivery,
+      reviewResult,
+      reviewParseError: 'should never be rendered',
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const written = await readFile(result.data.responsePath, 'utf8');
+    expect(written).toContain('**Outcome:** pass');
+    expect(written).not.toContain('Parse failed');
+    expect(written).not.toContain('should never be rendered');
   });
 });

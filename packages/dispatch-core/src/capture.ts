@@ -49,10 +49,21 @@ export interface CaptureOpts {
   /**
    * Parsed structured review header (S6a ruling 3) for `code_review` mode
    * responses. Rendered as a `## Structured Review` section when present.
-   * Absent for non-review modes, or when the header failed to parse
-   * (pipeline logs a warning; capture proceeds without this section).
+   * Absent for non-review modes, or when the header failed to parse — in
+   * the latter case `reviewParseError` (below) renders an explanatory
+   * `## Structured Review` section instead of omitting it silently.
    */
   reviewResult?: StructuredReviewResult;
+  /**
+   * The parser's error message when a `code_review` mode response's
+   * structured header failed to parse (S6a fix). Rendered as a
+   * `## Structured Review` section carrying this message, so a missing
+   * section is diagnosable from the response doc itself rather than
+   * requiring `--verbose` pipeline logs. Ignored when `reviewResult` is
+   * present (a successful parse always wins) or for non-`code_review`
+   * modes.
+   */
+  reviewParseError?: string;
 }
 
 export interface CaptureResult {
@@ -174,6 +185,17 @@ function formatStructuredReviewSection(review: StructuredReviewResult): string[]
 }
 
 /**
+ * Render the `## Structured Review` section as a parse-failure notice (S6a
+ * fix) when `code_review` mode produced no `reviewResult` but the pipeline
+ * captured why. Keeps a missing section from reading as silent success —
+ * the artifact itself states that the header didn't parse and what went
+ * wrong, rather than omitting the section with no trace.
+ */
+function formatStructuredReviewErrorSection(message: string): string[] {
+  return ['## Structured Review', '', `**Parse failed:** ${message}`, ''];
+}
+
+/**
  * Serialize a `BackendFingerprint` for the `backend_fingerprint` provenance
  * field. host/model are written even when `serverVersion` is null (no
  * version endpoint for this backend kind, or the probe failed) — losing
@@ -248,6 +270,8 @@ export async function writeResponseDoc(opts: CaptureOpts): Promise<DispatchResul
   );
   if (opts.reviewResult) {
     bodyLines.push(...formatStructuredReviewSection(opts.reviewResult));
+  } else if (opts.reviewParseError) {
+    bodyLines.push(...formatStructuredReviewErrorSection(opts.reviewParseError));
   }
   const body = bodyLines.join('\n');
 
