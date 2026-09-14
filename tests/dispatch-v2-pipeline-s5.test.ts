@@ -42,7 +42,10 @@ import type { InjectionScriptLines } from '../packages/dispatch-core/src/credent
 
 const clonePath = '/home/user/.kb-dispatch/clones/RUN-S5TEST';
 const runDirWsl = '/mnt/c/Users/test/.kb-dispatch/runs/HO-0001/RUN-S5TEST';
-const workerDir = `${clonePath}/.pi-agent`;
+// workerDir is a path INSIDE THE JAIL (bwrap's fresh /tmp tmpfs, jail.ts step
+// 4), never under clonePath — see pipeline.ts's own workerDir comment (the
+// EROFS fix: clonePath is read-only outside write_scope since S5).
+const workerDir = '/tmp/.pi-agent';
 const promptPathWsl = `${runDirWsl}/prompt.txt`;
 const tunnelSocketWsl = `${runDirWsl}/${TUNNEL_SOCKET_NAME}`;
 const relayScriptWsl = `${runDirWsl}/relay.js`;
@@ -239,8 +242,51 @@ describe('buildExecutionScript — models.json baseUrl rewrite', () => {
   it('still writes models.json via a quote-delimited heredoc (Pi\'s own $VAR apiKey placeholders stay unexpanded)', () => {
     const invocation = buildFixtureInvocation(piBaseUrl);
     const script = buildExecutionScript(buildFixtureOpts({ modelsJsonContent: invocation.modelsJsonContent }));
-    expect(script).toContain(`cat <<'DISPATCH_MODELS_JSON_EOF' > "$PI_CODING_AGENT_DIR/models.json"`);
+    // The heredoc now lives inside the shQuote'd `bash -c` inner-script blob
+    // (S5 EROFS fix, see the describe block below), so its own single quotes
+    // round-trip escaped (`'\''`) rather than bare in the raw script text —
+    // assert on the quote-free pieces (heredoc tag + target path + body)
+    // instead of the exact `<<'...'` substring.
+    expect(script).toContain('DISPATCH_MODELS_JSON_EOF');
+    expect(script).toContain('$PI_CODING_AGENT_DIR/models.json');
     expect(script).toContain(invocation.modelsJsonContent);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildExecutionScript — PI_CODING_AGENT_DIR setup runs INSIDE the jail
+// (S5 EROFS regression fix: workerDir moved to /tmp/.pi-agent, a path only
+// bwrap's own --tmpfs /tmp mount creates; anything written pre-jail to that
+// path lands on the wrong /tmp and is invisible once bwrap starts)
+// ---------------------------------------------------------------------------
+
+describe('buildExecutionScript — PI_CODING_AGENT_DIR setup runs INSIDE the jail (S5 EROFS fix)', () => {
+  it('exports PI_CODING_AGENT_DIR/PI_OFFLINE pre-jail (env vars ARE inherited by the bwrap child)', () => {
+    const script = buildExecutionScript(buildFixtureOpts());
+    const exportIndex = script.indexOf(`export PI_CODING_AGENT_DIR='${workerDir}'`);
+    const innerScriptStart = script.indexOf("'bash' '-c'");
+    expect(exportIndex).toBeGreaterThanOrEqual(0);
+    expect(exportIndex).toBeLessThan(innerScriptStart);
+  });
+
+  it('creates PI_CODING_AGENT_DIR (mkdir) INSIDE the bash -c inner script, not pre-jail', () => {
+    const script = buildExecutionScript(buildFixtureOpts());
+    const innerScriptStart = script.indexOf("'bash' '-c'");
+    const mkdirIndex = script.indexOf('mkdir -p "$PI_CODING_AGENT_DIR"');
+    expect(innerScriptStart).toBeGreaterThanOrEqual(0);
+    expect(mkdirIndex).toBeGreaterThan(innerScriptStart);
+    // Exactly one mkdir for it — no leftover pre-jail duplicate.
+    expect(script.split('mkdir -p "$PI_CODING_AGENT_DIR"').length - 1).toBe(1);
+  });
+
+  it('writes the models.json heredoc (both markers) INSIDE the bash -c inner script, not pre-jail', () => {
+    const script = buildExecutionScript(buildFixtureOpts());
+    const innerScriptStart = script.indexOf("'bash' '-c'");
+    const markerIndices = [...script.matchAll(/DISPATCH_MODELS_JSON_EOF/g)].map((m) => m.index!);
+    expect(markerIndices).toHaveLength(2); // heredoc open + close
+    for (const idx of markerIndices) {
+      expect(idx).toBeGreaterThan(innerScriptStart);
+    }
   });
 });
 

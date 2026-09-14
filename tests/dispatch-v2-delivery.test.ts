@@ -251,11 +251,21 @@ describe('delivery.ts — parseDeliveryOutput', () => {
 });
 
 // ---------------------------------------------------------------------------
-// WK-0075: worker infra dir exclusion (.pi-agent/)
+// WK-0075 (historical): worker infra dir exclusion (.pi-agent/). Originally
+// pipeline.ts filtered `.pi-agent/` out of enumeration/delivery because the
+// S0 jail put the worker's config dir inside the writable clone. The S5 EROFS
+// fix moved workerDir to /tmp/.pi-agent (inside the jail's own tmpfs, never
+// under clonePath), so that filtering step no longer exists in pipeline.ts —
+// `.pi-agent/` paths simply never appear in enumeration output any more. The
+// tests below still hold as generic, adapter-agnostic coverage of
+// delivery.ts's own primitives (parseEnumerateOutput does not special-case
+// any path; buildDeliveryScript's excludePrefixes remains a supported,
+// generic option for any future caller), just no longer wired to this
+// specific scenario in pipeline.ts.
 // ---------------------------------------------------------------------------
 
-describe('WK-0075 — parseEnumerateOutput preserves .pi-agent/ files (pipeline owns filtering)', () => {
-  it('includes .pi-agent/ files in untrackedFiles (proving pipeline filter is needed)', () => {
+describe('parseEnumerateOutput does not filter any paths (adapter-agnostic; callers filter, not this module)', () => {
+  it('includes .pi-agent/ files in untrackedFiles (a stand-in for any worker-infra-shaped path)', () => {
     const stdout = [
       '---STATUS-START---',
       ' M src/foo.ts',
@@ -281,43 +291,7 @@ describe('WK-0075 — parseEnumerateOutput preserves .pi-agent/ files (pipeline 
   });
 });
 
-describe('WK-0075 — infra filtering before checkWriteScope', () => {
-  const WORKER_INFRA_PREFIXES = ['.pi-agent'];
-  const isWorkerInfra = (p: string): boolean =>
-    WORKER_INFRA_PREFIXES.some(pfx => p === pfx || p.startsWith(pfx + '/'));
-
-  it('without filter, .pi-agent/ files cause scope refusal', () => {
-    const allFiles = ['src/foo.ts', '.pi-agent/auth.json', '.pi-agent/models.json'];
-    const result = checkWriteScope(allFiles, ['src/']);
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.offendingPaths).toContain('.pi-agent/auth.json');
-      expect(result.offendingPaths).toContain('.pi-agent/models.json');
-    }
-  });
-
-  it('after filtering, scope check passes on task files alone', () => {
-    const changedFiles = ['src/foo.ts'];
-    const untrackedFiles = ['.pi-agent/auth.json', '.pi-agent/models.json', 'src/bar.ts'];
-
-    const allFiltered = [
-      ...changedFiles.filter(f => !isWorkerInfra(f)),
-      ...untrackedFiles.filter(f => !isWorkerInfra(f)),
-    ];
-    expect(allFiltered).toEqual(['src/foo.ts', 'src/bar.ts']);
-
-    const result = checkWriteScope(allFiltered, ['src/']);
-    expect(result.ok).toBe(true);
-  });
-
-  it('filters the bare directory name as well as nested paths', () => {
-    const files = ['.pi-agent', '.pi-agent/auth.json', 'src/ok.ts'];
-    const filtered = files.filter(f => !isWorkerInfra(f));
-    expect(filtered).toEqual(['src/ok.ts']);
-  });
-});
-
-describe('WK-0075 — buildDeliveryScript excludes infra dirs from git-add', () => {
+describe('buildDeliveryScript excludePrefixes — generic git-add exclusion (no longer wired to .pi-agent by pipeline.ts)', () => {
   it('generates pathspec excludes when excludePrefixes are given', () => {
     const { scriptContent } = buildDeliveryScript({
       clonePath: '/tmp/run/clone',
