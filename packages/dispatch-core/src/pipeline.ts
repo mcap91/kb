@@ -70,7 +70,7 @@ import {
   type TunnelConfig,
   type TunnelBashLines,
 } from './tunnel.js';
-import { resolveTier, checkIsolationRoute, type TierProbeInputs } from './tier.js';
+import { resolveTier, checkIsolationRoute, type TierProbeInputs, type HostTier } from './tier.js';
 import { parseReviewHeader, type StructuredReviewResult } from './response-header.js';
 
 const WORKER_TIMEOUT_SECS = 1800;
@@ -367,10 +367,22 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
     // "$WIN_HOST" rather than an expanded address. Resolving it here in JS,
     // before the tunnel config is built, sidesteps that entirely — by the
     // time `tunnelConfig.targetUrl` exists it is already a concrete URL.
-    // Skipped for backends with no {{WIN_HOST}} template (e.g. a real HTTPS
-    // endpoint like OpenRouter) to avoid a pointless round trip.
+    //
+    // bwrap-wsl2 ONLY (S6a fix): the forwarder (tunnel.ts) runs OUTSIDE
+    // bwrap but still INSIDE WSL2, so a loopback hostname in `model.baseUrl`
+    // — `localhost`/`127.0.0.1`/`0.0.0.0`, the shape the S3 two-table
+    // config's own README documents for an Ollama `backends.json` entry
+    // (init-dispatch.ts), not just the legacy `{{WIN_HOST}}` template —
+    // would have the forwarder dial WSL2's OWN loopback and never reach the
+    // Windows host where Ollama actually listens (the live S6a gate-1 bug,
+    // 2026-09-13). On `bwrap-direct` (native Linux, e.g. EC2) the forwarder
+    // and the backend run on the SAME host, so a loopback hostname is
+    // already correct there and must be left untouched — resolving it would
+    // break a working same-host deployment. Skipped entirely for a real
+    // remote host (e.g. OpenRouter's HTTPS endpoint) to avoid a pointless
+    // round trip. See `needsWinHostResolution`/`applyWinHost` below.
     let resolvedTargetUrl = model.baseUrl;
-    if (model.baseUrl.includes('{{WIN_HOST}}')) {
+    if (needsWinHostResolution(model.baseUrl, tierResolution.tier)) {
       const winHostResult = await execViaWsl2({
         runDir,
         scriptContent: ['#!/bin/bash', `echo "WIN_HOST=$(${resolveWinHostIp()})"`].join('\n'),
@@ -386,7 +398,7 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
           winHostResult.data,
         );
       }
-      resolvedTargetUrl = model.baseUrl.replace(/\{\{WIN_HOST\}\}/g, winHostMatch[1]!);
+      resolvedTargetUrl = applyWinHost(model.baseUrl, winHostMatch[1]!);
     }
 
     // 11. Tunnel config (T26/D21) — the socket/relay/log all live under the
@@ -761,6 +773,63 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
     // safety net if this itself fails to run (never rejects, but belt+suspenders).
     await removeClone(clonePath, runDir).catch(() => undefined);
   }
+}
+
+// ---------------------------------------------------------------------------
+// S6a fix: forwarder target WIN_HOST resolution, bwrap-wsl2 ONLY. Not part of
+// the package's public surface — exported at module scope only so tests can
+// assert on them directly (mirrors `toJailDataMount` below), without needing
+// a live WSL2/bwrap host to drive `runDispatch()` all the way to step 10b.
+// ---------------------------------------------------------------------------
+
+/**
+ * Loopback hostnames a `backends.json` `base_url` may legitimately carry for
+ * a same-host model server (init-dispatch.ts's own README example uses
+ * `http://localhost:11434/v1`). `0.0.0.0` is included defensively: it is a
+ * BIND address on the server side, but a client dialing it lands on the same
+ * local network stack as `localhost`/`127.0.0.1`, so it has the identical
+ * bwrap-wsl2 failure mode if it ever appears as a target host.
+ */
+const LOOPBACK_HOSTNAMES = new Set(['localhost', '127.0.0.1', '0.0.0.0']);
+
+/**
+ * Whether `baseUrl` needs its host rewritten to the Windows host's real IP
+ * before it can serve as the tunnel forwarder's target (T26/D21). True only
+ * on `bwrap-wsl2` — see the "10b" comment in `runDispatch` above for why
+ * `bwrap-direct`/`pod-attested`/no-route (`tier === null`) must never rewrite
+ * a loopback host: on those tiers the forwarder and the backend already
+ * share the same host. Recognizes both the legacy `{{WIN_HOST}}` template
+ * (the deprecated `getDefaultRegistry` seed above) and a literal loopback
+ * hostname (the shape the live S3 two-table config actually produces). An
+ * unparseable `baseUrl` degrades to `false` (nothing to safely rewrite)
+ * rather than throwing — mirrors `extractHostname`'s tolerance in
+ * model-registry.ts.
+ */
+export function needsWinHostResolution(baseUrl: string, tier: HostTier | null): boolean {
+  if (tier !== 'bwrap-wsl2') return false;
+  if (baseUrl.includes('{{WIN_HOST}}')) return true;
+  try {
+    return LOOPBACK_HOSTNAMES.has(new URL(baseUrl).hostname);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Rewrite `baseUrl`'s host to `winHostIp`. Two shapes: the legacy
+ * `{{WIN_HOST}}` template substitutes via the same regex `runDispatch`
+ * always used; a literal loopback hostname is rewritten through the URL's
+ * own `.hostname` setter so the port and path survive untouched. Callers
+ * gate on `needsWinHostResolution` first — this function does not re-check
+ * the tier or re-detect which shape applies beyond that one branch.
+ */
+export function applyWinHost(baseUrl: string, winHostIp: string): string {
+  if (baseUrl.includes('{{WIN_HOST}}')) {
+    return baseUrl.replace(/\{\{WIN_HOST\}\}/g, winHostIp);
+  }
+  const rewritten = new URL(baseUrl);
+  rewritten.hostname = winHostIp;
+  return rewritten.toString();
 }
 
 // ---------------------------------------------------------------------------

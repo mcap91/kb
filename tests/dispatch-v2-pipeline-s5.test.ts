@@ -21,6 +21,8 @@ import { describe, expect, it } from 'vitest';
 import {
   buildExecutionScript,
   toJailDataMount,
+  needsWinHostResolution,
+  applyWinHost,
   type BuildExecutionScriptOpts,
 } from '../packages/dispatch-core/src/pipeline.js';
 import { buildJailArgs } from '../packages/dispatch-core/src/jail.js';
@@ -250,6 +252,77 @@ describe('buildExecutionScript — models.json baseUrl rewrite', () => {
     expect(script).toContain('DISPATCH_MODELS_JSON_EOF');
     expect(script).toContain('$PI_CODING_AGENT_DIR/models.json');
     expect(script).toContain(invocation.modelsJsonContent);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// needsWinHostResolution / applyWinHost — S6a fix: the tunnel forwarder's
+// real target URL must resolve a loopback hostname to the Windows host's IP
+// on bwrap-wsl2 ONLY (the forwarder runs outside bwrap but still inside
+// WSL2, so an unresolved `localhost` would have it dial WSL2's own loopback,
+// never reaching Windows-side Ollama), never on bwrap-direct (native Linux,
+// e.g. EC2, where the forwarder and the backend already share one host).
+// Pure/synchronous — asserted directly, the same way toJailDataMount above
+// is, rather than through a live-WSL2 `runDispatch()` call: pipeline.ts's
+// step 10b (where these are actually wired in) is reached only after real
+// clone/WSL2 work runs, well past what this suite's fake-tier convention
+// covers (see tests/dispatch-v2-e2e.test.ts's own docstring on this exact
+// boundary).
+// ---------------------------------------------------------------------------
+
+describe('needsWinHostResolution — gated to bwrap-wsl2 only', () => {
+  it('is true for a bare "localhost" base_url on bwrap-wsl2 (the live S6a gate-1 bug)', () => {
+    expect(needsWinHostResolution('http://localhost:11434/v1', 'bwrap-wsl2')).toBe(true);
+  });
+
+  it('is true for a bare "127.0.0.1" base_url on bwrap-wsl2', () => {
+    expect(needsWinHostResolution('http://127.0.0.1:11434/v1', 'bwrap-wsl2')).toBe(true);
+  });
+
+  it('is true for a "0.0.0.0" base_url on bwrap-wsl2 (defensive: same local-stack failure mode)', () => {
+    expect(needsWinHostResolution('http://0.0.0.0:11434/v1', 'bwrap-wsl2')).toBe(true);
+  });
+
+  it('is true for the legacy {{WIN_HOST}} template on bwrap-wsl2 (S0 seed registry back-compat)', () => {
+    expect(needsWinHostResolution('http://{{WIN_HOST}}:11434/v1', 'bwrap-wsl2')).toBe(true);
+  });
+
+  it('is false for the identical "localhost" base_url on bwrap-direct (EC2: same-host, localhost is already correct)', () => {
+    expect(needsWinHostResolution('http://localhost:11434/v1', 'bwrap-direct')).toBe(false);
+  });
+
+  it('is false for "127.0.0.1" on bwrap-direct', () => {
+    expect(needsWinHostResolution('http://127.0.0.1:11434/v1', 'bwrap-direct')).toBe(false);
+  });
+
+  it('is false on pod-attested (no Windows host in the picture)', () => {
+    expect(needsWinHostResolution('http://localhost:11434/v1', 'pod-attested')).toBe(false);
+  });
+
+  it('is false when no isolation route resolved (tier === null)', () => {
+    expect(needsWinHostResolution('http://localhost:11434/v1', null)).toBe(false);
+  });
+
+  it('is false for a real remote HTTPS endpoint on bwrap-wsl2 (no pointless round trip)', () => {
+    expect(needsWinHostResolution('https://openrouter.ai/api/v1', 'bwrap-wsl2')).toBe(false);
+  });
+
+  it('degrades to false for an unparseable base_url rather than throwing', () => {
+    expect(needsWinHostResolution('not-a-url', 'bwrap-wsl2')).toBe(false);
+  });
+});
+
+describe('applyWinHost — rewrites the host, preserves port and path', () => {
+  it('rewrites a bare "localhost" host to the resolved WIN_HOST IP', () => {
+    expect(applyWinHost('http://localhost:11434/v1', '172.26.0.1')).toBe('http://172.26.0.1:11434/v1');
+  });
+
+  it('rewrites a bare "127.0.0.1" host to the resolved WIN_HOST IP', () => {
+    expect(applyWinHost('http://127.0.0.1:11434/v1', '172.26.0.1')).toBe('http://172.26.0.1:11434/v1');
+  });
+
+  it('substitutes the legacy {{WIN_HOST}} template', () => {
+    expect(applyWinHost('http://{{WIN_HOST}}:11434/v1', '172.26.0.1')).toBe('http://172.26.0.1:11434/v1');
   });
 });
 
