@@ -51,7 +51,7 @@ import {
   parseDeliveryOutput,
   type DeliveryOutcome,
 } from './delivery.js';
-import { writeResponseDoc, buildProvenanceWriteBack } from './capture.js';
+import { writeResponseDoc, buildProvenanceWriteBack, type WorkerOutcomeResult } from './capture.js';
 import { runPreflight, type PreflightResult } from './preflight.js';
 import { getRunDir } from './paths.js';
 import { loadProfilesConfig } from './repo-config.js';
@@ -756,6 +756,40 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       }
     }
 
+    // 19c. Worker self-report outcome (.dispatch-out/outcome.yaml) — all modes.
+    // The worker writes this file as its self-reported outcome (assemble.ts
+    // response format instructions). Precedence in capture.ts's deriveOutcome:
+    // delivery-gate refused/conflict/error > outcome.yaml > parsePiOutput.
+    // Missing or malformed file → silent fallback to parsePiOutput (today's
+    // behavior, fail-safe — no pipeline failure).
+    let workerOutcome: WorkerOutcomeResult | undefined;
+    {
+      logVerbose(verbose, 'reading .dispatch-out/outcome.yaml from the clone');
+      const outcomeFileScript = buildOutcomeFileReadScript(clonePath);
+      const outcomeFileExec = await execViaWsl2({
+        runDir,
+        scriptContent: outcomeFileScript.scriptContent,
+        scriptName: outcomeFileScript.scriptName,
+        timeoutMs: 30_000,
+      });
+      const outcomeReadResult = outcomeFileExec.ok
+        ? parseOutcomeFileReadOutput(outcomeFileExec.data.stdout)
+        : { present: false, content: '' };
+      if (outcomeReadResult.present) {
+        workerOutcome = parseOutcomeFile(outcomeReadResult.content) ?? undefined;
+        if (workerOutcome) {
+          logVerbose(verbose, `worker self-reported outcome: ${workerOutcome.outcome}`);
+        } else {
+          logVerbose(verbose, 'warning: outcome.yaml present but malformed — falling back to parsePiOutput');
+        }
+        try {
+          await writeFile(join(runDir, 'outcome.yaml'), outcomeReadResult.content, 'utf8');
+        } catch (err) {
+          logVerbose(verbose, `warning: could not copy outcome.yaml to run dir: ${err}`);
+        }
+      }
+    }
+
     // 20. Capture
     const captureResult = await writeResponseDoc({
       runDir,
@@ -765,6 +799,7 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       model: canonicalModel,
       isolationBackend,
       needs: piParsed.data.needs,
+      workerOutcome,
       credentialsGranted: credResult.data.granted,
       reviewResult,
       reviewParseError,
@@ -1289,4 +1324,79 @@ export function resolveReviewFileOutcome(
     return { reviewResult: parsed.data };
   }
   return { reviewParseError: `${parsed.error}: ${parsed.message}` };
+}
+
+// ---------------------------------------------------------------------------
+// S6a: `.dispatch-out/outcome.yaml` read (the worker self-report outcome
+// channel — all modes). Mirrors the review.yaml read pattern above.
+// The outcome.yaml schema is simpler: `outcome:` + optional `needs:` list.
+// Missing or malformed files silently fall back to parsePiOutput's
+// classification (today's behavior, fail-safe).
+// ---------------------------------------------------------------------------
+
+export interface OutcomeFileReadResult {
+  present: boolean;
+  content: string;
+}
+
+export function buildOutcomeFileReadScript(clonePath: string): { scriptContent: string; scriptName: string } {
+  const outcomePath = `${clonePath}/.dispatch-out/outcome.yaml`;
+  const scriptContent = [
+    '#!/bin/bash',
+    'set -euo pipefail',
+    `FILE=${shQuote(outcomePath)}`,
+    'if [ -f "$FILE" ]; then',
+    '  echo "---OUTCOME-YAML-PRESENT---"',
+    'else',
+    '  echo "---OUTCOME-YAML-ABSENT---"',
+    'fi',
+    'echo "---OUTCOME-YAML-CONTENT-START---"',
+    'cat "$FILE" 2>/dev/null || true',
+    'echo "---OUTCOME-YAML-CONTENT-END---"',
+    '',
+  ].join('\n');
+  return { scriptContent, scriptName: 'dispatch-outcome-file-read.sh' };
+}
+
+export function parseOutcomeFileReadOutput(stdout: string): OutcomeFileReadResult {
+  const normalized = stdout.replace(/\r\n/g, '\n');
+  const present = normalized.includes('---OUTCOME-YAML-PRESENT---');
+  const content = extractMarked(normalized, '---OUTCOME-YAML-CONTENT-START---', '---OUTCOME-YAML-CONTENT-END---');
+  return { present, content };
+}
+
+const VALID_OUTCOMES = new Set(['completed', 'partial', 'blocked', 'failed']);
+
+export function parseOutcomeFile(content: string): WorkerOutcomeResult | null {
+  const lines = content.trim().split('\n');
+  let outcome: string | undefined;
+  const needs: string[] = [];
+  let inNeeds = false;
+
+  for (const line of lines) {
+    const outcomeMatch = line.match(/^outcome:\s*(.+)$/);
+    if (outcomeMatch) {
+      outcome = outcomeMatch[1]!.trim();
+      inNeeds = false;
+      continue;
+    }
+    if (/^needs:\s*$/.test(line)) {
+      inNeeds = true;
+      continue;
+    }
+    if (inNeeds) {
+      const needMatch = line.match(/^\s*-\s+(.+)$/);
+      if (needMatch) {
+        needs.push(needMatch[1]!.trim());
+      } else if (line.trim()) {
+        inNeeds = false;
+      }
+    }
+  }
+
+  if (!outcome || !VALID_OUTCOMES.has(outcome)) {
+    return null;
+  }
+
+  return { outcome: outcome as WorkerOutcomeResult['outcome'], needs };
 }

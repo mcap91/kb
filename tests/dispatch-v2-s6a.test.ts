@@ -33,11 +33,15 @@ import {
   type Handoff,
   type DeliveryOutcome,
   type StructuredReviewResult,
+  type WorkerOutcomeResult,
 } from '@kb/dispatch-core';
 import {
   buildReviewFileReadScript,
   parseReviewFileReadOutput,
   resolveReviewFileOutcome,
+  buildOutcomeFileReadScript,
+  parseOutcomeFileReadOutput,
+  parseOutcomeFile,
 } from '../packages/dispatch-core/src/pipeline.js';
 
 async function createTempDir(prefix: string): Promise<string> {
@@ -755,5 +759,132 @@ describe('capture.ts — Structured Review section rendering (S6a)', () => {
     expect(written).toContain('**Outcome:** pass');
     expect(written).not.toContain('Parse failed');
     expect(written).not.toContain('should never be rendered');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// outcome.yaml channel (S6a gate 3). `.dispatch-out/outcome.yaml` is the
+// worker's own structured self-report of its outcome (assemble.ts's
+// IMPLEMENT_RESPONSE_FORMAT/SIMPLE_RESPONSE_FORMAT instructions) — it exists
+// because a worker that says "blocked" in chat prose but ends the event
+// stream cleanly was previously recorded as `completed` (parsePiOutput only
+// looks at stream structure, never prose). buildOutcomeFileReadScript/
+// parseOutcomeFileReadOutput are pure (script builder / stdout parser)
+// either side of pipeline.ts's one execViaWsl2 round trip, mirroring
+// review.yaml's read pattern above. parseOutcomeFile is the pure content
+// parser. deriveOutcome itself is module-private in capture.ts, so its
+// workerOutcome-over-piResult precedence is exercised here through
+// writeResponseDoc's public surface (the response doc's outcome header),
+// same approach the Structured Review tests above use for reviewResult.
+// ---------------------------------------------------------------------------
+
+describe('outcome.yaml channel (S6a gate 3)', () => {
+  describe('parseOutcomeFile', () => {
+    it('parses a completed outcome with no needs', () => {
+      const result = parseOutcomeFile('outcome: completed\n');
+      expect(result).toEqual({ outcome: 'completed', needs: [] });
+    });
+
+    it('parses a blocked outcome with a needs list', () => {
+      const content = ['outcome: blocked', 'needs:', '  - network access', '  - pg package', ''].join('\n');
+      const result = parseOutcomeFile(content);
+      expect(result).toEqual({ outcome: 'blocked', needs: ['network access', 'pg package'] });
+    });
+
+    it('returns null when the outcome line is missing (malformed)', () => {
+      const content = ['needs:', '  - something', ''].join('\n');
+      expect(parseOutcomeFile(content)).toBeNull();
+    });
+
+    it('returns null for an invalid outcome value', () => {
+      expect(parseOutcomeFile('outcome: maybe\n')).toBeNull();
+    });
+
+    it('returns null for empty content', () => {
+      expect(parseOutcomeFile('')).toBeNull();
+    });
+  });
+
+  describe('buildOutcomeFileReadScript / parseOutcomeFileReadOutput', () => {
+    it('builds a read-only script that checks for .dispatch-out/outcome.yaml under the clone', () => {
+      const { scriptContent, scriptName } = buildOutcomeFileReadScript('/home/user/.kb-dispatch/clones/RUN-1');
+      expect(scriptName).toBe('dispatch-outcome-file-read.sh');
+      expect(scriptContent).toContain("FILE='/home/user/.kb-dispatch/clones/RUN-1/.dispatch-out/outcome.yaml'");
+      expect(scriptContent).toContain('---OUTCOME-YAML-PRESENT---');
+      expect(scriptContent).toContain('---OUTCOME-YAML-ABSENT---');
+    });
+
+    it('parses a present file into { present: true, content }', () => {
+      const stdout = [
+        '---OUTCOME-YAML-PRESENT---',
+        '---OUTCOME-YAML-CONTENT-START---',
+        'outcome: completed',
+        '---OUTCOME-YAML-CONTENT-END---',
+        '',
+      ].join('\n');
+      const result = parseOutcomeFileReadOutput(stdout);
+      expect(result).toEqual({ present: true, content: 'outcome: completed' });
+    });
+
+    it('parses an absent file into { present: false, content: "" }', () => {
+      const stdout = [
+        '---OUTCOME-YAML-ABSENT---',
+        '---OUTCOME-YAML-CONTENT-START---',
+        '---OUTCOME-YAML-CONTENT-END---',
+        '',
+      ].join('\n');
+      const result = parseOutcomeFileReadOutput(stdout);
+      expect(result).toEqual({ present: false, content: '' });
+    });
+  });
+
+  describe('capture.ts — workerOutcome precedence over piResult (via writeResponseDoc)', () => {
+    let runDir: string;
+
+    beforeEach(async () => {
+      runDir = await createTempDir('kb-capture-outcome-s6a-');
+    });
+
+    afterEach(async () => {
+      await rm(runDir, { recursive: true, force: true });
+    });
+
+    const handoff = { id: 'HO-TEST', title: 'Test task', mode: 'implement' };
+    const delivery: DeliveryOutcome = { status: 'no_changes' };
+
+    it("the worker's outcome.yaml self-report overrides parsePiOutput's classification and needs — this is the whole point of the channel: a worker that narrated `blocked` but ended the event stream cleanly must not be recorded as `completed`", async () => {
+      const workerOutcome: WorkerOutcomeResult = { outcome: 'blocked', needs: ['network access'] };
+
+      const result = await writeResponseDoc({
+        runDir,
+        handoff,
+        delivery,
+        piResult: { outcome: 'completed', usage: { totalTokens: 100, costUsd: 0 } },
+        needs: ['stale prose-derived need'],
+        workerOutcome,
+      });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      const written = await readFile(result.data.responsePath, 'utf8');
+      expect(written).toContain('outcome: blocked');
+      expect(written).not.toContain('outcome: completed');
+      expect(written).toContain('- network access');
+      expect(written).not.toContain('stale prose-derived need');
+    });
+
+    it('falls back to piResult when workerOutcome is absent (today\'s pre-S6a behavior, unchanged)', async () => {
+      const result = await writeResponseDoc({
+        runDir,
+        handoff,
+        delivery,
+        piResult: { outcome: 'completed', usage: { totalTokens: 100, costUsd: 0 } },
+      });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      const written = await readFile(result.data.responsePath, 'utf8');
+      expect(written).toContain('outcome: completed');
+    });
   });
 });

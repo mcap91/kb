@@ -21,6 +21,11 @@ import type { DeliveryOutcome } from './delivery.js';
 import type { BackendFingerprint } from './model-registry.js';
 import type { StructuredReviewResult } from './response-header.js';
 
+export interface WorkerOutcomeResult {
+  outcome: 'completed' | 'partial' | 'blocked' | 'failed';
+  needs: string[];
+}
+
 export interface CaptureOpts {
   /** Windows path to the run dir */
   runDir: string;
@@ -36,6 +41,9 @@ export interface CaptureOpts {
   isolationBackend?: string;
   /** Needed access/decisions the worker reported on a non-completed outcome (rev-5 §5); parsed from Pi output. */
   needs?: string[];
+  /** Worker self-reported outcome from .dispatch-out/outcome.yaml (S6a outcome channel).
+   * Takes precedence over parsePiOutput's classification when present. */
+  workerOutcome?: WorkerOutcomeResult;
   /** Credential profile names granted for this run (names only; S3 T10). */
   credentialsGranted?: string[];
   /** Resolved backend base_url actually used (never the {{WIN_HOST}} template; S3 ruling 8). */
@@ -92,18 +100,37 @@ function deriveBranch(handoffId: string, delivery: DeliveryOutcome): string {
 }
 
 /**
- * Response-doc outcome. Delivery-gate refusals/conflicts/errors always win
- * over whatever the worker itself reported; short of those, the worker's own
- * reported outcome (from the Pi adapter's facts-only `PiResult.outcome`)
- * is authoritative, defaulting to 'completed' when no piResult is available
- * at all (e.g. a delivered run captured without adapter usage data).
+ * Response-doc outcome. Precedence (highest to lowest):
+ *   1. Delivery-gate refusals/conflicts/errors — always win over whatever the
+ *      worker itself reported.
+ *   2. The worker's own self-report from `.dispatch-out/outcome.yaml` (S6a
+ *      outcome channel), when present — the worker's deliberate, structured
+ *      claim about its own run, taking precedence over the event-stream-only
+ *      classification below.
+ *   3. The Pi adapter's facts-only `PiResult.outcome` classification
+ *      (event-stream structure only) — the pre-S6a fallback, defaulting to
+ *      'completed' when no piResult is available at all (e.g. a delivered
+ *      run captured without adapter usage data).
  */
-function deriveOutcome(delivery: DeliveryOutcome, piResult?: CaptureOpts['piResult']): ResponseOutcome {
+function deriveOutcome(
+  delivery: DeliveryOutcome,
+  piResult?: CaptureOpts['piResult'],
+  workerOutcome?: WorkerOutcomeResult,
+): ResponseOutcome {
   if (delivery.status === 'refused_out_of_scope' || delivery.status === 'secret_in_diff') {
     return 'refused';
   }
   if (delivery.status === 'conflict' || delivery.status === 'error') {
     return 'failed';
+  }
+  if (workerOutcome) {
+    switch (workerOutcome.outcome) {
+      case 'completed':
+      case 'partial':
+      case 'blocked':
+      case 'failed':
+        return workerOutcome.outcome;
+    }
   }
   if (piResult) {
     switch (piResult.outcome) {
@@ -215,14 +242,18 @@ function formatBackendFingerprint(fingerprint: BackendFingerprint): string {
 export async function writeResponseDoc(opts: CaptureOpts): Promise<DispatchResult<CaptureResult>> {
   const { runDir, handoff, delivery, piResult, model, isolationBackend, needs } = opts;
 
-  const outcome = deriveOutcome(delivery, piResult);
+  const outcome = deriveOutcome(delivery, piResult, opts.workerOutcome);
   const branch = deriveBranch(handoff.id, delivery);
   const changedFiles = delivery.status === 'delivered' ? delivery.changedFiles : [];
   const totalTokens = piResult?.usage.totalTokens ?? 0;
   const costUsd = piResult?.usage.costUsd ?? 0;
   const changedFilesYaml = `[${changedFiles.map((file) => JSON.stringify(file)).join(', ')}]`;
   const credentialsGrantedYaml = `[${(opts.credentialsGranted ?? []).map((name) => JSON.stringify(name)).join(', ')}]`;
-  const hasNeeds = !!needs && needs.length > 0;
+  // The worker's own self-reported needs (outcome.yaml) take precedence over
+  // parsePiOutput's prose-derived needs when present — same precedence as
+  // deriveOutcome's outcome field above (S6a outcome channel).
+  const effectiveNeeds = (opts.workerOutcome?.needs?.length ? opts.workerOutcome.needs : needs) ?? [];
+  const hasNeeds = effectiveNeeds.length > 0;
 
   const frontmatterLines = [
     '---',
@@ -237,7 +268,7 @@ export async function writeResponseDoc(opts: CaptureOpts): Promise<DispatchResul
     `credentials_granted: ${credentialsGrantedYaml}`,
   ];
   if (hasNeeds) {
-    const needsYaml = `[${needs!.map((entry) => JSON.stringify(entry)).join(', ')}]`;
+    const needsYaml = `[${effectiveNeeds.map((entry) => JSON.stringify(entry)).join(', ')}]`;
     frontmatterLines.push(`needs: ${needsYaml}`);
   }
   // Resolved-value provenance (S3 ruling 8): stamped only when the caller has
@@ -258,7 +289,7 @@ export async function writeResponseDoc(opts: CaptureOpts): Promise<DispatchResul
     '',
   ];
   if (hasNeeds) {
-    bodyLines.push('## Needs', ...needs!.map((entry) => `- ${entry}`), '');
+    bodyLines.push('## Needs', ...effectiveNeeds.map((entry) => `- ${entry}`), '');
   }
   bodyLines.push(
     '## Changed Files',
