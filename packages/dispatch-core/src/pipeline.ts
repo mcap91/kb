@@ -341,7 +341,12 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
     // under --unshare-net and can reach nothing but 127.0.0.1. This retires
     // the {{WIN_HOST}} template from models.json entirely; WIN_HOST is still
     // resolved below, but only to feed the tunnel's own targetUrl.
-    const piBaseUrl = `http://127.0.0.1:${TUNNEL_RELAY_PORT}`;
+    // S6a fix (gate-2 bug, 2026-09-13): the loopback origin alone is not
+    // enough — buildPiBaseUrl preserves model.baseUrl's own path (`/v1` for
+    // Ollama, `/api/v1` for OpenRouter, per init-dispatch.ts's backends.json
+    // README) so Pi's relative-to-baseUrl requests still land on the right
+    // route once the forwarder puts the real host back.
+    const piBaseUrl = buildPiBaseUrl(model.baseUrl);
     // adapters/pi.ts still expects the legacy ModelEntry shape; build one from the
     // resolved two-table model (S3 ruling 1) rather than widening the adapter's
     // facts-only interface (D10) for a single-slice-old type.
@@ -773,6 +778,30 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
     // safety net if this itself fails to run (never rejects, but belt+suspenders).
     await removeClone(clonePath, runDir).catch(() => undefined);
   }
+}
+
+// ---------------------------------------------------------------------------
+// S6a fix: Pi baseUrl path preservation (gate-2 bug, 2026-09-13). Not part of
+// the package's public surface — exported at module scope only so tests can
+// assert on it directly (mirrors `needsWinHostResolution`/`applyWinHost`
+// below), without needing a live WSL2/bwrap host to drive `runDispatch()`
+// all the way to step 10.
+// ---------------------------------------------------------------------------
+
+/**
+ * Builds the in-jail loopback baseUrl Pi's own model entry points at
+ * (`http://127.0.0.1:<TUNNEL_RELAY_PORT>`), preserving the path component of
+ * the operator's configured `model.baseUrl` (e.g. `/v1` for an Ollama
+ * `backends.json` entry, `/api/v1` for OpenRouter — see init-dispatch.ts's
+ * own README for both shapes). Pi constructs API requests relative to
+ * baseUrl, so a bare loopback origin with no path would send requests to
+ * `/chat/completions` instead of the operator's real route — 404 from
+ * Ollama, errors from OpenRouter. A trailing slash on the original path is
+ * stripped so the rebuilt URL never double-slashes.
+ */
+export function buildPiBaseUrl(baseUrl: string): string {
+  const originalPath = new URL(baseUrl).pathname.replace(/\/$/, '');
+  return `http://127.0.0.1:${TUNNEL_RELAY_PORT}${originalPath}`;
 }
 
 // ---------------------------------------------------------------------------
