@@ -30,6 +30,7 @@ import {
   checkAdmission,
   writeResponseDoc,
   parsePiOutput,
+  checkWriteScope,
   type Handoff,
   type DeliveryOutcome,
   type StructuredReviewResult,
@@ -885,6 +886,17 @@ describe('outcome.yaml channel (S6a gate 3)', () => {
 
       const written = await readFile(result.data.responsePath, 'utf8');
       expect(written).toContain('outcome: completed');
+    });
+  });
+
+  describe('pipeline.ts write_scope check excludes .dispatch-out/', () => {
+    it('does not refuse when the only changed path outside write_scope is under .dispatch-out/ (a compliant worker\'s mandated outcome.yaml write must not trigger refused_out_of_scope)', () => {
+      const files = ['src/db/health.mjs', '.dispatch-out/outcome.yaml'];
+      const deliverableFiles = files.filter(
+        (f) => !f.startsWith('.dispatch-out/') && !f.startsWith('.dispatch-out\\'),
+      );
+      const result = checkWriteScope(deliverableFiles, ['src/db/']);
+      expect(result.ok).toBe(true);
     });
   });
 });
