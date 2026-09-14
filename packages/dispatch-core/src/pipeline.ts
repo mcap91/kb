@@ -76,12 +76,6 @@ import { parseReviewHeader, type StructuredReviewResult } from './response-heade
 const WORKER_TIMEOUT_SECS = 1800;
 const WORKER_TIMEOUT_MS = WORKER_TIMEOUT_SECS * 1000;
 
-// Worker infrastructure directories that live inside the ephemeral clone
-// (bwrap S0 only mounts clonePath writable). Excluded from enumeration
-// and delivery to prevent scope refusal and credential leaks (WK-0075).
-const PI_WORKER_DIR = '.pi-agent';
-const WORKER_INFRA_PREFIXES = [PI_WORKER_DIR];
-
 const VALID_RUN_ID = /^RUN-[0-9a-f-]{36}$/i;
 
 export interface DispatchOpts {
@@ -326,11 +320,18 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       if (!mkdirResult.ok) return mkdirResult;
     }
 
-    // 10. Build Pi invocation. workerDir (PI_CODING_AGENT_DIR) is nested INSIDE
-    // clonePath: jail.ts's S0-minimum bwrap only remounts clonePath writable
-    // (bwrap cannot bind a path that doesn't already exist under the ro root),
-    // so anywhere Pi needs to write must live under the one writable bind.
-    const workerDir = `${clonePath}/${PI_WORKER_DIR}`;
+    // 10. Build Pi invocation. workerDir (PI_CODING_AGENT_DIR) is a path
+    // INSIDE THE JAIL, not under clonePath: jail.ts's S5 recipe mounts a
+    // fresh --tmpfs /tmp (step 4 of the §11 recipe) that is always writable
+    // regardless of write_scope, unlike the rest of the ro-bound clone. A
+    // clone-relative path here (the old S0 shape) would put Pi's config dir
+    // outside write_scope and hit EROFS the moment Pi tries to write
+    // auth.json/models.json, since S5 made the clone read-only except for
+    // declared write_scope paths. buildExecutionScript below writes the
+    // mkdir + the models.json heredoc INSIDE the bwrap invocation for the
+    // same reason this path is chosen here: the tmpfs does not exist until
+    // bwrap itself mounts it, so nothing pre-jail can see or populate it.
+    const workerDir = '/tmp/.pi-agent';
     const promptPathWsl = windowsToWslPath(promptPath);
     const runDirWsl = windowsToWslPath(runDir);
 
@@ -519,12 +520,11 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
     // their §6 envelope grants no write authority at all (their
     // assemble.ts framings each instruct "do not modify any files"), and
     // the worker's own findings/review ARE the deliverable, captured below
-    // as the response doc rather than a git delta. `isWorkerInfra` is
-    // shared by both branches: the worker's own `.pi-agent/` config dir must
-    // never count as a "mutation" in either one (WK-0075).
-    const isWorkerInfra = (p: string): boolean =>
-      WORKER_INFRA_PREFIXES.some(pfx => p === pfx || p.startsWith(pfx + '/'));
-
+    // as the response doc rather than a git delta. The worker's own
+    // `.pi-agent/` config dir lives under the jail's /tmp tmpfs (never under
+    // clonePath any more), so it never appears in either branch's
+    // enumeration below — no infra-prefix filtering is needed here (formerly
+    // WK-0075's fix, now moot since the directory never touches the clone).
     let delivery: DeliveryOutcome;
 
     if (handoff.mode === 'implement') {
@@ -569,10 +569,7 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       }
       const enumerated = parseEnumerateOutput(enumerateExec.data.stdout);
       const secretHits = parseInjectedValueScanOutput(enumerateExec.data.stdout);
-      const allChangedFiles = [
-        ...enumerated.changedFiles.filter(f => !isWorkerInfra(f)),
-        ...enumerated.untrackedFiles.filter(f => !isWorkerInfra(f)),
-      ];
+      const allChangedFiles = [...enumerated.changedFiles, ...enumerated.untrackedFiles];
 
       // 17. Check write scope, check the injected-value scan hits captured
       // above — refusals are DATA (a DeliveryOutcome variant), not a
@@ -609,7 +606,6 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
           motherRepoWsl: windowsToWslPath(dir),
           handoffId: handoff.id,
           baseSha: admission.data.baseSha,
-          excludePrefixes: WORKER_INFRA_PREFIXES,
         });
         const deliveryExec = await execViaWsl2({
           runDir,
@@ -649,10 +645,7 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       });
       if (advisoryEnumerateExec.ok && advisoryEnumerateExec.data.exitCode === 0) {
         const enumResult = parseEnumerateOutput(advisoryEnumerateExec.data.stdout);
-        const mutatedFiles = [
-          ...enumResult.changedFiles.filter(f => !isWorkerInfra(f)),
-          ...enumResult.untrackedFiles.filter(f => !isWorkerInfra(f)),
-        ];
+        const mutatedFiles = [...enumResult.changedFiles, ...enumResult.untrackedFiles];
         if (mutatedFiles.length > 0) {
           logVerbose(
             verbose,
@@ -847,10 +840,14 @@ export interface BuildExecutionScriptOpts {
  * Section order:
  *   1. shebang / `set -euo pipefail` / PATH export (non-interactive shells skip .bashrc)
  *   2. selective credential injection (S3 ruling 2): existence checks, then exports
- *   3. PI_CODING_AGENT_DIR + models.json heredoc (baseUrl is already resolved by
- *      the caller — the in-jail loopback for the tunnel path — so no
- *      {{WIN_HOST}} substitution runs here any more; the tunnel's own target
- *      resolution is a separate, earlier step in runDispatch())
+ *   3. PI_CODING_AGENT_DIR/PI_OFFLINE exports only — plain env vars, inherited
+ *      by the bwrap child automatically (bwrap does not clear the environment
+ *      unless told to). The mkdir + models.json heredoc used to live here too,
+ *      but S5's jail rewrite mounts workerDir's parent (`/tmp`) as a FRESH
+ *      tmpfs INSIDE the jail (jail.ts step 4) — anything written to that path
+ *      before bwrap runs lands on the host/pre-jail `/tmp` and is invisible to
+ *      the sandboxed process once bwrap mounts over it. Both moved to step 7,
+ *      inside the inner script, for exactly this reason.
  *   4. backend fingerprint probe (S3 ruling 8, best-effort, never gating)
  *   5. tunnel preJailLines (T26/D21): stage forwarder.js/relay.js, start the
  *      host-side forwarder, export HTTP_PROXY/HTTPS_PROXY for the worker's own
@@ -861,11 +858,14 @@ export interface BuildExecutionScriptOpts {
  *   7. the bwrap invocation itself, now wrapping a `bash -c` inner script
  *      (rather than a bare worker command) so the in-jail relay can start/stop
  *      around the worker: inJailPrefix (bring up lo, start the relay, `npm
- *      rebuild` under containment when a lockfile is present) -> the worker
- *      command -> capture its exit code -> inJailSuffix (kill the relay) ->
- *      re-exit with that captured code, so a `timeout`-imposed 124 (or any
- *      other real worker exit code) still reaches the caller unchanged
- *      through the extra shell layer
+ *      rebuild` under containment when a lockfile is present) -> mkdir -p
+ *      "$PI_CODING_AGENT_DIR" + the models.json heredoc (moved in here from
+ *      step 3 above — PI_CODING_AGENT_DIR resolves to workerDir, i.e.
+ *      `/tmp/.pi-agent`, which only exists once bwrap's own tmpfs is mounted)
+ *      -> the worker command -> capture its exit code -> inJailSuffix (kill
+ *      the relay) -> re-exit with that captured code, so a `timeout`-imposed
+ *      124 (or any other real worker exit code) still reaches the caller
+ *      unchanged through the extra shell layer
  *   8. capture the outer bwrap/timeout pipeline's own exit code (guarded by an
  *      if/else rather than a bare `$?` — under `set -e`+`pipefail`, a bare
  *      `$?` capture on the line right after a failing pipeline never runs,
@@ -897,6 +897,16 @@ export function buildExecutionScript(opts: BuildExecutionScriptOpts): string {
   // layer, and survive intact.
   const innerScriptLines = [
     ...tunnelBash.inJailPrefix,
+    // PI_CODING_AGENT_DIR setup (mkdir + models.json) MUST run in here, not
+    // pre-jail: workerDir is `/tmp/.pi-agent`, and bwrap mounts a brand-new
+    // empty tmpfs at /tmp (jail.ts step 4) — that mount does not exist until
+    // bwrap itself starts, so anything written to it beforehand is invisible
+    // to the sandboxed process. PI_CODING_AGENT_DIR itself is already an
+    // exported env var by this point (inherited from the pre-jail section).
+    'mkdir -p "$PI_CODING_AGENT_DIR"',
+    `cat <<'DISPATCH_MODELS_JSON_EOF' > "$PI_CODING_AGENT_DIR/models.json"`,
+    modelsJsonContent,
+    'DISPATCH_MODELS_JSON_EOF',
     `if [ -f ${shQuote(lockfilePath)} ]; then`,
     `  cd ${shQuote(clonePath)} && npm rebuild 2>&1 && cd - > /dev/null || true`,
     'fi',
@@ -924,11 +934,6 @@ export function buildExecutionScript(opts: BuildExecutionScriptOpts): string {
     '',
     `export PI_CODING_AGENT_DIR=${shQuote(workerDir)}`,
     'export PI_OFFLINE=1',
-    'mkdir -p "$PI_CODING_AGENT_DIR"',
-    '',
-    `cat <<'DISPATCH_MODELS_JSON_EOF' > "$PI_CODING_AGENT_DIR/models.json"`,
-    modelsJsonContent,
-    'DISPATCH_MODELS_JSON_EOF',
     '',
     ...fingerprintLines,
     '',
