@@ -109,9 +109,19 @@ export interface DispatchResult2 {
    * `code_review` mode run whose worker response header parsed
    * deterministically. Absent (never a pipeline failure) when the mode isn't
    * `code_review` or the header failed to parse; a parse failure is
-   * informational for the orchestrator, logged verbose-only below.
+   * informational for the orchestrator, surfaced via `reviewParseError`
+   * below (and logged verbose-only) rather than silently dropped.
    */
   reviewResult?: StructuredReviewResult;
+  /**
+   * The parser's own error message when a `code_review` mode run's response
+   * header failed to parse (`response-header.ts`'s `REVIEW_PARSE_FAILED`
+   * message). Absent when the mode isn't `code_review` or parsing
+   * succeeded. Also threaded into the response doc's `## Structured Review`
+   * section (capture.ts) so the failure is diagnosable from the artifact
+   * itself, not only from this in-memory result or a `--verbose` log line.
+   */
+  reviewParseError?: string;
 }
 
 /** Single-quote a value for safe embedding in generated bash (mirrors delivery.ts's private helper). */
@@ -674,21 +684,37 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
     }
 
     // 19b. Structured review header (S6a ruling 3) — code_review mode only.
-    // Parsed from the worker's own accumulated response text and threaded
-    // into capture below so `writeResponseDoc` can render the `## Structured
-    // Review` section. Ruling 3's "parses deterministically or the run is
-    // failed" governs the ORCHESTRATOR's downstream merge decision (merge
-    // iff outcome === 'pass'), not this pipeline call: a parse failure here
-    // is informational (logged verbose-only), never a pipeline-level
-    // failure — `reviewResult` simply stays absent, and the response doc
-    // renders without the structured section (the worker's free-form text
-    // is still captured either way).
+    // Parsed from the worker's LAST assistant message ONLY
+    // (`piParsed.data.lastAssistantText`), never `accumulatedText` (the
+    // whole session). Root cause of the original silent-failure bug: an
+    // agentic code_review worker narrates ("Let me look at the diff...")
+    // and calls tools BEFORE producing its structured header, so the
+    // whole-session text pushes the header's opening `---` past
+    // `extractHeaderBlock`'s 5-line search window. The header is always in
+    // the worker's final message, regardless of how many turns the
+    // reviewer takes or which model/backend/tier served it — isolating
+    // that one message at the source (the adapter, `pi.ts`) fixes the data
+    // flow for every caller, rather than widening the parser's window
+    // (which would make a markdown `---` horizontal rule in the narration
+    // ambiguous with the real header delimiter).
+    //
+    // Ruling 3's "parses deterministically or the run is failed" governs
+    // the ORCHESTRATOR's downstream merge decision (merge iff outcome ===
+    // 'pass'), not this pipeline call: a parse failure here is never a
+    // pipeline-level failure — `reviewResult` simply stays absent. It is,
+    // however, surfaced NON-silently: `reviewParseError` carries the
+    // parser's own message into capture below, so `writeResponseDoc`
+    // renders a `## Structured Review` section explaining the failure
+    // instead of omitting the section with no trace (previously only a
+    // verbose-gated log line, invisible without `--verbose`).
     let reviewResult: StructuredReviewResult | undefined;
-    if (handoff.mode === 'code_review' && piParsed.data.accumulatedText) {
-      const reviewParsed = parseReviewHeader(piParsed.data.accumulatedText);
+    let reviewParseError: string | undefined;
+    if (handoff.mode === 'code_review') {
+      const reviewParsed = parseReviewHeader(piParsed.data.lastAssistantText);
       if (reviewParsed.ok) {
         reviewResult = reviewParsed.data;
       } else {
+        reviewParseError = reviewParsed.message;
         logVerbose(verbose, `warning: review header parse failed: ${reviewParsed.message}`);
       }
     }
@@ -704,6 +730,7 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       needs: piParsed.data.needs,
       credentialsGranted: credResult.data.granted,
       reviewResult,
+      reviewParseError,
       // Resolved-value provenance (S3 ruling 8): the real endpoint the tunnel
       // forwarder was configured to reach — never `model.baseUrl`'s raw
       // {{WIN_HOST}} template, which the old models.json-only sed substitution
@@ -772,6 +799,7 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       responsePath: captureResult.data.responsePath,
       runDir,
       reviewResult,
+      reviewParseError,
     });
   } finally {
     // 21. Remove clone — best-effort; clone.ts's 24h orphan sweep is the

@@ -589,4 +589,80 @@ describe('adapters/pi.ts — facts-only Pi adapter', () => {
     expect(result.data.stopReason).toBe('truncated_stream');
     expect(result.data.hasAgentEnd).toBe(false);
   });
+
+  // -------------------------------------------------------------------------
+  // parsePiOutput — lastAssistantText (S6a bug fix: the structured review
+  // header parser must read only the worker's final message, not the whole
+  // session — see tests/dispatch-v2-s6a.test.ts for the parseReviewHeader
+  // integration proof of the actual bug/fix).
+  // -------------------------------------------------------------------------
+
+  it('parsePiOutput isolates lastAssistantText to only the final assistant message across multiple turns', () => {
+    const lines = [
+      JSON.stringify({ type: 'agent_start' }),
+      // Turn 1: narration + a tool call, ending in its own message_end.
+      JSON.stringify({ type: 'text_delta', message: { content: 'Let me look at the diff first.\n' } }),
+      JSON.stringify({ type: 'toolcall_start', name: 'bash' }),
+      JSON.stringify({ type: 'tool_execution_end', output: 'diff --git a/foo b/foo' }),
+      JSON.stringify({
+        type: 'message_end',
+        message: { role: 'assistant', usage: { totalTokens: 40, cost: { total: 0.0004 } } },
+      }),
+      JSON.stringify({ type: 'turn_end', stopReason: 'tool_calls' }),
+      // Turn 2: the final reply — the only text lastAssistantText should carry.
+      JSON.stringify({ type: 'text_delta', message: { content: '---\noutcome: pass\n---\nLooks good.' } }),
+      JSON.stringify({
+        type: 'message_end',
+        message: { role: 'assistant', usage: { totalTokens: 15, cost: { total: 0.0001 } } },
+      }),
+      JSON.stringify({ type: 'turn_end', stopReason: 'end_turn' }),
+      JSON.stringify({ type: 'agent_end' }),
+    ].join('\n');
+
+    const result = parsePiOutput(lines);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.accumulatedText).toBe('Let me look at the diff first.\n---\noutcome: pass\n---\nLooks good.');
+    expect(result.data.lastAssistantText).toBe('---\noutcome: pass\n---\nLooks good.');
+    expect(result.data.usage.totalTokens).toBe(55);
+  });
+
+  it('parsePiOutput lastAssistantText equals accumulatedText when the stream carries only one message (backward-compatible, no message_start/end boundaries crossed)', () => {
+    const lines = [
+      JSON.stringify({ type: 'agent_start' }),
+      JSON.stringify({ type: 'text_delta', message: { content: 'All done, nothing needed.' } }),
+      JSON.stringify({ type: 'agent_end' }),
+    ].join('\n');
+
+    const result = parsePiOutput(lines);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.lastAssistantText).toBe('All done, nothing needed.');
+    expect(result.data.lastAssistantText).toBe(result.data.accumulatedText);
+  });
+
+  it('parsePiOutput falls back to the in-flight buffer when the final message never gets a message_end (truncated stream)', () => {
+    const lines = [
+      JSON.stringify({ type: 'agent_start' }),
+      JSON.stringify({ type: 'text_delta', message: { content: 'First message, complete.' } }),
+      JSON.stringify({
+        type: 'message_end',
+        message: { role: 'assistant', usage: { totalTokens: 10, cost: { total: 0.0001 } } },
+      }),
+      // Second message starts streaming but the connection drops before its own message_end.
+      JSON.stringify({ type: 'text_delta', message: { content: 'Second message, cut off mid' } }),
+    ].join('\n');
+
+    const result = parsePiOutput(lines);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.lastAssistantText).toBe('Second message, cut off mid');
+  });
+
+  it('parsePiOutput returns lastAssistantText: "" on empty input, alongside the existing empty_stream fields', () => {
+    const result = parsePiOutput('');
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.lastAssistantText).toBe('');
+  });
 });
