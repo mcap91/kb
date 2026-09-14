@@ -260,12 +260,19 @@ export function parsePiOutput(stdout: string): DispatchResult<PiResult> {
   // distinction is read from the worker's own response text by the capture
   // step (Wave 2 delivery/capture), not inferred here.
   const hasAgentEnd = events.some(e => isRecord(e) && e.type === 'agent_end');
-  const outcome: PiResult['outcome'] = sawError
-    ? 'error'
-    : hasAgentEnd
-      ? 'completed'
-      : 'failed';
-  if (outcome === 'failed' && stopReason === undefined) {
+  const allAttemptsErrored = events.some(
+    (e) => isRecord(e) && e.type === 'auto_retry_end' && e.success === false,
+  );
+  const outcome: PiResult['outcome'] = allAttemptsErrored
+    ? 'failed'
+    : sawError
+      ? 'error'
+      : hasAgentEnd
+        ? 'completed'
+        : 'failed';
+  if (allAttemptsErrored) {
+    stopReason = 'all_attempts_errored';
+  } else if (outcome === 'failed' && stopReason === undefined) {
     stopReason = 'truncated_stream';
   }
 

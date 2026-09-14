@@ -526,6 +526,29 @@ describe('adapters/pi.ts — facts-only Pi adapter', () => {
     expect(result.data.stopReason).toBe('error');
   });
 
+  it('parsePiOutput returns failed/all_attempts_errored when every retry exhausts with an error', () => {
+    const lines = [
+      JSON.stringify({ type: 'agent_start' }),
+      JSON.stringify({ type: 'message_end', stopReason: 'error', errorMessage: 'Connection error.' }),
+      JSON.stringify({ type: 'auto_retry_start', attempt: 1, delay: 2000 }),
+      JSON.stringify({ type: 'message_end', stopReason: 'error', errorMessage: 'Connection error.' }),
+      JSON.stringify({ type: 'auto_retry_start', attempt: 2, delay: 2000 }),
+      JSON.stringify({ type: 'message_end', stopReason: 'error', errorMessage: 'Connection error.' }),
+      JSON.stringify({ type: 'auto_retry_start', attempt: 3, delay: 2000 }),
+      JSON.stringify({ type: 'message_end', stopReason: 'error', errorMessage: 'Connection error.' }),
+      JSON.stringify({ type: 'auto_retry_end', success: false, attempt: 3, finalError: 'Connection error.' }),
+      JSON.stringify({ type: 'agent_settled' }),
+    ].join('\n');
+
+    const result = parsePiOutput(lines);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.outcome).toBe('failed');
+    expect(result.data.stopReason).toBe('all_attempts_errored');
+    expect(result.data.usage.totalTokens).toBe(0);
+    expect(result.data.hasAgentEnd).toBe(false);
+  });
+
   it('tolerates stray non-JSON lines but fails when nothing parses at all', () => {
     const tolerant = parsePiOutput('not json\n{"type":"agent_end"}\n');
     expect(tolerant.ok).toBe(true);
