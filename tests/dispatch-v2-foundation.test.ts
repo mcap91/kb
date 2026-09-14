@@ -9,6 +9,7 @@
  */
 import { describe, expect, it, beforeEach, afterEach } from 'vitest';
 import { execFileSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -591,29 +592,53 @@ describe('adapters/pi.ts — facts-only Pi adapter', () => {
   });
 
   // -------------------------------------------------------------------------
-  // parsePiOutput — lastAssistantText (S6a bug fix: the structured review
-  // header parser must read only the worker's final message, not the whole
-  // session — see tests/dispatch-v2-s6a.test.ts for the parseReviewHeader
-  // integration proof of the actual bug/fix).
+  // parsePiOutput — accumulatedText / lastAssistantText (WK-0092/WK-0093:
+  // text rides on assistant `message_end.message.content` blocks — Pi never
+  // emits a top-level `text_delta` event, so the prior delta/buffer
+  // implementation these tests exercised was dead code since S0. Event
+  // shapes below (role, content array, block `type`s) are the real shape
+  // verified against a captured pi-output.log — see the golden fixture
+  // describe block further down for the real-capture proof, and
+  // tests/dispatch-v2-s6a.test.ts for the parseReviewHeader integration
+  // proof of the S6a lastAssistantText/review-header bug and fix).
   // -------------------------------------------------------------------------
 
-  it('parsePiOutput isolates lastAssistantText to only the final assistant message across multiple turns', () => {
+  it('parsePiOutput isolates lastAssistantText to only the final assistant message, while accumulatedText spans both turns and excludes thinking/toolCall/toolResult content', () => {
     const lines = [
       JSON.stringify({ type: 'agent_start' }),
-      // Turn 1: narration + a tool call, ending in its own message_end.
-      JSON.stringify({ type: 'text_delta', message: { content: 'Let me look at the diff first.\n' } }),
-      JSON.stringify({ type: 'toolcall_start', name: 'bash' }),
-      JSON.stringify({ type: 'tool_execution_end', output: 'diff --git a/foo b/foo' }),
+      // Turn 1: thinking + narration text + a tool call, in one message_end.
       JSON.stringify({
         type: 'message_end',
-        message: { role: 'assistant', usage: { totalTokens: 40, cost: { total: 0.0004 } } },
+        message: {
+          role: 'assistant',
+          content: [
+            { type: 'thinking', thinking: 'Let me plan my approach.' },
+            { type: 'text', text: 'Let me look at the diff first.\n' },
+            { type: 'toolCall', id: 'call_1', name: 'bash', arguments: { command: 'git diff' } },
+          ],
+          usage: { totalTokens: 40, cost: { total: 0.0004 } },
+        },
       }),
       JSON.stringify({ type: 'turn_end', stopReason: 'tool_calls' }),
-      // Turn 2: the final reply — the only text lastAssistantText should carry.
-      JSON.stringify({ type: 'text_delta', message: { content: '---\noutcome: pass\n---\nLooks good.' } }),
+      // The tool result message_end — must not contaminate either field.
       JSON.stringify({
         type: 'message_end',
-        message: { role: 'assistant', usage: { totalTokens: 15, cost: { total: 0.0001 } } },
+        message: {
+          role: 'toolResult',
+          toolCallId: 'call_1',
+          toolName: 'bash',
+          content: [{ type: 'text', text: 'diff --git a/foo b/foo' }],
+          isError: false,
+        },
+      }),
+      // Turn 2: the final reply — the only text lastAssistantText should carry.
+      JSON.stringify({
+        type: 'message_end',
+        message: {
+          role: 'assistant',
+          content: [{ type: 'text', text: '---\noutcome: pass\n---\nLooks good.' }],
+          usage: { totalTokens: 15, cost: { total: 0.0001 } },
+        },
       }),
       JSON.stringify({ type: 'turn_end', stopReason: 'end_turn' }),
       JSON.stringify({ type: 'agent_end' }),
@@ -627,10 +652,17 @@ describe('adapters/pi.ts — facts-only Pi adapter', () => {
     expect(result.data.usage.totalTokens).toBe(55);
   });
 
-  it('parsePiOutput lastAssistantText equals accumulatedText when the stream carries only one message (backward-compatible, no message_start/end boundaries crossed)', () => {
+  it('parsePiOutput lastAssistantText equals accumulatedText when the stream carries only one assistant message_end', () => {
     const lines = [
       JSON.stringify({ type: 'agent_start' }),
-      JSON.stringify({ type: 'text_delta', message: { content: 'All done, nothing needed.' } }),
+      JSON.stringify({
+        type: 'message_end',
+        message: {
+          role: 'assistant',
+          content: [{ type: 'text', text: 'All done, nothing needed.' }],
+          usage: { totalTokens: 5, cost: { total: 0.00005 } },
+        },
+      }),
       JSON.stringify({ type: 'agent_end' }),
     ].join('\n');
 
@@ -641,22 +673,34 @@ describe('adapters/pi.ts — facts-only Pi adapter', () => {
     expect(result.data.lastAssistantText).toBe(result.data.accumulatedText);
   });
 
-  it('parsePiOutput falls back to the in-flight buffer when the final message never gets a message_end (truncated stream)', () => {
+  it('parsePiOutput does not recover partial text from a truncated stream (WK-0092 accepted trade-off: no message_end for the final message means no text, not a stray thinking/message_update fragment)', () => {
     const lines = [
       JSON.stringify({ type: 'agent_start' }),
-      JSON.stringify({ type: 'text_delta', message: { content: 'First message, complete.' } }),
       JSON.stringify({
         type: 'message_end',
-        message: { role: 'assistant', usage: { totalTokens: 10, cost: { total: 0.0001 } } },
+        message: {
+          role: 'assistant',
+          content: [{ type: 'text', text: 'First message, complete.' }],
+          usage: { totalTokens: 10, cost: { total: 0.0001 } },
+        },
       }),
-      // Second message starts streaming but the connection drops before its own message_end.
-      JSON.stringify({ type: 'text_delta', message: { content: 'Second message, cut off mid' } }),
+      // Second message starts streaming (real Pi shape: deltas nest under
+      // message_update.assistantMessageEvent) but the connection drops
+      // before its own message_end — this adapter does not read
+      // message_update at all, so nothing from the in-flight second message
+      // is recovered.
+      JSON.stringify({
+        type: 'message_update',
+        assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: 'Second message, cut off mid' },
+      }),
     ].join('\n');
 
     const result = parsePiOutput(lines);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.data.lastAssistantText).toBe('Second message, cut off mid');
+    expect(result.data.lastAssistantText).toBe('First message, complete.');
+    expect(result.data.outcome).toBe('failed');
+    expect(result.data.stopReason).toBe('truncated_stream');
   });
 
   it('parsePiOutput returns lastAssistantText: "" on empty input, alongside the existing empty_stream fields', () => {
@@ -664,5 +708,88 @@ describe('adapters/pi.ts — facts-only Pi adapter', () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.data.lastAssistantText).toBe('');
+  });
+
+  it('parsePiOutput defensively returns "" text for an assistant message_end whose message has no content array', () => {
+    const lines = [
+      JSON.stringify({ type: 'agent_start' }),
+      JSON.stringify({
+        type: 'message_end',
+        message: { role: 'assistant', usage: { totalTokens: 50, cost: { total: 0.0005 } } },
+      }),
+      JSON.stringify({ type: 'agent_end' }),
+    ].join('\n');
+
+    const result = parsePiOutput(lines);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.accumulatedText).toBe('');
+    expect(result.data.lastAssistantText).toBe('');
+    expect(result.data.usage.totalTokens).toBe(50);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// adapters/pi.ts — golden fixture (WK-0092/WK-0093, DEC-0009): a real,
+// unedited capture (9 verbatim events selected from a 1770-line pi-output.log
+// — HO-0008 RUN-ddccbe46, a multi-turn deepseek code_review dispatch) proves
+// the parser against Pi's actual event shape, not an invented one. See
+// tests/fixtures/pi-output-code-review.jsonl.
+// ---------------------------------------------------------------------------
+
+describe('adapters/pi.ts — golden fixture (real captured pi-output.log)', () => {
+  const fixturePath = join(process.cwd(), 'tests', 'fixtures', 'pi-output-code-review.jsonl');
+  const fixtureContent = readFileSync(fixturePath, 'utf8');
+
+  it("extracts a non-empty lastAssistantText containing the final message's structured review header, and excludes thinking/toolCall content", () => {
+    const result = parsePiOutput(fixtureContent);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.data.lastAssistantText.length).toBeGreaterThan(0);
+    expect(result.data.lastAssistantText).toContain('## Review:');
+    expect(result.data.lastAssistantText).toContain('outcome: changes-requested');
+    // The final message_end's own thinking block (same message, different
+    // content-block type) must not leak into the extracted text.
+    expect(result.data.lastAssistantText).not.toContain('Confirmed: `node:test` does NOT export');
+    // Extraction, not raw passthrough — the raw JSON event wrapper never
+    // appears in the extracted prose.
+    expect(result.data.lastAssistantText).not.toContain('"type":"message_end"');
+  });
+
+  it('accumulatedText contains text from all assistant message_end events and excludes user/toolResult content', () => {
+    const result = parsePiOutput(fixtureContent);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.data.accumulatedText.length).toBeGreaterThan(0);
+    // This fixture's only text-bearing assistant message_end is the final
+    // one (the earlier assistant message_end in the fixture carries
+    // thinking + toolCall blocks only, no text block — the real capture's
+    // actual shape) — so accumulatedText and lastAssistantText coincide
+    // here; both must still exclude the user prompt and the toolResult
+    // command output that sit between them in the stream.
+    expect(result.data.accumulatedText).toBe(result.data.lastAssistantText);
+    expect(result.data.accumulatedText).not.toContain('You are a code reviewer checking this change');
+    expect(result.data.accumulatedText).not.toContain('---DIFFSTAT---');
+  });
+
+  it('extractNeeds receives real (non-empty) input via accumulatedText and returns [] since this review has no ## Needs heading', () => {
+    const result = parsePiOutput(fixtureContent);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.data.accumulatedText.length).toBeGreaterThan(0);
+    expect(result.data.needs).toEqual([]);
+  });
+
+  it("reports outcome completed with usage summed across the fixture's assistant message_end events", () => {
+    const result = parsePiOutput(fixtureContent);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.data.hasAgentEnd).toBe(true);
+    expect(result.data.outcome).toBe('completed');
+    expect(result.data.usage.totalTokens).toBeGreaterThan(0);
   });
 });

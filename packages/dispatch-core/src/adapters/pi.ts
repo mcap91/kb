@@ -64,31 +64,47 @@ export interface PiResult {
   /**
    * Needed access/decisions the worker reported under a `## Needs` heading in
    * its own text output (rev-5 §5; assemble.ts's framing instructs this on
-   * non-`completed` outcomes). Parsed from accumulated `text_delta` content;
-   * `[]` when no such section is present.
+   * non-`completed` outcomes). Parsed from `accumulatedText`; `[]` when no
+   * such section is present.
    */
   needs: string[];
   /**
-   * Full accumulated `text_delta` content across the stream, in stream
-   * order — the worker's raw response text, spanning EVERY assistant
-   * message in the run (narration, tool-call commentary, and the final
-   * reply, all concatenated). `''` when the stream carried no text_delta
-   * events (e.g. the empty-stream fallback). Right tool for whole-run scans
-   * such as `extractNeeds`'s `## Needs` heading search, where text before
-   * the heading is expected and harmless. Wrong tool for anything that
-   * expects to see only the worker's FINAL message — see
-   * `lastAssistantText` below.
+   * Concatenated `type === 'text'` content blocks from EVERY assistant
+   * `message_end` event in the stream, in stream order — the worker's raw
+   * response text, spanning EVERY assistant message in the run (narration,
+   * tool-call commentary, and the final reply, all concatenated).
+   * `thinking` and `toolCall` blocks, and non-assistant (`user`/
+   * `toolResult`) `message_end`s, are excluded. `''` when the stream
+   * carried no assistant `message_end` with a `text` block (e.g. the
+   * empty-stream fallback). Right tool for whole-run scans such as
+   * `extractNeeds`'s `## Needs` heading search, where text before the
+   * heading is expected and harmless. Wrong tool for anything that expects
+   * to see only the worker's FINAL message — see `lastAssistantText` below.
+   *
+   * WK-0092/WK-0093: extracted from `message_end.message.content` blocks —
+   * Pi assembles the complete message there; it never emits a top-level
+   * `text_delta` event (deltas ride inside `message_update.
+   * assistantMessageEvent`, which this adapter does not read at all). The
+   * prior implementation read a top-level `text_delta` that Pi has never
+   * emitted, so this field — and `lastAssistantText` and `extractNeeds` —
+   * were dead code since S0; verified and fixed against a real captured
+   * stream, golden fixture `tests/fixtures/pi-output-code-review.jsonl`.
    */
   accumulatedText: string;
   /**
-   * Text of the LAST assistant message only — narration and tool-call
-   * commentary from earlier turns excluded — in stream order. Computed by
-   * resetting a per-message buffer every time an assistant `message_end`
-   * fires (committing the just-finished message's text first); an
-   * in-flight buffer that never got a closing `message_end` wins over the
-   * last committed one, so a stream truncated mid-final-message still
-   * surfaces that partial text instead of a stale earlier turn. `''` when
-   * the stream carried no text_delta events at all.
+   * Text of the LAST assistant `message_end` only — concatenated
+   * `type === 'text'` content blocks of that one message; narration and
+   * tool-call commentary from earlier turns excluded, and `thinking` /
+   * `toolCall` blocks within that same message also excluded. `''` when the
+   * stream carried no assistant `message_end` at all, or when the last one
+   * had no `text` block (e.g. a final turn that was pure tool calls).
+   *
+   * No partial-text recovery is attempted for a stream truncated
+   * mid-message (no closing `message_end` for the in-flight final turn) —
+   * WK-0092 accepted trade-off: such streams are already classified
+   * `failed`/`truncated_stream`, and the delta-based recovery this replaces
+   * never actually worked (Pi never emits the top-level event it read), so
+   * nothing real is lost by not reconstructing one.
    *
    * S6a's structured review-header parser (`response-header.ts`'s
    * `parseReviewHeader`) reads from THIS field, not `accumulatedText` — an
@@ -217,6 +233,27 @@ function extractNeeds(text: string): string[] {
 }
 
 /**
+ * Extract the concatenated `type === 'text'` content blocks of one assistant
+ * `message_end`'s `message.content` array — `thinking` and `toolCall` blocks
+ * are deliberately skipped (WK-0092/WK-0093: verified against a real
+ * captured `pi-output.log`; the golden fixture is
+ * `tests/fixtures/pi-output-code-review.jsonl`). Returns `''` when `content`
+ * is missing or not an array — defensive, since some hand-rolled
+ * usage/error-path test fixtures (and edge-case Pi events) carry a
+ * `message` with no `content` at all.
+ */
+function extractAssistantMessageText(message: Record<string, unknown>): string {
+  if (!Array.isArray(message.content)) return '';
+  let text = '';
+  for (const block of message.content) {
+    if (isRecord(block) && block.type === 'text' && typeof block.text === 'string') {
+      text += block.text;
+    }
+  }
+  return text;
+}
+
+/**
  * Parse Pi's JSON-lines stdout. Non-JSON lines are skipped (Pi's `--mode json`
  * output is pure JSON-lines, but the adapter tolerates stray banner/log lines
  * rather than failing the whole run over one bad line). Returns ADAPTER_FAILED
@@ -250,24 +287,11 @@ export function parsePiOutput(stdout: string): DispatchResult<PiResult> {
   let sawError = false;
   let stopReason: string | undefined;
   let accumulatedText = '';
-  // Per-message buffer (S6a fix, see `lastAssistantText`'s doc comment
-  // above): reset every time an assistant message completes, so it
-  // isolates that message's own text from everything streamed before it.
-  // `lastCommittedAssistantText` holds the most recently COMPLETED
-  // assistant message; `currentMessageText` holds whatever has streamed in
-  // since (normally empty right after a commit — non-empty only if the
-  // stream ends mid-message, e.g. a truncated final turn).
-  let currentMessageText = '';
-  let lastCommittedAssistantText = '';
+  let lastAssistantText = '';
 
   for (const event of events) {
     if (!isRecord(event)) continue;
     const type = event.type;
-
-    if (type === 'text_delta' && isRecord(event.message) && typeof event.message.content === 'string') {
-      accumulatedText += event.message.content;
-      currentMessageText += event.message.content;
-    }
 
     if (type === 'message_end' || type === 'turn_end') {
       if (event.stopReason === 'error') {
@@ -288,19 +312,15 @@ export function parsePiOutput(stdout: string): DispatchResult<PiResult> {
           costUsd += usage.cost.total;
         }
       }
-      // Commit this message's text, then start the next message's buffer
-      // fresh — this is what makes `lastAssistantText` below isolate the
-      // FINAL message instead of accumulating across the whole run.
-      lastCommittedAssistantText = currentMessageText;
-      currentMessageText = '';
+      // WK-0092/WK-0093: text rides on the assembled `content` array of the
+      // assistant message_end, not a top-level `text_delta` event (Pi never
+      // emits one). Overwritten on every assistant message_end, so after the
+      // loop this holds the LAST one — see `lastAssistantText`'s doc comment.
+      const messageText = extractAssistantMessageText(event.message);
+      accumulatedText += messageText;
+      lastAssistantText = messageText;
     }
   }
-
-  // The in-flight buffer wins when non-empty — a truncated final message
-  // is still more recent than the last cleanly-committed one. Otherwise
-  // fall back to the last message that did get a `message_end` (the normal
-  // case for a completed run).
-  const lastAssistantText = currentMessageText !== '' ? currentMessageText : lastCommittedAssistantText;
 
   // Facts-only: the launcher (not this adapter) owns outcome policy beyond
   // error-detection. `agent_end` presence with no observed error defaults to

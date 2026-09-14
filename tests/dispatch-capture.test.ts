@@ -198,14 +198,21 @@ describe('pipeline.ts — mergeProvenanceFrontmatter', () => {
 // ---------------------------------------------------------------------------
 
 describe('adapters/pi.ts — parsePiOutput needs extraction', () => {
-  it('parses a ## Needs section accumulated across text_delta events', () => {
+  it('parses a ## Needs section accumulated across text content blocks (WK-0092/WK-0093: text rides on message_end content blocks, not text_delta events)', () => {
     const lines = [
       JSON.stringify({ type: 'agent_start' }),
-      JSON.stringify({ type: 'text_delta', message: { content: 'Ran into a scope wall.\n\n## Needs\n' } }),
-      JSON.stringify({ type: 'text_delta', message: { content: '- foo\n- bar\n' } }),
       JSON.stringify({
         type: 'message_end',
-        message: { role: 'assistant', usage: { totalTokens: 20, cost: { total: 0.0002 } } },
+        message: {
+          role: 'assistant',
+          // Two text blocks within the same message_end — proves block-level
+          // concatenation, not just message-level.
+          content: [
+            { type: 'text', text: 'Ran into a scope wall.\n\n## Needs\n' },
+            { type: 'text', text: '- foo\n- bar\n' },
+          ],
+          usage: { totalTokens: 20, cost: { total: 0.0002 } },
+        },
       }),
       JSON.stringify({ type: 'turn_end', stopReason: 'end_turn' }),
     ].join('\n');
@@ -219,7 +226,14 @@ describe('adapters/pi.ts — parsePiOutput needs extraction', () => {
   it('returns an empty needs array when no ## Needs section is present', () => {
     const lines = [
       JSON.stringify({ type: 'agent_start' }),
-      JSON.stringify({ type: 'text_delta', message: { content: 'All done, nothing needed.' } }),
+      JSON.stringify({
+        type: 'message_end',
+        message: {
+          role: 'assistant',
+          content: [{ type: 'text', text: 'All done, nothing needed.' }],
+          usage: { totalTokens: 5, cost: { total: 0.00005 } },
+        },
+      }),
       JSON.stringify({ type: 'agent_end' }),
     ].join('\n');
 

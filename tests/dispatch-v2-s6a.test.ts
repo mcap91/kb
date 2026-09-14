@@ -289,23 +289,42 @@ describe('adapters/pi.ts — lastAssistantText isolates the review header (S6a f
   function codeReviewStreamLines(): string {
     return [
       JSON.stringify({ type: 'agent_start' }),
-      // Turn 1: narration + a tool call (e.g. reading the diff), its own
-      // message_end — this is what a real agentic code_review run does
-      // before it ever produces the structured header.
-      JSON.stringify({ type: 'text_delta', message: { content: NARRATION } }),
-      JSON.stringify({ type: 'toolcall_start', name: 'bash' }),
-      JSON.stringify({ type: 'tool_execution_end', output: 'diff --git a/foo b/foo' }),
+      // Turn 1: narration text + a tool call (e.g. reading the diff), its
+      // own message_end — this is what a real agentic code_review run does
+      // before it ever produces the structured header. (WK-0092/WK-0093:
+      // text rides on the message_end's content array, not a top-level
+      // text_delta event — Pi never emits one.)
       JSON.stringify({
         type: 'message_end',
-        message: { role: 'assistant', usage: { totalTokens: 40, cost: { total: 0.0004 } } },
+        message: {
+          role: 'assistant',
+          content: [
+            { type: 'text', text: NARRATION },
+            { type: 'toolCall', id: 'call_1', name: 'bash', arguments: { command: 'git diff' } },
+          ],
+          usage: { totalTokens: 40, cost: { total: 0.0004 } },
+        },
       }),
       JSON.stringify({ type: 'turn_end', stopReason: 'tool_calls' }),
-      // Turn 2: the final reply — the structured header lives here, and
-      // ONLY here.
-      JSON.stringify({ type: 'text_delta', message: { content: PASS_HEADER } }),
       JSON.stringify({
         type: 'message_end',
-        message: { role: 'assistant', usage: { totalTokens: 15, cost: { total: 0.0001 } } },
+        message: {
+          role: 'toolResult',
+          toolCallId: 'call_1',
+          toolName: 'bash',
+          content: [{ type: 'text', text: 'diff --git a/foo b/foo' }],
+          isError: false,
+        },
+      }),
+      // Turn 2: the final reply — the structured header lives here, and
+      // ONLY here.
+      JSON.stringify({
+        type: 'message_end',
+        message: {
+          role: 'assistant',
+          content: [{ type: 'text', text: PASS_HEADER }],
+          usage: { totalTokens: 15, cost: { total: 0.0001 } },
+        },
       }),
       JSON.stringify({ type: 'turn_end', stopReason: 'end_turn' }),
       JSON.stringify({ type: 'agent_end' }),
