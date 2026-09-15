@@ -62,13 +62,6 @@ export interface PiResult {
   /** Raw parsed JSON-lines events, in stream order. */
   events: unknown[];
   /**
-   * Needed access/decisions the worker reported under a `## Needs` heading in
-   * its own text output (rev-5 §5; assemble.ts's framing instructs this on
-   * non-`completed` outcomes). Parsed from `accumulatedText`; `[]` when no
-   * such section is present.
-   */
-  needs: string[];
-  /**
    * Concatenated `type === 'text'` content blocks from EVERY assistant
    * `message_end` event in the stream, in stream order — the worker's raw
    * response text, spanning EVERY assistant message in the run (narration,
@@ -76,19 +69,18 @@ export interface PiResult {
    * `thinking` and `toolCall` blocks, and non-assistant (`user`/
    * `toolResult`) `message_end`s, are excluded. `''` when the stream
    * carried no assistant `message_end` with a `text` block (e.g. the
-   * empty-stream fallback). Right tool for whole-run scans such as
-   * `extractNeeds`'s `## Needs` heading search, where text before the
-   * heading is expected and harmless. Wrong tool for anything that expects
-   * to see only the worker's FINAL message — see `lastAssistantText` below.
+   * empty-stream fallback). Right tool for whole-run scans (e.g. debugging
+   * the full transcript); wrong tool for anything that expects to see only
+   * the worker's FINAL message — see `lastAssistantText` below.
    *
    * WK-0092/WK-0093: extracted from `message_end.message.content` blocks —
    * Pi assembles the complete message there; it never emits a top-level
    * `text_delta` event (deltas ride inside `message_update.
    * assistantMessageEvent`, which this adapter does not read at all). The
    * prior implementation read a top-level `text_delta` that Pi has never
-   * emitted, so this field — and `lastAssistantText` and `extractNeeds` —
-   * were dead code since S0; verified and fixed against a real captured
-   * stream, golden fixture `tests/fixtures/pi-output-code-review.jsonl`.
+   * emitted, so this field — and `lastAssistantText` — were dead code since
+   * S0; verified and fixed against a real captured stream, golden fixture
+   * `tests/fixtures/pi-output-code-review.jsonl`.
    */
   accumulatedText: string;
   /**
@@ -202,37 +194,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * Scan accumulated worker text for a `## Needs` heading and parse the bullet
- * list beneath it (rev-5 §5 response-header requirement; assemble.ts:92-97
- * instructs the worker to report this on non-`completed` outcomes).
- * Line-based, consistent with this codebase's other hand-rolled parsers
- * (ho.ts's frontmatter reader, delivery.ts's marker sections) — no markdown
- * library. Collects bullet (`- ...`) lines immediately following the
- * heading, tolerating blank lines between them; stops at the first
- * non-bullet, non-blank line (the next section or trailing prose). Returns
- * `[]` when no heading is found.
- */
-function extractNeeds(text: string): string[] {
-  const lines = text.split('\n');
-  const headingIndex = lines.findIndex((line) => /^\s*##\s*needs\s*$/i.test(line));
-  if (headingIndex === -1) return [];
-
-  const needs: string[] = [];
-  for (let i = headingIndex + 1; i < lines.length; i++) {
-    const line = lines[i]!;
-    const bulletMatch = line.match(/^\s*-\s+(.*)$/);
-    if (bulletMatch) {
-      const value = bulletMatch[1]!.trim();
-      if (value) needs.push(value);
-      continue;
-    }
-    if (line.trim() === '') continue;
-    break;
-  }
-  return needs;
-}
-
-/**
  * Extract the concatenated `type === 'text'` content blocks of one assistant
  * `message_end`'s `message.content` array — `thinking` and `toolCall` blocks
  * are deliberately skipped (WK-0092/WK-0093: verified against a real
@@ -279,7 +240,7 @@ export function parsePiOutput(stdout: string): DispatchResult<PiResult> {
   }
 
   if (events.length === 0) {
-    return ok({ outcome: 'failed', stopReason: 'empty_stream', hasAgentEnd: false, usage: { totalTokens: 0, costUsd: 0 }, events: [], needs: [], accumulatedText: '', lastAssistantText: '' });
+    return ok({ outcome: 'failed', stopReason: 'empty_stream', hasAgentEnd: false, usage: { totalTokens: 0, costUsd: 0 }, events: [], accumulatedText: '', lastAssistantText: '' });
   }
 
   let totalTokens = 0;
@@ -344,7 +305,5 @@ export function parsePiOutput(stdout: string): DispatchResult<PiResult> {
     stopReason = 'truncated_stream';
   }
 
-  const needs = extractNeeds(accumulatedText);
-
-  return ok({ outcome, stopReason, hasAgentEnd, usage: { totalTokens, costUsd }, events, needs, accumulatedText, lastAssistantText });
+  return ok({ outcome, stopReason, hasAgentEnd, usage: { totalTokens, costUsd }, events, accumulatedText, lastAssistantText });
 }

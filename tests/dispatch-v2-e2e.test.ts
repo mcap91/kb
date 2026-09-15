@@ -256,7 +256,7 @@ describe('dispatch v2 e2e (fake-tier) — full pipeline chain', () => {
       const onDisk = await readFile(captureResult.data.responsePath, 'utf8');
       expect(onDisk).toBe(captureResult.data.responseContent);
       expect(onDisk).toContain('handoff_id: HO-TEST');
-      expect(onDisk).toContain('outcome: completed');
+      expect(onDisk).toContain('outcome: delivered');
       expect(onDisk).toContain(`model: ${canonicalModel}`);
       expect(onDisk).toContain('isolation_backend: bwrap-wsl2');
       expect(onDisk).toContain('branch: dispatch/HO-TEST');

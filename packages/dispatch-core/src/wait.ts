@@ -11,8 +11,13 @@ const DEFAULT_POLL_INTERVAL_MS = 1000;
 
 const TERMINAL_STATUSES = new Set(['completed', 'failed', 'timed_out', 'cancelled', 'rejected']);
 
-/** v2's status vocabulary (s1-rulings ruling 5) — wider than v1's `TerminalRunStatus`. */
-const TERMINAL_STATUSES_V2 = new Set(['completed', 'partial', 'blocked', 'failed', 'refused', 'timed_out', 'cancelled']);
+/**
+ * v2's status vocabulary (s1-rulings ruling 5) — wider than v1's
+ * `TerminalRunStatus`. `blocked`/`partial` retired (DEC-0010: not mechanical
+ * run-level facts — the response doc's own verdict vocabulary dropped them
+ * too, see capture.ts's `ResponseOutcome`).
+ */
+const TERMINAL_STATUSES_V2 = new Set(['completed', 'failed', 'refused', 'timed_out', 'cancelled']);
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));

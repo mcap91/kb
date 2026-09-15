@@ -4,8 +4,10 @@
  * task body + AC list + read_first contents. No model call here, ever. Framings are
  * subagent profiles that set posture, never guardrails (s6-rulings.md ruling 2) — all
  * guardrails are deterministic elsewhere (delivery gate, bwrap, etc). Every framing
- * instructs the worker to end any non-`completed` run by naming the exact additional
- * access or decisions it needed (the source of `.dispatch-out/outcome.yaml`'s `needs:` list).
+ * instructs the worker that if it cannot finish, its final chat message should state
+ * exactly what it needed and why it stopped — diagnosis only (DEC-0010): that text is
+ * embedded verbatim as the response doc's `## Worker Report` evidence section
+ * (capture.ts) and is never parsed or consulted by the mechanical verdict ladder.
  */
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -50,69 +52,37 @@ interface ModeParts {
 
 const IMPLEMENT_FRAMING =
   'Execute the spec exactly. You have NO unratified decisions to make outside the decision ' +
-  'space granted in the task below. If you encounter a missing decision, stop with outcome ' +
-  '`blocked` and name what you need in the `needs:` section of `.dispatch-out/outcome.yaml` — do not ' +
-  'make judgment calls.\n\n' +
+  'space granted in the task below. If you encounter a missing decision, stop and end your ' +
+  'final message stating exactly what you needed and why you stopped — do not make judgment ' +
+  'calls.\n\n' +
   'If implementing your task requires fixing a pre-existing bug inside write_scope that ' +
   'directly blocks your objective, one targeted fix with a note in your response is ' +
   'acceptable. If you need more than one corrective change to code unrelated to your ' +
-  'objective, stop — report the root cause as `blocked` with `needs:` diagnostics rather ' +
-  'than patching forward.\n\n' +
+  'objective, stop — end your final message stating the root cause and exactly what you ' +
+  'needed, rather than patching forward.\n\n' +
   "Use the environment named in the task's `vars` field. Do not create, modify, or install " +
   'new environments (conda, mamba, venv, virtualenv). If the task requires an environment ' +
-  'that is not provided, stop with outcome `blocked` and name the missing environment in ' +
-  '`needs:`.';
+  'that is not provided, stop and end your final message stating exactly what you needed and ' +
+  'why you stopped.';
 
-const IMPLEMENT_RESPONSE_FORMAT = [
-  '## Response Format',
-  '',
-  'Write your outcome to `.dispatch-out/outcome.yaml` relative to your working directory. ' +
-    'The file must be valid YAML with this exact schema:',
-  '',
-  '```yaml',
-  'outcome: completed | partial | blocked | failed',
-  'needs:',
-  '  - <what was missing, if not completed>',
-  '```',
-  '',
-  'No `---` delimiters. No code fences. The entire file IS the YAML.',
-  '',
-  'Your chat response is free narrative for the operator — it is never parsed.',
-  '',
-  'Rules:',
-  '- `outcome` is MANDATORY.',
-  '- If not `completed`, include a `needs:` list naming the exact paths, capabilities, or ' +
-    'decisions you lacked.',
-].join('\n');
+const IMPLEMENT_RESPONSE_FORMAT =
+  'If you cannot finish, end your final message stating exactly what you needed and why you stopped.';
 
 const REDTEAM_FRAMING =
   'Focus on: security holes, unhandled edge cases, spec violations, missing validation, ' +
   'assumptions that could fail.\n\n' +
   'Your deliverable is adversarial findings. Do not modify any files.\n\n' +
   'If bubblewrap (bwrap) sandbox is not available or known-unsupported on this host, refuse ' +
-  'to proceed — report `blocked` with `needs: bwrap sandbox environment`.';
+  'to proceed — stop and state in your final message that you need a bwrap sandbox environment.';
 
 const RESEARCH_FRAMING =
   'You have read-only access to the full repository including the wiki. Use web tools if ' +
   'granted.\n\n' +
-  'Your deliverable is findings and sources. Do not modify any files.';
+  'Your deliverable is findings and sources. Do not modify any files.\n\n' +
+  'If you cannot finish, end your final message stating exactly what you needed and why you stopped.';
 
-const SIMPLE_RESPONSE_FORMAT = [
-  '## Response Format',
-  '',
-  'Write your outcome to `.dispatch-out/outcome.yaml` relative to your working directory. ' +
-    'The file must be valid YAML:',
-  '',
-  '```yaml',
-  'outcome: completed | blocked | failed',
-  'needs:',
-  '  - <what was missing, if not completed>',
-  '```',
-  '',
-  'No `---` delimiters. No code fences. The entire file IS the YAML.',
-  '',
-  'Your chat response is free narrative — findings, sources, analysis.',
-].join('\n');
+const SIMPLE_RESPONSE_FORMAT =
+  'If you cannot finish, end your final message stating exactly what you needed and why you stopped.';
 
 const CODE_REVIEW_RESPONSE_FORMAT = [
   '## Response Format',
@@ -171,7 +141,8 @@ function getModeParts(handoff: Handoff): ModeParts {
           'Flag iterative fix-up patterns (multiple small patches to the same region, ' +
           'trial-and-error artifacts, debug residue) as a quality finding — do not auto-reject; ' +
           'the orchestrator decides disposition.\n\n' +
-          'Your deliverable is a structured review outcome, not code changes. Do not modify any files.',
+          'Your deliverable is a structured review outcome, not code changes. Do not modify any files.\n\n' +
+          'If you cannot finish, end your final message stating exactly what you needed and why you stopped.',
         includeWriteScope: false,
         includeAcceptance: true,
         includeValidation: false,

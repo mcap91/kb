@@ -34,15 +34,11 @@ import {
   type Handoff,
   type DeliveryOutcome,
   type StructuredReviewResult,
-  type WorkerOutcomeResult,
 } from '@kb/dispatch-core';
 import {
   buildReviewFileReadScript,
   parseReviewFileReadOutput,
   resolveReviewFileOutcome,
-  buildOutcomeFileReadScript,
-  parseOutcomeFileReadOutput,
-  parseOutcomeFile,
 } from '../packages/dispatch-core/src/pipeline.js';
 
 async function createTempDir(prefix: string): Promise<string> {
@@ -525,7 +521,7 @@ describe('assemble.ts — mode-specific framings (S6a)', () => {
     if (!result.ok) return;
 
     expect(result.data.text).toContain('bwrap');
-    expect(result.data.text).toContain('blocked');
+    expect(result.data.text).toContain('stop and state in your final message that you need a bwrap sandbox environment');
   });
 
   it('research framing casts the worker as a research investigator', async () => {
@@ -764,139 +760,278 @@ describe('capture.ts — Structured Review section rendering (S6a)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// outcome.yaml channel (S6a gate 3). `.dispatch-out/outcome.yaml` is the
-// worker's own structured self-report of its outcome (assemble.ts's
-// IMPLEMENT_RESPONSE_FORMAT/SIMPLE_RESPONSE_FORMAT instructions) — it exists
-// because a worker that says "blocked" in chat prose but ends the event
-// stream cleanly was previously recorded as `completed` (parsePiOutput only
-// looks at stream structure, never prose). buildOutcomeFileReadScript/
-// parseOutcomeFileReadOutput are pure (script builder / stdout parser)
-// either side of pipeline.ts's one execViaWsl2 round trip, mirroring
-// review.yaml's read pattern above. parseOutcomeFile is the pure content
-// parser. deriveOutcome itself is module-private in capture.ts, so its
-// workerOutcome-over-piResult precedence is exercised here through
-// writeResponseDoc's public surface (the response doc's outcome header),
-// same approach the Structured Review tests above use for reviewResult.
+// pipeline.ts write_scope check excludes .dispatch-out/ (7cb1758). This
+// exclusion survives DEC-0010/WK-0095's outcome.yaml deletion unchanged:
+// .dispatch-out/ is still dispatch-owned infrastructure (review.yaml is
+// code_review's deliverable now) and must never trigger refused_out_of_scope.
 // ---------------------------------------------------------------------------
 
-describe('outcome.yaml channel (S6a gate 3)', () => {
-  describe('parseOutcomeFile', () => {
-    it('parses a completed outcome with no needs', () => {
-      const result = parseOutcomeFile('outcome: completed\n');
-      expect(result).toEqual({ outcome: 'completed', needs: [] });
-    });
+describe('pipeline.ts write_scope check excludes .dispatch-out/ (7cb1758)', () => {
+  it('does not refuse when the only changed path outside write_scope is under .dispatch-out/ (a code_review worker\'s mandated review.yaml write must not trigger refused_out_of_scope)', () => {
+    const files = ['src/db/health.mjs', '.dispatch-out/review.yaml'];
+    const deliverableFiles = files.filter(
+      (f) => !f.startsWith('.dispatch-out/') && !f.startsWith('.dispatch-out\\'),
+    );
+    const result = checkWriteScope(deliverableFiles, ['src/db/']);
+    expect(result.ok).toBe(true);
+  });
+});
 
-    it('parses a blocked outcome with a needs list', () => {
-      const content = ['outcome: blocked', 'needs:', '  - network access', '  - pg package', ''].join('\n');
-      const result = parseOutcomeFile(content);
-      expect(result).toEqual({ outcome: 'blocked', needs: ['network access', 'pg package'] });
-    });
+// ---------------------------------------------------------------------------
+// capture.ts — mechanical verdict ladder (DEC-0010 rule 2 / WK-0095). The
+// outcome.yaml channel above is deleted outright, not re-scoped:
+// `deriveVerdict` (module-private in capture.ts) computes the response-doc
+// outcome exclusively from delivery-gate facts and per-mode deliverable
+// checks — never the worker's chat text, never a worker-authored self-report
+// file. Exercised here through `writeResponseDoc`'s public surface (the
+// response doc's `outcome`/`reason` frontmatter), the same approach the
+// Structured Review tests above use for reviewResult.
+// ---------------------------------------------------------------------------
 
-    it('returns null when the outcome line is missing (malformed)', () => {
-      const content = ['needs:', '  - something', ''].join('\n');
-      expect(parseOutcomeFile(content)).toBeNull();
-    });
+describe('capture.ts — mechanical verdict ladder (DEC-0010 / WK-0095)', () => {
+  let runDir: string;
 
-    it('returns null for an invalid outcome value', () => {
-      expect(parseOutcomeFile('outcome: maybe\n')).toBeNull();
-    });
-
-    it('returns null for empty content', () => {
-      expect(parseOutcomeFile('')).toBeNull();
-    });
+  beforeEach(async () => {
+    runDir = await createTempDir('kb-capture-verdict-');
   });
 
-  describe('buildOutcomeFileReadScript / parseOutcomeFileReadOutput', () => {
-    it('builds a read-only script that checks for .dispatch-out/outcome.yaml under the clone', () => {
-      const { scriptContent, scriptName } = buildOutcomeFileReadScript('/home/user/.kb-dispatch/clones/RUN-1');
-      expect(scriptName).toBe('dispatch-outcome-file-read.sh');
-      expect(scriptContent).toContain("FILE='/home/user/.kb-dispatch/clones/RUN-1/.dispatch-out/outcome.yaml'");
-      expect(scriptContent).toContain('---OUTCOME-YAML-PRESENT---');
-      expect(scriptContent).toContain('---OUTCOME-YAML-ABSENT---');
-    });
-
-    it('parses a present file into { present: true, content }', () => {
-      const stdout = [
-        '---OUTCOME-YAML-PRESENT---',
-        '---OUTCOME-YAML-CONTENT-START---',
-        'outcome: completed',
-        '---OUTCOME-YAML-CONTENT-END---',
-        '',
-      ].join('\n');
-      const result = parseOutcomeFileReadOutput(stdout);
-      expect(result).toEqual({ present: true, content: 'outcome: completed' });
-    });
-
-    it('parses an absent file into { present: false, content: "" }', () => {
-      const stdout = [
-        '---OUTCOME-YAML-ABSENT---',
-        '---OUTCOME-YAML-CONTENT-START---',
-        '---OUTCOME-YAML-CONTENT-END---',
-        '',
-      ].join('\n');
-      const result = parseOutcomeFileReadOutput(stdout);
-      expect(result).toEqual({ present: false, content: '' });
-    });
+  afterEach(async () => {
+    await rm(runDir, { recursive: true, force: true });
   });
 
-  describe('capture.ts — workerOutcome precedence over piResult (via writeResponseDoc)', () => {
-    let runDir: string;
+  it('implement mode + delivered diff -> outcome: delivered, no reason', async () => {
+    const handoff = { id: 'HO-TEST', title: 'Test task', mode: 'implement' };
+    const delivery: DeliveryOutcome = {
+      status: 'delivered',
+      branch: 'dispatch/HO-TEST',
+      commitSha: 'abc123',
+      changedFiles: ['src/foo.ts'],
+    };
+    const result = await writeResponseDoc({ runDir, handoff, delivery });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const written = await readFile(result.data.responsePath, 'utf8');
+    expect(written).toContain('outcome: delivered');
+    expect(written).not.toContain('reason:');
+  });
 
-    beforeEach(async () => {
-      runDir = await createTempDir('kb-capture-outcome-s6a-');
-    });
-
-    afterEach(async () => {
-      await rm(runDir, { recursive: true, force: true });
-    });
-
+  it('implement mode + no_changes delivery -> outcome: failed, reason: no_deliverable (DEC-0010: silence plus no deliverable is failure, never success)', async () => {
     const handoff = { id: 'HO-TEST', title: 'Test task', mode: 'implement' };
     const delivery: DeliveryOutcome = { status: 'no_changes' };
-
-    it("the worker's outcome.yaml self-report overrides parsePiOutput's classification and needs — this is the whole point of the channel: a worker that narrated `blocked` but ended the event stream cleanly must not be recorded as `completed`", async () => {
-      const workerOutcome: WorkerOutcomeResult = { outcome: 'blocked', needs: ['network access'] };
-
-      const result = await writeResponseDoc({
-        runDir,
-        handoff,
-        delivery,
-        piResult: { outcome: 'completed', usage: { totalTokens: 100, costUsd: 0 } },
-        needs: ['stale prose-derived need'],
-        workerOutcome,
-      });
-      expect(result.ok).toBe(true);
-      if (!result.ok) return;
-
-      const written = await readFile(result.data.responsePath, 'utf8');
-      expect(written).toContain('outcome: blocked');
-      expect(written).not.toContain('outcome: completed');
-      expect(written).toContain('- network access');
-      expect(written).not.toContain('stale prose-derived need');
-    });
-
-    it('falls back to piResult when workerOutcome is absent (today\'s pre-S6a behavior, unchanged)', async () => {
-      const result = await writeResponseDoc({
-        runDir,
-        handoff,
-        delivery,
-        piResult: { outcome: 'completed', usage: { totalTokens: 100, costUsd: 0 } },
-      });
-      expect(result.ok).toBe(true);
-      if (!result.ok) return;
-
-      const written = await readFile(result.data.responsePath, 'utf8');
-      expect(written).toContain('outcome: completed');
-    });
+    const result = await writeResponseDoc({ runDir, handoff, delivery });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const written = await readFile(result.data.responsePath, 'utf8');
+    expect(written).toContain('outcome: failed');
+    expect(written).toContain('reason: no_deliverable');
   });
 
-  describe('pipeline.ts write_scope check excludes .dispatch-out/', () => {
-    it('does not refuse when the only changed path outside write_scope is under .dispatch-out/ (a compliant worker\'s mandated outcome.yaml write must not trigger refused_out_of_scope)', () => {
-      const files = ['src/db/health.mjs', '.dispatch-out/outcome.yaml'];
-      const deliverableFiles = files.filter(
-        (f) => !f.startsWith('.dispatch-out/') && !f.startsWith('.dispatch-out\\'),
-      );
-      const result = checkWriteScope(deliverableFiles, ['src/db/']);
-      expect(result.ok).toBe(true);
+  it('implement mode + refused_out_of_scope delivery -> outcome: refused, reason carries the delivery status', async () => {
+    const handoff = { id: 'HO-TEST', title: 'Test task', mode: 'implement' };
+    const delivery: DeliveryOutcome = {
+      status: 'refused_out_of_scope',
+      offendingPaths: ['other/file.ts'],
+      quarantinePath: '/tmp/quarantine.diff',
+    };
+    const result = await writeResponseDoc({ runDir, handoff, delivery });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const written = await readFile(result.data.responsePath, 'utf8');
+    expect(written).toContain('outcome: refused');
+    expect(written).toContain('reason: refused_out_of_scope');
+  });
+
+  it('implement mode + secret_in_diff delivery -> outcome: refused (delivery-gate refusal still wins over everything)', async () => {
+    const handoff = { id: 'HO-TEST', title: 'Test task', mode: 'implement' };
+    const delivery: DeliveryOutcome = {
+      status: 'secret_in_diff',
+      patterns: ['sk-live-redacted'],
+      quarantinePath: '/tmp/quarantine.diff',
+    };
+    const result = await writeResponseDoc({ runDir, handoff, delivery });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const written = await readFile(result.data.responsePath, 'utf8');
+    expect(written).toContain('outcome: refused');
+    expect(written).toContain('reason: secret_in_diff');
+  });
+
+  it('code_review mode + no_changes delivery (the advisory path\'s normal shape) -> outcome: delivered', async () => {
+    const handoff = { id: 'HO-TEST', title: 'Test task', mode: 'code_review' };
+    const delivery: DeliveryOutcome = { status: 'no_changes' };
+    const result = await writeResponseDoc({ runDir, handoff, delivery });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const written = await readFile(result.data.responsePath, 'utf8');
+    expect(written).toContain('outcome: delivered');
+  });
+
+  it('research mode + a clean piResult -> outcome: delivered (the transcript is the product, not a file)', async () => {
+    const handoff = { id: 'HO-TEST', title: 'Test task', mode: 'research' };
+    const delivery: DeliveryOutcome = { status: 'no_changes' };
+    const result = await writeResponseDoc({
+      runDir,
+      handoff,
+      delivery,
+      piResult: { outcome: 'completed', usage: { totalTokens: 100, costUsd: 0 } },
     });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const written = await readFile(result.data.responsePath, 'utf8');
+    expect(written).toContain('outcome: delivered');
+  });
+
+  it('research mode + a failed piResult -> outcome: failed, reason: process_error (crash detection, never a verdict read from prose)', async () => {
+    const handoff = { id: 'HO-TEST', title: 'Test task', mode: 'research' };
+    const delivery: DeliveryOutcome = { status: 'no_changes' };
+    const result = await writeResponseDoc({
+      runDir,
+      handoff,
+      delivery,
+      piResult: { outcome: 'failed', usage: { totalTokens: 50, costUsd: 0 } },
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const written = await readFile(result.data.responsePath, 'utf8');
+    expect(written).toContain('outcome: failed');
+    expect(written).toContain('reason: process_error');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// capture.ts — Worker Report embedding (DEC-0010 diagnosis channel / WK-0095).
+// The worker's final assistant message is embedded VERBATIM as evidence —
+// never parsed, never consulted by deriveVerdict above — under every mode
+// and every verdict, so a stopped/blocked/crashed run's diagnosis is always
+// readable from the artifact itself.
+// ---------------------------------------------------------------------------
+
+describe('capture.ts — Worker Report embedding (DEC-0010 / WK-0095)', () => {
+  let runDir: string;
+
+  beforeEach(async () => {
+    runDir = await createTempDir('kb-capture-workerreport-');
+  });
+
+  afterEach(async () => {
+    await rm(runDir, { recursive: true, force: true });
+  });
+
+  it('embeds lastAssistantText verbatim under ## Worker Report', async () => {
+    const handoff = { id: 'HO-TEST', title: 'Test task', mode: 'implement' };
+    const delivery: DeliveryOutcome = { status: 'no_changes' };
+    const message = 'I stopped because the database credential was missing from profiles.json.';
+    const result = await writeResponseDoc({ runDir, handoff, delivery, lastAssistantText: message });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const written = await readFile(result.data.responsePath, 'utf8');
+    expect(written).toContain('## Worker Report (evidence, not verdict)');
+    expect(written).toContain(message);
+  });
+
+  it('renders the placeholder when lastAssistantText is absent', async () => {
+    const handoff = { id: 'HO-TEST', title: 'Test task', mode: 'implement' };
+    const delivery: DeliveryOutcome = { status: 'no_changes' };
+    const result = await writeResponseDoc({ runDir, handoff, delivery });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const written = await readFile(result.data.responsePath, 'utf8');
+    expect(written).toContain('## Worker Report (evidence, not verdict)');
+    expect(written).toContain('(no final message captured)');
+  });
+
+  it('renders the placeholder when lastAssistantText is an empty string', async () => {
+    const handoff = { id: 'HO-TEST', title: 'Test task', mode: 'implement' };
+    const delivery: DeliveryOutcome = { status: 'no_changes' };
+    const result = await writeResponseDoc({ runDir, handoff, delivery, lastAssistantText: '' });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const written = await readFile(result.data.responsePath, 'utf8');
+    expect(written).toContain('(no final message captured)');
+  });
+
+  const modesAndDeliveries: Array<{ mode: string; delivery: DeliveryOutcome }> = [
+    { mode: 'implement', delivery: { status: 'delivered', branch: 'dispatch/HO-TEST', commitSha: 'abc123', changedFiles: ['src/foo.ts'] } },
+    { mode: 'implement', delivery: { status: 'no_changes' } },
+    { mode: 'code_review', delivery: { status: 'no_changes' } },
+    { mode: 'redteam', delivery: { status: 'no_changes' } },
+    { mode: 'research', delivery: { status: 'no_changes' } },
+  ];
+
+  for (const { mode, delivery } of modesAndDeliveries) {
+    it(`appears for mode=${mode}, delivery=${delivery.status} regardless of verdict`, async () => {
+      const handoff = { id: 'HO-TEST', title: 'Test task', mode };
+      const result = await writeResponseDoc({ runDir, handoff, delivery, lastAssistantText: 'final words from the worker' });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      const written = await readFile(result.data.responsePath, 'utf8');
+      expect(written).toContain('## Worker Report (evidence, not verdict)');
+      expect(written).toContain('final words from the worker');
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// capture.ts — no worker-to-success path (DEC-0010 structural acceptance
+// criterion / WK-0095): "no code path exists from worker-authored content to
+// a success verdict." A fabricated success claim, in EITHER the process
+// classification or the chat transcript, must not move an implement run
+// with no deliverable off of `failed`.
+// ---------------------------------------------------------------------------
+
+describe('capture.ts — no worker-to-success path (DEC-0010 structural acceptance criterion)', () => {
+  let runDir: string;
+
+  beforeEach(async () => {
+    runDir = await createTempDir('kb-capture-no-worker-success-');
+  });
+
+  afterEach(async () => {
+    await rm(runDir, { recursive: true, force: true });
+  });
+
+  it('a fabricated piResult.outcome of "completed" plus a triumphant final message cannot upgrade an implement no_changes delivery to delivered', async () => {
+    const handoff = { id: 'HO-TEST', title: 'Test task', mode: 'implement' };
+    const delivery: DeliveryOutcome = { status: 'no_changes' };
+    const result = await writeResponseDoc({
+      runDir,
+      handoff,
+      delivery,
+      // The worker's own process/chat signal claims total success; the
+      // verdict ladder must never read piResult.outcome for implement mode
+      // at all — only the delivery-gate fact (no_changes = no deliverable).
+      piResult: { outcome: 'completed', usage: { totalTokens: 999, costUsd: 0 } },
+      lastAssistantText: 'Task completed successfully! Everything is done.',
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const written = await readFile(result.data.responsePath, 'utf8');
+    expect(written).toContain('outcome: failed');
+    expect(written).toContain('reason: no_deliverable');
+    expect(written).not.toContain('outcome: delivered');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Golden fixture evidence (WK-0095 checklist): real captures of the DELETED
+// outcome.yaml channel's behavior, proving what the old system actually did
+// — WK-0091's false-positive `completed` on a run with no real deliverable,
+// and the blocked-outcome self-report channel it replaced. These are not
+// tests of current code (capture.ts no longer reads either file) — they are
+// DEC-0009 evidence that the deleted machinery, and the bug that justified
+// deleting it, were both real.
+// ---------------------------------------------------------------------------
+
+describe('golden fixture evidence — old outcome.yaml channel behavior (WK-0095)', () => {
+  it("RUN-dcb2072e capture: the old system's false-positive outcome: completed on a run with no real deliverable", async () => {
+    const fixturePath = join(process.cwd(), 'tests', 'fixtures', 'RUN-dcb2072e-false-positive', 'HO-0009.response.md');
+    const content = await readFile(fixturePath, 'utf8');
+    expect(content).toContain('outcome: completed');
+  });
+
+  it("RUN-a4444bdc capture: the old outcome.yaml self-report channel's outcome: blocked", async () => {
+    const fixturePath = join(process.cwd(), 'tests', 'fixtures', 'RUN-a4444bdc-blocked-outcome', 'HO-0009.response.md');
+    const content = await readFile(fixturePath, 'utf8');
+    expect(content).toContain('outcome: blocked');
   });
 });

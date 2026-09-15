@@ -1,104 +1,21 @@
 /**
  * PLN-0004 S1 Wave 2b — T7-full closure tests.
  *
- * Covers the three previously-unwired T7 capture items named in
- * `wiki/plans/PLN-0004/execution/s1-rulings.md` ("T7-full closure"):
- * 1. `needs:` parsing from Pi's own text output (adapters/pi.ts) and its
- *    round-trip into the response doc (capture.ts).
- * 2. The canonical `wiki/handoffs/HO-XXXX.response.md` copy — wired in
- *    pipeline.ts's `runDispatch()`, which requires the full WSL2/bwrap/Pi
- *    chain to exercise end-to-end (see tests/dispatch-v2-e2e.test.ts); not
- *    re-tested here.
- * 3. Provenance write-back into HO frontmatter — this suite covers the
- *    `mergeProvenanceFrontmatter` merge helper pipeline.ts wires it through.
+ * Covers provenance write-back into HO frontmatter (T7-full closure item 3,
+ * `wiki/plans/PLN-0004/execution/s1-rulings.md`) via the
+ * `mergeProvenanceFrontmatter` merge helper pipeline.ts wires it through.
+ * (T7-full closure item 1, `needs:` parsing/round-trip, was retired outright
+ * by DEC-0010/WK-0095 — the worker's self-reported needs are no longer
+ * consulted by anything; item 2, the canonical response-doc copy, requires
+ * the full WSL2/bwrap/Pi chain and is covered in tests/dispatch-v2-e2e.test.ts.)
  *
  * capture.ts's pre-existing writeResponseDoc/buildProvenanceWriteBack
  * coverage (delivered/refused/secret/no-op outcomes) lives in
- * tests/dispatch-v2-delivery.test.ts and is not duplicated here. No
- * personal/absolute paths appear in fixtures (WK-0043 rule); filesystem
- * tests use temp dirs.
+ * tests/dispatch-v2-delivery.test.ts and is not duplicated here.
  */
-import { describe, expect, it, afterEach } from 'vitest';
-import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { describe, expect, it } from 'vitest';
 
-import { writeResponseDoc } from '../packages/dispatch-core/src/capture.js';
-import type { DeliveryOutcome } from '../packages/dispatch-core/src/delivery.js';
-import { parsePiOutput } from '../packages/dispatch-core/src/adapters/pi.js';
 import { mergeProvenanceFrontmatter } from '../packages/dispatch-core/src/pipeline.js';
-
-async function createTempDir(prefix: string): Promise<string> {
-  return mkdtemp(join(tmpdir(), prefix));
-}
-
-// ---------------------------------------------------------------------------
-// capture.ts — writeResponseDoc `needs` round-trip
-// ---------------------------------------------------------------------------
-
-describe('capture.ts — writeResponseDoc needs handling', () => {
-  let runDir: string | undefined;
-  const delivery: DeliveryOutcome = { status: 'no_changes' };
-
-  afterEach(async () => {
-    if (runDir) await rm(runDir, { recursive: true, force: true });
-    runDir = undefined;
-  });
-
-  it('round-trips needs into frontmatter and a body section', async () => {
-    runDir = await createTempDir('kb-capture-needs-');
-
-    const result = await writeResponseDoc({
-      runDir,
-      handoff: { id: 'HO-0020', title: 'Widen scope test', mode: 'implement' },
-      delivery,
-      piResult: { outcome: 'blocked', usage: { totalTokens: 10, costUsd: 0.0001 } },
-      needs: ['wider scope', 'data access'],
-    });
-
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-
-    const { responseContent } = result.data;
-    expect(responseContent).toContain('needs: ["wider scope", "data access"]');
-    expect(responseContent).toContain('## Needs');
-    expect(responseContent).toContain('- wider scope');
-    expect(responseContent).toContain('- data access');
-  });
-
-  it('omits both the frontmatter field and body section when needs is empty', async () => {
-    runDir = await createTempDir('kb-capture-no-needs-');
-
-    const result = await writeResponseDoc({
-      runDir,
-      handoff: { id: 'HO-0021', title: 'No needs test', mode: 'implement' },
-      delivery,
-      needs: [],
-    });
-
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-
-    expect(result.data.responseContent).not.toContain('needs:');
-    expect(result.data.responseContent).not.toContain('## Needs');
-  });
-
-  it('omits needs when the field is not passed at all', async () => {
-    runDir = await createTempDir('kb-capture-undefined-needs-');
-
-    const result = await writeResponseDoc({
-      runDir,
-      handoff: { id: 'HO-0022', title: 'Undefined needs test', mode: 'implement' },
-      delivery,
-    });
-
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-
-    expect(result.data.responseContent).not.toContain('needs:');
-    expect(result.data.responseContent).not.toContain('## Needs');
-  });
-});
 
 // ---------------------------------------------------------------------------
 // pipeline.ts — mergeProvenanceFrontmatter
@@ -190,56 +107,5 @@ describe('pipeline.ts — mergeProvenanceFrontmatter', () => {
     const noFrontmatter = 'Just a plain markdown file, no frontmatter.\n';
     const result = mergeProvenanceFrontmatter(noFrontmatter, { run_id: 'RUN-x' });
     expect(result).toBe(noFrontmatter);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// adapters/pi.ts — parsePiOutput needs extraction
-// ---------------------------------------------------------------------------
-
-describe('adapters/pi.ts — parsePiOutput needs extraction', () => {
-  it('parses a ## Needs section accumulated across text content blocks (WK-0092/WK-0093: text rides on message_end content blocks, not text_delta events)', () => {
-    const lines = [
-      JSON.stringify({ type: 'agent_start' }),
-      JSON.stringify({
-        type: 'message_end',
-        message: {
-          role: 'assistant',
-          // Two text blocks within the same message_end — proves block-level
-          // concatenation, not just message-level.
-          content: [
-            { type: 'text', text: 'Ran into a scope wall.\n\n## Needs\n' },
-            { type: 'text', text: '- foo\n- bar\n' },
-          ],
-          usage: { totalTokens: 20, cost: { total: 0.0002 } },
-        },
-      }),
-      JSON.stringify({ type: 'turn_end', stopReason: 'end_turn' }),
-    ].join('\n');
-
-    const result = parsePiOutput(lines);
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.data.needs).toEqual(['foo', 'bar']);
-  });
-
-  it('returns an empty needs array when no ## Needs section is present', () => {
-    const lines = [
-      JSON.stringify({ type: 'agent_start' }),
-      JSON.stringify({
-        type: 'message_end',
-        message: {
-          role: 'assistant',
-          content: [{ type: 'text', text: 'All done, nothing needed.' }],
-          usage: { totalTokens: 5, cost: { total: 0.00005 } },
-        },
-      }),
-      JSON.stringify({ type: 'agent_end' }),
-    ].join('\n');
-
-    const result = parsePiOutput(lines);
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.data.needs).toEqual([]);
   });
 });

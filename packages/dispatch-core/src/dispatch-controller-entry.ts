@@ -32,12 +32,10 @@ import { writeJsonAtomic } from './run-state.js';
 /** v2 heartbeat cadence (operator ruling 2026-09-07, s1-rulings #4): 120s, not v1's 1s. */
 export const V2_HEARTBEAT_INTERVAL_MS = 120_000;
 
-/** s1-rulings ruling 5's v2 run-state status vocabulary. */
+/** s1-rulings ruling 5's v2 run-state status vocabulary. `blocked`/`partial` retired (DEC-0010). */
 export type V2RunStatus =
   | 'running'
   | 'completed'
-  | 'partial'
-  | 'blocked'
   | 'failed'
   | 'refused'
   | 'timed_out'

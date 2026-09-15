@@ -379,7 +379,7 @@ describe('capture.ts — writeResponseDoc', () => {
 
     const { responseContent } = result.data;
     expect(responseContent).toContain('handoff_id: HO-0002');
-    expect(responseContent).toContain('outcome: completed');
+    expect(responseContent).toContain('outcome: delivered');
     expect(responseContent).toContain('model: deepseek/deepseek-v4-flash-0731');
     expect(responseContent).toContain('isolation_backend: bwrap-wsl2');
     expect(responseContent).toContain('total_tokens: 125');

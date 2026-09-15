@@ -348,7 +348,7 @@ describe('assemble.ts — mechanical prompt assembly', () => {
     expect(text).toContain('- node --test test/');
     expect(text).toContain('<file path="README.md">');
     expect(text).toContain('test_kb is a minimal knowledge-base repo.');
-    expect(text).toContain('outcome: completed | partial | blocked | failed');
+    expect(text).toContain('If you cannot finish, end your final message stating exactly what you needed and why you stopped.');
     expect(result.data.tokenEstimate).toBeGreaterThan(0);
   });
 
@@ -602,8 +602,10 @@ describe('adapters/pi.ts — facts-only Pi adapter', () => {
   // tests/dispatch-v2-s6a.test.ts's own extraction-mechanics coverage. S6a
   // W4 moved review-verdict parsing off these fields entirely, onto
   // `.dispatch-out/review.yaml` (response-header.ts's `parseReviewFile`,
-  // read directly by pipeline.ts) — accumulatedText/lastAssistantText remain
-  // for the response-doc narrative (`extractNeeds` reads accumulatedText).
+  // read directly by pipeline.ts) — accumulatedText remains for
+  // whole-transcript narrative/debugging; lastAssistantText is DEC-0010's
+  // diagnosis-channel source, embedded verbatim as the response doc's
+  // `## Worker Report` section (capture.ts).
   // -------------------------------------------------------------------------
 
   it('parsePiOutput isolates lastAssistantText to only the final assistant message, while accumulatedText spans both turns and excludes thinking/toolCall/toolResult content', () => {
@@ -775,15 +777,6 @@ describe('adapters/pi.ts — golden fixture (real captured pi-output.log)', () =
     expect(result.data.accumulatedText).toBe(result.data.lastAssistantText);
     expect(result.data.accumulatedText).not.toContain('You are a code reviewer checking this change');
     expect(result.data.accumulatedText).not.toContain('---DIFFSTAT---');
-  });
-
-  it('extractNeeds receives real (non-empty) input via accumulatedText and returns [] since this review has no ## Needs heading', () => {
-    const result = parsePiOutput(fixtureContent);
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-
-    expect(result.data.accumulatedText.length).toBeGreaterThan(0);
-    expect(result.data.needs).toEqual([]);
   });
 
   it("reports outcome completed with usage summed across the fixture's assistant message_end events", () => {
