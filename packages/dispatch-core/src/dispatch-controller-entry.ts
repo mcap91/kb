@@ -214,6 +214,8 @@ export function deriveTerminalFields(
       };
     case 'no_changes':
       return { status: 'completed', outcome: 'completed', delivery_status: delivery.status, branch: null, error: null };
+    case 'no_delta':
+      return { status: 'failed', outcome: 'failed', delivery_status: delivery.status, branch: null, error: null };
     case 'refused_out_of_scope':
       return { status: 'refused', outcome: 'refused', delivery_status: delivery.status, branch: null, error: null };
     case 'secret_in_diff':

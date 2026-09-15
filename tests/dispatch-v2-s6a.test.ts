@@ -815,15 +815,26 @@ describe('capture.ts — mechanical verdict ladder (DEC-0010 / WK-0095)', () => 
     expect(written).not.toContain('reason:');
   });
 
-  it('implement mode + no_changes delivery -> outcome: failed, reason: no_deliverable (DEC-0010: silence plus no deliverable is failure, never success)', async () => {
+  it('implement mode + no_delta delivery -> outcome: failed, reason: no_deliverable (DEC-0010: silence plus no deliverable is failure, never success)', async () => {
     const handoff = { id: 'HO-TEST', title: 'Test task', mode: 'implement' };
-    const delivery: DeliveryOutcome = { status: 'no_changes' };
+    const delivery: DeliveryOutcome = { status: 'no_delta' };
     const result = await writeResponseDoc({ runDir, handoff, delivery });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     const written = await readFile(result.data.responsePath, 'utf8');
     expect(written).toContain('outcome: failed');
     expect(written).toContain('reason: no_deliverable');
+  });
+
+  it('implement mode + no_changes delivery -> outcome: delivered (idempotent redelivery: the exact same tree is already on the branch from the same base)', async () => {
+    const handoff = { id: 'HO-TEST', title: 'Test task', mode: 'implement' };
+    const delivery: DeliveryOutcome = { status: 'no_changes' };
+    const result = await writeResponseDoc({ runDir, handoff, delivery });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const written = await readFile(result.data.responsePath, 'utf8');
+    expect(written).toContain('outcome: delivered');
+    expect(written).not.toContain('reason:');
   });
 
   it('implement mode + refused_out_of_scope delivery -> outcome: refused, reason carries the delivery status', async () => {
@@ -990,16 +1001,18 @@ describe('capture.ts — no worker-to-success path (DEC-0010 structural acceptan
     await rm(runDir, { recursive: true, force: true });
   });
 
-  it('a fabricated piResult.outcome of "completed" plus a triumphant final message cannot upgrade an implement no_changes delivery to delivered', async () => {
+  it('a fabricated piResult.outcome of "completed" plus a triumphant final message cannot upgrade an implement no_delta delivery to delivered', async () => {
     const handoff = { id: 'HO-TEST', title: 'Test task', mode: 'implement' };
-    const delivery: DeliveryOutcome = { status: 'no_changes' };
+    const delivery: DeliveryOutcome = { status: 'no_delta' };
     const result = await writeResponseDoc({
       runDir,
       handoff,
       delivery,
       // The worker's own process/chat signal claims total success; the
       // verdict ladder must never read piResult.outcome for implement mode
-      // at all — only the delivery-gate fact (no_changes = no deliverable).
+      // at all — only the delivery-gate fact (no_delta = no deliverable;
+      // no_changes is reserved for an idempotent redelivery and is NOT this
+      // case — see the verdict-ladder tests above).
       piResult: { outcome: 'completed', usage: { totalTokens: 999, costUsd: 0 } },
       lastAssistantText: 'Task completed successfully! Everything is done.',
     });

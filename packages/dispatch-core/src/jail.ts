@@ -31,8 +31,8 @@
  *   9.  .dispatch-out/ bind (S6a W4)  dispatch-owned worker-output dir —
  *                                      always writable, unconditional across
  *                                      every mode (not gated by write_scope);
- *                                      carries review.yaml today, will carry
- *                                      outcome.yaml later
+ *                                      carries review.yaml (code_review's
+ *                                      file-artifact deliverable)
  *   10. wiki read axis (T25/D19)      dual-shape probe result decides mask
  *                                      vs. explicit bind vs. no-op
  *   11. data mounts                   per-HO ro/rw binds (existence/
@@ -217,7 +217,8 @@ export function buildJailArgs(opts: JailOpts): JailArgs {
   }
 
   // 9: .dispatch-out/ (S6a W4) — dispatch-owned worker-output dir (review.yaml
-  // today, outcome.yaml later). Unconditional and layered AFTER the
+  // is code_review's file-artifact deliverable; DEC-0010 retired outcome.yaml).
+  // Unconditional and layered AFTER the
   // write_scope binds above regardless of mode, so it is writable even when
   // write_scope is empty (code_review's envelope grants no write authority at
   // all — see assemble.ts's code_review framing). Self-bind, same pattern as
