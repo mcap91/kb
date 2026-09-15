@@ -1,5 +1,6 @@
 scratch_space/
 .claude/
+.agents/
 node_modules/
 dist/
 dist-tests/
