@@ -21,11 +21,6 @@ import type { DeliveryOutcome } from './delivery.js';
 import type { BackendFingerprint } from './model-registry.js';
 import type { StructuredReviewResult } from './response-header.js';
 
-export interface WorkerOutcomeResult {
-  outcome: 'completed' | 'partial' | 'blocked' | 'failed';
-  needs: string[];
-}
-
 export interface CaptureOpts {
   /** Windows path to the run dir */
   runDir: string;
@@ -39,11 +34,13 @@ export interface CaptureOpts {
   model?: string;
   /** Isolation backend */
   isolationBackend?: string;
-  /** Needed access/decisions the worker reported on a non-completed outcome (rev-5 §5); parsed from Pi output. */
-  needs?: string[];
-  /** Worker self-reported outcome from .dispatch-out/outcome.yaml (S6a outcome channel).
-   * Takes precedence over parsePiOutput's classification when present. */
-  workerOutcome?: WorkerOutcomeResult;
+  /**
+   * The worker's final assistant message, verbatim (DEC-0010 diagnosis
+   * channel) — rendered as the `## Worker Report` section, evidence only,
+   * never consulted by the verdict ladder below. Typically `piResult`'s own
+   * `lastAssistantText` (adapters/pi.ts).
+   */
+  lastAssistantText?: string;
   /** Credential profile names granted for this run (names only; S3 T10). */
   credentialsGranted?: string[];
   /** Resolved backend base_url actually used (never the {{WIN_HOST}} template; S3 ruling 8). */
@@ -84,8 +81,15 @@ export interface ProvenanceWriteBack {
   fields: Record<string, string | boolean | string[]>;
 }
 
-/** Rev-5 response-doc outcome header (spec §5): four worker outcomes plus the delivery-gate refusal. */
-type ResponseOutcome = 'completed' | 'partial' | 'blocked' | 'failed' | 'refused';
+/**
+ * DEC-0010 mechanical verdict vocabulary. Computed exclusively from
+ * delivery-gate facts and mode deliverable checks (`deriveVerdict` below) —
+ * no worker input is ever consulted. `timed_out`/`cancelled` are set at the
+ * pipeline/controller level on paths that never reach `writeResponseDoc` at
+ * all (e.g. a watchdog-killed worker); `deriveVerdict` itself never returns
+ * them.
+ */
+type ResponseOutcome = 'delivered' | 'failed' | 'refused' | 'timed_out' | 'cancelled';
 
 /**
  * Branch naming is a fixed convention (`dispatch/<handoffId>`), meaningful
@@ -99,51 +103,64 @@ function deriveBranch(handoffId: string, delivery: DeliveryOutcome): string {
   return '';
 }
 
+/** `deriveVerdict`'s return: the mechanical outcome plus a machine-set reason code for every non-`delivered` result. */
+interface VerdictResult {
+  outcome: ResponseOutcome;
+  reason?: string;
+}
+
 /**
- * Response-doc outcome. Precedence (highest to lowest):
- *   1. Delivery-gate refusals/conflicts/errors — always win over whatever the
- *      worker itself reported.
- *   2. The worker's own self-report from `.dispatch-out/outcome.yaml` (S6a
- *      outcome channel), when present — the worker's deliberate, structured
- *      claim about its own run, taking precedence over the event-stream-only
- *      classification below.
- *   3. The Pi adapter's facts-only `PiResult.outcome` classification
- *      (event-stream structure only) — the pre-S6a fallback, defaulting to
- *      'completed' when no piResult is available at all (e.g. a delivered
- *      run captured without adapter usage data).
+ * Mechanical verdict ladder (DEC-0010 rule 2 — "completion is mechanical;
+ * workers never assert done/not-done"). Every branch reads only delivery-gate
+ * facts, the handoff's mode, and (for research/redteam crash detection only)
+ * the Pi adapter's facts-only process classification — never the worker's
+ * chat text, and never a worker-authored self-report file. There is no path
+ * from worker-authored content to a `delivered` verdict.
+ *
+ * Ladder:
+ *   1. Delivery-gate refusals (out-of-scope / secret-in-diff) -> `refused`.
+ *   2. Delivery-gate errors (conflict / git error) -> `failed`.
+ *   3. Mode-specific deliverable check:
+ *      - implement: an in-scope diff landed on the branch -> `delivered`;
+ *        no changes at all -> `failed` (`no_deliverable` — DEC-0010's
+ *        "silence plus no deliverable is failure, never success").
+ *      - code_review: reaching this function at all means the advisory path
+ *        ran to completion — review.yaml presence/schema-validity is a
+ *        SEPARATE gate the caller (pipeline.ts step 19b) checks before this
+ *        is reached, so this branch only needs to say `delivered`.
+ *      - research/redteam: no deliverable file exists for these modes — the
+ *        transcript IS the product (`## Worker Report`); `delivered` here
+ *        claims only "the process ran to completion", never findings
+ *        quality. A crashed/errored process still fails.
  */
-function deriveOutcome(
+function deriveVerdict(
   delivery: DeliveryOutcome,
+  handoffMode: string,
   piResult?: CaptureOpts['piResult'],
-  workerOutcome?: WorkerOutcomeResult,
-): ResponseOutcome {
+): VerdictResult {
   if (delivery.status === 'refused_out_of_scope' || delivery.status === 'secret_in_diff') {
-    return 'refused';
+    return { outcome: 'refused', reason: delivery.status };
   }
-  if (delivery.status === 'conflict' || delivery.status === 'error') {
-    return 'failed';
+  if (delivery.status === 'conflict') {
+    return { outcome: 'failed', reason: 'delivery_conflict' };
   }
-  if (workerOutcome) {
-    switch (workerOutcome.outcome) {
-      case 'completed':
-      case 'partial':
-      case 'blocked':
-      case 'failed':
-        return workerOutcome.outcome;
+  if (delivery.status === 'error') {
+    return { outcome: 'failed', reason: 'delivery_error' };
+  }
+  if (handoffMode === 'implement') {
+    if (delivery.status === 'delivered') return { outcome: 'delivered' };
+    if (delivery.status === 'no_changes') return { outcome: 'failed', reason: 'no_deliverable' };
+  }
+  if (handoffMode === 'code_review') {
+    return { outcome: 'delivered' };
+  }
+  if (handoffMode === 'research' || handoffMode === 'redteam') {
+    if (piResult?.outcome === 'failed' || piResult?.outcome === 'error') {
+      return { outcome: 'failed', reason: 'process_error' };
     }
+    return { outcome: 'delivered' };
   }
-  if (piResult) {
-    switch (piResult.outcome) {
-      case 'completed':
-      case 'partial':
-      case 'blocked':
-      case 'failed':
-        return piResult.outcome;
-      default:
-        return 'failed'; // covers the adapter's 'error' outcome and any unrecognized value
-    }
-  }
-  return 'completed';
+  return { outcome: 'failed', reason: 'unknown_mode' };
 }
 
 function describeOutcome(delivery: DeliveryOutcome): string {
@@ -176,6 +193,17 @@ function formatChangedFilesSection(delivery: DeliveryOutcome): string {
 function formatUsageSection(piResult: CaptureOpts['piResult']): string {
   if (!piResult) return '- Tokens: unavailable\n- Cost: unavailable';
   return `- Tokens: ${piResult.usage.totalTokens}\n- Cost: $${piResult.usage.costUsd}`;
+}
+
+/**
+ * Render the `## Worker Report` section body (DEC-0010 diagnosis channel):
+ * the worker's final assistant message, embedded VERBATIM as evidence —
+ * never parsed, never consulted by `deriveVerdict` above. Absent/empty text
+ * (no final message captured at all, e.g. a crashed or empty event stream)
+ * renders an explicit placeholder rather than a blank section.
+ */
+function formatWorkerReportSection(lastAssistantText: string | undefined): string {
+  return lastAssistantText && lastAssistantText.length > 0 ? lastAssistantText : '(no final message captured)';
 }
 
 /**
@@ -240,25 +268,20 @@ function formatBackendFingerprint(fingerprint: BackendFingerprint): string {
  * files) followed by a free-form findings body (spec §5).
  */
 export async function writeResponseDoc(opts: CaptureOpts): Promise<DispatchResult<CaptureResult>> {
-  const { runDir, handoff, delivery, piResult, model, isolationBackend, needs } = opts;
+  const { runDir, handoff, delivery, piResult, model, isolationBackend } = opts;
 
-  const outcome = deriveOutcome(delivery, piResult, opts.workerOutcome);
+  const verdict = deriveVerdict(delivery, handoff.mode, piResult);
   const branch = deriveBranch(handoff.id, delivery);
   const changedFiles = delivery.status === 'delivered' ? delivery.changedFiles : [];
   const totalTokens = piResult?.usage.totalTokens ?? 0;
   const costUsd = piResult?.usage.costUsd ?? 0;
   const changedFilesYaml = `[${changedFiles.map((file) => JSON.stringify(file)).join(', ')}]`;
   const credentialsGrantedYaml = `[${(opts.credentialsGranted ?? []).map((name) => JSON.stringify(name)).join(', ')}]`;
-  // The worker's own self-reported needs (outcome.yaml) take precedence over
-  // parsePiOutput's prose-derived needs when present — same precedence as
-  // deriveOutcome's outcome field above (S6a outcome channel).
-  const effectiveNeeds = (opts.workerOutcome?.needs?.length ? opts.workerOutcome.needs : needs) ?? [];
-  const hasNeeds = effectiveNeeds.length > 0;
 
   const frontmatterLines = [
     '---',
     `handoff_id: ${handoff.id}`,
-    `outcome: ${outcome}`,
+    `outcome: ${verdict.outcome}`,
     `model: ${model ?? ''}`,
     `isolation_backend: ${isolationBackend ?? ''}`,
     `total_tokens: ${totalTokens}`,
@@ -267,10 +290,7 @@ export async function writeResponseDoc(opts: CaptureOpts): Promise<DispatchResul
     `changed_files: ${changedFilesYaml}`,
     `credentials_granted: ${credentialsGrantedYaml}`,
   ];
-  if (hasNeeds) {
-    const needsYaml = `[${effectiveNeeds.map((entry) => JSON.stringify(entry)).join(', ')}]`;
-    frontmatterLines.push(`needs: ${needsYaml}`);
-  }
+  if (verdict.reason) frontmatterLines.push(`reason: ${verdict.reason}`);
   // Resolved-value provenance (S3 ruling 8): stamped only when the caller has
   // them (e.g. never for the delivery-gate refusal callers, which pass no
   // model/backend at all) — RESOLVED runtime values only, never a template.
@@ -287,18 +307,17 @@ export async function writeResponseDoc(opts: CaptureOpts): Promise<DispatchResul
     '## Outcome',
     describeOutcome(delivery),
     '',
-  ];
-  if (hasNeeds) {
-    bodyLines.push('## Needs', ...effectiveNeeds.map((entry) => `- ${entry}`), '');
-  }
-  bodyLines.push(
     '## Changed Files',
     formatChangedFilesSection(delivery),
     '',
     '## Usage',
     formatUsageSection(piResult),
     '',
-  );
+    '## Worker Report (evidence, not verdict)',
+    '',
+    formatWorkerReportSection(opts.lastAssistantText),
+    '',
+  ];
   if (opts.reviewResult) {
     bodyLines.push(...formatStructuredReviewSection(opts.reviewResult));
   } else if (opts.reviewParseError) {
@@ -330,7 +349,7 @@ export async function writeResponseDoc(opts: CaptureOpts): Promise<DispatchResul
  * (e.g. no credentials were requested).
  */
 export function buildProvenanceWriteBack(opts: CaptureOpts): ProvenanceWriteBack {
-  const { runDir, handoff, delivery, model, isolationBackend, needs } = opts;
+  const { runDir, handoff, delivery, model, isolationBackend } = opts;
 
   const fields: Record<string, string | boolean | string[]> = {
     run_id: basename(runDir),
@@ -343,9 +362,6 @@ export function buildProvenanceWriteBack(opts: CaptureOpts): ProvenanceWriteBack
     credentials_granted: opts.credentialsGranted ?? [],
   };
 
-  if (needs && needs.length > 0) {
-    fields.needs = needs;
-  }
   // Resolved-value provenance (S3 ruling 8) — same RESOLVED-only invariant as
   // writeResponseDoc above; present only when the caller supplied them.
   if (opts.baseUrl) fields.base_url = opts.baseUrl;

@@ -1,0 +1,16 @@
+{
+  "schema_version": 2,
+  "run_id": "RUN-dcb2072e-ff06-4aba-9d29-53f96d55437b",
+  "handoff_id": "HO-0009",
+  "model": "deepseek",
+  "status": "completed",
+  "pid": 23316,
+  "pgid": 23316,
+  "started_at": "2026-09-14T22:54:43.159Z",
+  "heartbeat_at": "2026-09-14T22:56:52.962Z",
+  "completed_at": "2026-09-14T22:56:52.962Z",
+  "outcome": "completed",
+  "delivery_status": "delivered",
+  "branch": "dispatch/HO-0009",
+  "error": null
+}

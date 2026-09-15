@@ -51,7 +51,7 @@ import {
   parseDeliveryOutput,
   type DeliveryOutcome,
 } from './delivery.js';
-import { writeResponseDoc, buildProvenanceWriteBack, type WorkerOutcomeResult } from './capture.js';
+import { writeResponseDoc, buildProvenanceWriteBack } from './capture.js';
 import { runPreflight, type PreflightResult } from './preflight.js';
 import { getRunDir } from './paths.js';
 import { loadProfilesConfig } from './repo-config.js';
@@ -335,9 +335,10 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       if (!mkdirResult.ok) return mkdirResult;
     }
 
-    // 9c. Pre-create .dispatch-out/ — dispatch-owned worker-output dir (S6a
-    // W4: review.yaml today, outcome.yaml later). Same bwrap constraint as
-    // the write_scope skeleton dirs above: the path must already exist on
+    // 9c. Pre-create .dispatch-out/ — dispatch-owned worker-output dir
+    // (review.yaml is code_review's deliverable; DEC-0010 retired the
+    // outcome.yaml self-report channel — no other mode writes here). Same
+    // bwrap constraint as the write_scope skeleton dirs above: the path must already exist on
     // disk before jail.ts's unconditional .dispatch-out bind is handed to
     // bwrap. Unconditional across every mode, not gated by write_scope —
     // code_review declares write_scope: [] (its envelope grants no write
@@ -617,11 +618,10 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       const enumerated = parseEnumerateOutput(enumerateExec.data.stdout);
       const secretHits = parseInjectedValueScanOutput(enumerateExec.data.stdout);
       const allChangedFiles = [...enumerated.changedFiles, ...enumerated.untrackedFiles];
-      // .dispatch-out/ is dispatch-owned infrastructure (outcome.yaml,
-      // review.yaml), already excluded from the delivery commit via
-      // excludePrefixes — exclude from the write_scope check too, so a
-      // compliant worker writing its mandated outcome file doesn't trigger
-      // refused_out_of_scope.
+      // .dispatch-out/ is dispatch-owned infrastructure (review.yaml is
+      // code_review's deliverable), already excluded from the delivery
+      // commit via excludePrefixes — exclude from the write_scope check too,
+      // so it never triggers refused_out_of_scope.
       const deliverableFiles = allChangedFiles.filter(f => !f.startsWith('.dispatch-out/') && !f.startsWith('.dispatch-out\\'));
 
       // 17. Check write scope, check the injected-value scan hits captured
@@ -762,40 +762,6 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       }
     }
 
-    // 19c. Worker self-report outcome (.dispatch-out/outcome.yaml) — all modes.
-    // The worker writes this file as its self-reported outcome (assemble.ts
-    // response format instructions). Precedence in capture.ts's deriveOutcome:
-    // delivery-gate refused/conflict/error > outcome.yaml > parsePiOutput.
-    // Missing or malformed file → silent fallback to parsePiOutput (today's
-    // behavior, fail-safe — no pipeline failure).
-    let workerOutcome: WorkerOutcomeResult | undefined;
-    {
-      logVerbose(verbose, 'reading .dispatch-out/outcome.yaml from the clone');
-      const outcomeFileScript = buildOutcomeFileReadScript(clonePath);
-      const outcomeFileExec = await execViaWsl2({
-        runDir,
-        scriptContent: outcomeFileScript.scriptContent,
-        scriptName: outcomeFileScript.scriptName,
-        timeoutMs: 30_000,
-      });
-      const outcomeReadResult = outcomeFileExec.ok
-        ? parseOutcomeFileReadOutput(outcomeFileExec.data.stdout)
-        : { present: false, content: '' };
-      if (outcomeReadResult.present) {
-        workerOutcome = parseOutcomeFile(outcomeReadResult.content) ?? undefined;
-        if (workerOutcome) {
-          logVerbose(verbose, `worker self-reported outcome: ${workerOutcome.outcome}`);
-        } else {
-          logVerbose(verbose, 'warning: outcome.yaml present but malformed — falling back to parsePiOutput');
-        }
-        try {
-          await writeFile(join(runDir, 'outcome.yaml'), outcomeReadResult.content, 'utf8');
-        } catch (err) {
-          logVerbose(verbose, `warning: could not copy outcome.yaml to run dir: ${err}`);
-        }
-      }
-    }
-
     // 20. Capture
     const captureResult = await writeResponseDoc({
       runDir,
@@ -804,8 +770,7 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       piResult: { outcome: piParsed.data.outcome, usage: piParsed.data.usage },
       model: canonicalModel,
       isolationBackend,
-      needs: piParsed.data.needs,
-      workerOutcome,
+      lastAssistantText: piParsed.data.lastAssistantText,
       credentialsGranted: credResult.data.granted,
       reviewResult,
       reviewParseError,
@@ -847,7 +812,6 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       delivery,
       model: canonicalModel,
       isolationBackend,
-      needs: piParsed.data.needs,
       credentialsGranted: credResult.data.granted,
       // Resolved-value provenance (S3 ruling 8): the real endpoint the tunnel
       // forwarder was configured to reach — never `model.baseUrl`'s raw
@@ -1114,12 +1078,12 @@ export function buildExecutionScript(opts: BuildExecutionScriptOpts): string {
     `cat <<'DISPATCH_MODELS_JSON_EOF' > "$PI_CODING_AGENT_DIR/models.json"`,
     modelsJsonContent,
     'DISPATCH_MODELS_JSON_EOF',
-    // S6a W4: defensive in-jail mkdir for .dispatch-out/ (the review.yaml /
-    // future outcome.yaml artifact dir) — belt-and-suspenders in case the
-    // pre-jail mkdir (pipeline.ts step 9c) doesn't persist through the
-    // self-bind; a no-op when it already does. Relative to cwd (bwrap's
-    // --chdir is always the clone root here), so this targets
-    // "<clonePath>/.dispatch-out" regardless of mode.
+    // S6a W4: defensive in-jail mkdir for .dispatch-out/ (review.yaml is
+    // code_review's deliverable; DEC-0010 retired outcome.yaml) —
+    // belt-and-suspenders in case the pre-jail mkdir (pipeline.ts step 9c)
+    // doesn't persist through the self-bind; a no-op when it already does.
+    // Relative to cwd (bwrap's --chdir is always the clone root here), so
+    // this targets "<clonePath>/.dispatch-out" regardless of mode.
     'mkdir -p .dispatch-out',
     `if [ -f ${shQuote(lockfilePath)} ]; then`,
     `  cd ${shQuote(clonePath)} && npm rebuild 2>&1 && cd - > /dev/null || true`,
@@ -1330,79 +1294,4 @@ export function resolveReviewFileOutcome(
     return { reviewResult: parsed.data };
   }
   return { reviewParseError: `${parsed.error}: ${parsed.message}` };
-}
-
-// ---------------------------------------------------------------------------
-// S6a: `.dispatch-out/outcome.yaml` read (the worker self-report outcome
-// channel — all modes). Mirrors the review.yaml read pattern above.
-// The outcome.yaml schema is simpler: `outcome:` + optional `needs:` list.
-// Missing or malformed files silently fall back to parsePiOutput's
-// classification (today's behavior, fail-safe).
-// ---------------------------------------------------------------------------
-
-export interface OutcomeFileReadResult {
-  present: boolean;
-  content: string;
-}
-
-export function buildOutcomeFileReadScript(clonePath: string): { scriptContent: string; scriptName: string } {
-  const outcomePath = `${clonePath}/.dispatch-out/outcome.yaml`;
-  const scriptContent = [
-    '#!/bin/bash',
-    'set -euo pipefail',
-    `FILE=${shQuote(outcomePath)}`,
-    'if [ -f "$FILE" ]; then',
-    '  echo "---OUTCOME-YAML-PRESENT---"',
-    'else',
-    '  echo "---OUTCOME-YAML-ABSENT---"',
-    'fi',
-    'echo "---OUTCOME-YAML-CONTENT-START---"',
-    'cat "$FILE" 2>/dev/null || true',
-    'echo "---OUTCOME-YAML-CONTENT-END---"',
-    '',
-  ].join('\n');
-  return { scriptContent, scriptName: 'dispatch-outcome-file-read.sh' };
-}
-
-export function parseOutcomeFileReadOutput(stdout: string): OutcomeFileReadResult {
-  const normalized = stdout.replace(/\r\n/g, '\n');
-  const present = normalized.includes('---OUTCOME-YAML-PRESENT---');
-  const content = extractMarked(normalized, '---OUTCOME-YAML-CONTENT-START---', '---OUTCOME-YAML-CONTENT-END---');
-  return { present, content };
-}
-
-const VALID_OUTCOMES = new Set(['completed', 'partial', 'blocked', 'failed']);
-
-export function parseOutcomeFile(content: string): WorkerOutcomeResult | null {
-  const lines = content.trim().split('\n');
-  let outcome: string | undefined;
-  const needs: string[] = [];
-  let inNeeds = false;
-
-  for (const line of lines) {
-    const outcomeMatch = line.match(/^outcome:\s*(.+)$/);
-    if (outcomeMatch) {
-      outcome = outcomeMatch[1]!.trim();
-      inNeeds = false;
-      continue;
-    }
-    if (/^needs:\s*$/.test(line)) {
-      inNeeds = true;
-      continue;
-    }
-    if (inNeeds) {
-      const needMatch = line.match(/^\s*-\s+(.+)$/);
-      if (needMatch) {
-        needs.push(needMatch[1]!.trim());
-      } else if (line.trim()) {
-        inNeeds = false;
-      }
-    }
-  }
-
-  if (!outcome || !VALID_OUTCOMES.has(outcome)) {
-    return null;
-  }
-
-  return { outcome: outcome as WorkerOutcomeResult['outcome'], needs };
 }
