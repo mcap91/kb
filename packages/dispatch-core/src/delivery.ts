@@ -52,6 +52,7 @@ export interface DeliveryOpts {
 export type DeliveryOutcome =
   | { status: 'delivered'; branch: string; commitSha: string; changedFiles: string[] }
   | { status: 'no_changes' }
+  | { status: 'no_delta' }
   | { status: 'refused_out_of_scope'; offendingPaths: string[]; quarantinePath: string }
   | { status: 'secret_in_diff'; patterns: string[]; quarantinePath: string }
   | { status: 'conflict'; existingTree: string; newTree: string }
@@ -291,6 +292,14 @@ $GIT read-tree "$BASE_SHA"
 ${gitAddLine}
 
 TREE=$($GIT write-tree)
+
+BASE_TREE=$($GIT rev-parse "$BASE_SHA^{tree}")
+if [ "$TREE" = "$BASE_TREE" ]; then
+  rm -f "$DELIVERY_IDX"
+  echo "NO_DELTA"
+  exit 0
+fi
+
 COMMIT=$($GIT commit-tree "$TREE" -p "$BASE_SHA" -m "dispatch: $HANDOFF_ID")
 
 rm -f "$DELIVERY_IDX"
@@ -350,6 +359,10 @@ export function parseDeliveryOutput(stdout: string): DeliveryOutcome {
       extractSection(normalized, '---CHANGED-FILES-START---', '---CHANGED-FILES-END---'),
     );
     return { status: 'delivered', branch, commitSha, changedFiles };
+  }
+
+  if (lines.some((line) => line === 'NO_DELTA')) {
+    return { status: 'no_delta' };
   }
 
   if (lines.some((line) => line === 'IDEMPOTENT')) {

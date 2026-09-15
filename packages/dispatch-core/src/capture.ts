@@ -122,8 +122,12 @@ interface VerdictResult {
  *   2. Delivery-gate errors (conflict / git error) -> `failed`.
  *   3. Mode-specific deliverable check:
  *      - implement: an in-scope diff landed on the branch -> `delivered`;
- *        no changes at all -> `failed` (`no_deliverable` — DEC-0010's
- *        "silence plus no deliverable is failure, never success").
+ *        an idempotent redelivery (`no_changes` — the exact same tree is
+ *        already on the branch from the same base) -> also `delivered`;
+ *        an empty delta (`no_delta` — the worker's tree matches the base
+ *        tree, so no branch was ever created) -> `failed` (`no_deliverable`
+ *        — DEC-0010's "silence plus no deliverable is failure, never
+ *        success").
  *      - code_review: reaching this function at all means the advisory path
  *        ran to completion — review.yaml presence/schema-validity is a
  *        SEPARATE gate the caller (pipeline.ts step 19b) checks before this
@@ -149,7 +153,8 @@ function deriveVerdict(
   }
   if (handoffMode === 'implement') {
     if (delivery.status === 'delivered') return { outcome: 'delivered' };
-    if (delivery.status === 'no_changes') return { outcome: 'failed', reason: 'no_deliverable' };
+    if (delivery.status === 'no_changes') return { outcome: 'delivered' }; // F1: idempotent redelivery
+    if (delivery.status === 'no_delta') return { outcome: 'failed', reason: 'no_deliverable' }; // F2: empty delta
   }
   if (handoffMode === 'code_review') {
     return { outcome: 'delivered' };
@@ -169,6 +174,8 @@ function describeOutcome(delivery: DeliveryOutcome): string {
       return `Delivered to \`${delivery.branch}\` at commit \`${delivery.commitSha}\`.`;
     case 'no_changes':
       return 'No changes were delivered (either the worker made none, or this is an idempotent redelivery already landed on the branch).';
+    case 'no_delta':
+      return 'No changes: the worker produced no diff from the base tree. No branch was created.';
     case 'refused_out_of_scope':
       return `Refused: changes touched paths outside the declared write_scope (${delivery.offendingPaths.join(', ')}). Diff quarantined at \`${delivery.quarantinePath}\`.`;
     case 'secret_in_diff':

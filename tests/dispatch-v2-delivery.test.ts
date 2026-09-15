@@ -200,6 +200,8 @@ describe('delivery.ts — buildDeliveryScript', () => {
     expect(scriptContent).toContain('IDEMPOTENT');
     expect(scriptContent).toContain('CONFLICT:');
     expect(scriptContent).toContain("HANDOFF_ID='HO-0002'");
+    expect(scriptContent).toContain('NO_DELTA');
+    expect(scriptContent).toContain('BASE_TREE');
     expect(scriptName).toBe('dispatch-deliver.sh');
   });
 });
@@ -235,6 +237,11 @@ describe('delivery.ts — parseDeliveryOutput', () => {
   it('parses IDEMPOTENT as a no_changes outcome (idempotent redelivery)', () => {
     const result = parseDeliveryOutput('IDEMPOTENT');
     expect(result.status).toBe('no_changes');
+  });
+
+  it('parses NO_DELTA as a no_delta outcome (worker produced no diff from base)', () => {
+    const result = parseDeliveryOutput('NO_DELTA');
+    expect(result.status).toBe('no_delta');
   });
 
   it('parses a CONFLICT line into a conflict outcome', () => {
