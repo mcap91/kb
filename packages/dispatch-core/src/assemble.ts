@@ -5,7 +5,7 @@
  * subagent profiles that set posture, never guardrails (s6-rulings.md ruling 2) — all
  * guardrails are deterministic elsewhere (delivery gate, bwrap, etc). Every framing
  * instructs the worker to end any non-`completed` run by naming the exact additional
- * access or decisions it needed (the source of the response header's `needs:` list).
+ * access or decisions it needed (the source of `.dispatch-out/outcome.yaml`'s `needs:` list).
  */
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -51,7 +51,7 @@ interface ModeParts {
 const IMPLEMENT_FRAMING =
   'Execute the spec exactly. You have NO unratified decisions to make outside the decision ' +
   'space granted in the task below. If you encounter a missing decision, stop with outcome ' +
-  '`blocked` and name what you need in the `needs:` section of your response header — do not ' +
+  '`blocked` and name what you need in the `needs:` section of `.dispatch-out/outcome.yaml` — do not ' +
   'make judgment calls.\n\n' +
   'If implementing your task requires fixing a pre-existing bug inside write_scope that ' +
   'directly blocks your objective, one targeted fix with a note in your response is ' +
