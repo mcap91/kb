@@ -678,4 +678,6 @@ To test consumer-repo workflows (bootstrap, dispatch, handoffs, PLN) against a r
 
 ## License
 
-[MIT](LICENSE)
+[Elastic License 2.0](LICENSE)
+
+Versions prior to 2026-09-16 were published under the MIT License and remain MIT-licensed to anyone who received them.
