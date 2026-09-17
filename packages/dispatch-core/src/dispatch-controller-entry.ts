@@ -35,7 +35,7 @@ export const V2_HEARTBEAT_INTERVAL_MS = 120_000;
 /** s1-rulings ruling 5's v2 run-state status vocabulary. `blocked`/`partial` retired (DEC-0010). */
 export type V2RunStatus =
   | 'running'
-  | 'completed'
+  | 'delivered'
   | 'failed'
   | 'refused'
   | 'timed_out'
@@ -165,9 +165,9 @@ export interface TerminalFields {
  *
  * `outcome` mirrors the coarse `status` bucket today. `runDispatch()`'s
  * `DispatchResult2` does not surface Pi's own finer-grained worker outcome
- * (completed/partial/blocked/failed) separately from the delivery outcome —
+ * (completed/failed/error) separately from the delivery outcome —
  * only the written response doc's frontmatter has that (capture.ts's
- * `deriveOutcome`). Recovering it here would mean either threading it through
+ * `deriveVerdict`). Recovering it here would mean either threading it through
  * `DispatchOpts`/`DispatchResult2` (a pipeline.ts change, out of scope for
  * this wave) or parsing the response doc back off disk. Left as a known gap
  * for a later wave; `outcome` is still always populated (never silently
@@ -206,14 +206,14 @@ export function deriveTerminalFields(
   switch (delivery.status) {
     case 'delivered':
       return {
-        status: 'completed',
-        outcome: 'completed',
+        status: 'delivered',
+        outcome: 'delivered',
         delivery_status: delivery.status,
         branch: delivery.branch,
         error: null,
       };
     case 'no_changes':
-      return { status: 'completed', outcome: 'completed', delivery_status: delivery.status, branch: null, error: null };
+      return { status: 'delivered', outcome: 'delivered', delivery_status: delivery.status, branch: null, error: null };
     case 'no_delta':
       return { status: 'failed', outcome: 'failed', delivery_status: delivery.status, branch: null, error: null };
     case 'refused_out_of_scope':

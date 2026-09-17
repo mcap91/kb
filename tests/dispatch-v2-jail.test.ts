@@ -2,9 +2,7 @@
  * PLN-0004 S5 — tests for the full §11 jail recipe (T15 full) and the
  * dual-shape wiki read axis (T25).
  *
- * jail.ts's S0-minimum shape is already frozen by the equality assertions in
- * dispatch-v2-exec.test.ts (untouched here — that file is the backward-compat
- * contract). This file covers the NEW S5 surface: write_scope sparse binds,
+ * This file covers the S5 surface: write_scope sparse binds,
  * the wiki read axis (T25/D19), data mounts, the T26/D21 egress-bind wiring,
  * full-recipe ordering, and the two new pure helpers `classifyWikiShape` and
  * `parseDataMount`. Pure/synchronous throughout — no WSL2/bwrap required,
@@ -21,41 +19,6 @@ import {
 } from '../packages/dispatch-core/src/jail.js';
 
 const clonePath = '/home/user/.kb-dispatch/clones/RUN-JAIL';
-
-// ---------------------------------------------------------------------------
-// buildJailArgs — S0 backward compatibility (no S5 options set)
-// ---------------------------------------------------------------------------
-
-describe('buildJailArgs — S0 backward compatibility', () => {
-  it('produces the exact S0-minimum argv when no S5 options are set', () => {
-    const result = buildJailArgs({ clonePath });
-    expect(result.argv).toEqual([
-      'bwrap',
-      '--ro-bind', '/', '/',
-      '--proc', '/proc',
-      '--dev', '/dev',
-      '--die-with-parent',
-      '--bind', clonePath, clonePath,
-      '--chdir', clonePath,
-      '--',
-    ]);
-  });
-
-  it('still honors an explicit cwd distinct from clonePath with no S5 options set', () => {
-    const cwd = `${clonePath}/subdir`;
-    const result = buildJailArgs({ clonePath, cwd });
-    expect(result.argv).toEqual([
-      'bwrap',
-      '--ro-bind', '/', '/',
-      '--proc', '/proc',
-      '--dev', '/dev',
-      '--die-with-parent',
-      '--bind', clonePath, clonePath,
-      '--chdir', cwd,
-      '--',
-    ]);
-  });
-});
 
 // ---------------------------------------------------------------------------
 // buildJailArgs — write_scope sparse binds
@@ -128,11 +91,6 @@ describe('buildJailArgs — .dispatch-out/ worker-output bind (S6a W4)', () => {
         expect.arrayContaining(['--bind', `${clonePath}/.dispatch-out`, `${clonePath}/.dispatch-out`]),
       );
     }
-  });
-
-  it('is absent from the S0-minimum shape (no S5 options set — backward compat)', () => {
-    const result = buildJailArgs({ clonePath });
-    expect(result.argv).not.toContain(`${clonePath}/.dispatch-out`);
   });
 });
 

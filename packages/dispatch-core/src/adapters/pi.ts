@@ -55,7 +55,7 @@ export interface PiUsage {
 }
 
 export interface PiResult {
-  outcome: 'completed' | 'partial' | 'blocked' | 'failed' | 'error';
+  outcome: 'completed' | 'failed' | 'error';
   stopReason?: string;
   hasAgentEnd: boolean;
   usage: PiUsage;
@@ -99,11 +99,11 @@ export interface PiResult {
    * nothing real is lost by not reconstructing one.
    *
    * S6a's structured review-header parser (`response-header.ts`'s
-   * `parseReviewHeader`) reads from THIS field, not `accumulatedText` — an
+   * `parseReviewFile`) reads from THIS field, not `accumulatedText` — an
    * agentic `code_review` worker narrates ("Let me look at the diff...")
    * and calls tools before producing its structured header, so the
    * whole-session text pushes the header's opening `---` past
-   * `extractHeaderBlock`'s 5-line search window. The header is always in
+   * `parseReviewFile`'s 5-line search window. The header is always in
    * the worker's final message, regardless of how many turns the reviewer
    * takes or which model/backend/tier served it, so isolating that one
    * message here (in the one place that already walks the event stream,
@@ -285,9 +285,10 @@ export function parsePiOutput(stdout: string): DispatchResult<PiResult> {
 
   // Facts-only: the launcher (not this adapter) owns outcome policy beyond
   // error-detection. `agent_end` presence with no observed error defaults to
-  // 'completed'; the response-doc-level completed/partial/blocked/failed
-  // distinction is read from the worker's own response text by the capture
-  // step (Wave 2 delivery/capture), not inferred here.
+  // 'completed'. Post-DEC-0010, the response-doc-level verdict is computed
+  // mechanically by capture.ts from delivery-gate facts and per-mode
+  // deliverable checks, never from the worker's response text — that text
+  // is embedded verbatim as evidence only (`## Worker Report`).
   const hasAgentEnd = events.some(e => isRecord(e) && e.type === 'agent_end');
   const allAttemptsErrored = events.some(
     (e) => isRecord(e) && e.type === 'auto_retry_end' && e.success === false,

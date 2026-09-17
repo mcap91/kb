@@ -4,7 +4,7 @@
  * Structured Review response-doc rendering (execution/s6-rulings.md).
  *
  * Covers:
- *  - response-header.ts: `parseReviewHeader` (ruling 3) — deterministic
+ *  - response-header.ts: `parseReviewFile` (ruling 3) — deterministic
  *    parse-or-fail contract for a code_review worker's structured response
  *    header. No fallback path scans free-form prose for authority.
  *  - assemble.ts: mode-specific framings for all four §6 modes, plus fix-up
@@ -250,10 +250,13 @@ describe('response-header.ts — parseReviewFile (S6a ruling 3; W4 file artifact
 // WK-0093). No longer feeds review-verdict parsing (S6a W4 moved that onto
 // `.dispatch-out/review.yaml`, read directly by pipeline.ts — see the
 // `pipeline.ts — .dispatch-out/review.yaml read` describe block below) —
-// these fields still exist in `PiResult` for the response-doc narrative
-// (`extractNeeds` reads `accumulatedText`; see foundation.test.ts's golden
-// fixture describe block for that proof). Kept here as regression coverage
-// for the extraction mechanics themselves, independent of what consumes them.
+// these fields still exist in `PiResult`: accumulatedText remains for
+// whole-transcript narrative/debugging, while lastAssistantText is
+// DEC-0010's diagnosis-channel source, embedded verbatim as the response
+// doc's `## Worker Report` section (capture.ts) — see
+// tests/dispatch-v2-foundation.test.ts's golden fixture describe block for
+// that proof. Kept here as regression coverage for the extraction
+// mechanics themselves, independent of what consumes them.
 // ---------------------------------------------------------------------------
 
 describe('adapters/pi.ts — lastAssistantText/accumulatedText extraction', () => {
