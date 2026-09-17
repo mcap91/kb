@@ -63,7 +63,8 @@ export type DispatchErrorCode =
   // --- v2 structured review response header (PLN-0004 S6a, ruling 3) ---
   | 'REVIEW_PARSE_FAILED'
   // --- v2 native spawn pipeline (PLN-0004 D6 — mid_project_review_rulings.md ruling 7) ---
-  | 'BWRAP_SPAWN_FAILED';
+  | 'BWRAP_SPAWN_FAILED'
+  | 'EXEC_FAILED';
 
 /**
  * Discriminated union result type for dispatch-core operations.

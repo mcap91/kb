@@ -296,7 +296,7 @@ describe('model-registry.ts — S0 seed registry', () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.data.provider).toBe('ollama');
-    expect(result.data.baseUrl).toBe('http://{{WIN_HOST}}:11434/v1');
+    expect(result.data.baseUrl).toBe('http://localhost:11434/v1');
     expect(result.data.apiKeyEnv).toBeNull();
     expect(result.data.compat).toEqual({ supportsDeveloperRole: false, supportsReasoningEffort: false });
   });
@@ -470,7 +470,7 @@ describe('adapters/pi.ts — facts-only Pi adapter', () => {
     expect(buildModelsJson(qwen)).toEqual({
       providers: {
         ollama: {
-          baseUrl: 'http://{{WIN_HOST}}:11434/v1',
+          baseUrl: 'http://localhost:11434/v1',
           api: 'openai-completions',
           apiKey: 'placeholder',
           models: [

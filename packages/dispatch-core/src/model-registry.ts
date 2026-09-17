@@ -66,7 +66,7 @@ export function getDefaultRegistry(): ModelRegistry {
         provider: 'ollama',
         modelId: 'qwen3:8b',
         displayName: 'Qwen3 8B (Ollama)',
-        baseUrl: 'http://{{WIN_HOST}}:11434/v1',
+        baseUrl: 'http://localhost:11434/v1',
         api: 'openai-completions',
         apiKeyEnv: null,
         contextWindow: 32768,
