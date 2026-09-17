@@ -39,7 +39,6 @@ import { checkAdmission } from '../packages/dispatch-core/src/admission.js';
 import { getDefaultRegistry, resolveModel } from '../packages/dispatch-core/src/model-registry.js';
 import { assemblePrompt } from '../packages/dispatch-core/src/assemble.js';
 import { buildInvocation } from '../packages/dispatch-core/src/adapters/pi.js';
-import { windowsToWslPath } from '../packages/dispatch-core/src/wsl2.js';
 import { buildJailArgs } from '../packages/dispatch-core/src/jail.js';
 import {
   buildEnumerateScript,
@@ -57,6 +56,7 @@ import {
 import { writeResponseDoc } from '../packages/dispatch-core/src/capture.js';
 import { parsePreflightOutput } from '../packages/dispatch-core/src/preflight.js';
 import * as preflightModule from '../packages/dispatch-core/src/preflight.js';
+import * as tierModule from '../packages/dispatch-core/src/tier.js';
 import { runDispatch } from '../packages/dispatch-core/src/pipeline.js';
 
 // ---------------------------------------------------------------------------
@@ -157,18 +157,17 @@ describe('dispatch v2 e2e (fake-tier) — full pipeline chain', () => {
       expect(assembled.data.text).toContain('## Task: Add a greet utility with node:test coverage');
       expect(assembled.data.text).toContain('kb-e2e-fixture');
 
-      // 8. Write prompt to the (fake) run dir; convert to its WSL2-equivalent path
+      // 8. Write prompt to the (fake) run dir — a plain host path (D6: no more WSL2 path conversion)
       const promptPath = join(runDir, 'prompt.txt');
       await writeFile(promptPath, assembled.data.text, 'utf8');
-      const promptPathWsl = windowsToWslPath(promptPath);
-      expect(promptPathWsl.startsWith('/')).toBe(true);
+      expect(promptPath.startsWith('/')).toBe(true);
 
-      // 9/10. Fake clone path (no real WSL2 clone) + Pi invocation shape
+      // 9/10. Fake clone path (no real clone) + Pi invocation shape
       const clonePath = '/home/tester/.kb-dispatch/clones/RUN-e2e-fake';
       const workerDir = `${clonePath}/.pi-agent`;
-      const invocation = buildInvocation(promptPathWsl, model, clonePath, workerDir);
+      const invocation = buildInvocation(promptPath, model, clonePath, workerDir);
       expect(invocation.cmd).toBe('pi');
-      expect(invocation.args).toContain(`@${promptPathWsl}`);
+      expect(invocation.args).toContain(`@${promptPath}`);
       expect(invocation.env.PI_CODING_AGENT_DIR).toBe(workerDir);
       expect(invocation.cwd).toBe(clonePath);
 
@@ -178,9 +177,9 @@ describe('dispatch v2 e2e (fake-tier) — full pipeline chain', () => {
       expect(jailArgs.argv[jailArgs.argv.length - 1]).toBe('--');
       const fullArgv = [...jailArgs.argv, invocation.cmd, ...invocation.args];
       expect(fullArgv).toContain('pi');
-      expect(fullArgv[fullArgv.length - 1]).toBe(`@${promptPathWsl}`);
+      expect(fullArgv[fullArgv.length - 1]).toBe(`@${promptPath}`);
 
-      // 16. Enumerate — simulate the WSL2 script's stdout for a worker that
+      // 16. Enumerate — simulate the enumerate script's stdout for a worker that
       // created two new, in-scope files (new files show up as untracked, not
       // in `git diff`, which stays empty here).
       const enumerateScript = buildEnumerateScript(clonePath);
@@ -215,7 +214,7 @@ describe('dispatch v2 e2e (fake-tier) — full pipeline chain', () => {
       // 18. Delivery script shape
       const deliveryScript = buildDeliveryScript({
         clonePath,
-        motherRepoWsl: windowsToWslPath(repoRoot),
+        motherRepoWsl: repoRoot,
         handoffId: handoff.id,
         baseSha: admission.data.baseSha,
       });
@@ -728,41 +727,32 @@ describe('dispatch v2 e2e (fake-tier) — S3 wave 3 harness version gate (mocked
 });
 
 // ---------------------------------------------------------------------------
-// PLN-0004 S5 Wave 2 — pipeline.ts tier-resolution integration: honest
-// isolationBackend provenance (T16), not a hardcoded 'bwrap-wsl2' string.
+// PLN-0004 S5/D6 — pipeline.ts isolation-route integration: honest
+// isolationBackend provenance, not a hardcoded string.
 //
-// This is the one S5 wiring point that genuinely needs a real `runDispatch()`
-// call rather than a pure string-content test against `buildExecutionScript`
-// (see tests/dispatch-v2-pipeline-s5.test.ts for those) — it proves tier
-// resolution reads REAL preflight data and that `checkIsolationRoute`'s
-// refusal is actually reachable through the integrated pipeline, mirroring
-// the harness-version-gate test above (same `vi.spyOn(preflightModule, ...)`
-// technique). `remediationNeeded: false` in the mock is a deliberate
-// isolation trick, not a realistic preflight output: it holds the EARLIER
-// preflight-remediation gate open so only the NEW tier-resolution gate is
-// under test here. Cross-platform-safe by construction: `bwrapAvailable:
-// false` yields `no_isolation_route` whether this suite runs on a Windows
-// host (routed through the Windows+WSL2 branch, which reads this exact
-// field) or on native Linux (routed through the native-Linux branch, whose
-// own probes this pipeline does not yet wire up positively at all — see
-// pipeline.ts's tier resolution comment — so it refuses there too).
+// This is the one wiring point that genuinely needs a real `runDispatch()`
+// call — it proves `probeBwrap()` is wired for real and that the
+// NO_ISOLATION_ROUTE refusal is actually reachable through the integrated
+// pipeline, mirroring the harness-version-gate test above (same
+// `vi.spyOn(...)` technique, now targeting tier.ts's `probeBwrap` directly —
+// D6 replaced the old resolveTier(tierProbes-derived-from-mocked-preflight)
+// gate with an unconditional, directly-probed boolean gate, so mocking
+// `runPreflight` alone no longer reaches it; `runPreflight` runs for real
+// here and is expected to pass on any host with working bwrap).
 // ---------------------------------------------------------------------------
 
-describe('dispatch v2 e2e (fake-tier) — S5 tier resolution (mocked preflight)', () => {
+describe('dispatch v2 e2e (fake-tier) — isolation route (mocked bwrap probe)', () => {
   afterEach(() => {
     vi.restoreAllMocks();
   });
 
-  it('refuses NO_ISOLATION_ROUTE when preflight reports bwrap unavailable, proving tier resolution is wired for real', async () => {
-    vi.spyOn(preflightModule, 'runPreflight').mockResolvedValue({
-      ok: true,
-      data: {
-        bwrapAvailable: false,
-        unshareUserWorks: false,
-        appArmorRestriction: false,
-        remediationNeeded: false, // isolates the tier-resolution gate from the earlier preflight-remediation gate
-        piVersion: '0.85.1',
-      },
+  it('refuses NO_ISOLATION_ROUTE when the bwrap probe reports unavailable, proving the isolation gate is wired for real', async () => {
+    vi.spyOn(tierModule, 'probeBwrap').mockResolvedValue({
+      available: false,
+      bwrapVersion: null,
+      unshareUserWorks: false,
+      kernelVersion: 'test-kernel',
+      usernsSysctl: null,
     });
 
     const repoRoot = await setupS3Repo();

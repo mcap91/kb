@@ -4,33 +4,35 @@
  * Every implement run executes in an ephemeral FULL clone at a pinned `base_sha`
  * (spec §8, decision R2/R5: the mother repo is read-only to dispatch; clone root is
  * dispatch-owned, disk-backed, and NEVER `/tmp` — tmpfs would put node_modules in
- * RAM/vmmem). On the Windows tier the mother repo lives on NTFS and the clone lands
- * on WSL2 ext4 at `~/.kb-dispatch/clones/<run>` (measured: clone-in 1.06s, push-back
- * 161ms — WK-0074 GATE 2 B10/B11). This module only knows how to create, remove, and
- * sweep those clones; the delivery/plumbing-commit path (§8 canonical delivery
- * sequence) is a separate module (delivery.ts, Wave 2b).
+ * RAM/vmmem). The orchestrator runs natively on Linux (D3/D6): the mother repo and
+ * the clone root both live on the same host ext4 filesystem at
+ * `~/.kb-dispatch/clones/<run>` (measured: clone-in 1.06s, push-back 161ms —
+ * WK-0074 GATE 2 B10/B11 — from the earlier Windows+WSL2 rig; the same script content
+ * now runs via direct `bash -c`, not `wsl.exe`). This module only knows how to
+ * create, remove, and sweep those clones; the delivery/plumbing-commit path (§8
+ * canonical delivery sequence) is a separate module (delivery.ts, Wave 2b).
  */
-import { mkdtemp, realpath, rm } from 'node:fs/promises';
-import { homedir, tmpdir } from 'node:os';
+import { realpath } from 'node:fs/promises';
+import { homedir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 
 import type { DispatchResult } from './errors.js';
 import { ok } from './errors.js';
-import { execViaWsl2, windowsToWslPath } from './wsl2.js';
+import { execBash } from './exec-direct.js';
 
 export interface CloneOpts {
-  /** Absolute Windows path to the mother repo. */
+  /** Absolute path to the mother repo. */
   motherRepo: string;
   /** Run ID (used to name the clone dir). */
   runId: string;
   /** base_sha to checkout in the clone. */
   baseSha: string;
-  /** The WSL2 clone root (default: ~/.kb-dispatch/clones). */
+  /** The clone root (default: ~/.kb-dispatch/clones). */
   cloneRoot?: string;
 }
 
 export interface CloneResult {
-  /** WSL2 path to the clone directory. */
+  /** Absolute path to the clone directory. */
   clonePath: string;
   /** The actual base_sha checked out. */
   baseSha: string;
@@ -61,9 +63,10 @@ const ORPHAN_THRESHOLD_SECONDS = 24 * 60 * 60;
 const CANONICAL_CLONE_ROOT = join(homedir(), '.kb-dispatch', 'clones');
 const RUN_ID_BASENAME_PATTERN = /^RUN-/;
 
-// runId / baseSha are interpolated directly into a generated bash script (WSL2
-// scripts are files, not shell-escaped argv — spec §11), so both are restricted to a
-// safe ref/identifier charset before they ever reach script text.
+// runId / baseSha are interpolated directly into a generated bash script (the
+// script is one argv element handed to `bash -c`, not shell-escaped argv — spec
+// §11), so both are restricted to a safe ref/identifier charset before they
+// ever reach script text.
 const SAFE_REF_PATTERN = /^[A-Za-z0-9._/-]+$/;
 
 /** Rewrite a leading `~/` to `$HOME/` so the path expands correctly even when the
@@ -73,16 +76,7 @@ function toShellPath(path: string): string {
   return path.startsWith('~/') ? `$HOME/${path.slice(2)}` : path;
 }
 
-async function withTempRunDir<T>(fn: (runDir: string) => Promise<T>): Promise<T> {
-  const dir = await mkdtemp(join(tmpdir(), 'kb-dispatch-clone-'));
-  try {
-    return await fn(dir);
-  } finally {
-    await rm(dir, { recursive: true, force: true }).catch(() => undefined);
-  }
-}
-
-function buildCloneScript(motherRepoWsl: string, cloneRootShell: string, runId: string, baseSha: string): string {
+function buildCloneScript(motherRepoPath: string, cloneRootShell: string, runId: string, baseSha: string): string {
   // Every git invocation here is a fresh clone under dispatch's own clone root
   // (never the mother repo), so the frozen delivery config (§8 canonical sequence)
   // does not apply — that config guards the plumbing-commit/push-back path in
@@ -94,7 +88,7 @@ function buildCloneScript(motherRepoWsl: string, cloneRootShell: string, runId: 
     `CLONE_ROOT="${cloneRootShell}"`,
     `CLONE_DIR="$CLONE_ROOT/${runId}"`,
     'mkdir -p "$CLONE_ROOT"',
-    `git clone "${motherRepoWsl}" "$CLONE_DIR" >&2`,
+    `git clone "${motherRepoPath}" "$CLONE_DIR" >&2`,
     'cd "$CLONE_DIR"',
     `git checkout "${baseSha}" >&2`,
     'echo "$CLONE_DIR"',
@@ -104,12 +98,12 @@ function buildCloneScript(motherRepoWsl: string, cloneRootShell: string, runId: 
 }
 
 /**
- * Create an ephemeral full clone of the mother repo at a pinned `base_sha`, inside
- * WSL2 on the dispatch-owned clone root. Steps (spec §8 step 2 / WK-0074 B10):
- * resolve the clone root, `mkdir -p` it, `git clone` the mother repo (Windows path
- * converted to its `/mnt/c/...` WSL2 equivalent), `git checkout base_sha` inside the
- * clone. The clone directory and the resolved HEAD sha are read back off the
- * script's stdout rather than assumed, since `base_sha` may be a symbolic ref.
+ * Create an ephemeral full clone of the mother repo at a pinned `base_sha`, on
+ * the dispatch-owned clone root. Steps (spec §8 step 2 / WK-0074 B10):
+ * resolve the clone root, `mkdir -p` it, `git clone` the mother repo,
+ * `git checkout base_sha` inside the clone. The clone directory and the
+ * resolved HEAD sha are read back off the script's stdout rather than
+ * assumed, since `base_sha` may be a symbolic ref.
  */
 export async function createClone(opts: CloneOpts): Promise<DispatchResult<CloneResult>> {
   if (!opts.motherRepo.trim()) {
@@ -123,33 +117,30 @@ export async function createClone(opts: CloneOpts): Promise<DispatchResult<Clone
   }
 
   const cloneRoot = opts.cloneRoot ?? DEFAULT_CLONE_ROOT;
-  const motherRepoWsl = windowsToWslPath(opts.motherRepo);
-  const scriptContent = buildCloneScript(motherRepoWsl, toShellPath(cloneRoot), opts.runId, opts.baseSha);
+  const scriptContent = buildCloneScript(opts.motherRepo, toShellPath(cloneRoot), opts.runId, opts.baseSha);
 
-  return withTempRunDir(async (runDir) => {
-    const execResult = await execViaWsl2({ runDir, scriptContent, scriptName: 'clone.sh' });
-    if (!execResult.ok) return execResult;
+  const execResult = await execBash({ scriptContent });
+  if (!execResult.ok) return execResult;
 
-    if (execResult.data.exitCode !== 0) {
-      return fail(
-        `Clone script exited with code ${execResult.data.exitCode} for run ${opts.runId}.`,
-        execResult.data,
-      );
-    }
+  if (execResult.data.exitCode !== 0) {
+    return fail(
+      `Clone script exited with code ${execResult.data.exitCode} for run ${opts.runId}.`,
+      execResult.data,
+    );
+  }
 
-    const lines = execResult.data.stdout
-      .split('\n')
-      .map((line) => line.trim())
-      .filter((line) => line.length > 0);
-    const clonePath = lines[0];
-    const resolvedBaseSha = lines[1] ?? opts.baseSha;
+  const lines = execResult.data.stdout
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  const clonePath = lines[0];
+  const resolvedBaseSha = lines[1] ?? opts.baseSha;
 
-    if (!clonePath) {
-      return fail('Clone script produced no clone path on stdout.', execResult.data);
-    }
+  if (!clonePath) {
+    return fail('Clone script produced no clone path on stdout.', execResult.data);
+  }
 
-    return ok({ clonePath, baseSha: resolvedBaseSha });
-  });
+  return ok({ clonePath, baseSha: resolvedBaseSha });
 }
 
 /**
@@ -204,7 +195,7 @@ function checkClonePathStructure(resolvedPath: string): { safe: true } | { safe:
  * "removed it" and doesn't start now. Any other check failure refuses the
  * deletion with an error Result; it never throws.
  */
-export async function removeClone(clonePath: string, runDir: string): Promise<DispatchResult<void>> {
+export async function removeClone(clonePath: string): Promise<DispatchResult<void>> {
   const trimmed = clonePath.trim();
   if (!trimmed) {
     return fail('Refusing to remove clone: path is empty.', { clonePath });
@@ -228,7 +219,7 @@ export async function removeClone(clonePath: string, runDir: string): Promise<Di
   }
 
   const scriptContent = ['#!/usr/bin/env bash', 'set -euo pipefail', `rm -rf "${resolved}"`, ''].join('\n');
-  const execResult = await execViaWsl2({ runDir, scriptContent, scriptName: 'remove-clone.sh' });
+  const execResult = await execBash({ scriptContent });
   if (!execResult.ok) return execResult;
 
   if (execResult.data.exitCode !== 0) {
@@ -271,28 +262,25 @@ function buildSweepScript(cloneRootShell: string, thresholdSeconds: number): str
  * the threshold would also be swept; callers that need a stronger guarantee should
  * not rely on this alone.
  *
- * Unwired (ruling 6 item 4, flagged for D6/Phase 2): this function is exported and
- * unit-tested but nothing in production calls it today. Phase 2 should either wire
- * it at pipeline startup or record why it's intentionally manual — not this slice's
- * job (Phase 1b scope is the three structural checks in `removeClone` above only).
+ * Wired at the top of `runDispatch()` (D6 Phase 2, ruling 7 component 13):
+ * called once per run, best-effort — errors are logged, never thrown, and
+ * never block or refuse the run.
  */
 export async function sweepOrphanClones(cloneRoot?: string): Promise<DispatchResult<{ removed: string[] }>> {
   const root = cloneRoot ?? DEFAULT_CLONE_ROOT;
   const scriptContent = buildSweepScript(toShellPath(root), ORPHAN_THRESHOLD_SECONDS);
 
-  return withTempRunDir(async (runDir) => {
-    const execResult = await execViaWsl2({ runDir, scriptContent, scriptName: 'sweep-clones.sh' });
-    if (!execResult.ok) return execResult;
+  const execResult = await execBash({ scriptContent });
+  if (!execResult.ok) return execResult;
 
-    if (execResult.data.exitCode !== 0) {
-      return fail(`Sweep script exited with code ${execResult.data.exitCode}.`, execResult.data);
-    }
+  if (execResult.data.exitCode !== 0) {
+    return fail(`Sweep script exited with code ${execResult.data.exitCode}.`, execResult.data);
+  }
 
-    const removed = execResult.data.stdout
-      .split('\n')
-      .map((line) => line.trim())
-      .filter((line) => line.length > 0);
+  const removed = execResult.data.stdout
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
 
-    return ok({ removed });
-  });
+  return ok({ removed });
 }

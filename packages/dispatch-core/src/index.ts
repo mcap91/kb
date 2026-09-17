@@ -193,11 +193,15 @@ export { assemblePrompt } from './assemble.js';
 export type { PiModelsJson, PiInvocation, PiUsage, PiResult } from './adapters/pi.js';
 export { buildModelsJson, buildInvocation, parsePiOutput } from './adapters/pi.js';
 
-// Windows -> WSL2 routing (§11)
-export type { Wsl2ScriptOpts, Wsl2ExecResult } from './wsl2.js';
-export { execViaWsl2, classifySignalExit, windowsToWslPath, resolveWinHostIp } from './wsl2.js';
+// Direct bash execution (D6 Phase 2 — replaces wsl2.ts's execViaWsl2)
+export type { ExecBashOpts, ExecBashResult } from './exec-direct.js';
+export { execBash } from './exec-direct.js';
 
-// bwrap jail args (§11 S0 minimum)
+// bwrap jail args (§11 S0 minimum). buildJailArgs is superseded by
+// buildBwrapPlan (D6) as pipeline.ts's own call path but stays defined/
+// exported — its output shares buildJailPlanSteps's mount-logic walk with
+// buildBwrapPlan and it remains independently unit-tested
+// (tests/dispatch-v2-jail.test.ts).
 export type { JailOpts, JailArgs } from './jail.js';
 export { buildJailArgs } from './jail.js';
 
@@ -291,6 +295,26 @@ export { buildTunnelScripts, buildTunnelBashLines, TUNNEL_RELAY_PORT, TUNNEL_SOC
 // jail.ts S5 exports (T15/T25 — buildJailArgs already exported above at S0)
 export type { WikiShape, ParsedDataMount } from './jail.js';
 export { classifyWikiShape, parseDataMount } from './jail.js';
+
+// ---------------------------------------------------------------------------
+// D6 native spawn pipeline (PLN-0004 mid_project_review_rulings.md ruling 7) —
+// frozen bwrap plan + direct spawn + worker env policy + boolean bwrap probe.
+// ---------------------------------------------------------------------------
+
+// Frozen bwrap plan (jail.ts) — replaces the generated-bash-script pattern.
+export type { BwrapMount, BwrapInjectedFile, BwrapPlan, BuildBwrapPlanOpts } from './jail.js';
+export { buildBwrapPlan } from './jail.js';
+
+// Direct bwrap spawn (spawn-isolated.ts) — bounded capture + two-clock timeout.
+export type { SpawnIsolatedOpts, SpawnResult } from './spawn-isolated.js';
+export { spawnIsolated } from './spawn-isolated.js';
+
+// Worker env deny-list (env-policy.ts).
+export { buildWorkerEnv } from './env-policy.js';
+
+// Boolean bwrap probe (tier.ts) — no tier enum; provenance records facts.
+export type { BwrapProbeResult } from './tier.js';
+export { probeBwrap, buildBwrapEnvironmentInfo } from './tier.js';
 
 // ---------------------------------------------------------------------------
 // Structured review verdict (PLN-0004 S6a, ruling 3 — execution/s6-rulings.md;

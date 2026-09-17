@@ -14,7 +14,7 @@
  */
 import type { DispatchResult } from './errors.js';
 import { ok, fail } from './errors.js';
-import { execViaWsl2 } from './wsl2.js';
+import { execBash } from './exec-direct.js';
 
 export interface PreflightResult {
   bwrapAvailable: boolean;
@@ -117,18 +117,15 @@ export function parsePreflightOutput(stdout: string): PreflightResult {
 }
 
 /**
- * Run the T27 host preflight inside WSL2 (bwrap presence, a live
- * `--unshare-user` round trip, the AppArmor userns sysctl). Stages and
- * executes the probe script via `execViaWsl2` — kb never runs `sudo` itself;
- * a blocked host is reported as data (`remediationNeeded` + `remediationText`),
- * never thrown, so the caller (pipeline.ts) decides whether to refuse the run.
+ * Run the T27 host preflight (bwrap presence, a live `--unshare-user` round
+ * trip, the AppArmor userns sysctl). Runs the probe script directly via
+ * `execBash` (D6 Phase 2 — no more script-file staging, no more `wsl.exe`
+ * boundary to cross) — kb never runs `sudo` itself; a blocked host is
+ * reported as data (`remediationNeeded` + `remediationText`), never thrown,
+ * so the caller (pipeline.ts) decides whether to refuse the run.
  */
-export async function runPreflight(runDir: string): Promise<DispatchResult<PreflightResult>> {
-  const execResult = await execViaWsl2({
-    runDir,
-    scriptContent: PREFLIGHT_SCRIPT,
-    scriptName: 'dispatch-preflight.sh',
-  });
+export async function runPreflight(): Promise<DispatchResult<PreflightResult>> {
+  const execResult = await execBash({ scriptContent: PREFLIGHT_SCRIPT });
   if (!execResult.ok) return execResult;
 
   if (execResult.data.exitCode !== 0) {

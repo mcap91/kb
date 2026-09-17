@@ -1,13 +1,13 @@
 /**
- * PLN-0004 S5 T29/T17 — env-gated live-tier tests (real bwrap+WSL2) plus a
+ * PLN-0004 S5 T29/T17 — env-gated live-tier tests (real bwrap) plus a
  * small fake-tier gap-fill.
  *
- * The rest of the v2 suite is 100%-Windows-runnable by design (DEC-0006):
- * jail.ts/tunnel.ts/pipeline.ts are proven via string-content assertions
- * against generated bwrap argv / bash script text, never a live host. T29
- * adds the NEW permanent tier this file lives in: tests that actually spawn
- * `wsl.exe`, run real `bwrap`, and touch a real git clone. They require a
- * working bwrap+WSL2 host (or native Linux with bwrap) and are gated behind
+ * The rest of the v2 suite is proven via string-content assertions against
+ * generated bwrap argv / bash script text, never a live host. T29 adds the
+ * NEW permanent tier this file lives in: tests that run real `bwrap` and
+ * touch a real git clone, directly via `execBash` (D6 Phase 2 — no more
+ * `wsl.exe` transport; the orchestrator runs natively on Linux). They
+ * require a working bwrap host and are gated behind
  * `KB_DISPATCH_LIVE_TESTS=1` — absent, every live group below SKIPS LOUDLY
  * (a real `console.warn` explaining exactly why + how to enable them, not a
  * silent omission — see `describeIfLive` below for how that's guaranteed).
@@ -54,7 +54,7 @@ import {
   buildDeliveryScript,
   parseDeliveryOutput,
 } from '../packages/dispatch-core/src/delivery.js';
-import { execViaWsl2, windowsToWslPath, type Wsl2ExecResult } from '../packages/dispatch-core/src/wsl2.js';
+import { execBash, type ExecBashResult } from '../packages/dispatch-core/src/exec-direct.js';
 import { buildJailArgs } from '../packages/dispatch-core/src/jail.js';
 import {
   buildTunnelBashLines,
@@ -121,23 +121,25 @@ function shQuote(value: string): string {
 }
 
 /**
- * Stage+run a bash script inside WSL2 via the REAL `execViaWsl2`. Throws only
- * when the exec plumbing itself failed to run at all (e.g. `wsl.exe` missing
- * from PATH) — a live test that sets `KB_DISPATCH_LIVE_TESTS=1` on a host
- * without a working WSL2 SHOULD fail loudly here rather than skip, since the
- * operator explicitly opted in. Callers inspect `exitCode`/`stdout` on the
- * returned `Wsl2ExecResult` themselves for probes that are EXPECTED to fail
- * (e.g. the adversarial canary probes in Group 2).
+ * Run a bash script directly via the REAL `execBash` (D6 Phase 2 — no more
+ * `wsl.exe`/script-file staging; `runDir`/`scriptName` are accepted for
+ * call-site compatibility with the pre-D6 signature but no longer used).
+ * Throws only when the exec plumbing itself failed to run at all (e.g. bash
+ * missing from PATH) — a live test that sets `KB_DISPATCH_LIVE_TESTS=1`
+ * SHOULD fail loudly here rather than skip, since the operator explicitly
+ * opted in. Callers inspect `exitCode`/`stdout` on the returned
+ * `ExecBashResult` themselves for probes that are EXPECTED to fail (e.g. the
+ * adversarial canary probes in Group 2).
  */
 async function runWsl(
-  runDir: string,
+  _runDir: string,
   scriptContent: string,
   scriptName: string,
   timeoutMs = 60_000,
-): Promise<Wsl2ExecResult> {
-  const result = await execViaWsl2({ runDir, scriptContent, scriptName, timeoutMs });
+): Promise<ExecBashResult> {
+  const result = await execBash({ scriptContent, timeoutMs });
   if (!result.ok) {
-    throw new Error(`execViaWsl2 itself failed to run "${scriptName}" (is wsl.exe on PATH?): ${result.message}`);
+    throw new Error(`execBash itself failed to run "${scriptName}" (is bash on PATH?): ${result.message}`);
   }
   return result.data;
 }
@@ -385,7 +387,7 @@ directly against a real temp git repo and a real WSL2 clone.
       }, 60_000);
 
       afterAll(async () => {
-        if (clonePath) await removeClone(clonePath, runDir).catch(() => undefined);
+        if (clonePath) await removeClone(clonePath).catch(() => undefined);
         if (runDir) await rm(runDir, { recursive: true, force: true }).catch(() => undefined);
         if (repoRoot) await rm(repoRoot, { recursive: true, force: true }).catch(() => undefined);
       }, 60_000);
@@ -404,7 +406,7 @@ directly against a real temp git repo and a real WSL2 clone.
 
         const deliveryScript = buildDeliveryScript({
           clonePath,
-          motherRepoWsl: windowsToWslPath(repoRoot),
+          motherRepoWsl: repoRoot,
           handoffId,
           baseSha,
         });
@@ -424,7 +426,7 @@ directly against a real temp git repo and a real WSL2 clone.
       it('3. CAS delivery: the parent of the delivered commit equals base_sha', async () => {
         const parentExec = await runWsl(
           runDir,
-          ['#!/bin/bash', 'set -euo pipefail', `git -C ${shQuote(windowsToWslPath(repoRoot))} rev-parse refs/heads/dispatch/${handoffId}^`].join('\n'),
+          ['#!/bin/bash', 'set -euo pipefail', `git -C ${shQuote(repoRoot)} rev-parse refs/heads/dispatch/${handoffId}^`].join('\n'),
           'check-parent.sh',
         );
         expect(parentExec.exitCode).toBe(0);
@@ -434,7 +436,7 @@ directly against a real temp git repo and a real WSL2 clone.
       it('4. idempotent redelivery: re-delivering the SAME (unchanged) clone produces no_changes, not a conflict', async () => {
         const deliveryScript = buildDeliveryScript({
           clonePath,
-          motherRepoWsl: windowsToWslPath(repoRoot),
+          motherRepoWsl: repoRoot,
           handoffId,
           baseSha,
         });
@@ -456,7 +458,7 @@ directly against a real temp git repo and a real WSL2 clone.
 
         const deliveryScript = buildDeliveryScript({
           clonePath,
-          motherRepoWsl: windowsToWslPath(repoRoot),
+          motherRepoWsl: repoRoot,
           handoffId,
           baseSha,
         });
@@ -474,7 +476,7 @@ directly against a real temp git repo and a real WSL2 clone.
         // the FIRST delivery from test 2, untouched by the rejected attempt.
         const verifyExec = await runWsl(
           runDir,
-          ['#!/bin/bash', 'set -euo pipefail', `git -C ${shQuote(windowsToWslPath(repoRoot))} rev-parse refs/heads/dispatch/${handoffId}`].join('\n'),
+          ['#!/bin/bash', 'set -euo pipefail', `git -C ${shQuote(repoRoot)} rev-parse refs/heads/dispatch/${handoffId}`].join('\n'),
           'verify-not-clobbered.sh',
         );
         expect(verifyExec.stdout.trim()).toBe(firstCommitSha);
@@ -564,39 +566,26 @@ directly against a real temp git repo and a real WSL2 clone.
     // Group 3 (T17 items 10-12) — egress enforcement proofs (T26/D21).
     //
     // Reuses the REAL `buildTunnelBashLines` + `buildJailArgs` to assemble
-    // the exact same forwarder/relay/jail shape pipeline.ts's own
-    // buildExecutionScript wires together, substituting a plain `curl` probe
-    // for the Pi worker invocation -- no model/backend config needed, only
-    // bwrap+WSL2. The "granted endpoint" is a tiny self-contained Node stub
-    // server (no npm deps, mirrors tunnel.ts's own style) started WSL2-side,
-    // outside the jail, alongside the forwarder.
+    // the exact same forwarder/relay/jail shape pipeline.ts's own D6 spawn
+    // path wires together, substituting a plain `curl` probe for the Pi
+    // worker invocation -- no model/backend config needed, only bwrap. The
+    // "granted endpoint" is a tiny self-contained Node stub server (no npm
+    // deps, mirrors tunnel.ts's own style) started outside the jail,
+    // alongside the forwarder.
     //
-    // KNOWN LIVE FAILURE (found running this suite live against a real
-    // Windows+WSL2+bwrap host, 2026-09-12 -- production bug, not a test bug;
-    // reported upstream, not fixed here per this task's no-source-edits
-    // scope): items 10 and 11 currently fail with an empty ALLOWED_CODE/
-    // DENIED_CODE because the forwarder's `server.listen(SOCKET_PATH)` throws
-    // `ENOTSUP: operation not supported on socket <path under /mnt/c/...>`.
-    // Root cause: `tunnel.ts`'s own module doc and s5-rulings.md ruling 1
-    // both say the socket is "staged under the run dir (ext4)", but
-    // pipeline.ts actually builds `tunnelSocketWsl`/`relayScriptWsl` from
-    // `runDirWsl = windowsToWslPath(runDir)`, where `runDir` is
-    // `getRunDir(dir, ...)` -- INSIDE the Windows-side mother repo. Converted
-    // to its WSL2 form that is a DrvFS path (`/mnt/c/...`), and DrvFS does
-    // not support AF_UNIX sockets at all (verified directly: an ext4 path
-    // under `$HOME` binds fine, the identical call under `/mnt/c/...` throws
-    // ENOTSUP every time). Every Windows-hosted mother repo hits this on
-    // every `web:false` (the default) dispatch once egress enforcement is
-    // actually exercised -- this is not host-specific flakiness. This test
-    // mirrors pipeline.ts's actual wiring byte-for-byte on purpose (same
-    // `runDirWsl` derivation for the socket/relay paths) rather than routing
-    // the test's own scratch socket onto ext4 to dodge the bug -- doing that
-    // would stop this suite from proving the real, currently-broken
-    // integration. Item 12 (loopback-up) is unaffected (no socket involved)
-    // and passes today. Fix belongs in pipeline.ts/tunnel.ts (e.g. stage the
-    // socket + relay script under an ext4-backed path -- the clone path
-    // already lives there -- instead of runDirWsl); once fixed, items 10/11
-    // should pass unchanged.
+    // FORMERLY-KNOWN LIVE FAILURE (found running this suite live against a
+    // real Windows+WSL2+bwrap host, 2026-09-12): items 10/11 failed with an
+    // empty ALLOWED_CODE/DENIED_CODE because the forwarder's
+    // `server.listen(SOCKET_PATH)` threw `ENOTSUP` on a DrvFS path
+    // (`/mnt/c/...`) -- DrvFS does not support AF_UNIX sockets at all, and
+    // the socket/relay paths were derived from the Windows-side mother
+    // repo's run dir. D6 (native-Linux orchestrator, no more Windows host,
+    // no more DrvFS) removes this bug class by construction: `runDir` below
+    // is a plain host path on the same ext4 filesystem as everything else,
+    // same as the socket already living under `clonePath`. Kept unfixed
+    // here on purpose historically (this task's own no-source-edits scope);
+    // now moot rather than fixed, since the Windows/DrvFS axis this bug
+    // depended on no longer exists.
     // -------------------------------------------------------------------
 
     describe('Group 3 (T17 items 10-12): egress enforcement proofs (T26/D21)', () => {
@@ -607,7 +596,7 @@ directly against a real temp git repo and a real WSL2 clone.
 
       beforeAll(async () => {
         runDir = await createTempDir('kb-egress-rundir-');
-        runDirWsl = windowsToWslPath(runDir);
+        runDirWsl = runDir; // D6: plain host path now, no more WSL2 conversion
         clonePath = await createScratchDir(runDir, 'egress');
       }, 60_000);
 

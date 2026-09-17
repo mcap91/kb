@@ -15,10 +15,14 @@
  * as `TierProbeInputs`.
  *
  * The AppArmor-userns remediation text mirrors preflight.ts's
- * `REMEDIATION_TEXT` (DEC-0008 D20: the `/etc/apparmor.d/bwrap` profile).
- * It is duplicated here rather than imported — that constant is private to
- * preflight.ts and T16 does not touch preflight.ts. kb never runs `sudo`
- * itself; this text is only ever printed, never executed.
+ * `REMEDIATION_TEXT` (DEC-0008 D20: the `/etc/apparmor.d/bwrap` profile). It
+ * was originally duplicated here rather than imported (preflight.ts's own
+ * copy stayed private and T16 didn't touch preflight.ts); D6 Phase 2 exports
+ * this module's copy (`APPARMOR_REMEDIATION_TEXT`/`MISSING_BWRAP_TEXT`) so
+ * pipeline.ts's new `probeBwrap()`-based NO_ISOLATION_ROUTE refusal (D6
+ * ruling 7 component 10) can reuse the exact remediation text rather than a
+ * third duplicate. kb never runs `sudo` itself; this text is only ever
+ * printed, never executed.
  */
 import { execFile as execFileCb } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
@@ -67,7 +71,7 @@ export interface TierProbeInputs {
  * kb-authored remediation text (mirrors preflight.ts's `REMEDIATION_TEXT`,
  * DEC-0008 D20). kb never runs sudo itself — printed, never executed.
  */
-const APPARMOR_REMEDIATION_TEXT = `bwrap user namespace support is required but blocked.
+export const APPARMOR_REMEDIATION_TEXT = `bwrap user namespace support is required but blocked.
 
 If running Ubuntu 24.04+, the AppArmor restriction on unprivileged user namespaces
 must be relaxed for bwrap. Create this profile and reload:
@@ -85,7 +89,7 @@ PROFILE
 
 Then re-run the preflight check.`;
 
-const MISSING_BWRAP_TEXT = 'bwrap is not installed. Install with: sudo apt install bubblewrap';
+export const MISSING_BWRAP_TEXT = 'bwrap is not installed. Install with: sudo apt install bubblewrap';
 
 const NO_WSL2_TEXT = 'WSL2 with Ubuntu is required on Windows. Install with: wsl --install -d Ubuntu';
 
@@ -289,4 +293,27 @@ export async function probeBwrap(): Promise<BwrapProbeResult> {
     kernelVersion: osRelease(),
     usernsSysctl,
   };
+}
+
+/**
+ * D6 ruling 7 component 11 (check-environment): the v2 environment-info
+ * primitive — reports bwrap probe facts directly (available, version,
+ * kernel, userns sysctl, unshare-user result), never a tier name (ruling 8:
+ * "provenance records facts, not tier names"). Supersedes
+ * `buildTierEnvironmentInfo` above for v2 callers; that function stays
+ * defined (not deleted) since Phase 3 tests may still exercise the old
+ * tier-resolution primitives directly.
+ *
+ * NOT YET WIRED into the live `check-environment` MCP/CLI tool — that tool
+ * calls environment.ts's v1 `checkEnvironment()` today (registry-keyed
+ * per-agent bwrap probes for the v1 launcher), which DEC-0008 keeps
+ * untouched until the S7 cutover retires v1 wholesale; splicing v2 facts into
+ * that shared surface is a v1/v2-coexistence design question bigger than
+ * this mechanical primitive.
+ * TODO(D6-phase3): wire this into dispatch-mcp/dispatch-cli's
+ * check-environment surface (additive to, not replacing, the v1 report
+ * before S7).
+ */
+export async function buildBwrapEnvironmentInfo(): Promise<BwrapProbeResult> {
+  return probeBwrap();
 }
