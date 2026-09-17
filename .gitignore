@@ -1,6 +1,8 @@
 scratch_space/
 .claude/
 .agents/
+.vscode/
+skills-lock.json
 node_modules/
 dist/
 dist-tests/
