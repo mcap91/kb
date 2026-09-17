@@ -10,9 +10,9 @@
  * sweep those clones; the delivery/plumbing-commit path (§8 canonical delivery
  * sequence) is a separate module (delivery.ts, Wave 2b).
  */
-import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { mkdtemp, realpath, rm } from 'node:fs/promises';
+import { homedir, tmpdir } from 'node:os';
+import { basename, dirname, join } from 'node:path';
 
 import type { DispatchResult } from './errors.js';
 import { ok } from './errors.js';
@@ -48,6 +48,18 @@ function fail<T = never>(message: string, detail?: unknown): DispatchResult<T> {
 const DEFAULT_CLONE_ROOT = '~/.kb-dispatch/clones';
 // 24h — best-effort orphan sweep (spec §8 decision R5), not a hard guarantee.
 const ORPHAN_THRESHOLD_SECONDS = 24 * 60 * 60;
+
+// removeClone hardening (mid_project_review_rulings.md ruling 6, "Ruling 6 —
+// D2-remainder"; D6 component 12). The one canonical clone root every real
+// run uses — removeClone refuses to delete anything whose resolved (symlink-
+// followed) parent directory isn't exactly this. Threat surface is small:
+// clonePath is a `const` pipeline.ts builds from CLONE_ROOT + a server-
+// generated `RUN-${randomUUID()}` (pipeline.ts:195-196, regex-locked at
+// createClone) — never LLM-influenced, never exposed on an MCP tool schema,
+// never reassigned. This is defense-in-depth against a bug in kb's own code,
+// not adversarial input.
+const CANONICAL_CLONE_ROOT = join(homedir(), '.kb-dispatch', 'clones');
+const RUN_ID_BASENAME_PATTERN = /^RUN-/;
 
 // runId / baseSha are interpolated directly into a generated bash script (WSL2
 // scripts are files, not shell-escaped argv — spec §11), so both are restricted to a
@@ -141,28 +153,87 @@ export async function createClone(opts: CloneOpts): Promise<DispatchResult<Clone
 }
 
 /**
+ * Structural guard over an already-resolved (symlink-followed) clone path:
+ * does it look like a genuine dispatch-owned clone directory? Pure and
+ * exported separately from `removeClone` so the check itself is unit-testable
+ * without touching the filesystem (ruling 6's four checks, minus the
+ * `realpath` step which necessarily needs the real filesystem).
+ *
+ * Three checks, run in order:
+ * 1. parent directory equals the canonical clone root exactly
+ * 2. basename matches `^RUN-`
+ * 3. the runId (basename minus the `RUN-` prefix) contains no `/` or `..`
+ *
+ * The third check is defense-in-depth on top of the first two: `dirname`/
+ * `basename` on an already-realpath'd input can't smuggle a traversal by
+ * construction, but a literal (non-traversing) `..` substring inside the id
+ * itself — e.g. a directory genuinely named `RUN-..evil` — would still pass
+ * checks 1-2, so it's rejected explicitly here rather than assumed away.
+ */
+function checkClonePathStructure(resolvedPath: string): { safe: true } | { safe: false; reason: string } {
+  const parent = dirname(resolvedPath);
+  if (parent !== CANONICAL_CLONE_ROOT) {
+    return { safe: false, reason: `parent directory "${parent}" is not the canonical clone root "${CANONICAL_CLONE_ROOT}"` };
+  }
+
+  const base = basename(resolvedPath);
+  if (!RUN_ID_BASENAME_PATTERN.test(base)) {
+    return { safe: false, reason: `basename "${base}" does not match the ^RUN- pattern` };
+  }
+
+  const runId = base.slice('RUN-'.length);
+  if (runId.includes('/') || runId.includes('..')) {
+    return { safe: false, reason: `runId "${runId}" contains unsafe characters` };
+  }
+
+  return { safe: true };
+}
+
+/**
  * Remove an ephemeral clone directory (`rm -rf`, spec §8 step 4: after delivery has
  * captured any tree delta — capture-before-delete is the CALLER's responsibility,
- * this function only performs the deletion). Refuses paths that are empty, root, or
- * do not look like they live under a dispatch-owned clone root, as a belt-and-
- * suspenders guard against a caller bug turning into a catastrophic `rm -rf`.
+ * this function only performs the deletion).
+ *
+ * Hardened per ruling 6 (D6 component 12): the old substring guard
+ * (`includes('.kb-dispatch')`) is replaced with four structural checks before
+ * any deletion is attempted — `realpath` the target to resolve symlinks, then
+ * `checkClonePathStructure` above (canonical parent / `^RUN-` basename / safe
+ * runId). A target that no longer exists is treated as already-removed
+ * (`ok(undefined)`), matching `rm -rf`'s own idempotent semantics — this
+ * function never had a way to report "was already gone" as distinct from
+ * "removed it" and doesn't start now. Any other check failure refuses the
+ * deletion with an error Result; it never throws.
  */
 export async function removeClone(clonePath: string, runDir: string): Promise<DispatchResult<void>> {
   const trimmed = clonePath.trim();
-  if (!trimmed || trimmed === '/' || !trimmed.includes('.kb-dispatch')) {
-    return fail(
-      'Refusing to remove clone: path does not look like a dispatch-owned clone directory.',
-      { clonePath },
-    );
+  if (!trimmed) {
+    return fail('Refusing to remove clone: path is empty.', { clonePath });
   }
 
-  const scriptContent = ['#!/usr/bin/env bash', 'set -euo pipefail', `rm -rf "${trimmed}"`, ''].join('\n');
+  let resolved: string;
+  try {
+    resolved = await realpath(trimmed);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT') {
+      // Already gone. rm -rf on a missing target is a silent no-op too.
+      return ok(undefined);
+    }
+    return fail('Refusing to remove clone: failed to resolve real path.', { clonePath, err: String(err) });
+  }
+
+  const structureCheck = checkClonePathStructure(resolved);
+  if (!structureCheck.safe) {
+    return fail(`Refusing to remove clone: ${structureCheck.reason}.`, { clonePath, resolved });
+  }
+
+  const scriptContent = ['#!/usr/bin/env bash', 'set -euo pipefail', `rm -rf "${resolved}"`, ''].join('\n');
   const execResult = await execViaWsl2({ runDir, scriptContent, scriptName: 'remove-clone.sh' });
   if (!execResult.ok) return execResult;
 
   if (execResult.data.exitCode !== 0) {
     return fail(
-      `rm -rf exited with code ${execResult.data.exitCode} while removing ${trimmed}.`,
+      `rm -rf exited with code ${execResult.data.exitCode} while removing ${resolved}.`,
       execResult.data,
     );
   }
@@ -199,6 +270,11 @@ function buildSweepScript(cloneRootShell: string, thresholdSeconds: number): str
  * never corrupt it. Not a hard guarantee: a slow-running legitimate clone older than
  * the threshold would also be swept; callers that need a stronger guarantee should
  * not rely on this alone.
+ *
+ * Unwired (ruling 6 item 4, flagged for D6/Phase 2): this function is exported and
+ * unit-tested but nothing in production calls it today. Phase 2 should either wire
+ * it at pipeline startup or record why it's intentionally manual — not this slice's
+ * job (Phase 1b scope is the three structural checks in `removeClone` above only).
  */
 export async function sweepOrphanClones(cloneRoot?: string): Promise<DispatchResult<{ removed: string[] }>> {
   const root = cloneRoot ?? DEFAULT_CLONE_ROOT;
