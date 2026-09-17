@@ -1,7 +1,7 @@
 {
   "name": "kb",
   "description": "Agent-facing toolkit for structured repo-local wiki, reviewed multi-agent dispatch, and deterministic code-graph extraction",
-  "license": "MIT",
+  "license": "Elastic-2.0",
   "workspaces": [
     "packages/*"
   ],
