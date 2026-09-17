@@ -20,6 +20,11 @@
  * preflight.ts and T16 does not touch preflight.ts. kb never runs `sudo`
  * itself; this text is only ever printed, never executed.
  */
+import { execFile as execFileCb } from 'node:child_process';
+import { readFile } from 'node:fs/promises';
+import { release as osRelease } from 'node:os';
+import { promisify } from 'node:util';
+
 import type { DispatchResult } from './errors.js';
 import { ok, fail } from './errors.js';
 
@@ -183,5 +188,105 @@ export function buildTierEnvironmentInfo(probes: TierProbeInputs): TierEnvironme
     isolationBackend: resolution.isolationBackend,
     detail: resolution.detail,
     probes,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// D8 boolean bwrap probe (mid_project_review_rulings.md ruling 7 component 10
+// + ruling 8) — ADDITIVE, coexists with the tier code above.
+//
+// Everything above this line (HostTier, resolveTier, checkIsolationRoute,
+// buildTierEnvironmentInfo) STAYS for now: pipeline.ts still calls resolveTier
+// with WSL2/container probe inputs. This section is the new primitive Phase 2
+// will wire in instead, after which the tier enum and its WSL2/container
+// detection code get deleted (`bwrap-wsl2` is dead post-D3's Linux-only
+// orchestrator; `pod-attested` stays a deferred stub, D3c).
+//
+// Design: no execution-tier enum, mirroring agent-chassis, which has none
+// (agent-chassis README.md:117-131 — "Can it enforce?" is a plain boolean
+// backed by probe facts and a backend name; its only "tier" vocabulary is the
+// unrelated CCE product/entitlement tier — docs/enforcement-model.md root
+// copy, "Product Structure"/"The spine" sections). Phase 2's provenance
+// should follow the same shape: record `isolation: "bwrap"` (a backend name,
+// like chassis's `isolation_backend`) plus these probe facts, never a tier
+// name.
+//
+// Probe facts mirror kb's own EXISTING live-probe shape (preflight.ts's
+// PREFLIGHT_SCRIPT: bwrap version, a live `--unshare-user` round trip, and
+// the Ubuntu 24.04+ AppArmor userns sysctl), extended with the kernel release
+// string the D8 EC2/Amazon-Linux-2023 probe sheet asked for (ruling 8 item 6
+// — SELinux, not AppArmor, needs the kernel version to reason about a
+// failure; its own sysctl path is not yet probed here, same gap as
+// preflight.ts today). Runs direct Node child_process calls, not
+// execViaWsl2 — D3 made the orchestrator Linux-native, so there is no WSL2
+// boundary left to cross, and this primitive does not need to wait on
+// execViaWsl2's D6 replacement (component 5).
+// ---------------------------------------------------------------------------
+
+const execFileAsync = promisify(execFileCb);
+
+const USERNS_SYSCTL_PATH = '/proc/sys/kernel/apparmor_restrict_unprivileged_userns';
+
+export interface BwrapProbeResult {
+  /** Does bwrap work end-to-end: binary runs AND the live --unshare-user round trip succeeds? The single fact Phase 2 gates on. */
+  available: boolean;
+  /** `bwrap --version` stdout, trimmed; null if the binary could not be found or run. */
+  bwrapVersion: string | null;
+  /** Live `bwrap --unshare-user --ro-bind / / true` round trip result (mirrors preflight.ts's UNSHARE_USER probe). */
+  unshareUserWorks: boolean;
+  /** `os.release()` — the running kernel's release string. */
+  kernelVersion: string;
+  /** Ubuntu/AppArmor userns-restriction sysctl value, or null where the file doesn't exist (e.g. Amazon Linux 2023's SELinux gate uses a different mechanism, not yet probed here). */
+  usernsSysctl: string | null;
+}
+
+async function probeBwrapVersion(): Promise<string | null> {
+  try {
+    const { stdout } = await execFileAsync('bwrap', ['--version']);
+    const trimmed = stdout.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  } catch {
+    return null;
+  }
+}
+
+async function probeUnshareUser(): Promise<boolean> {
+  try {
+    await execFileAsync('bwrap', ['--unshare-user', '--ro-bind', '/', '/', 'true']);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function readUsernsSysctl(): Promise<string | null> {
+  try {
+    const value = await readFile(USERNS_SYSCTL_PATH, 'utf-8');
+    return value.trim();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Boolean bwrap probe: does bwrap work, full stop — no tier enum. Never
+ * throws: every sub-probe degrades to a safe false/null on error, so there is
+ * no failure mode to report — only facts. (Plain data return rather than a
+ * DispatchResult for that reason: nothing here can fail, only find bwrap
+ * absent or broken, which `available: false` already states.)
+ */
+export async function probeBwrap(): Promise<BwrapProbeResult> {
+  const [bwrapVersion, unshareUserWorks, usernsSysctl] = await Promise.all([
+    probeBwrapVersion(),
+    probeUnshareUser(),
+    readUsernsSysctl(),
+  ]);
+
+  return {
+    available: bwrapVersion !== null && unshareUserWorks,
+    bwrapVersion,
+    unshareUserWorks,
+    kernelVersion: osRelease(),
+    usernsSysctl,
   };
 }
