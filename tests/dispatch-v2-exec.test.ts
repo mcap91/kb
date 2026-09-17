@@ -64,37 +64,6 @@ describe('windowsToWslPath', () => {
 // ---------------------------------------------------------------------------
 
 describe('buildJailArgs', () => {
-  it('builds the S0-minimum bwrap argv shape with cwd defaulting to clonePath', () => {
-    const clonePath = '/home/user/.kb-dispatch/clones/RUN-1';
-    const result = buildJailArgs({ clonePath });
-    expect(result.argv).toEqual([
-      'bwrap',
-      '--ro-bind', '/', '/',
-      '--proc', '/proc',
-      '--dev', '/dev',
-      '--die-with-parent',
-      '--bind', clonePath, clonePath,
-      '--chdir', clonePath,
-      '--',
-    ]);
-  });
-
-  it('uses an explicit cwd when provided, distinct from clonePath', () => {
-    const clonePath = '/home/user/.kb-dispatch/clones/RUN-2';
-    const cwd = `${clonePath}/subdir`;
-    const result = buildJailArgs({ clonePath, cwd });
-    expect(result.argv).toEqual([
-      'bwrap',
-      '--ro-bind', '/', '/',
-      '--proc', '/proc',
-      '--dev', '/dev',
-      '--die-with-parent',
-      '--bind', clonePath, clonePath,
-      '--chdir', cwd,
-      '--',
-    ]);
-  });
-
   it('ends with a bare "--" so the caller can append the worker invocation', () => {
     const result = buildJailArgs({ clonePath: '/tmp/x' });
     expect(result.argv[result.argv.length - 1]).toBe('--');

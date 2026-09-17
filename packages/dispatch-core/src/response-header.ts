@@ -21,9 +21,9 @@
  * this: merge iff `outcome === 'pass'`.
  *
  * Line-based state-machine parser, consistent with this codebase's other
- * hand-rolled small-schema readers (`ho.ts`'s frontmatter reader, `pi.ts`'s
- * `## Needs` extractor, `delivery.ts`'s marker sections) — no YAML library,
- * because the schema is small and fixed:
+ * hand-rolled small-schema readers (`ho.ts`'s frontmatter reader,
+ * `delivery.ts`'s marker sections) — no YAML library, because the schema is
+ * small and fixed:
  *
  * ```
  * outcome: changes-requested

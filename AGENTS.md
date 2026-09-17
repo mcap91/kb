@@ -101,7 +101,7 @@ If you are wiring `kb` into a native MCP client, use direct `node` launch comman
 - Codex: use `codex mcp add ...` native registration.
 - Verify with `claude mcp list` and `codex mcp list`.
 - For strict stdio clients, avoid `npm run wiki:mcp` and `npm run dispatch:mcp` because the npm wrapper writes to stdout before the MCP handshake.
-- If the client does not preserve `cwd`, especially on Windows, use absolute `tsx` loader and server script paths.
+- If the client does not preserve `cwd`, especially on Windows, use absolute `tsx` loader and server script paths. *(2026-09-16, D3 ruling: historical — orchestrator is Linux-only; Windows client note no longer applicable.)*
 
 When you are working in `kb` itself, this checkout can self-host its own MCP tools:
 
@@ -121,7 +121,7 @@ Claude `.mcp.json` example. Replace:
 
 Examples for `<TSX-LOADER-FILE-URL>`:
 
-- Windows: `file:///C:/Users/you/projects/kb/node_modules/tsx/dist/loader.mjs`
+- Windows: `file:///C:/Users/you/projects/kb/node_modules/tsx/dist/loader.mjs` *(historical — 2026-09-16, D3 ruling: Linux-only orchestrator.)*
 - Linux/macOS: `file:///home/you/projects/kb/node_modules/tsx/dist/loader.mjs`
 
 ```json
@@ -163,6 +163,8 @@ codex mcp add kb-wiki -- node --import <TSX-LOADER-FILE-URL> <ABSOLUTE-PATH-TO-K
 codex mcp add kb-dispatch -- node --import <TSX-LOADER-FILE-URL> <ABSOLUTE-PATH-TO-KB>/packages/dispatch-mcp/src/server.ts
 codex mcp list
 ```
+
+**[2026-09-16, D3 ruling: historical. Orchestrator is Linux-only; Windows-specific MCP registration no longer applicable.]**
 
 Windows note: if the client does not preserve `cwd`, prefer forward-slash absolute paths such as `C:/Users/you/projects/kb/...` so JSON and CLI arguments do not need escaped backslashes. In PowerShell, execution policy can block the `.ps1` shims for `npm`, `claude`, and `codex`; use `npm.cmd`, `claude.cmd`, and `codex.cmd` in that case. On Linux and macOS, use the normal command names.
 
@@ -472,6 +474,9 @@ Both must pass.
 
 ### Cross-platform gate (Windows AND Linux/WSL)
 
+**[2026-09-16, D3 ruling: RETIRED. Linux-only orchestrator (WSL2 ext4). DEC-0006 dual-checkout
++ rsync discipline retired. All references to Windows-native validation below are historical.]**
+
 The gate must be green on **both** Windows and Linux/WSL before work is declared complete.
 
 Running the Linux gate from a Windows checkout has one trap: a `node_modules` installed on Windows
@@ -510,7 +515,7 @@ When running commands inside WSL2 from a Windows shell (Git Bash / MSYS), always
 
 ## Test Consuming Repo
 
-`C:\Users\mcap9\projects\test_kb` is a test consuming repo. It can be cleared and re-bootstrapped at any time. Use it for smoke-testing dispatch, bootstrap, sync-contract, and any feature that targets a consuming repo via `--dir`. Do not treat its contents as durable.
+`/home/mcap91/projects/test_kb` is a test consuming repo. It can be cleared and re-bootstrapped at any time. Use it for smoke-testing dispatch, bootstrap, sync-contract, and any feature that targets a consuming repo via `--dir`. Do not treat its contents as durable.
 
 ## Interaction Contract
 

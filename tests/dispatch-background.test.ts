@@ -257,22 +257,22 @@ describe('deriveTerminalFields', () => {
       runDir: 'C:\\run',
     });
 
-  it('maps a delivered outcome to completed, carrying the branch', () => {
+  it('maps a delivered outcome to delivered, carrying the branch', () => {
     const result = pipelineOk({ status: 'delivered', branch: 'dispatch/HO-1', commitSha: 'abc123', changedFiles: ['src/a.ts'] });
     expect(deriveTerminalFields(result, null)).toEqual({
-      status: 'completed',
-      outcome: 'completed',
+      status: 'delivered',
+      outcome: 'delivered',
       delivery_status: 'delivered',
       branch: 'dispatch/HO-1',
       error: null,
     });
   });
 
-  it('maps a no_changes outcome to completed with no branch', () => {
+  it('maps a no_changes outcome to delivered with no branch', () => {
     const result = pipelineOk({ status: 'no_changes' });
     expect(deriveTerminalFields(result, null)).toEqual({
-      status: 'completed',
-      outcome: 'completed',
+      status: 'delivered',
+      outcome: 'delivered',
       delivery_status: 'no_changes',
       branch: null,
       error: null,

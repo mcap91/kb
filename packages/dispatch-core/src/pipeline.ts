@@ -490,7 +490,7 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
     // api_key_env plus granted profiles' inject vars reach the worker.
     const injectionScript = buildInjectionScript(credResult.data, handoff.vars);
     // Backend fingerprint (S3 ruling 8) — best-effort, facts-only, never gating.
-    const fingerprintLines = buildFingerprintFragment(model);
+    const fingerprintLines = buildFingerprintFragment({ ...model, baseUrl: resolvedTargetUrl });
 
     // 13. Build the full execution script (T26 tunnel splice + lockfile-gated
     // dependency provisioning — see buildExecutionScript's own doc for the

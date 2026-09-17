@@ -43,18 +43,6 @@
  *   14. --chdir <cwd>
  *   15. --                            terminates bwrap's own argv; the
  *                                      caller appends the worker invocation
- *
- * ## Backward compatibility
- *
- * When NONE of the S5 fields below are supplied, `buildJailArgs` returns the
- * S0-minimum argv byte-for-byte — no `--tmpfs /tmp`, no `--unshare-net`:
- *
- *   bwrap --ro-bind / / --proc /proc --dev /dev --die-with-parent \
- *     --bind <clonePath> <clonePath> --chdir <cwd> --
- *
- * This keeps existing callers (pipeline.ts's S0-S4 `buildJailArgs({ clonePath })`
- * call, and the frozen equality assertions in tests/dispatch-v2-exec.test.ts)
- * working unchanged until pipeline.ts is updated to pass S5 options (W2).
  */
 
 /** Wiki shape in the mother repo — the dual-shape read axis (T25, D19). */
@@ -134,20 +122,6 @@ const WIKI_MASKED_MODES: ReadonlySet<string> = new Set(['implement', 'code_revie
 /** Modes allowed to read wiki content — get an explicit bind when wiki/ is nested-private. */
 const WIKI_VISIBLE_MODES: ReadonlySet<string> = new Set(['redteam', 'research']);
 
-/** True if any S5 field is set — selects the full §11 recipe over the S0-minimum shape. */
-function hasS5Options(opts: JailOpts): boolean {
-  return (
-    opts.writeScope !== undefined ||
-    opts.wikiShape !== undefined ||
-    opts.mode !== undefined ||
-    opts.motherWikiPath !== undefined ||
-    opts.dataMounts !== undefined ||
-    opts.unshareNet !== undefined ||
-    opts.tunnelSocketPath !== undefined ||
-    opts.relayScriptPath !== undefined
-  );
-}
-
 /**
  * Join a write_scope-style relative path onto the clone root. Strips leading
  * and trailing slashes from the relative segment so both "src/" and "src"
@@ -164,27 +138,10 @@ function joinUnderClone(clonePath: string, relPath: string): string {
  * Pure and synchronous — this only assembles an argument array, it never
  * spawns anything and cannot fail, so it does not return a `DispatchResult`.
  *
- * With no S5 options set, returns the S0-minimum shape unchanged (see the
- * "Backward compatibility" module doc above). With any S5 option set, builds
- * the full §11 recipe in the 14-step order documented above.
+ * Always builds the full §11 recipe in the 14-step order documented above.
  */
 export function buildJailArgs(opts: JailOpts): JailArgs {
   const cwd = opts.cwd ?? opts.clonePath;
-
-  if (!hasS5Options(opts)) {
-    return {
-      argv: [
-        'bwrap',
-        '--ro-bind', '/', '/',
-        '--proc', '/proc',
-        '--dev', '/dev',
-        '--die-with-parent',
-        '--bind', opts.clonePath, opts.clonePath,
-        '--chdir', cwd,
-        '--',
-      ],
-    };
-  }
 
   const argv: string[] = ['bwrap'];
 
