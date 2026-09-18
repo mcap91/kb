@@ -21,14 +21,17 @@ export interface BackendEntry {
   api_key_env: string | null;
   secrets_file: string | null;
   notes?: string;
+  serving?: {
+    context_window?: number;
+    [key: string]: unknown;
+  };
 }
 
 export interface ModelTableEntry {
   available_on: string[];
   model_id: string;
   notes?: string;
-  /** §7.13 context-budget gate input (tokens); model-registry.ts defaults when absent. */
-  context_window?: number;
+  inference?: Record<string, unknown>;
 }
 
 export interface ProfileEntry {
@@ -86,7 +89,7 @@ function warnUnknownKeys(entry: Record<string, unknown>, knownKeys: ReadonlySet<
   }
 }
 
-const BACKEND_ENTRY_KNOWN_KEYS = new Set(['base_url', 'api_key_env', 'secrets_file', 'notes']);
+const BACKEND_ENTRY_KNOWN_KEYS = new Set(['base_url', 'api_key_env', 'secrets_file', 'notes', 'serving']);
 
 function validateBackendEntry(name: string, raw: unknown): DispatchResult<BackendEntry> {
   if (!isPlainObject(raw)) {
@@ -105,16 +108,33 @@ function validateBackendEntry(name: string, raw: unknown): DispatchResult<Backen
     return fail('BAD_RECORD', `Backend "${name}" in backends.json must have "secrets_file" as a string or null.`);
   }
 
+  if (raw.serving !== undefined) {
+    if (!isPlainObject(raw.serving)) {
+      return fail('BAD_RECORD', `Backend "${name}" in backends.json: "serving" must be an object.`);
+    }
+    if (raw.serving.context_window !== undefined && typeof raw.serving.context_window !== 'number') {
+      return fail('BAD_RECORD', `Backend "${name}" in backends.json: "serving.context_window" must be a number when present.`);
+    }
+  }
+
   const entry: BackendEntry = {
     base_url: raw.base_url,
     api_key_env: raw.api_key_env as string | null,
     secrets_file: raw.secrets_file as string | null,
   };
   if (typeof raw.notes === 'string') entry.notes = raw.notes;
+  if (isPlainObject(raw.serving)) {
+    const serving: BackendEntry['serving'] = {};
+    if (typeof raw.serving.context_window === 'number') serving.context_window = raw.serving.context_window;
+    for (const [k, v] of Object.entries(raw.serving)) {
+      if (k !== 'context_window') serving[k] = v;
+    }
+    entry.serving = serving;
+  }
   return ok(entry);
 }
 
-const MODEL_TABLE_ENTRY_KNOWN_KEYS = new Set(['available_on', 'model_id', 'notes', 'context_window']);
+const MODEL_TABLE_ENTRY_KNOWN_KEYS = new Set(['available_on', 'model_id', 'notes', 'inference']);
 
 function validateModelTableEntry(slug: string, raw: unknown): DispatchResult<ModelTableEntry> {
   if (!isPlainObject(raw)) {
@@ -129,8 +149,8 @@ function validateModelTableEntry(slug: string, raw: unknown): DispatchResult<Mod
   if (typeof raw.model_id !== 'string') {
     return fail('BAD_RECORD', `Model "${slug}" in models.json must have a string "model_id".`);
   }
-  if (raw.context_window !== undefined && typeof raw.context_window !== 'number') {
-    return fail('BAD_RECORD', `Model "${slug}" in models.json must have "context_window" as a number when present.`);
+  if (raw.inference !== undefined && !isPlainObject(raw.inference)) {
+    return fail('BAD_RECORD', `Model "${slug}" in models.json: "inference" must be an object when present.`);
   }
 
   const entry: ModelTableEntry = {
@@ -138,7 +158,7 @@ function validateModelTableEntry(slug: string, raw: unknown): DispatchResult<Mod
     model_id: raw.model_id,
   };
   if (typeof raw.notes === 'string') entry.notes = raw.notes;
-  if (typeof raw.context_window === 'number') entry.context_window = raw.context_window;
+  if (isPlainObject(raw.inference)) entry.inference = raw.inference as Record<string, unknown>;
   return ok(entry);
 }
 
