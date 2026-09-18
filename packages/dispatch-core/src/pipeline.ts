@@ -75,7 +75,7 @@ import {
   type TunnelConfig,
 } from './tunnel.js';
 import { probeBwrap, APPARMOR_REMEDIATION_TEXT, MISSING_BWRAP_TEXT } from './tier.js';
-import { parseReviewFile, type StructuredReviewResult } from './response-header.js';
+import { extractRecoveryBlock, type RecoveryBlockEvidence } from './recovery-block.js';
 
 const WORKER_TIMEOUT_SECS = 1800;
 const WORKER_TIMEOUT_MS = WORKER_TIMEOUT_SECS * 1000;
@@ -109,28 +109,19 @@ export interface DispatchResult2 {
   responsePath: string;
   runDir: string;
   /**
-   * Parsed structured review verdict (S6a ruling 3, re-platformed onto a
-   * file artifact at S6a W4) — present only for a `code_review` mode run
-   * whose `.dispatch-out/review.yaml` was present and parsed
-   * deterministically. Absent (never a pipeline failure) when the mode
-   * isn't `code_review`, the file was never written, or it failed to parse;
-   * either failure is informational for the orchestrator, surfaced via
-   * `reviewParseError` below (and logged verbose-only) rather than silently
-   * dropped.
+   * Extracted + validated `kb-dispatch-recovery.v1` evidence (D1 ruling 1;
+   * mid_project_review_rulings.md) from the worker/reviewer/redteam's
+   * terminal fenced output block. Absent for `research` mode (prose-only,
+   * never emits the block — ruling 1 item 1). For every other mode this is
+   * always populated (a missing/malformed block still yields an evidence
+   * envelope with `valid: false` and diagnostics — extraction never
+   * throws). V4 note 3 role asymmetry: for `implement` this is diagnostic
+   * evidence only and never changes the run's verdict; for
+   * `code_review`/`redteam` an invalid/absent block drives the response
+   * doc's verdict to `failed` (`missing_review_artifact`) in capture.ts's
+   * `deriveVerdict`.
    */
-  reviewResult?: StructuredReviewResult;
-  /**
-   * Why `reviewResult` is absent for a `code_review` mode run: the literal
-   * string `'missing_review_artifact'` when the worker never wrote
-   * `.dispatch-out/review.yaml` at all, or
-   * `` `${error}: ${message}` `` (response-header.ts's own
-   * `REVIEW_PARSE_FAILED` code + detail) when the file was present but
-   * failed to parse. Absent when the mode isn't `code_review` or parsing
-   * succeeded. Also threaded into the response doc's `## Structured Review`
-   * section (capture.ts) so the failure is diagnosable from the artifact
-   * itself, not only from this in-memory result or a `--verbose` log line.
-   */
-  reviewParseError?: string;
+  recoveryEvidence?: RecoveryBlockEvidence;
 }
 
 /** Single-quote a value for safe embedding in generated bash (mirrors delivery.ts's private helper). */
@@ -438,20 +429,6 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       }
     }
 
-    // 9c. Pre-create .dispatch-out/ — dispatch-owned worker-output dir
-    // (review.yaml is code_review's deliverable; DEC-0010 retired the
-    // outcome.yaml self-report channel — no other mode writes here). Same
-    // bwrap constraint as the write_scope skeleton dirs above: the path must already exist on
-    // disk before jail.ts's unconditional .dispatch-out bind is handed to
-    // bwrap. Unconditional across every mode, not gated by write_scope —
-    // code_review declares write_scope: [] (its envelope grants no write
-    // authority at all) but still needs somewhere to write its verdict.
-    try {
-      await mkdir(join(clonePath, '.dispatch-out'), { recursive: true });
-    } catch (err) {
-      return fail('PIPELINE_FAILED', `Failed to create .dispatch-out dir: ${join(clonePath, '.dispatch-out')}`, err);
-    }
-
     // 10. Build Pi invocation. workerDir (PI_CODING_AGENT_DIR) is a path
     // INSIDE THE JAIL, not under clonePath: jail.ts's S5 recipe mounts a
     // fresh --tmpfs /tmp (step 4 of the §11 recipe) that is always writable
@@ -574,7 +551,6 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       'ip link set lo up 2>/dev/null || true',
       `node ${shQuote(relayScriptPath)} ${shQuote(String(TUNNEL_RELAY_PORT))} ${shQuote(tunnelSocketPath)} < /dev/null > /dev/null 2>&1 &`,
       'sleep 0.2',
-      'mkdir -p .dispatch-out',
       ...(hasLockfile ? ['npm rebuild'] : []),
       `exec ${[invocation.cmd, ...invocation.args].map(shQuote).join(' ')}`,
     ].join('\n');
@@ -675,6 +651,24 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
     }
     logVerbose(verbose, `pi outcome: ${piParsed.data.outcome}`);
 
+    // 15b. Extract the kb-dispatch-recovery.v1 recovery block (D1 ruling 1,
+    // mid_project_review_rulings.md; V4 note 3 role asymmetry). Transport is
+    // the worker's own terminal LLM output (assemble.ts's prompt contract
+    // instructs every non-research mode to emit it) — no file artifact, no
+    // `.dispatch-out/`. `research` is prose-only and never emits this block
+    // (ruling 1 item 1; recovery-block.ts's own module doc: "never invoked
+    // for it") — skip extraction there so `recoveryEvidence` stays undefined
+    // rather than reporting a spurious `missing_result` diagnostic.
+    // Extraction never throws and never gates the pipeline by itself; V4
+    // note 3's role asymmetry (implement: evidence only; code_review/redteam:
+    // the block IS the deliverable) is enforced downstream in capture.ts's
+    // `deriveVerdict`, not here.
+    const recoveryEvidence: RecoveryBlockEvidence | undefined =
+      handoff.mode === 'research' ? undefined : extractRecoveryBlock(piParsed.data.lastAssistantText);
+    if (recoveryEvidence && !recoveryEvidence.valid) {
+      logVerbose(verbose, `recovery block invalid: ${recoveryEvidence.diagnostics.map((d) => d.code).join(', ')}`);
+    }
+
     // 16. Enumerate changes / advisory delivery branch (S6a T30,
     // execution/s6-rulings.md gate item: "advisory-mode file mutations
     // discarded with a warning"). Only `implement` mode lands a
@@ -729,11 +723,6 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       const enumerated = parseEnumerateOutput(enumerateExec.data.stdout);
       const secretHits = parseInjectedValueScanOutput(enumerateExec.data.stdout);
       const allChangedFiles = [...enumerated.changedFiles, ...enumerated.untrackedFiles];
-      // .dispatch-out/ is dispatch-owned infrastructure (review.yaml is
-      // code_review's deliverable), already excluded from the delivery
-      // commit via excludePrefixes — exclude from the write_scope check too,
-      // so it never triggers refused_out_of_scope.
-      const deliverableFiles = allChangedFiles.filter(f => !f.startsWith('.dispatch-out/') && !f.startsWith('.dispatch-out\\'));
 
       // 17. Check write scope, check the injected-value scan hits captured
       // above — refusals are DATA (a DeliveryOutcome variant), not a
@@ -742,7 +731,7 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       // pattern-based scanSecrets() leg — it checks only the exact values
       // the worker was granted, not heuristic patterns, so it is fully
       // deterministic.)
-      const scopeCheck = checkWriteScope(deliverableFiles, handoff.write_scope);
+      const scopeCheck = checkWriteScope(allChangedFiles, handoff.write_scope);
 
       if (!scopeCheck.ok) {
         const quarantinePath = join(runDir, 'quarantine.diff');
@@ -763,18 +752,13 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
         logVerbose(verbose, `refused: granted credential value(s) found in diff: ${secretHits.join(', ')}`);
         delivery = { status: 'secret_in_diff', patterns: secretHits, quarantinePath };
       } else {
-        // 18. Deliver (clean: land the scope-checked commit). .dispatch-out/
-        // (S6a W4) is dispatch's own worker-output dir, not the worker's
-        // deliverable — excluded from the commit the same way WK-0075
-        // excluded the old .pi-agent/ infra dir (the mechanism outlives that
-        // specific caller; see delivery.ts's own module doc).
+        // 18. Deliver (clean: land the scope-checked commit).
         logVerbose(verbose, 'delivering scope-checked commit');
         const deliveryScript = buildDeliveryScript({
           clonePath,
           motherRepoWsl: dir,
           handoffId: handoff.id,
           baseSha: admission.data.baseSha,
-          excludePrefixes: ['.dispatch-out'],
         });
         const deliveryExec = await execBash({
           scriptContent: deliveryScript.scriptContent,
@@ -821,54 +805,6 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       delivery = { status: 'no_changes' };
     }
 
-    // 19b. Structured review verdict (S6a ruling 3, re-platformed onto a
-    // file artifact at S6a W4) — code_review mode only. The verdict is a
-    // FILE the worker writes (`.dispatch-out/review.yaml`,
-    // assemble.ts's CODE_REVIEW_RESPONSE_FORMAT), never parsed from chat
-    // prose — this retires the original silent-failure bug class entirely
-    // (an agentic reviewer narrating before its verdict could push a
-    // delimited header past a fixed scan window; a `---` horizontal rule in
-    // the narration could collide with the real delimiter). Read here,
-    // BEFORE clone teardown in this function's `finally`. A read failure
-    // (missing file, or a read error) is folded into "absent" — this is
-    // never a pipeline-level failure either way; `reviewResult` simply stays
-    // absent and `reviewParseError` carries why, non-silently, into capture
-    // below (`## Structured Review`). D6: the clone is a plain host path
-    // now, so this reads the file directly — `buildReviewFileReadScript`/
-    // `parseReviewFileReadOutput` stay defined below (still independently
-    // unit-tested) but are no longer this call site's transport.
-    let reviewResult: StructuredReviewResult | undefined;
-    let reviewParseError: string | undefined;
-    if (handoff.mode === 'code_review') {
-      logVerbose(verbose, 'reading .dispatch-out/review.yaml from the clone');
-      const reviewFilePath = join(clonePath, '.dispatch-out', 'review.yaml');
-      let readResult: ReviewFileReadResult;
-      try {
-        readResult = { present: true, content: await readFile(reviewFilePath, 'utf8') };
-      } catch {
-        readResult = { present: false, content: '' };
-      }
-      const outcome = resolveReviewFileOutcome(readResult);
-      reviewResult = outcome.reviewResult;
-      reviewParseError = outcome.reviewParseError;
-      if (reviewParseError) {
-        logVerbose(verbose, `warning: review file parse failed: ${reviewParseError}`);
-      }
-
-      // Copy the raw artifact into the run dir for forensics (S6a W4),
-      // alongside pi-output.log/state.json — the clone gets deleted in this
-      // function's `finally`; the run dir persists. Copied whenever present,
-      // even if it failed to parse, since it's still evidence of what the
-      // worker wrote.
-      if (readResult.present) {
-        try {
-          await writeFile(join(runDir, 'review.yaml'), readResult.content, 'utf8');
-        } catch (err) {
-          logVerbose(verbose, `warning: could not copy review.yaml to run dir: ${err}`);
-        }
-      }
-    }
-
     // 20. Capture
     const captureResult = await writeResponseDoc({
       runDir,
@@ -879,8 +815,7 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       isolationBackend,
       lastAssistantText: piParsed.data.lastAssistantText,
       credentialsGranted: credResult.data.granted,
-      reviewResult,
-      reviewParseError,
+      recoveryEvidence,
       // Resolved-value provenance (S3 ruling 8): the real endpoint the tunnel
       // forwarder was configured to reach (resolvedTargetUrl === model.baseUrl
       // post-D3/D6 — there is no more WIN_HOST template to resolve).
@@ -943,8 +878,7 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       delivery,
       responsePath: captureResult.data.responsePath,
       runDir,
-      reviewResult,
-      reviewParseError,
+      recoveryEvidence,
     });
   } finally {
     // 21. Remove clone — best-effort; clone.ts's 24h orphan sweep is the
@@ -1040,95 +974,3 @@ export function mergeProvenanceFrontmatter(
   return `---\n${updatedLines.join('\n')}\n---\n${body}`;
 }
 
-// ---------------------------------------------------------------------------
-// S6a W4: `.dispatch-out/review.yaml` read (the review verdict is a FILE the
-// worker writes, never parsed from chat prose — see response-header.ts's
-// module doc and assemble.ts's CODE_REVIEW_RESPONSE_FORMAT). D6: `clonePath`
-// is a plain host path now, so `runDispatch` itself reads the file directly
-// (`fs.readFile`) rather than round-tripping through this script-builder +
-// stdout-parser pair — both stay defined and exported at module scope so
-// tests can still assert on each half directly (mirrors
-// `mergeProvenanceFrontmatter` above); not part of the package's public
-// surface (src/index.ts does not re-export them).
-// ---------------------------------------------------------------------------
-
-export interface ReviewFileScript {
-  scriptContent: string;
-  scriptName: string;
-}
-
-export interface ReviewFileReadResult {
-  /** Whether `.dispatch-out/review.yaml` existed in the clone at read time. */
-  present: boolean;
-  /** Raw file content — '' when absent, or when present but genuinely empty. */
-  content: string;
-}
-
-/**
- * Build the read-only WSL2 script that reports whether
- * `<clonePath>/.dispatch-out/review.yaml` exists and, if so, its raw
- * content. Presence is reported via an explicit marker line rather than
- * inferred from whether any text rode between the content markers, so a
- * legitimately empty (0-byte) review.yaml still reports PRESENT (with empty
- * content) rather than being confused with ABSENT. Never mutates the clone.
- */
-export function buildReviewFileReadScript(clonePath: string): ReviewFileScript {
-  const reviewPath = `${clonePath}/.dispatch-out/review.yaml`;
-  const scriptContent = [
-    '#!/bin/bash',
-    'set -euo pipefail',
-    `FILE=${shQuote(reviewPath)}`,
-    'if [ -f "$FILE" ]; then',
-    '  echo "---REVIEW-YAML-PRESENT---"',
-    'else',
-    '  echo "---REVIEW-YAML-ABSENT---"',
-    'fi',
-    'echo "---REVIEW-YAML-CONTENT-START---"',
-    'cat "$FILE" 2>/dev/null || true',
-    'echo "---REVIEW-YAML-CONTENT-END---"',
-    '',
-  ].join('\n');
-  return { scriptContent, scriptName: 'dispatch-review-file-read.sh' };
-}
-
-/** Extract the text between two literal marker lines (exclusive), or '' if either is absent (mirrors delivery.ts's private extractSection). */
-function extractMarked(text: string, startMarker: string, endMarker: string): string {
-  const startIdx = text.indexOf(startMarker);
-  const endIdx = text.indexOf(endMarker);
-  if (startIdx === -1 || endIdx === -1 || endIdx < startIdx) return '';
-  return text
-    .slice(startIdx + startMarker.length, endIdx)
-    .replace(/^\n/, '')
-    .replace(/\n$/, '');
-}
-
-/** Parse `buildReviewFileReadScript`'s stdout into a `ReviewFileReadResult`. */
-export function parseReviewFileReadOutput(stdout: string): ReviewFileReadResult {
-  const normalized = stdout.replace(/\r\n/g, '\n');
-  const present = normalized.includes('---REVIEW-YAML-PRESENT---');
-  const content = extractMarked(normalized, '---REVIEW-YAML-CONTENT-START---', '---REVIEW-YAML-CONTENT-END---');
-  return { present, content };
-}
-
-/**
- * Map a `ReviewFileReadResult` to the `reviewResult`/`reviewParseError` pair
- * `runDispatch` threads into its own return value and into capture.ts's
- * `## Structured Review` section. Absent file -> the literal
- * `'missing_review_artifact'` (constraint: no fallback that scans prose when
- * the file is missing — missing is failed, loudly, not silently). Present
- * but unparseable -> `` `${error}: ${message}` `` from response-header.ts's
- * own `REVIEW_PARSE_FAILED` result, so the failure is self-describing without
- * needing `--verbose`.
- */
-export function resolveReviewFileOutcome(
-  read: ReviewFileReadResult,
-): { reviewResult?: StructuredReviewResult; reviewParseError?: string } {
-  if (!read.present) {
-    return { reviewParseError: 'missing_review_artifact' };
-  }
-  const parsed = parseReviewFile(read.content);
-  if (parsed.ok) {
-    return { reviewResult: parsed.data };
-  }
-  return { reviewParseError: `${parsed.error}: ${parsed.message}` };
-}

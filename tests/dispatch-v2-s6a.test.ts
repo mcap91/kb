@@ -1,18 +1,24 @@
 /**
- * PLN-0004 S6a — tests for structured review header parsing, mode-specific
- * prompt framings, base_ref-aware admission, fixup_context frontmatter, and
- * Structured Review response-doc rendering (execution/s6-rulings.md).
+ * PLN-0004 S6a / Session C S6a.1 — tests for the `kb-dispatch-recovery.v1`
+ * terminal-block recovery signal, mode-specific prompt framings, base_ref-aware
+ * admission, fixup_context frontmatter, and response-doc rendering
+ * (execution/s6-rulings.md, execution/mid_project_review_rulings.md ruling 1).
  *
  * Covers:
- *  - response-header.ts: `parseReviewFile` (ruling 3) — deterministic
- *    parse-or-fail contract for a code_review worker's structured response
- *    header. No fallback path scans free-form prose for authority.
+ *  - recovery-block.ts: `extractRecoveryBlock` (terminal fenced-block scan)
+ *    and `validateRecoveryPayload` (S6a.1 ruling 1) — the deterministic
+ *    parse-or-fail contract that replaced response-header.ts's
+ *    `parseReviewFile` and the bespoke `.dispatch-out/review.yaml` file
+ *    channel (both deleted; response-header.ts no longer exists).
  *  - assemble.ts: mode-specific framings for all four §6 modes, plus fix-up
- *    context injection (coordination context only — grants no authority).
+ *    context injection (coordination context only — grants no authority),
+ *    and the recovery-block prompt contract worker/reviewer/redteam see.
  *  - admission.ts: baseSha now resolves from `handoff.base_ref` when
  *    declared, instead of unconditionally using HEAD.
  *  - ho.ts: the new optional `fixup_context` frontmatter field.
- *  - capture.ts: the `## Structured Review` response-doc section.
+ *  - capture.ts: the `## Recovery Signal` response-doc section and the V4
+ *    note 3 role asymmetry in `deriveVerdict` (implement: diagnostic
+ *    evidence only; code_review/redteam: the block IS the deliverable).
  *
  * No personal/absolute paths appear in fixtures (WK-0043 rule); all
  * filesystem tests use temp dirs.
@@ -24,247 +30,237 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
-  parseReviewFile,
+  extractRecoveryBlock,
+  validateRecoveryPayload,
+  KB_DISPATCH_RECOVERY_VERSION,
   parseHandoffContent,
   assemblePrompt,
   checkAdmission,
   writeResponseDoc,
   parsePiOutput,
-  checkWriteScope,
   type Handoff,
   type DeliveryOutcome,
-  type StructuredReviewResult,
+  type RecoveryBlockEvidence,
 } from '@kb/dispatch-core';
-import {
-  buildReviewFileReadScript,
-  parseReviewFileReadOutput,
-  resolveReviewFileOutcome,
-} from '../packages/dispatch-core/src/pipeline.js';
 
 async function createTempDir(prefix: string): Promise<string> {
   return mkdtemp(join(tmpdir(), prefix));
 }
 
 // ---------------------------------------------------------------------------
-// response-header.ts — parseReviewFile (S6a ruling 3; W4 file-artifact
-// re-platform). Fixtures below are raw `.dispatch-out/review.yaml` file
-// content — no `---` delimiters, no code fences, no trailing chat prose: the
-// entire file IS the YAML (assemble.ts's CODE_REVIEW_RESPONSE_FORMAT).
+// recovery-block.ts — extractRecoveryBlock / validateRecoveryPayload (S6a.1,
+// mid_project_review_rulings.md ruling 1). Fixtures below are raw LLM output
+// text (for extractRecoveryBlock) or already-parsed JSON payload objects
+// (for validateRecoveryPayload) — never `.dispatch-out/review.yaml` content,
+// which no longer exists (response-header.ts and the file-artifact channel
+// it parsed are both deleted).
 // ---------------------------------------------------------------------------
 
-const PASS_HEADER = `outcome: pass
-findings:
-  - id: F1
-    severity: low
-    blocking: false
-    summary: "Minor style nit"
-    detail: "Consider renaming the variable for clarity"
-    ac: AC-1
-acceptance_criteria:
-  - criterion: "AC-1: parses valid header"
-    pass: true
-    notes: "Looks good"
-`;
+const VALID_WORKER_PAYLOAD = {
+  schema_version: KB_DISPATCH_RECOVERY_VERSION,
+  reported_role: 'worker',
+  reported_subject: 'HO-0042',
+  reported_outcome: 'completed',
+  summary: 'Implemented the feature',
+  findings: [],
+  finding_counts: { total: 0, blocking: 0, critical: 0, high: 0, medium: 0, low: 0, info: 0 },
+  reviewed_controls: [],
+};
 
-const CHANGES_REQUESTED_HEADER = `outcome: changes-requested
-findings:
-  - id: F1
-    severity: high
-    blocking: true
-    summary: "Missing null check on line 42"
-    detail: "Dereferencing without a guard can crash on empty input"
-    ac: AC-2
-acceptance_criteria:
-  - criterion: "AC-2: handles empty input"
-    pass: false
-`;
+const VALID_REVIEWER_PAYLOAD = {
+  schema_version: KB_DISPATCH_RECOVERY_VERSION,
+  reported_role: 'reviewer',
+  reported_subject: 'HO-0042',
+  reported_outcome: 'changes_requested',
+  summary: 'Found issues',
+  findings: [
+    {
+      id: 'F1',
+      title: 'Bug',
+      severity: 'high',
+      blocking: true,
+      affected_paths: [{ path: 'src/foo.ts', line: 42 }],
+      control_id: null,
+    },
+  ],
+  finding_counts: { total: 1, blocking: 1, critical: 0, high: 1, medium: 0, low: 0, info: 0 },
+  reviewed_controls: [{ control_id: 'AC-1', result: 'fail' }],
+};
 
-const PASS_WITH_MINOR_HEADER = `outcome: pass-with-minor
-findings:
-  - id: F1
-    severity: low
-    blocking: false
-    summary: "Non-blocking style nit"
-acceptance_criteria:
-  - criterion: "AC-1: works as specified"
-    pass: true
-`;
+/** Builds a fenced code block: ```<info>\n<body>\n``` */
+function fenceBlock(info: string, body: string): string {
+  return ['```' + info, body, '```'].join('\n');
+}
 
-const MALFORMED_CONTENT = 'This review looks fine to me, no changes needed.\n';
+/** Builds a `kb-dispatch-recovery.v1`-marked fence around a JSON-serialized payload. */
+function recoveryFence(payload: unknown, info: string = KB_DISPATCH_RECOVERY_VERSION): string {
+  return fenceBlock(info, JSON.stringify(payload, null, 2));
+}
 
-const EMPTY_CONTENT = '';
-
-const MISSING_OUTCOME_HEADER = `findings:
-  - id: F1
-    severity: low
-    blocking: false
-    summary: "A finding without a top-level outcome field"
-acceptance_criteria:
-  - criterion: "AC-1: something"
-    pass: true
-`;
-
-const PASS_WITH_BLOCKING_FINDING = `outcome: pass
-findings:
-  - id: F1
-    severity: high
-    blocking: true
-    summary: "This should not be allowed to coexist with outcome: pass"
-`;
-
-const CHANGES_REQUESTED_WITH_NO_BLOCKING = `outcome: changes-requested
-findings:
-  - id: F1
-    severity: low
-    blocking: false
-    summary: "Not blocking, yet outcome claims changes-requested"
-`;
-
-const INVALID_SEVERITY_HEADER = `outcome: pass-with-minor
-findings:
-  - id: F1
-    severity: urgent
-    blocking: false
-    summary: "Severity 'urgent' is not a recognized enum value"
-`;
-
-const BOOLEAN_VARIANTS_HEADER = `outcome: changes-requested
-findings:
-  - id: F1
-    severity: high
-    blocking: yes
-    summary: "Uses yes/no instead of true/false"
-acceptance_criteria:
-  - criterion: "AC-1: boolean variants are tolerated"
-    pass: no
-`;
-
-const LEADING_BLANK_LINES_HEADER = `
-
-outcome: pass
-`;
-
-describe('response-header.ts — parseReviewFile (S6a ruling 3; W4 file artifact)', () => {
-  it('parses a valid pass file', () => {
-    const result = parseReviewFile(PASS_HEADER);
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-
-    expect(result.data.outcome).toBe('pass');
-    expect(result.data.findings).toEqual([
-      {
-        id: 'F1',
-        severity: 'low',
-        blocking: false,
-        summary: 'Minor style nit',
-        detail: 'Consider renaming the variable for clarity',
-        ac: 'AC-1',
-      },
-    ]);
-    expect(result.data.acceptanceCriteria).toEqual([
-      { criterion: 'AC-1: parses valid header', pass: true, notes: 'Looks good' },
-    ]);
+describe('recovery-block.ts — extractRecoveryBlock (S6a.1, ruling 1)', () => {
+  it('extracts and validates a well-formed terminal block (happy path, worker)', () => {
+    const text = `Some narrative text.\n\n${recoveryFence(VALID_WORKER_PAYLOAD)}`;
+    const evidence = extractRecoveryBlock(text);
+    expect(evidence.valid).toBe(true);
+    expect(evidence.diagnostics).toEqual([]);
+    expect(evidence.result?.reported_role).toBe('worker');
+    expect(evidence.result?.reported_outcome).toBe('completed');
+    expect(evidence.authority).toBe('child_evidence_only');
   });
 
-  it('parses a valid changes-requested file with a blocking finding', () => {
-    const result = parseReviewFile(CHANGES_REQUESTED_HEADER);
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-
-    expect(result.data.outcome).toBe('changes-requested');
-    expect(result.data.findings).toHaveLength(1);
-    expect(result.data.findings[0].blocking).toBe(true);
+  it('extracts and validates a well-formed terminal block (happy path, reviewer with findings)', () => {
+    const text = `Here is my review.\n\n${recoveryFence(VALID_REVIEWER_PAYLOAD)}`;
+    const evidence = extractRecoveryBlock(text);
+    expect(evidence.valid).toBe(true);
+    expect(evidence.result?.reported_role).toBe('reviewer');
+    expect(evidence.result?.findings).toHaveLength(1);
   });
 
-  it('parses a valid pass-with-minor file', () => {
-    const result = parseReviewFile(PASS_WITH_MINOR_HEADER);
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-
-    expect(result.data.outcome).toBe('pass-with-minor');
-    expect(result.data.findings).toHaveLength(1);
-    expect(result.data.findings[0].blocking).toBe(false);
+  it('returns missing_result when the output has no fenced block at all', () => {
+    const text = 'I looked at the diff and everything seems fine. No code block here.';
+    const evidence = extractRecoveryBlock(text);
+    expect(evidence.valid).toBe(false);
+    expect(evidence.diagnostics.map((d) => d.code)).toContain('missing_result');
   });
 
-  it('rejects content that is not key: value shaped (e.g. accidental chat prose written to the file)', () => {
-    const result = parseReviewFile(MALFORMED_CONTENT);
-    expect(result.ok).toBe(false);
-    if (result.ok) return;
-    expect(result.error).toBe('REVIEW_PARSE_FAILED');
+  it('returns malformed_json when the fenced block body is not valid JSON', () => {
+    const text = fenceBlock(KB_DISPATCH_RECOVERY_VERSION, 'this is not valid json at all');
+    const evidence = extractRecoveryBlock(text);
+    expect(evidence.valid).toBe(false);
+    expect(evidence.diagnostics.map((d) => d.code)).toContain('malformed_json');
   });
 
-  it('rejects an empty file', () => {
-    const result = parseReviewFile(EMPTY_CONTENT);
-    expect(result.ok).toBe(false);
-    if (result.ok) return;
-    expect(result.error).toBe('REVIEW_PARSE_FAILED');
+  it('returns multiple_json_candidates when more than one JSON-shaped block is present', () => {
+    const text = [
+      'Here is an example of the format:',
+      '',
+      fenceBlock('json', JSON.stringify({ foo: 'bar' })),
+      '',
+      recoveryFence(VALID_WORKER_PAYLOAD),
+    ].join('\n');
+    const evidence = extractRecoveryBlock(text);
+    expect(evidence.valid).toBe(false);
+    expect(evidence.diagnostics.map((d) => d.code)).toContain('multiple_json_candidates');
   });
 
-  it('rejects a file missing the outcome field', () => {
-    const result = parseReviewFile(MISSING_OUTCOME_HEADER);
-    expect(result.ok).toBe(false);
-    if (result.ok) return;
-    expect(result.error).toBe('REVIEW_PARSE_FAILED');
+  it('returns trailing_prose_after_result when prose follows the block', () => {
+    const text = `${recoveryFence(VALID_WORKER_PAYLOAD)}\n\nThanks for reviewing!`;
+    const evidence = extractRecoveryBlock(text);
+    expect(evidence.valid).toBe(false);
+    expect(evidence.diagnostics.map((d) => d.code)).toContain('trailing_prose_after_result');
   });
 
-  it('rejects outcome: pass combined with a blocking finding', () => {
-    const result = parseReviewFile(PASS_WITH_BLOCKING_FINDING);
-    expect(result.ok).toBe(false);
-    if (result.ok) return;
-    expect(result.error).toBe('REVIEW_PARSE_FAILED');
+  it('returns ordinary_json_code_block for a plain ```json fence missing the marker', () => {
+    const text = fenceBlock('json', JSON.stringify(VALID_WORKER_PAYLOAD, null, 2));
+    const evidence = extractRecoveryBlock(text);
+    expect(evidence.valid).toBe(false);
+    expect(evidence.diagnostics.map((d) => d.code)).toContain('ordinary_json_code_block');
   });
 
-  it('rejects outcome: changes-requested with no blocking finding', () => {
-    const result = parseReviewFile(CHANGES_REQUESTED_WITH_NO_BLOCKING);
-    expect(result.ok).toBe(false);
-    if (result.ok) return;
-    expect(result.error).toBe('REVIEW_PARSE_FAILED');
+  it('is invalid when the block is not the terminal content (narration continues after it)', () => {
+    const text = [
+      recoveryFence(VALID_WORKER_PAYLOAD),
+      '',
+      'Let me also double check the test suite before I finish.',
+    ].join('\n');
+    const evidence = extractRecoveryBlock(text);
+    expect(evidence.valid).toBe(false);
+  });
+});
+
+describe('recovery-block.ts — validateRecoveryPayload (S6a.1, ruling 1)', () => {
+  it('accepts a valid worker payload with a kind', () => {
+    const payload = { ...VALID_WORKER_PAYLOAD, reported_outcome: 'partial', kind: 'scope_insufficient' };
+    const evidence = validateRecoveryPayload(payload);
+    expect(evidence.valid).toBe(true);
+    expect(evidence.result?.kind).toBe('scope_insufficient');
   });
 
-  it('rejects an invalid severity value', () => {
-    const result = parseReviewFile(INVALID_SEVERITY_HEADER);
-    expect(result.ok).toBe(false);
-    if (result.ok) return;
-    expect(result.error).toBe('REVIEW_PARSE_FAILED');
+  it('accepts a valid reviewer payload with findings', () => {
+    const evidence = validateRecoveryPayload(VALID_REVIEWER_PAYLOAD);
+    expect(evidence.valid).toBe(true);
+    expect(evidence.result?.findings).toHaveLength(1);
   });
 
-  it('tolerates yes/no boolean variants for blocking and pass', () => {
-    const result = parseReviewFile(BOOLEAN_VARIANTS_HEADER);
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-
-    expect(result.data.findings[0].blocking).toBe(true);
-    expect(result.data.acceptanceCriteria[0].pass).toBe(false);
+  it('rejects a schema_version that does not match kb-dispatch-recovery.v1', () => {
+    const payload = { ...VALID_WORKER_PAYLOAD, schema_version: 'kb-dispatch-recovery.v0' };
+    const evidence = validateRecoveryPayload(payload);
+    expect(evidence.valid).toBe(false);
+    expect(evidence.diagnostics.map((d) => d.code)).toContain('schema_mismatch');
   });
 
-  it('allows leading whitespace/blank lines', () => {
-    const result = parseReviewFile(LEADING_BLANK_LINES_HEADER);
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.data.outcome).toBe('pass');
+  it('rejects a worker payload using a findings outcome instead of a worker outcome', () => {
+    const payload = { ...VALID_WORKER_PAYLOAD, reported_outcome: 'no_findings' };
+    const evidence = validateRecoveryPayload(payload);
+    expect(evidence.valid).toBe(false);
+    expect(evidence.diagnostics.map((d) => d.code)).toContain('role_outcome_mismatch');
+  });
+
+  it('rejects a reviewer payload using a worker outcome instead of a findings outcome', () => {
+    const payload = { ...VALID_REVIEWER_PAYLOAD, reported_outcome: 'completed' };
+    const evidence = validateRecoveryPayload(payload);
+    expect(evidence.valid).toBe(false);
+    expect(evidence.diagnostics.map((d) => d.code)).toContain('role_outcome_mismatch');
+  });
+
+  it('rejects finding_counts that do not match the recomputed findings', () => {
+    const payload = {
+      ...VALID_REVIEWER_PAYLOAD,
+      finding_counts: { ...VALID_REVIEWER_PAYLOAD.finding_counts, total: 2 },
+    };
+    const evidence = validateRecoveryPayload(payload);
+    expect(evidence.valid).toBe(false);
+    expect(evidence.diagnostics.map((d) => d.code)).toContain('finding_count_mismatch');
+  });
+
+  it('rejects a payload carrying a backend authority field', () => {
+    const payload = { ...VALID_WORKER_PAYLOAD, run_id: 'RUN-123' };
+    const evidence = validateRecoveryPayload(payload);
+    expect(evidence.valid).toBe(false);
+    expect(evidence.diagnostics.map((d) => d.code)).toContain('authority_field_forbidden');
+  });
+
+  it('accepts a worker payload with non-empty findings (ruling 1 item 7 — deliberate divergence from agent-chassis)', () => {
+    const payload = {
+      ...VALID_WORKER_PAYLOAD,
+      findings: [
+        {
+          id: 'F1',
+          title: 'Noticed a pre-existing null check gap',
+          severity: 'low',
+          blocking: false,
+          affected_paths: [],
+          control_id: null,
+        },
+      ],
+      finding_counts: { total: 1, blocking: 0, critical: 0, high: 0, medium: 0, low: 1, info: 0 },
+    };
+    const evidence = validateRecoveryPayload(payload);
+    expect(evidence.valid).toBe(true);
+    expect(evidence.result?.findings).toHaveLength(1);
   });
 });
 
 // ---------------------------------------------------------------------------
 // adapters/pi.ts — lastAssistantText/accumulatedText extraction (WK-0092/
-// WK-0093). No longer feeds review-verdict parsing (S6a W4 moved that onto
-// `.dispatch-out/review.yaml`, read directly by pipeline.ts — see the
-// `pipeline.ts — .dispatch-out/review.yaml read` describe block below) —
-// these fields still exist in `PiResult`: accumulatedText remains for
-// whole-transcript narrative/debugging, while lastAssistantText is
-// DEC-0010's diagnosis-channel source, embedded verbatim as the response
-// doc's `## Worker Report` section (capture.ts) — see
-// tests/dispatch-v2-foundation.test.ts's golden fixture describe block for
-// that proof. Kept here as regression coverage for the extraction
-// mechanics themselves, independent of what consumes them.
+// WK-0093). No longer feeds review-verdict parsing (S6a.1 moved that onto
+// the `kb-dispatch-recovery.v1` terminal fenced block extracted by
+// recovery-block.ts's `extractRecoveryBlock` — see the `recovery-block.ts —
+// extractRecoveryBlock` describe block above) — these fields still exist in
+// `PiResult`: accumulatedText remains for whole-transcript narrative/
+// debugging, while lastAssistantText is DEC-0010's diagnosis-channel
+// source, embedded verbatim as the response doc's `## Worker Report`
+// section (capture.ts) — see tests/dispatch-v2-foundation.test.ts's golden
+// fixture describe block for that proof. Kept here as regression coverage
+// for the extraction mechanics themselves, independent of what consumes
+// them.
 // ---------------------------------------------------------------------------
 
 describe('adapters/pi.ts — lastAssistantText/accumulatedText extraction', () => {
-  // Six narration lines with no blank lines, deliberately pushing the
-  // header's opening '---' to line 7 of the whole-session text — past
-  // extractHeaderBlock's 5-line search window (this is the exact bug
-  // reproduced: an agentic reviewer narrates and calls tools before
-  // producing its structured header).
+  // Six narration lines with no blank lines, deliberately pushing the final
+  // turn's content to line 7 of the whole-session text — this is the exact
+  // bug reproduced: an agentic reviewer narrates and calls tools before
+  // producing its final-turn content.
   const NARRATION = [
     'Let me look at the diff first.',
     'I will check each changed file for correctness.',
@@ -274,12 +270,18 @@ describe('adapters/pi.ts — lastAssistantText/accumulatedText extraction', () =
     'Finally, composing the review verdict.',
   ].join('\n') + '\n';
 
+  // Arbitrary final-turn text — proves the extraction boundary between
+  // narration and the final turn. No longer tied to any particular response
+  // schema: response-header.ts's YAML header is deleted, and parsePiOutput's
+  // extraction is agnostic to what the final turn contains.
+  const FINAL_TURN_TEXT = 'Review complete: no blocking issues found.\n';
+
   function codeReviewStreamLines(): string {
     return [
       JSON.stringify({ type: 'agent_start' }),
       // Turn 1: narration text + a tool call (e.g. reading the diff), its
       // own message_end — this is what a real agentic code_review run does
-      // before it ever produces the structured header. (WK-0092/WK-0093:
+      // before it ever produces its final-turn content. (WK-0092/WK-0093:
       // text rides on the message_end's content array, not a top-level
       // text_delta event — Pi never emits one.)
       JSON.stringify({
@@ -304,13 +306,13 @@ describe('adapters/pi.ts — lastAssistantText/accumulatedText extraction', () =
           isError: false,
         },
       }),
-      // Turn 2: the final reply — the structured header lives here, and
+      // Turn 2: the final reply — the final-turn content lives here, and
       // ONLY here.
       JSON.stringify({
         type: 'message_end',
         message: {
           role: 'assistant',
-          content: [{ type: 'text', text: PASS_HEADER }],
+          content: [{ type: 'text', text: FINAL_TURN_TEXT }],
           usage: { totalTokens: 15, cost: { total: 0.0001 } },
         },
       }),
@@ -324,90 +326,9 @@ describe('adapters/pi.ts — lastAssistantText/accumulatedText extraction', () =
     expect(result.ok).toBe(true);
     if (!result.ok) return;
 
-    expect(result.data.accumulatedText).toBe(NARRATION + PASS_HEADER);
-    expect(result.data.lastAssistantText).toBe(PASS_HEADER);
+    expect(result.data.accumulatedText).toBe(NARRATION + FINAL_TURN_TEXT);
+    expect(result.data.lastAssistantText).toBe(FINAL_TURN_TEXT);
     expect(result.data.usage.totalTokens).toBe(55);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// pipeline.ts — .dispatch-out/review.yaml read (S6a W4). buildReviewFileReadScript
-// and parseReviewFileReadOutput are pure (script builder / stdout parser)
-// either side of pipeline.ts's one `execViaWsl2` round trip, same pattern as
-// delivery.ts's buildEnumerateScript/parseEnumerateOutput — exercised here
-// without any live WSL2/bwrap host. resolveReviewFileOutcome is the pure
-// mapping from a read result to the reviewResult/reviewParseError pair
-// runDispatch() threads into capture.ts.
-// ---------------------------------------------------------------------------
-
-describe('pipeline.ts — buildReviewFileReadScript / parseReviewFileReadOutput (S6a W4)', () => {
-  it('builds a read-only script that checks for .dispatch-out/review.yaml under the clone', () => {
-    const { scriptContent, scriptName } = buildReviewFileReadScript('/home/user/.kb-dispatch/clones/RUN-1');
-    expect(scriptName).toBe('dispatch-review-file-read.sh');
-    expect(scriptContent).toContain("FILE='/home/user/.kb-dispatch/clones/RUN-1/.dispatch-out/review.yaml'");
-    expect(scriptContent).toContain('---REVIEW-YAML-PRESENT---');
-    expect(scriptContent).toContain('---REVIEW-YAML-ABSENT---');
-  });
-
-  it('parses PRESENT output with content into { present: true, content }', () => {
-    const stdout = [
-      '---REVIEW-YAML-PRESENT---',
-      '---REVIEW-YAML-CONTENT-START---',
-      'outcome: pass',
-      '---REVIEW-YAML-CONTENT-END---',
-      '',
-    ].join('\n');
-    const result = parseReviewFileReadOutput(stdout);
-    expect(result).toEqual({ present: true, content: 'outcome: pass' });
-  });
-
-  it('parses ABSENT output into { present: false, content: "" }', () => {
-    const stdout = [
-      '---REVIEW-YAML-ABSENT---',
-      '---REVIEW-YAML-CONTENT-START---',
-      '---REVIEW-YAML-CONTENT-END---',
-      '',
-    ].join('\n');
-    const result = parseReviewFileReadOutput(stdout);
-    expect(result).toEqual({ present: false, content: '' });
-  });
-
-  it('reports present:true with empty content for a legitimately empty (0-byte) review.yaml', () => {
-    const stdout = [
-      '---REVIEW-YAML-PRESENT---',
-      '---REVIEW-YAML-CONTENT-START---',
-      '---REVIEW-YAML-CONTENT-END---',
-      '',
-    ].join('\n');
-    const result = parseReviewFileReadOutput(stdout);
-    expect(result.present).toBe(true);
-    expect(result.content).toBe('');
-  });
-});
-
-describe('pipeline.ts — resolveReviewFileOutcome (S6a W4)', () => {
-  it('missing file -> reviewParseError is the literal string "missing_review_artifact", no reviewResult', () => {
-    const outcome = resolveReviewFileOutcome({ present: false, content: '' });
-    expect(outcome.reviewResult).toBeUndefined();
-    expect(outcome.reviewParseError).toBe('missing_review_artifact');
-  });
-
-  it('present + valid YAML -> reviewResult set, no reviewParseError', () => {
-    const outcome = resolveReviewFileOutcome({ present: true, content: PASS_HEADER });
-    expect(outcome.reviewParseError).toBeUndefined();
-    expect(outcome.reviewResult?.outcome).toBe('pass');
-  });
-
-  it('present + invalid YAML -> reviewParseError is "REVIEW_PARSE_FAILED: <detail>", no reviewResult', () => {
-    const outcome = resolveReviewFileOutcome({ present: true, content: MALFORMED_CONTENT });
-    expect(outcome.reviewResult).toBeUndefined();
-    expect(outcome.reviewParseError).toMatch(/^REVIEW_PARSE_FAILED: /);
-  });
-
-  it('present + empty content -> reviewParseError is REVIEW_PARSE_FAILED, no reviewResult', () => {
-    const outcome = resolveReviewFileOutcome({ present: true, content: '' });
-    expect(outcome.reviewResult).toBeUndefined();
-    expect(outcome.reviewParseError).toMatch(/^REVIEW_PARSE_FAILED: /);
   });
 });
 
@@ -498,7 +419,8 @@ describe('assemble.ts — mode-specific framings (S6a)', () => {
     const result = await assembleForMode('code_review');
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.data.text).toContain('outcome: pass | pass-with-minor | changes-requested');
+    expect(result.data.text).toContain('kb-dispatch-recovery.v1');
+    expect(result.data.text).toContain('This block IS your deliverable');
   });
 
   it('code_review framing includes fix-up flagging', async () => {
@@ -680,10 +602,12 @@ Body text.
 });
 
 // ---------------------------------------------------------------------------
-// capture.ts — Structured Review section rendering (S6a)
+// capture.ts — Recovery Signal section rendering (S6a.1). Replaces the
+// deleted reviewResult/reviewParseError fields (response-header.ts's
+// StructuredReviewResult) with recoveryEvidence: RecoveryBlockEvidence.
 // ---------------------------------------------------------------------------
 
-describe('capture.ts — Structured Review section rendering (S6a)', () => {
+describe('capture.ts — Recovery Signal section rendering (S6a.1)', () => {
   let runDir: string;
 
   beforeEach(async () => {
@@ -697,86 +621,64 @@ describe('capture.ts — Structured Review section rendering (S6a)', () => {
   const handoff = { id: 'HO-TEST', title: 'Test task', mode: 'code_review' };
   const delivery: DeliveryOutcome = { status: 'no_changes' };
 
-  it('includes a ## Structured Review section when reviewResult is present', async () => {
-    const reviewResult: StructuredReviewResult = {
-      outcome: 'pass',
-      findings: [],
-      acceptanceCriteria: [{ criterion: 'AC-1: Works', pass: true }],
-    };
+  it('includes a ## Recovery Signal section when recoveryEvidence is valid', async () => {
+    const recoveryEvidence: RecoveryBlockEvidence = validateRecoveryPayload(VALID_REVIEWER_PAYLOAD);
+    expect(recoveryEvidence.valid).toBe(true); // sanity: fixture itself must validate
 
-    const result = await writeResponseDoc({ runDir, handoff, delivery, reviewResult });
+    const result = await writeResponseDoc({ runDir, handoff, delivery, recoveryEvidence });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
 
     const written = await readFile(result.data.responsePath, 'utf8');
-    expect(written).toContain('## Structured Review');
-    expect(written).toContain('**Outcome:** pass');
+    expect(written).toContain('## Recovery Signal');
+    expect(written).toContain('**Reported outcome:** changes_requested');
+    expect(written).toContain('### Findings');
+    expect(written).toContain('Bug');
   });
 
-  it('omits the Structured Review section when reviewResult is absent', async () => {
+  it('omits the Recovery Signal section when recoveryEvidence is absent', async () => {
     const result = await writeResponseDoc({ runDir, handoff, delivery });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
 
     const written = await readFile(result.data.responsePath, 'utf8');
-    expect(written).not.toContain('Structured Review');
+    expect(written).not.toContain('Recovery Signal');
   });
 
-  it('renders a ## Structured Review parse-failure notice when reviewParseError is present and reviewResult is absent (S6a non-silent fix)', async () => {
-    const result = await writeResponseDoc({
-      runDir,
-      handoff,
-      delivery,
-      reviewParseError: "No opening '---' header delimiter found in the first 5 line(s) of the response.",
-    });
+  it('renders a parse-failure notice when recoveryEvidence is invalid', async () => {
+    const recoveryEvidence: RecoveryBlockEvidence = validateRecoveryPayload({ not: 'a valid payload' });
+    expect(recoveryEvidence.valid).toBe(false); // sanity: fixture itself must fail validation
+
+    const result = await writeResponseDoc({ runDir, handoff, delivery, recoveryEvidence });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
 
     const written = await readFile(result.data.responsePath, 'utf8');
-    expect(written).toContain('## Structured Review');
+    expect(written).toContain('## Recovery Signal');
     expect(written).toContain('**Parse failed:**');
-    expect(written).toContain("No opening '---' header delimiter found");
+    expect(written).toContain('schema_version is required');
   });
 
-  it('prefers reviewResult over reviewParseError when both are somehow present', async () => {
-    const reviewResult: StructuredReviewResult = {
-      outcome: 'pass',
-      findings: [],
-      acceptanceCriteria: [{ criterion: 'AC-1: Works', pass: true }],
-    };
+  it('code_review with invalid evidence -> outcome: failed, reason: missing_review_artifact (V4 note 3 role asymmetry: the recovery block IS the code_review deliverable)', async () => {
+    const recoveryEvidence: RecoveryBlockEvidence = validateRecoveryPayload({ not: 'a valid payload' });
 
-    const result = await writeResponseDoc({
-      runDir,
-      handoff,
-      delivery,
-      reviewResult,
-      reviewParseError: 'should never be rendered',
-    });
+    const result = await writeResponseDoc({ runDir, handoff, delivery, recoveryEvidence });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
 
     const written = await readFile(result.data.responsePath, 'utf8');
-    expect(written).toContain('**Outcome:** pass');
-    expect(written).not.toContain('Parse failed');
-    expect(written).not.toContain('should never be rendered');
+    expect(written).toContain('outcome: failed');
+    expect(written).toContain('reason: missing_review_artifact');
   });
-});
 
-// ---------------------------------------------------------------------------
-// pipeline.ts write_scope check excludes .dispatch-out/ (7cb1758). This
-// exclusion survives DEC-0010/WK-0095's outcome.yaml deletion unchanged:
-// .dispatch-out/ is still dispatch-owned infrastructure (review.yaml is
-// code_review's deliverable now) and must never trigger refused_out_of_scope.
-// ---------------------------------------------------------------------------
-
-describe('pipeline.ts write_scope check excludes .dispatch-out/ (7cb1758)', () => {
-  it('does not refuse when the only changed path outside write_scope is under .dispatch-out/ (a code_review worker\'s mandated review.yaml write must not trigger refused_out_of_scope)', () => {
-    const files = ['src/db/health.mjs', '.dispatch-out/review.yaml'];
-    const deliverableFiles = files.filter(
-      (f) => !f.startsWith('.dispatch-out/') && !f.startsWith('.dispatch-out\\'),
-    );
-    const result = checkWriteScope(deliverableFiles, ['src/db/']);
+  it('code_review with absent evidence -> outcome: failed, reason: missing_review_artifact (same asymmetry: no block at all is treated the same as an invalid one)', async () => {
+    const result = await writeResponseDoc({ runDir, handoff, delivery });
     expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const written = await readFile(result.data.responsePath, 'utf8');
+    expect(written).toContain('outcome: failed');
+    expect(written).toContain('reason: missing_review_artifact');
   });
 });
 
@@ -784,11 +686,12 @@ describe('pipeline.ts write_scope check excludes .dispatch-out/ (7cb1758)', () =
 // capture.ts — mechanical verdict ladder (DEC-0010 rule 2 / WK-0095). The
 // outcome.yaml channel above is deleted outright, not re-scoped:
 // `deriveVerdict` (module-private in capture.ts) computes the response-doc
-// outcome exclusively from delivery-gate facts and per-mode deliverable
-// checks — never the worker's chat text, never a worker-authored self-report
-// file. Exercised here through `writeResponseDoc`'s public surface (the
-// response doc's `outcome`/`reason` frontmatter), the same approach the
-// Structured Review tests above use for reviewResult.
+// outcome exclusively from delivery-gate facts, per-mode deliverable checks,
+// and (for code_review/redteam only, V4 note 3) `recoveryEvidence.valid` —
+// never the worker's chat text, never a worker-authored self-report file.
+// Exercised here through `writeResponseDoc`'s public surface (the response
+// doc's `outcome`/`reason` frontmatter), the same approach the Recovery
+// Signal tests above use for recoveryEvidence.
 // ---------------------------------------------------------------------------
 
 describe('capture.ts — mechanical verdict ladder (DEC-0010 / WK-0095)', () => {
@@ -870,10 +773,11 @@ describe('capture.ts — mechanical verdict ladder (DEC-0010 / WK-0095)', () => 
     expect(written).toContain('reason: secret_in_diff');
   });
 
-  it('code_review mode + no_changes delivery (the advisory path\'s normal shape) -> outcome: delivered', async () => {
+  it("code_review mode + no_changes delivery + a valid recovery block -> outcome: delivered (the advisory path's normal shape: reviewers land no diff, so the block is the deliverable — V4 note 3)", async () => {
     const handoff = { id: 'HO-TEST', title: 'Test task', mode: 'code_review' };
     const delivery: DeliveryOutcome = { status: 'no_changes' };
-    const result = await writeResponseDoc({ runDir, handoff, delivery });
+    const recoveryEvidence = validateRecoveryPayload(VALID_REVIEWER_PAYLOAD);
+    const result = await writeResponseDoc({ runDir, handoff, delivery, recoveryEvidence });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     const written = await readFile(result.data.responsePath, 'utf8');

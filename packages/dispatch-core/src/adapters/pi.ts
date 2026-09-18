@@ -98,17 +98,16 @@ export interface PiResult {
    * never actually worked (Pi never emits the top-level event it read), so
    * nothing real is lost by not reconstructing one.
    *
-   * S6a's structured review-header parser (`response-header.ts`'s
-   * `parseReviewFile`) reads from THIS field, not `accumulatedText` — an
-   * agentic `code_review` worker narrates ("Let me look at the diff...")
-   * and calls tools before producing its structured header, so the
-   * whole-session text pushes the header's opening `---` past
-   * `parseReviewFile`'s 5-line search window. The header is always in
-   * the worker's final message, regardless of how many turns the reviewer
+   * The `kb-dispatch-recovery.v1` terminal-block extractor
+   * (`recovery-block.ts`'s `extractRecoveryBlock`) reads from THIS field,
+   * not `accumulatedText` — an agentic worker narrates and calls tools
+   * before producing its terminal fenced block, so the whole-session text
+   * may contain multiple JSON-shaped blocks. The recovery block is always
+   * in the worker's final message, regardless of how many turns the worker
    * takes or which model/backend/tier served it, so isolating that one
    * message here (in the one place that already walks the event stream,
    * D10 facts-only) fixes the data flow for every caller — widening the
-   * parser's window instead would only paper over this one symptom, and
+   * extractor's scan window instead would only paper over this one symptom, and
    * would make a markdown `---` horizontal rule in the narration
    * ambiguous with the real header delimiter.
    */

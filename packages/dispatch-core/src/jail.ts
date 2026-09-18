@@ -28,20 +28,15 @@
  *   7.  clone bind                    ro-bind first if write_scope is
  *                                      sparse, else writable (legacy shape)
  *   8.  write_scope binds             selective rw layered over step 7
- *   9.  .dispatch-out/ bind (S6a W4)  dispatch-owned worker-output dir —
- *                                      always writable, unconditional across
- *                                      every mode (not gated by write_scope);
- *                                      carries review.yaml (code_review's
- *                                      file-artifact deliverable)
- *   10. wiki read axis (T25/D19)      dual-shape probe result decides mask
+ *   9.  wiki read axis (T25/D19)      dual-shape probe result decides mask
  *                                      vs. explicit bind vs. no-op
- *   11. data mounts                   per-HO ro/rw binds (existence/
+ *   10. data mounts                   per-HO ro/rw binds (existence/
  *                                      absoluteness already §7.14-validated
  *                                      by the admission gate)
- *   12. tunnel socket bind (T26/D21)  egress-forwarder unix socket
- *   13. relay script bind (T26/D21)   in-jail relay, read-only
- *   14. --chdir <cwd>
- *   15. --                            terminates bwrap's own argv; the
+ *   11. tunnel socket bind (T26/D21)  egress-forwarder unix socket
+ *   12. relay script bind (T26/D21)   in-jail relay, read-only
+ *   13. --chdir <cwd>
+ *   14. --                            terminates bwrap's own argv; the
  *                                      caller appends the worker invocation
  */
 
@@ -146,9 +141,9 @@ function joinUnderClone(clonePath: string, relPath: string): string {
  * of once. Not exported — an implementation seam, not a public contract.
  */
 interface JailPlanSteps {
-  /** Steps 1-13 (system baseline through relay-script bind) as flat argv tokens — EXCLUDES the leading 'bwrap' program name and the trailing steps 14-15 (`--chdir <cwd>` + `--`), which each caller appends per its own contract. */
+  /** Steps 1-12 (system baseline through relay-script bind) as flat argv tokens — EXCLUDES the leading 'bwrap' program name and the trailing steps 13-14 (`--chdir <cwd>` + `--`), which each caller appends per its own contract. */
   mountArgv: string[];
-  /** The same steps 1-13, structured — mirrors agent-chassis's plan-mounts `{src,dst}` shape (`launch-isolation-plan-mounts.mjs:185-499`). */
+  /** The same steps 1-12, structured — mirrors agent-chassis's plan-mounts `{src,dst}` shape (`launch-isolation-plan-mounts.mjs:185-499`). */
   mounts: BwrapMount[];
   /** Resolved --chdir target (`opts.cwd ?? opts.clonePath`). */
   cwd: string;
@@ -196,19 +191,7 @@ function buildJailPlanSteps(opts: JailOpts): JailPlanSteps {
     bind('bind', opts.clonePath, opts.clonePath);
   }
 
-  // 9: .dispatch-out/ (S6a W4) — dispatch-owned worker-output dir (review.yaml
-  // is code_review's file-artifact deliverable; DEC-0010 retired outcome.yaml).
-  // Unconditional and layered AFTER the
-  // write_scope binds above regardless of mode, so it is writable even when
-  // write_scope is empty (code_review's envelope grants no write authority at
-  // all — see assemble.ts's code_review framing). Self-bind, same pattern as
-  // the write_scope binds: pipeline.ts must `mkdir -p` this path in the clone
-  // before calling buildJailArgs (bwrap cannot mkdir a new path under a
-  // ro-bound root — see this module's own doc above).
-  const dispatchOutPath = joinUnderClone(opts.clonePath, '.dispatch-out');
-  bind('bind', dispatchOutPath, dispatchOutPath);
-
-  // 10: dual-shape wiki read axis (T25/D19).
+  // 9: dual-shape wiki read axis (T25/D19).
   const wikiPath = joinUnderClone(opts.clonePath, 'wiki');
   if (opts.wikiShape === 'tracked') {
     if (opts.mode !== undefined && WIKI_MASKED_MODES.has(opts.mode)) {
@@ -222,7 +205,7 @@ function buildJailPlanSteps(opts: JailOpts): JailPlanSteps {
     // implement/code_review (or no motherWikiPath given): clone has no wiki/ at all — nothing to bind.
   }
 
-  // 11: declared data mounts (ro/rw per HO; existence/absoluteness already
+  // 10: declared data mounts (ro/rw per HO; existence/absoluteness already
   // validated by the admission gate's bad_data_mount check, §7.14).
   if (opts.dataMounts) {
     for (const entry of opts.dataMounts) {
@@ -232,12 +215,12 @@ function buildJailPlanSteps(opts: JailOpts): JailPlanSteps {
     }
   }
 
-  // 12: tunnel socket bind (T26/D21 egress enforcement).
+  // 11: tunnel socket bind (T26/D21 egress enforcement).
   if (opts.tunnelSocketPath) {
     bind('bind', opts.tunnelSocketPath, opts.tunnelSocketPath);
   }
 
-  // 13: in-jail relay script bind (T26/D21), read-only.
+  // 12: in-jail relay script bind (T26/D21), read-only.
   if (opts.relayScriptPath) {
     bind('ro-bind', opts.relayScriptPath, opts.relayScriptPath);
   }
@@ -254,7 +237,7 @@ function buildJailPlanSteps(opts: JailOpts): JailPlanSteps {
  */
 export function buildJailArgs(opts: JailOpts): JailArgs {
   const { mountArgv, cwd } = buildJailPlanSteps(opts);
-  // 14-15: cwd + terminator (the caller appends the worker invocation after this).
+  // 13-14: cwd + terminator (the caller appends the worker invocation after this).
   return { argv: ['bwrap', ...mountArgv, '--chdir', cwd, '--'] };
 }
 

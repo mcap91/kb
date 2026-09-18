@@ -317,11 +317,22 @@ export type { BwrapProbeResult } from './tier.js';
 export { probeBwrap, buildBwrapEnvironmentInfo } from './tier.js';
 
 // ---------------------------------------------------------------------------
-// Structured review verdict (PLN-0004 S6a, ruling 3 — execution/s6-rulings.md;
-// re-platformed onto a file artifact at S6a W4): deterministic parse-or-fail
-// contract for a code_review worker's `.dispatch-out/review.yaml` (outcome
-// enum + per-finding severity/blocking + per-AC pass/fail).
+// Recovery block (PLN-0004 Session C / S6a.1 — mid_project_review_rulings.md
+// ruling 1, "D1: Structured recovery signal"): `kb-dispatch-recovery.v1`
+// terminal-block extraction + validation. Replaces the deleted `.dispatch-out/
+// review.yaml` file channel and response-header.ts's `parseReviewFile` with
+// one schema across every role that emits it (implement/worker,
+// code_review/reviewer, redteam).
 // ---------------------------------------------------------------------------
 
-export type { ReviewOutcome, FindingSeverity, ReviewFinding, ACResult, StructuredReviewResult } from './response-header.js';
-export { parseReviewFile } from './response-header.js';
+export type {
+  RecoveryBlockEvidence,
+  RecoveryBlockPayload,
+  RecoveryDiagnostic,
+  RecoveryKind,
+  RecoveryFinding,
+  FindingCounts,
+  ReviewedControl,
+  FindingSeverity as RecoveryFindingSeverity,
+} from './recovery-block.js';
+export { extractRecoveryBlock, validateRecoveryPayload, KB_DISPATCH_RECOVERY_VERSION } from './recovery-block.js';

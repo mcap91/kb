@@ -41,6 +41,79 @@ function bulletList(entries: string[]): string {
   return entries.map((entry) => `- ${entry}`).join('\n');
 }
 
+/**
+ * `kb-dispatch-recovery.v1` terminal block plumbing (mid_project_review_rulings.md ruling 1;
+ * schema/transport adapted from agent-chassis's `agent-role-result.v1` — ELv2: mirrored
+ * design, TypeScript written from scratch, no copied code. Chassis source:
+ * `work-record-launch-prompt.mjs:157-175,205-209` (terminal fenced-block transport rules +
+ * example-rendering pattern), `agent-role-result.v1.schema.json` (field shapes).
+ *
+ * Transport: exactly one fenced block, info-string `kb-dispatch-recovery.v1`, as the LAST
+ * content in the worker's output (ruling 1 item 2). The consequence of a missing/malformed
+ * block is role-dependent and stated in each responseFormat constant below, not here: for
+ * `implement` it costs only diagnostic evidence (ruling 1 item 8); for `code_review`/`redteam`
+ * the block IS the mode deliverable and its absence fails the run (V4 note 3). `research` gets
+ * no block at all (ruling 1 item 1) — never wire this into RESEARCH_FRAMING/SIMPLE_RESPONSE_FORMAT.
+ */
+const RECOVERY_BLOCK_INTRO =
+  'As the LAST content in your output, emit exactly one fenced JSON block whose info-string ' +
+  'is exactly `kb-dispatch-recovery.v1`. Do not emit ordinary ```json fences, extra JSON ' +
+  'candidates, or any content after the closing fence.';
+
+function recoveryBlockExample(example: Record<string, unknown>): string {
+  return ['```kb-dispatch-recovery.v1', JSON.stringify(example, null, 2), '```'].join('\n');
+}
+
+/**
+ * Shared instruction body for `code_review` and `redteam` — identical payload shape (ruling 1
+ * item 4: "redteam | Same as reviewer"), differing only in `reported_role`.
+ */
+function reviewerRecoveryFormat(role: 'reviewer' | 'redteam'): string {
+  const example = recoveryBlockExample({
+    schema_version: 'kb-dispatch-recovery.v1',
+    reported_role: role,
+    reported_subject: '<handoff id>',
+    reported_outcome: 'changes_requested',
+    summary: '<one-paragraph summary of the review>',
+    findings: [
+      {
+        id: 'F1',
+        title: '<short finding title>',
+        severity: 'high',
+        blocking: true,
+        affected_paths: [{ path: 'src/foo.ts', line: 42 }],
+        control_id: null,
+      },
+    ],
+    finding_counts: { total: 1, blocking: 1, critical: 0, high: 1, medium: 0, low: 0, info: 0 },
+    reviewed_controls: [{ control_id: 'acceptance_criteria', result: 'fail' }],
+  });
+
+  return (
+    '## Recovery Signal\n\n' +
+    `${RECOVERY_BLOCK_INTRO}\n\n` +
+    'This block IS your deliverable — it is not diagnostic evidence on the side. If it is ' +
+    'missing, or present but cannot be parsed, the run is marked `failed`.\n\n' +
+    `\`reported_role\` is \`"${role}"\`. \`reported_subject\` is the handoff id you were ` +
+    'dispatched as. `reported_outcome` is one of `no_findings` | ' +
+    '`passed_no_blocking_or_medium_findings` | `changes_requested`. `no_findings` requires ' +
+    'an empty `findings` array and all-zero `finding_counts`. ' +
+    '`passed_no_blocking_or_medium_findings` permits only `low`/`info` findings and zero ' +
+    'blocking/critical/high/medium counts. Any blocking, critical, high, or medium finding ' +
+    'MUST appear in `findings[]`, MUST use `changes_requested`, and blocks a clean outcome.\n\n' +
+    '`findings`, `finding_counts`, and `reviewed_controls` are REQUIRED for this role. Each ' +
+    'finding is `{id, title, severity, blocking, affected_paths, control_id}` — `severity` ' +
+    'is one of critical|high|medium|low|info, `affected_paths` is an array of ' +
+    '`{"path": "src/foo.ts", "line": 42}` (or `"line": null` when no specific line applies). ' +
+    '`finding_counts` (`{total, blocking, critical, high, medium, low, info}`) MUST match ' +
+    '`findings`. Each `reviewed_controls` entry is `{control_id, result}` with `result` of ' +
+    '`pass` or `fail`, listing controls you actually reviewed.\n\n' +
+    'Your chat response outside the block is free narrative for the operator — it is never ' +
+    'parsed.\n\n' +
+    example
+  );
+}
+
 interface ModeParts {
   introLine: string;
   framing: string;
@@ -65,8 +138,33 @@ const IMPLEMENT_FRAMING =
   'that is not provided, stop and end your final message stating exactly what you needed and ' +
   'why you stopped.';
 
+const WORKER_RECOVERY_EXAMPLE = recoveryBlockExample({
+  schema_version: 'kb-dispatch-recovery.v1',
+  reported_role: 'worker',
+  reported_subject: '<handoff id>',
+  reported_outcome: 'completed',
+  summary: '<one-paragraph summary of what you did>',
+  findings: [],
+  finding_counts: { total: 0, blocking: 0, critical: 0, high: 0, medium: 0, low: 0, info: 0 },
+  reviewed_controls: [],
+});
+
 const IMPLEMENT_RESPONSE_FORMAT =
-  'If you cannot finish, end your final message stating exactly what you needed and why you stopped.';
+  'If you cannot finish, end your final message stating exactly what you needed and why you ' +
+  'stopped.\n\n' +
+  '## Recovery Signal\n\n' +
+  `${RECOVERY_BLOCK_INTRO}\n\n` +
+  'This block is diagnostic evidence only — delivery authority is the scope-checked commit, ' +
+  'not this block. Failing to emit it, or emitting it malformed, loses only diagnostic ' +
+  'evidence and never invalidates an authenticated delivery.\n\n' +
+  '`reported_role` is `"worker"`. `reported_subject` is the handoff id you were dispatched ' +
+  'as. `reported_outcome` is one of `completed` | `partial` | `blocked` | `failed`. If not ' +
+  '`completed`, also include `kind`: one of `scope_insufficient` | ' +
+  '`dependency_missing` | `spec_unclear` | `partial_progress` | `resource_limit`. `findings`, ' +
+  '`finding_counts`, and `reviewed_controls` are required fields but MAY be populated with ' +
+  'real observations from your work (e.g. a pre-existing bug you noticed) — they are ' +
+  'evidence, not a verdict on your own work.\n\n' +
+  WORKER_RECOVERY_EXAMPLE;
 
 const REDTEAM_FRAMING =
   'Focus on: security holes, unhandled edge cases, spec violations, missing validation, ' +
@@ -74,6 +172,8 @@ const REDTEAM_FRAMING =
   'Your deliverable is adversarial findings. Do not modify any files.\n\n' +
   'If bubblewrap (bwrap) sandbox is not available or known-unsupported on this host, refuse ' +
   'to proceed — stop and state in your final message that you need a bwrap sandbox environment.';
+
+const REDTEAM_RESPONSE_FORMAT = reviewerRecoveryFormat('redteam');
 
 const RESEARCH_FRAMING =
   'You have read-only access to the full repository including the wiki. Use web tools if ' +
@@ -84,41 +184,7 @@ const RESEARCH_FRAMING =
 const SIMPLE_RESPONSE_FORMAT =
   'If you cannot finish, end your final message stating exactly what you needed and why you stopped.';
 
-const CODE_REVIEW_RESPONSE_FORMAT = [
-  '## Response Format',
-  '',
-  'Write your structured review verdict to the file `.dispatch-out/review.yaml` relative to ' +
-    'your working directory. The file must be valid YAML with this exact schema (this MUST be ' +
-    'parseable — if the file is missing or cannot be parsed deterministically, the run is ' +
-    'marked `failed`):',
-  '',
-  '```yaml',
-  'outcome: pass | pass-with-minor | changes-requested',
-  'findings:',
-  '  - id: F1',
-  '    severity: critical | high | medium | low | info',
-  '    blocking: true | false',
-  '    summary: <one-line>',
-  '    detail: <explanation>',
-  '    ac: <which AC>',
-  'acceptance_criteria:',
-  '  - criterion: <AC text>',
-  '    pass: true | false',
-  '    notes: <optional>',
-  '```',
-  '',
-  'No `---` delimiters. No code fences. The entire file IS the YAML.',
-  '',
-  'Your chat response is free narrative for the operator — it is never parsed.',
-  '',
-  'Rules:',
-  '- `outcome` is MANDATORY. `pass` = all ACs met, no blocking findings. `pass-with-minor` = ' +
-    'all ACs met, non-blocking findings exist. `changes-requested` = blocking finding(s) or AC ' +
-    'failure(s).',
-  '- Every finding MUST have severity and blocking fields.',
-  '- Every acceptance criterion from the task MUST appear in the acceptance_criteria list with ' +
-    'a pass/fail judgment.',
-].join('\n');
+const CODE_REVIEW_RESPONSE_FORMAT = reviewerRecoveryFormat('reviewer');
 
 /** Mode framings are subagent profiles (posture), never guardrails — s6-rulings.md ruling 2. */
 function getModeParts(handoff: Handoff): ModeParts {
@@ -157,7 +223,7 @@ function getModeParts(handoff: Handoff): ModeParts {
         includeWriteScope: false,
         includeAcceptance: false,
         includeValidation: false,
-        responseFormat: SIMPLE_RESPONSE_FORMAT,
+        responseFormat: REDTEAM_RESPONSE_FORMAT,
       };
     case 'research':
       return {
