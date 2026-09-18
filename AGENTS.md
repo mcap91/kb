@@ -33,7 +33,11 @@ the initial retrieval pass.
 - `allocate-id` is an idempotent **peek/reserve**, not a counter: repeat calls return the same id until
   `create` writes the record that claims it. Do not loop it expecting increments — call `create` to claim
   an id (it allocates and writes the record atomically). Repeated identical ids are correct, not a bug.
-- Dispatch: prefer the `kb-dispatch` MCP tools or the kb CLI.
+- Dispatch: multi-agent handoff protocol — author HOs (`create-handoff`), dispatch workers
+  (Pi/codex/claude in bwrap jail), capture results, review, merge. The dispatch MCP server
+  instructions carry the full orchestration recipe (dispatch loop, polling, kind routing,
+  fix-up budget, merge/cleanup). Prefer `kb-dispatch` MCP tools; CLI fallback
+  `npm run dispatch -- …`.
 - Graph: kb CLI (`npm run graph -- --dir <this repo>`).
 - Dashboard: `npm run dashboard -- <ID> --dir <this repo>` generates a self-contained HTML tracker
   for PLN, IN, or WK-set records. Output: `wiki/dashboard/<ID>.html`. See `docs/dashboard.md`.
@@ -101,7 +105,7 @@ If you are wiring `kb` into a native MCP client, use direct `node` launch comman
 - Codex: use `codex mcp add ...` native registration.
 - Verify with `claude mcp list` and `codex mcp list`.
 - For strict stdio clients, avoid `npm run wiki:mcp` and `npm run dispatch:mcp` because the npm wrapper writes to stdout before the MCP handshake.
-- If the client does not preserve `cwd`, especially on Windows, use absolute `tsx` loader and server script paths. *(2026-09-16, D3 ruling: historical — orchestrator is Linux-only; Windows client note no longer applicable.)*
+- If the client does not preserve `cwd`, use absolute `tsx` loader and server script paths.
 
 When you are working in `kb` itself, this checkout can self-host its own MCP tools:
 
@@ -116,13 +120,8 @@ This self-hosted setup does not replace the sister-repo model:
 
 Claude `.mcp.json` example. Replace:
 
-- `<TSX-LOADER-FILE-URL>` with a file URL to `node_modules/tsx/dist/loader.mjs`
+- `<TSX-LOADER-FILE-URL>` with a file URL to `node_modules/tsx/dist/loader.mjs` (e.g. `file:///home/you/projects/kb/node_modules/tsx/dist/loader.mjs`)
 - `<ABSOLUTE-PATH-TO-KB>` with the absolute path to this `kb` checkout, using forward slashes
-
-Examples for `<TSX-LOADER-FILE-URL>`:
-
-- Windows: `file:///C:/Users/you/projects/kb/node_modules/tsx/dist/loader.mjs` *(historical — 2026-09-16, D3 ruling: Linux-only orchestrator.)*
-- Linux/macOS: `file:///home/you/projects/kb/node_modules/tsx/dist/loader.mjs`
 
 ```json
 {
@@ -163,10 +162,6 @@ codex mcp add kb-wiki -- node --import <TSX-LOADER-FILE-URL> <ABSOLUTE-PATH-TO-K
 codex mcp add kb-dispatch -- node --import <TSX-LOADER-FILE-URL> <ABSOLUTE-PATH-TO-KB>/packages/dispatch-mcp/src/server.ts
 codex mcp list
 ```
-
-**[2026-09-16, D3 ruling: historical. Orchestrator is Linux-only; Windows-specific MCP registration no longer applicable.]**
-
-Windows note: if the client does not preserve `cwd`, prefer forward-slash absolute paths such as `C:/Users/you/projects/kb/...` so JSON and CLI arguments do not need escaped backslashes. In PowerShell, execution policy can block the `.ps1` shims for `npm`, `claude`, and `codex`; use `npm.cmd`, `claude.cmd`, and `codex.cmd` in that case. On Linux and macOS, use the normal command names.
 
 ## Core Architecture
 
@@ -250,26 +245,6 @@ Repository-context retrieval is a wiki/docs retrieval problem first, not a broad
 
 Do not treat generated views, launcher runtime artifacts, or `scratch_space/` material as canonical state.
 
-### Retrieval Order
-
-Before substantive work:
-
-1. Search the wiki with the kb wiki MCP `search` tool. This is the first retrieval step.
-2. If you need a structured overview, regenerate views with the MCP `generate` tool and read them (`catalog`, `now`, `inbox`, `backlog`, `archive`).
-3. Then read the relevant durable `docs/` pages.
-4. Then check related `wiki/decisions/`, `wiki/issues/`, `wiki/initiatives/`, `wiki/areas/`, and `wiki/sources/` pages when they exist.
-5. Only then drill into implementation files under `packages/` and `tests/`.
-
-If the kb wiki MCP server is not available this session, run the same steps via the kb CLI (`npm run wiki -- search --dir .`, `npm run wiki -- generate --dir .`). Do not use raw `rg`, file globbing, or direct file reads as the first retrieval step. Do not parallelize implementation search with the initial retrieval pass.
-
-If generated views are missing or stale, fall back to:
-
-1. relevant durable `docs/` reference pages
-2. `wiki/decisions/`
-3. `wiki/issues/` and `wiki/initiatives/`
-4. `wiki/sources/` and `wiki/areas/`
-5. implementation files
-
 ### Canonical Layers
 
 - `docs/` reference pages are the canonical durable knowledge layer for operator and protocol behavior.
@@ -296,7 +271,7 @@ If generated views are missing or stale, fall back to:
 - `wiki-mcp` imports from `@kb/wiki-core`. It does not import from dispatch or graph.
 - `dispatch-cli` imports from `@kb/dispatch-core`. It does not import from wiki or graph.
 - `dispatch-mcp` imports from `@kb/dispatch-core`. It does not import from wiki or graph.
-- `dispatch-core` may import `@kb/wiki-core`'s record primitives — the ONE ratified one-way exception (DEC-0007, for the shared HO id seam; lands with PLN-0004 S2). `wiki-core` must never import from dispatch-core.
+- `dispatch-core` may import `@kb/wiki-core`'s record primitives — the ONE ratified one-way exception (DEC-0007). `wiki-core` must never import from dispatch-core.
 - `graph-explore` is standalone. It reads wiki files directly but does not import wiki-core or dispatch-core.
 - No circular dependencies between packages.
 
@@ -353,57 +328,6 @@ The following files are generated by `wiki generate` and are not canonical:
 - `wiki/archive.md`
 
 These are excluded from lint and graph scanning.
-
-## Dispatch Conventions
-
-> ⚠️ **Superseded direction (2026-09-04):** DEC-0007 ratified dispatch v2 (spec:
-> `docs/superpowers/specs/2026-09-04-universal-dispatch-v2-design.md`; build plan: PLN-0004). This
-> section describes the current-but-being-replaced system and stays accurate until the v2 phase that
-> replaces it lands.
-
-### Trust Model
-
-- The **operator** controls config, registry, and tokens. These are trusted.
-- **HO-\* handoffs** are untrusted input. They go through review validation.
-- The agent registry (`launchers.v1.json`) lives in the operator config directory, not in the repo.
-- Token keys (`token.key`) are operator-owned HMAC secrets.
-
-### Review-Before-Launch
-
-Every handoff must be reviewed before it can be launched. The review step:
-
-1. Validates frontmatter against the Zod schema
-2. Rejects forbidden fields (command, cwd, permissions, path-bearing fields)
-3. Enforces `allowed_agents` from the handoff
-4. Validates Read First paths exist in repo
-5. Checks agent exists in registry
-6. Creates an immutable review bundle in `.agent-runs/reviews/RV-<uuid>/`
-7. Writes `agent-visible/wrapper.md`, `agent-visible/handoff.snapshot.md`, and `agent-visible/context/`
-8. Writes `metadata/input-manifest.json` and `metadata/review.json`
-7. Captures input manifest hash and registry hash
-8. Issues a signed pending token
-
-### Token State Machine
-
-Tokens move through four states, each backed by a subdirectory under the operator config:
-
-```
-pending/ --> launching/ --> consumed/
-                       \--> rejected/
-```
-
-- `pending`: Review completed, awaiting launch
-- `launching`: Launch in progress
-- `consumed`: Successfully launched and agent responded
-- `rejected`: Expired, failed, or rejected
-
-### Reviewed Bundle Invariant
-
-Agent processes are spawned with `cwd` set to the reviewed `agent-visible/` bundle inside `.agent-runs/runs/<handoffId>/RUN-<uuid>/agent-visible/`. The handoff never controls its own working directory.
-
-### Environment Allowlist
-
-Launch builds a filtered environment. Only allowlisted variables from the operator's environment are passed through, plus dispatch-specific variables (`AGENT_BLACKBOARD_*`).
 
 ## Graph Conventions
 
@@ -470,36 +394,11 @@ Before declaring any work complete, run:
 npm run typecheck && npm test
 ```
 
-Both must pass.
+Both must pass. The gate must be green on Linux (WSL2 ext4).
 
-### Cross-platform gate (Windows AND Linux/WSL)
+## Test Consuming Repo
 
-**[2026-09-16, D3 ruling: RETIRED. Linux-only orchestrator (WSL2 ext4). DEC-0006 dual-checkout
-+ rsync discipline retired. All references to Windows-native validation below are historical.]**
-
-The gate must be green on **both** Windows and Linux/WSL before work is declared complete.
-
-Running the Linux gate from a Windows checkout has one trap: a `node_modules` installed on Windows
-(or one shared via `/mnt/c`) ships **Windows-only native binaries** (rolldown/esbuild), so `npm test`
-(vitest) fails under WSL with a `MODULE_NOT_FOUND` for the native binding. `tsc` is pure JS and runs
-fine either way. Do **not** run `npm install` against the shared `/mnt/c` tree — it overwrites the
-native binaries and breaks the Windows install.
-
-To run the Linux gate, use a persistent WSL-native mirror with its own `node_modules` (DEC-0006):
-
-```
-# one-time setup (WSL): copy repo to Linux filesystem, install Linux-native deps
-wsl bash -lc 'mkdir -p ~/projects && rsync -a --exclude node_modules --exclude .git /mnt/c/Users/<you>/projects/kb/ ~/projects/kb/ && cd ~/projects/kb && npm install'
-
-# each run: sync working tree (preserves node_modules), then gate
-wsl bash -lc 'cd ~/projects/kb && rsync -a --delete --exclude node_modules --exclude .git /mnt/c/Users/<you>/projects/kb/ ./ && npm run typecheck && npm test'
-```
-
-Report the actual output for each platform; if one was not run, say so explicitly.
-
-### WSL2 command quoting from Windows
-
-When running commands inside WSL2 from a Windows shell (Git Bash / MSYS), always use `wsl -d Ubuntu -- bash -lc "..."`. Bare `wsl -- cat ~/path` silently mangles paths through MSYS path translation (`~` → `C:/Users/...`, forward slashes converted). The generated dispatch scripts handle this correctly; ad-hoc diagnostic commands must too.
+`/home/mcap91/projects/test_kb` is a test consuming repo. It can be cleared and re-bootstrapped at any time. Use it for smoke-testing dispatch, bootstrap, sync-contract, and any feature that targets a consuming repo via `--dir`. Do not treat its contents as durable.
 
 ## What Not To Do
 
@@ -511,11 +410,6 @@ When running commands inside WSL2 from a Windows shell (Git Bash / MSYS), always
 - **Do not import across subsystem boundaries.** wiki-cli uses wiki-core. dispatch-cli uses dispatch-core. graph-explore is standalone. Sole ratified exception (DEC-0007): dispatch-core may import wiki-core's record primitives, one-way, never the reverse.
 - **Do not describe features that do not exist.** No semantic search, no embeddings, no function-level graphs.
 - **Do not modify files under `scratch_space/`.** That directory is for planning and reference only.
-
-
-## Test Consuming Repo
-
-`/home/mcap91/projects/test_kb` is a test consuming repo. It can be cleared and re-bootstrapped at any time. Use it for smoke-testing dispatch, bootstrap, sync-contract, and any feature that targets a consuming repo via `--dir`. Do not treat its contents as durable.
 
 ## Interaction Contract
 
