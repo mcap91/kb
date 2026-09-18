@@ -12,9 +12,12 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  buildBwrapPlan,
   buildJailArgs,
   classifyWikiShape,
   parseDataMount,
+  type BwrapInjectedFile,
+  type BwrapMount,
   type JailOpts,
 } from '../packages/dispatch-core/src/jail.js';
 
@@ -410,5 +413,307 @@ describe('parseDataMount', () => {
 
   it('returns null for an empty string', () => {
     expect(parseDataMount('')).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildBwrapPlan (D6 Phase 3) — frozen plan object for direct bwrap spawn.
+//
+// Shares its mount-logic walk (buildJailPlanSteps) with buildJailArgs above —
+// same conditions, same order, same values (see jail.ts's own comment on
+// buildJailPlanSteps) — so these suites mirror the buildJailArgs ones above
+// rather than re-deriving the recipe from scratch. Two shape differences from
+// buildJailArgs's argv: (1) bwrapArgs excludes the leading 'bwrap' program
+// name (Node's spawn(cmd, args) takes the binary separately from its argv);
+// (2) bwrapArgs always ends with the worker command after `--`, never a bare
+// `--` left for a caller to append to.
+// ---------------------------------------------------------------------------
+
+describe('buildBwrapPlan — plan object shape', () => {
+  it('produces bwrapArgs/mounts/env/cwd/command with the documented types', () => {
+    const command = ['pi', '-p', '--mode', 'json'];
+    const plan = buildBwrapPlan({ clonePath, command });
+
+    expect(Array.isArray(plan.bwrapArgs)).toBe(true);
+    expect(plan.bwrapArgs.every((tok) => typeof tok === 'string')).toBe(true);
+    expect(Array.isArray(plan.mounts)).toBe(true);
+    expect(plan.mounts.length).toBeGreaterThan(0);
+    expect(typeof plan.env).toBe('object');
+    expect(typeof plan.cwd).toBe('string');
+    expect(Array.isArray(plan.command)).toBe(true);
+    expect(plan.command).toEqual(command);
+  });
+
+  it('renders the base recipe (no S5 options) ending in "--chdir <cwd> -- <command...>", with no leading "bwrap" token', () => {
+    const command = ['pi', '-p'];
+    const plan = buildBwrapPlan({ clonePath, command });
+
+    expect(plan.bwrapArgs).toEqual([
+      '--ro-bind', '/', '/',
+      '--proc', '/proc',
+      '--dev', '/dev',
+      '--tmpfs', '/tmp',
+      '--die-with-parent',
+      '--bind', clonePath, clonePath,
+      '--bind', `${clonePath}/.dispatch-out`, `${clonePath}/.dispatch-out`,
+      '--chdir', clonePath,
+      '--',
+      'pi', '-p',
+    ]);
+    expect(plan.mounts[0]).toEqual({ kind: 'ro-bind', src: '/', dst: '/' });
+    expect(plan.mounts[1]).toEqual({ kind: 'proc', dst: '/proc' });
+  });
+
+  it('honors an explicit cwd distinct from clonePath, placed right after --chdir and mirrored on plan.cwd', () => {
+    const cwd = `${clonePath}/work`;
+    const plan = buildBwrapPlan({ clonePath, cwd, command: ['pi'] });
+
+    expect(plan.cwd).toBe(cwd);
+    const chdirIdx = plan.bwrapArgs.indexOf('--chdir');
+    expect(plan.bwrapArgs[chdirIdx + 1]).toBe(cwd);
+  });
+
+  it("defaults env to {} and defensively copies a provided env/command rather than aliasing the caller's objects", () => {
+    const bare = buildBwrapPlan({ clonePath, command: ['pi'] });
+    expect(bare.env).toEqual({});
+
+    const inputEnv = { FOO: 'bar' };
+    const command = ['pi', '-p'];
+    const plan = buildBwrapPlan({ clonePath, command, env: inputEnv });
+    expect(plan.env).toEqual({ FOO: 'bar' });
+    expect(plan.env).not.toBe(inputEnv);
+    expect(plan.command).toEqual(command);
+    expect(plan.command).not.toBe(command);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildBwrapPlan — injectedFiles (--file materialization)
+// ---------------------------------------------------------------------------
+
+describe('buildBwrapPlan — injectedFiles', () => {
+  it('assigns sequential fds starting at 3 and renders matching "--file <fd> <dest>" pairs before the "--" terminator', () => {
+    const injectedFiles = [
+      { content: '{"a":1}', dest: `${clonePath}/tmp/.pi-agent/models.json` },
+      { content: 'second', dest: `${clonePath}/tmp/.pi-agent/second.json` },
+    ];
+    const plan = buildBwrapPlan({ clonePath, command: ['pi'], injectedFiles });
+
+    const expectedInjected: BwrapInjectedFile[] = [
+      { fd: 3, dest: injectedFiles[0].dest, content: injectedFiles[0].content },
+      { fd: 4, dest: injectedFiles[1].dest, content: injectedFiles[1].content },
+    ];
+    expect(plan.injectedFiles).toEqual(expectedInjected);
+
+    expect(plan.bwrapArgs).toEqual([
+      '--ro-bind', '/', '/',
+      '--proc', '/proc',
+      '--dev', '/dev',
+      '--tmpfs', '/tmp',
+      '--die-with-parent',
+      '--bind', clonePath, clonePath,
+      '--bind', `${clonePath}/.dispatch-out`, `${clonePath}/.dispatch-out`,
+      '--file', '3', injectedFiles[0].dest,
+      '--file', '4', injectedFiles[1].dest,
+      '--chdir', clonePath,
+      '--',
+      'pi',
+    ]);
+  });
+
+  it('defaults injectedFiles to [] and emits no --file tokens when none are given', () => {
+    const plan = buildBwrapPlan({ clonePath, command: ['pi'] });
+    expect(plan.injectedFiles).toEqual([]);
+    expect(plan.bwrapArgs).not.toContain('--file');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildBwrapPlan — write_scope sparse binds (mirrors buildJailArgs above)
+// ---------------------------------------------------------------------------
+
+describe('buildBwrapPlan — write_scope sparse binds', () => {
+  it('ro-binds the clone, then rw-binds each write_scope path, with --tmpfs /tmp present', () => {
+    const plan = buildBwrapPlan({ clonePath, writeScope: ['src/', 'test/'], command: ['pi'] });
+    expect(plan.bwrapArgs).toEqual([
+      '--ro-bind', '/', '/',
+      '--proc', '/proc',
+      '--dev', '/dev',
+      '--tmpfs', '/tmp',
+      '--die-with-parent',
+      '--ro-bind', clonePath, clonePath,
+      '--bind', `${clonePath}/src`, `${clonePath}/src`,
+      '--bind', `${clonePath}/test`, `${clonePath}/test`,
+      '--bind', `${clonePath}/.dispatch-out`, `${clonePath}/.dispatch-out`,
+      '--chdir', clonePath,
+      '--',
+      'pi',
+    ]);
+  });
+
+  it('keeps the clone fully writable (legacy shape) when writeScope is absent', () => {
+    const plan = buildBwrapPlan({ clonePath, unshareNet: true, command: ['pi'] });
+    const roBindMounts = plan.mounts.filter((m) => m.kind === 'ro-bind');
+    expect(roBindMounts).toHaveLength(1); // only the mandatory root ro-bind
+    const cloneMount: BwrapMount | undefined = plan.mounts.find((m) => m.dst === clonePath);
+    expect(cloneMount).toEqual({ kind: 'bind', src: clonePath, dst: clonePath });
+  });
+
+  it('ro-binds the clone with zero write binds when writeScope is an empty array (the code_review shape), but still writably binds .dispatch-out/', () => {
+    const plan = buildBwrapPlan({ clonePath, writeScope: [], command: ['pi'] });
+    expect(plan.bwrapArgs).toEqual([
+      '--ro-bind', '/', '/',
+      '--proc', '/proc',
+      '--dev', '/dev',
+      '--tmpfs', '/tmp',
+      '--die-with-parent',
+      '--ro-bind', clonePath, clonePath,
+      '--bind', `${clonePath}/.dispatch-out`, `${clonePath}/.dispatch-out`,
+      '--chdir', clonePath,
+      '--',
+      'pi',
+    ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildBwrapPlan — data mounts (mirrors buildJailArgs above)
+// ---------------------------------------------------------------------------
+
+describe('buildBwrapPlan — data mounts', () => {
+  it('ro data mount produces --ro-bind, reflected in both bwrapArgs and mounts', () => {
+    const plan = buildBwrapPlan({ clonePath, dataMounts: ['ro:/data/ref'], command: ['pi'] });
+    expect(plan.bwrapArgs).toEqual([
+      '--ro-bind', '/', '/',
+      '--proc', '/proc',
+      '--dev', '/dev',
+      '--tmpfs', '/tmp',
+      '--die-with-parent',
+      '--bind', clonePath, clonePath,
+      '--bind', `${clonePath}/.dispatch-out`, `${clonePath}/.dispatch-out`,
+      '--ro-bind', '/data/ref', '/data/ref',
+      '--chdir', clonePath,
+      '--',
+      'pi',
+    ]);
+    expect(plan.mounts).toEqual(expect.arrayContaining([{ kind: 'ro-bind', src: '/data/ref', dst: '/data/ref' }]));
+  });
+
+  it('rw data mount produces --bind, reflected in both bwrapArgs and mounts', () => {
+    const plan = buildBwrapPlan({ clonePath, dataMounts: ['rw:/tmp/scratch'], command: ['pi'] });
+    expect(plan.bwrapArgs).toEqual([
+      '--ro-bind', '/', '/',
+      '--proc', '/proc',
+      '--dev', '/dev',
+      '--tmpfs', '/tmp',
+      '--die-with-parent',
+      '--bind', clonePath, clonePath,
+      '--bind', `${clonePath}/.dispatch-out`, `${clonePath}/.dispatch-out`,
+      '--bind', '/tmp/scratch', '/tmp/scratch',
+      '--chdir', clonePath,
+      '--',
+      'pi',
+    ]);
+    expect(plan.mounts).toEqual(expect.arrayContaining([{ kind: 'bind', src: '/tmp/scratch', dst: '/tmp/scratch' }]));
+  });
+
+  it('skips malformed data_mounts entries silently, same as buildJailArgs', () => {
+    const plan = buildBwrapPlan({ clonePath, dataMounts: ['garbage', 'ro:/data/ref'], command: ['pi'] });
+    expect(plan.bwrapArgs).toEqual([
+      '--ro-bind', '/', '/',
+      '--proc', '/proc',
+      '--dev', '/dev',
+      '--tmpfs', '/tmp',
+      '--die-with-parent',
+      '--bind', clonePath, clonePath,
+      '--bind', `${clonePath}/.dispatch-out`, `${clonePath}/.dispatch-out`,
+      '--ro-bind', '/data/ref', '/data/ref',
+      '--chdir', clonePath,
+      '--',
+      'pi',
+    ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildBwrapPlan — dual-shape wiki read axis (mirrors buildJailArgs above)
+// ---------------------------------------------------------------------------
+
+describe('buildBwrapPlan — wiki read axis (T25/D19)', () => {
+  it('tracked + implement: masks wiki with --tmpfs', () => {
+    const plan = buildBwrapPlan({ clonePath, wikiShape: 'tracked', mode: 'implement', command: ['pi'] });
+    expect(plan.bwrapArgs).toEqual([
+      '--ro-bind', '/', '/',
+      '--proc', '/proc',
+      '--dev', '/dev',
+      '--tmpfs', '/tmp',
+      '--die-with-parent',
+      '--bind', clonePath, clonePath,
+      '--bind', `${clonePath}/.dispatch-out`, `${clonePath}/.dispatch-out`,
+      '--tmpfs', `${clonePath}/wiki`,
+      '--chdir', clonePath,
+      '--',
+      'pi',
+    ]);
+  });
+
+  it('tracked + redteam: no wiki mask — wiki stays visible as part of the clone', () => {
+    const plan = buildBwrapPlan({ clonePath, wikiShape: 'tracked', mode: 'redteam', command: ['pi'] });
+    expect(plan.bwrapArgs).not.toContain(`${clonePath}/wiki`);
+    // Only the mandatory root ro-bind is present — no wiki mask was added.
+    expect(plan.mounts.filter((m) => m.kind === 'ro-bind')).toHaveLength(1);
+  });
+
+  it('nested-private + research with motherWikiPath: ro-binds the mother wiki into the clone', () => {
+    const motherWikiPath = '/home/user/kb-dev-rig/wiki';
+    const plan = buildBwrapPlan({
+      clonePath,
+      wikiShape: 'nested-private',
+      mode: 'research',
+      motherWikiPath,
+      command: ['pi'],
+    });
+    expect(plan.bwrapArgs).toEqual([
+      '--ro-bind', '/', '/',
+      '--proc', '/proc',
+      '--dev', '/dev',
+      '--tmpfs', '/tmp',
+      '--die-with-parent',
+      '--bind', clonePath, clonePath,
+      '--bind', `${clonePath}/.dispatch-out`, `${clonePath}/.dispatch-out`,
+      '--ro-bind', motherWikiPath, `${clonePath}/wiki`,
+      '--chdir', clonePath,
+      '--',
+      'pi',
+    ]);
+  });
+
+  it('nested-private + redteam WITHOUT motherWikiPath: no wiki bind — nothing to bind against', () => {
+    const plan = buildBwrapPlan({ clonePath, wikiShape: 'nested-private', mode: 'redteam', command: ['pi'] });
+    expect(plan.mounts.filter((m) => m.dst === `${clonePath}/wiki`)).toHaveLength(0);
+    // Only the mandatory root ro-bind is present (the .dispatch-out/ bind is a plain 'bind', not 'ro-bind').
+    expect(plan.mounts.filter((m) => m.kind === 'ro-bind')).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildBwrapPlan — command always follows "--" (contrast with buildJailArgs)
+// ---------------------------------------------------------------------------
+
+describe('buildBwrapPlan — no trailing bare "--"', () => {
+  it('embeds the full worker command right after "--", unlike buildJailArgs which leaves a bare "--" for the caller to append to', () => {
+    const command = ['pi', '-p', '--mode', 'json'];
+    const plan = buildBwrapPlan({ clonePath, command });
+    const jailArgv = buildJailArgs({ clonePath }).argv;
+
+    // buildJailArgs's contract: caller appends the worker invocation after a bare '--'.
+    expect(jailArgv[jailArgv.length - 1]).toBe('--');
+
+    // buildBwrapPlan already embeds the command: the '--' terminator appears
+    // exactly once, immediately followed by every command token, in order.
+    const dashIdx = plan.bwrapArgs.indexOf('--');
+    expect(plan.bwrapArgs.lastIndexOf('--')).toBe(dashIdx);
+    expect(plan.bwrapArgs.slice(dashIdx + 1)).toEqual(command);
+    expect(plan.bwrapArgs[plan.bwrapArgs.length - 1]).not.toBe('--');
   });
 });
