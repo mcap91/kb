@@ -19,7 +19,7 @@ import type { DispatchResult } from './errors.js';
 import { fail, ok } from './errors.js';
 import type { DeliveryOutcome } from './delivery.js';
 import type { BackendFingerprint } from './model-registry.js';
-import type { StructuredReviewResult } from './response-header.js';
+import type { RecoveryBlockEvidence, RecoveryBlockPayload } from './recovery-block.js';
 
 export interface CaptureOpts {
   /** Windows path to the run dir */
@@ -52,23 +52,18 @@ export interface CaptureOpts {
   /** Best-effort backend fingerprint — host/model always present when probed, serverVersion null when the backend has no version endpoint (S3 ruling 8). */
   backendFingerprint?: BackendFingerprint;
   /**
-   * Parsed structured review header (S6a ruling 3) for `code_review` mode
-   * responses. Rendered as a `## Structured Review` section when present.
-   * Absent for non-review modes, or when the header failed to parse — in
-   * the latter case `reviewParseError` (below) renders an explanatory
-   * `## Structured Review` section instead of omitting it silently.
+   * Extracted + validated `kb-dispatch-recovery.v1` evidence (D1 ruling 1;
+   * `wiki/plans/PLN-0004/execution/mid_project_review_rulings.md`) from the
+   * worker/reviewer/redteam's terminal fenced output block. Rendered as a
+   * `## Recovery Signal` section whenever present — an invalid/unparseable
+   * block renders as a `**Parse failed:**` notice rather than being omitted
+   * silently. V4 note 3 role asymmetry, enforced in `deriveVerdict` below:
+   * for `implement` this is diagnostic evidence only and never changes the
+   * verdict (delivery authority is the scope-checked commit); for
+   * `code_review`/`redteam` the block IS the mode deliverable, so an
+   * absent/invalid block drives the verdict to `failed`.
    */
-  reviewResult?: StructuredReviewResult;
-  /**
-   * The parser's error message when a `code_review` mode response's
-   * structured header failed to parse (S6a fix). Rendered as a
-   * `## Structured Review` section carrying this message, so a missing
-   * section is diagnosable from the response doc itself rather than
-   * requiring `--verbose` pipeline logs. Ignored when `reviewResult` is
-   * present (a successful parse always wins) or for non-`code_review`
-   * modes.
-   */
-  reviewParseError?: string;
+  recoveryEvidence?: RecoveryBlockEvidence;
 }
 
 export interface CaptureResult {
@@ -114,8 +109,18 @@ interface VerdictResult {
  * workers never assert done/not-done"). Every branch reads only delivery-gate
  * facts, the handoff's mode, and (for research/redteam crash detection only)
  * the Pi adapter's facts-only process classification — never the worker's
- * chat text, and never a worker-authored self-report file. There is no path
- * from worker-authored content to a `delivered` verdict.
+ * chat text, and never a worker-authored self-report file as authority. The
+ * one exception is `recoveryEvidence.valid` for code_review/redteam (V4 note
+ * 3, below) — even there the branch reads only whether extraction/validation
+ * succeeded, never the worker's narrative content inside the block.
+ *
+ * V4 note 3 role asymmetry (`wiki/plans/PLN-0004/execution/
+ * mid_project_review_rulings.md`, re-review pass): for `implement`, the
+ * `kb-dispatch-recovery.v1` block is diagnostic evidence ONLY — an absent or
+ * malformed block never changes this ladder's verdict, because delivery
+ * authority is the scope-checked commit. For `code_review`/`redteam`, the
+ * block IS the mode deliverable (these modes land no commit) — an absent or
+ * invalid block drives the verdict to `failed` directly.
  *
  * Ladder:
  *   1. Delivery-gate refusals (out-of-scope / secret-in-diff) -> `refused`.
@@ -127,20 +132,22 @@ interface VerdictResult {
  *        an empty delta (`no_delta` — the worker's tree matches the base
  *        tree, so no branch was ever created) -> `failed` (`no_deliverable`
  *        — DEC-0010's "silence plus no deliverable is failure, never
- *        success").
- *      - code_review: reaching this function at all means the advisory path
- *        ran to completion — review.yaml presence/schema-validity is a
- *        SEPARATE gate the caller (pipeline.ts step 19b) checks before this
- *        is reached, so this branch only needs to say `delivered`.
- *      - research/redteam: no deliverable file exists for these modes — the
- *        transcript IS the product (`## Worker Report`); `delivered` here
- *        claims only "the process ran to completion", never findings
- *        quality. A crashed/errored process still fails.
+ *        success"). `recoveryEvidence` is never consulted in this branch.
+ *      - code_review / redteam: `recoveryEvidence?.valid` false (block never
+ *        emitted, or emitted but failed extraction/validation) -> `failed`
+ *        (`missing_review_artifact`); a valid block -> `delivered` (redteam
+ *        additionally still fails on a crashed/errored worker process).
+ *      - research: no deliverable block exists for this mode (prose-only,
+ *        ruling 1 item 1) — the transcript IS the product (`## Worker
+ *        Report`); `delivered` here claims only "the process ran to
+ *        completion", never findings quality. A crashed/errored process
+ *        still fails.
  */
 function deriveVerdict(
   delivery: DeliveryOutcome,
   handoffMode: string,
   piResult?: CaptureOpts['piResult'],
+  recoveryEvidence?: RecoveryBlockEvidence,
 ): VerdictResult {
   if (delivery.status === 'refused_out_of_scope' || delivery.status === 'secret_in_diff') {
     return { outcome: 'refused', reason: delivery.status };
@@ -157,9 +164,24 @@ function deriveVerdict(
     if (delivery.status === 'no_delta') return { outcome: 'failed', reason: 'no_deliverable' }; // F2: empty delta
   }
   if (handoffMode === 'code_review') {
+    // V4 note 3: the recovery block IS the code_review deliverable — absent
+    // or invalid block = failed.
+    if (!recoveryEvidence?.valid) {
+      return { outcome: 'failed', reason: 'missing_review_artifact' };
+    }
     return { outcome: 'delivered' };
   }
-  if (handoffMode === 'research' || handoffMode === 'redteam') {
+  if (handoffMode === 'redteam') {
+    // V4 note 3: same asymmetry as code_review — the block is the deliverable.
+    if (!recoveryEvidence?.valid) {
+      return { outcome: 'failed', reason: 'missing_review_artifact' };
+    }
+    if (piResult?.outcome === 'failed' || piResult?.outcome === 'error') {
+      return { outcome: 'failed', reason: 'process_error' };
+    }
+    return { outcome: 'delivered' };
+  }
+  if (handoffMode === 'research') {
     if (piResult?.outcome === 'failed' || piResult?.outcome === 'error') {
       return { outcome: 'failed', reason: 'process_error' };
     }
@@ -214,47 +236,52 @@ function formatWorkerReportSection(lastAssistantText: string | undefined): strin
 }
 
 /**
- * Render the `## Structured Review` section (S6a ruling 3) for a
- * `code_review` mode response carrying a deterministically-parsed
- * `StructuredReviewResult`. Only called when `opts.reviewResult` is present
- * — the outcome enum and per-finding/per-AC tables are rendered verbatim
- * from the already-validated parse, never re-derived from prose.
+ * Render the `## Recovery Signal` section (D1 ruling 1; V4 note 3) from the
+ * `kb-dispatch-recovery.v1` evidence extracted from the worker/reviewer/
+ * redteam's terminal output block. An absent/invalid block renders a
+ * `**Parse failed:**` notice instead of a table, listing every diagnostic
+ * `extractRecoveryBlock`/`validateRecoveryPayload` collected — this keeps a
+ * missing section from reading as silent success. This rendering is always
+ * diagnostic-only from `writeResponseDoc`'s point of view; whether it also
+ * drives the run's verdict is `deriveVerdict`'s call (V4 note 3 role
+ * asymmetry), not this function's.
  */
-function formatStructuredReviewSection(review: StructuredReviewResult): string[] {
-  const lines: string[] = ['## Structured Review', '', `**Outcome:** ${review.outcome}`, '', '### Findings'];
+function formatRecoveryBlockSection(evidence: RecoveryBlockEvidence): string[] {
+  const lines: string[] = ['## Recovery Signal', ''];
 
-  if (review.findings.length === 0) {
-    lines.push('(none)');
-  } else {
-    lines.push('| ID | Severity | Blocking | Summary |', '|----|----------|----------|---------|');
-    for (const finding of review.findings) {
-      lines.push(`| ${finding.id} | ${finding.severity} | ${finding.blocking ? 'yes' : 'no'} | ${finding.summary} |`);
+  if (!evidence.valid || !evidence.result) {
+    const detail = evidence.diagnostics
+      .map((d) => `${d.code}: ${d.message}${d.path ? ` (${d.path})` : ''}`)
+      .join('; ');
+    lines.push(`**Parse failed:** ${detail || 'no diagnostics recorded'}`, '');
+    return lines;
+  }
+
+  const payload: RecoveryBlockPayload = evidence.result;
+  lines.push(`**Reported outcome:** ${payload.reported_outcome}`);
+  if (payload.kind) {
+    lines.push(`**Kind:** ${payload.kind}`);
+  }
+  if (payload.summary) {
+    lines.push('', payload.summary);
+  }
+
+  if (payload.findings.length > 0) {
+    lines.push('', '### Findings', '| ID | Severity | Blocking | Title |', '|----|----------|----------|-------|');
+    for (const finding of payload.findings) {
+      lines.push(`| ${finding.id} | ${finding.severity} | ${finding.blocking ? 'yes' : 'no'} | ${finding.title} |`);
     }
   }
 
-  lines.push('', '### Acceptance Criteria');
-  if (review.acceptanceCriteria.length === 0) {
-    lines.push('(none)');
-  } else {
-    lines.push('| Criterion | Pass | Notes |', '|-----------|------|-------|');
-    for (const ac of review.acceptanceCriteria) {
-      lines.push(`| ${ac.criterion} | ${ac.pass ? 'yes' : 'no'} | ${ac.notes ?? ''} |`);
+  if (payload.reviewed_controls.length > 0) {
+    lines.push('', '### Reviewed Controls', '| Control | Result |', '|---------|--------|');
+    for (const control of payload.reviewed_controls) {
+      lines.push(`| ${control.control_id} | ${control.result} |`);
     }
   }
+
   lines.push('');
-
   return lines;
-}
-
-/**
- * Render the `## Structured Review` section as a parse-failure notice (S6a
- * fix) when `code_review` mode produced no `reviewResult` but the pipeline
- * captured why. Keeps a missing section from reading as silent success —
- * the artifact itself states that the header didn't parse and what went
- * wrong, rather than omitting the section with no trace.
- */
-function formatStructuredReviewErrorSection(message: string): string[] {
-  return ['## Structured Review', '', `**Parse failed:** ${message}`, ''];
 }
 
 /**
@@ -277,7 +304,7 @@ function formatBackendFingerprint(fingerprint: BackendFingerprint): string {
 export async function writeResponseDoc(opts: CaptureOpts): Promise<DispatchResult<CaptureResult>> {
   const { runDir, handoff, delivery, piResult, model, isolationBackend } = opts;
 
-  const verdict = deriveVerdict(delivery, handoff.mode, piResult);
+  const verdict = deriveVerdict(delivery, handoff.mode, piResult, opts.recoveryEvidence);
   const branch = deriveBranch(handoff.id, delivery);
   const changedFiles = delivery.status === 'delivered' ? delivery.changedFiles : [];
   const totalTokens = piResult?.usage.totalTokens ?? 0;
@@ -325,10 +352,8 @@ export async function writeResponseDoc(opts: CaptureOpts): Promise<DispatchResul
     formatWorkerReportSection(opts.lastAssistantText),
     '',
   ];
-  if (opts.reviewResult) {
-    bodyLines.push(...formatStructuredReviewSection(opts.reviewResult));
-  } else if (opts.reviewParseError) {
-    bodyLines.push(...formatStructuredReviewErrorSection(opts.reviewParseError));
+  if (opts.recoveryEvidence) {
+    bodyLines.push(...formatRecoveryBlockSection(opts.recoveryEvidence));
   }
   const body = bodyLines.join('\n');
 

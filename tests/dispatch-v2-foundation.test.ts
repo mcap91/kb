@@ -600,12 +600,12 @@ describe('adapters/pi.ts — facts-only Pi adapter', () => {
   // verified against a captured pi-output.log — see the golden fixture
   // describe block further down for the real-capture proof, and
   // tests/dispatch-v2-s6a.test.ts's own extraction-mechanics coverage. S6a
-  // W4 moved review-verdict parsing off these fields entirely, onto
-  // `.dispatch-out/review.yaml` (response-header.ts's `parseReviewFile`,
-  // read directly by pipeline.ts) — accumulatedText remains for
-  // whole-transcript narrative/debugging; lastAssistantText is DEC-0010's
-  // diagnosis-channel source, embedded verbatim as the response doc's
-  // `## Worker Report` section (capture.ts).
+  // W4 moved review-verdict parsing off these fields entirely, onto the
+  // terminal `kb-dispatch-recovery.v1` fenced JSON block (recovery-block.ts's
+  // extraction/validation, read directly by pipeline.ts) — accumulatedText
+  // remains for whole-transcript narrative/debugging; lastAssistantText is
+  // DEC-0010's diagnosis-channel source, embedded verbatim as the response
+  // doc's `## Worker Report` section (capture.ts).
   // -------------------------------------------------------------------------
 
   it('parsePiOutput isolates lastAssistantText to only the final assistant message, while accumulatedText spans both turns and excludes thinking/toolCall/toolResult content', () => {
