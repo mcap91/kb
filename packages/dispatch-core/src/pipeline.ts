@@ -464,7 +464,7 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       baseUrl: piBaseUrl,
       api: 'openai-completions',
       apiKeyEnv: model.apiKeyEnv,
-      contextWindow: 131072,
+      contextWindow: model.contextWindow,
       maxTokens: 8192,
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     };

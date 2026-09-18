@@ -107,12 +107,25 @@ export interface ResolvedModel {
   availableOn: string[];
   /** Whether the backend supports effort/reasoning params (false for all current open-model backends). */
   supportsEffort: boolean;
-  /** §7.13 context-budget gate input (tokens). Defaults when models.json omits context_window. */
+  /** §7.13 context-budget gate input (tokens). Defaults to DEFAULT_CONTEXT_WINDOW; floor at MIN_CONTEXT_WINDOW. */
   contextWindow: number;
 }
 
-/** §7.13 fallback context window (tokens) when models.json omits `context_window` (S4). */
-const DEFAULT_CONTEXT_WINDOW = 128000;
+/**
+ * Default context window (tokens) when backends.json omits serving.context_window.
+ * 128k matches the native capacity of every current dispatch-target model
+ * (DeepSeek, Qwen3, Gemma, GLM). Operators override when their deployment
+ * serves at a smaller window (Ollama num_ctx, vLLM max_model_len).
+ */
+export const DEFAULT_CONTEXT_WINDOW = 131072;
+
+/**
+ * Minimum context window (tokens). Pi's compaction reserve is 16384
+ * (compaction.js:76 in Pi 0.85.1); below 2x reserve Pi enters an infinite
+ * compaction loop (shouldCompact threshold goes negative).
+ * Verified against Pi 0.85.1 source: compaction.js:160-163.
+ */
+export const MIN_CONTEXT_WINDOW = 32768;
 
 /**
  * Resolve `--model <slug> --backend <name>` (both required — s3-rulings.md
@@ -158,6 +171,15 @@ export async function resolveModelFromConfig(
     );
   }
 
+  const contextWindow = backendEntry.serving?.context_window ?? DEFAULT_CONTEXT_WINDOW;
+  if (contextWindow < MIN_CONTEXT_WINDOW) {
+    return fail(
+      'BAD_RECORD',
+      `Backend "${backend}" serving.context_window is ${contextWindow}, below minimum ${MIN_CONTEXT_WINDOW}. Pi requires at least 2× its compaction reserve (16384) to function.`,
+      { contextWindow, minimum: MIN_CONTEXT_WINDOW },
+    );
+  }
+
   return ok({
     slug,
     backend,
@@ -166,10 +188,8 @@ export async function resolveModelFromConfig(
     apiKeyEnv: backendEntry.api_key_env,
     secretsFile: backendEntry.secrets_file,
     availableOn: modelEntry.available_on,
-    // Hardcoded for every current open-model backend; becomes per-model
-    // metadata at a future slice (ruling 9 / s3-rulings.md deferral list).
     supportsEffort: false,
-    contextWindow: modelEntry.context_window ?? DEFAULT_CONTEXT_WINDOW,
+    contextWindow,
   });
 }
 
