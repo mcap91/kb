@@ -922,6 +922,7 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       relayScriptPath,
       toolchainPaths,
       authLeafBinds,
+      homeScaffold: (toolchainPaths.length > 0 || authLeafBinds.length > 0) ? (process.env.HOME ?? undefined) : undefined,
       command: ['bash', '-c', innerScript],
       env: workerEnv,
       injectedFiles: bwrapInjectedFiles,

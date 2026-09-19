@@ -91,6 +91,12 @@ export interface JailOpts {
   /** Per-family auth leaf file binds — the ONLY $HOME paths let through.
    *  Each entry is { path, access } where access = 'ro' | 'rw'. */
   authLeafBinds?: ReadonlyArray<{ path: string; access: 'ro' | 'rw' }>;
+
+  /** Empty tmpfs scaffold so toolchain/auth leaf binds under $HOME have a
+   *  mount point. The old --ro-bind / / implicitly provided the directory
+   *  tree; with curated roots, this creates the minimal parent (e.g. $HOME)
+   *  as an empty tmpfs before the bind overlays land on top. */
+  homeScaffold?: string;
 }
 
 export interface JailArgs {
@@ -216,6 +222,14 @@ function buildJailPlanSteps(opts: JailOpts): JailPlanSteps {
   // 6: network namespace removal (T26/D21) — opt-in.
   if (opts.unshareNet) {
     mountArgv.push('--unshare-net');
+  }
+
+  // 6-scaffold: empty tmpfs at $HOME so toolchain/auth leaf binds below
+  // have a mount point. The old --ro-bind / / implicitly provided the
+  // directory tree; with curated system roots alone, paths under $HOME
+  // have no parent to attach to and --ro-bind-try silently skips them.
+  if (opts.homeScaffold) {
+    synthetic('tmpfs', opts.homeScaffold);
   }
 
   // 6a. Toolchain binary paths under $HOME — exact leaves, never a $HOME directory bind.
