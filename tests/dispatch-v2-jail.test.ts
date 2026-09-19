@@ -16,12 +16,23 @@ import {
   buildJailArgs,
   classifyWikiShape,
   parseDataMount,
+  SYSTEM_ROOTS,
   type BwrapInjectedFile,
   type BwrapMount,
   type JailOpts,
 } from '../packages/dispatch-core/src/jail.js';
 
 const clonePath = '/home/user/.kb-dispatch/clones/RUN-JAIL';
+
+/** Expected system-root args for test assertions (DEC-0011: replaces the former whole-root `--ro-bind / /`). */
+function expectedSystemRootArgs(): string[] {
+  return SYSTEM_ROOTS.flatMap((root) => ['--ro-bind-try', root, root]);
+}
+
+/** Expected system-root structured mounts, mirroring `expectedSystemRootArgs` for `plan.mounts` assertions. */
+function expectedSystemRootMounts(): BwrapMount[] {
+  return SYSTEM_ROOTS.map((root) => ({ kind: 'ro-bind-try', src: root, dst: root }));
+}
 
 // ---------------------------------------------------------------------------
 // buildJailArgs — write_scope sparse binds
@@ -32,7 +43,7 @@ describe('buildJailArgs — write_scope sparse binds', () => {
     const result = buildJailArgs({ clonePath, writeScope: ['src/', 'test/'] });
     expect(result.argv).toEqual([
       'bwrap',
-      '--ro-bind', '/', '/',
+      ...expectedSystemRootArgs(),
       '--proc', '/proc',
       '--dev', '/dev',
       '--tmpfs', '/tmp',
@@ -47,10 +58,10 @@ describe('buildJailArgs — write_scope sparse binds', () => {
 
   it('keeps the clone fully writable (legacy shape) when writeScope is absent but other S5 options are set', () => {
     const result = buildJailArgs({ clonePath, unshareNet: true });
-    // Only the mandatory root ro-bind should appear; the clone itself binds
-    // writable because writeScope was never provided.
+    // No exact --ro-bind appears (system roots are --ro-bind-try, DEC-0011);
+    // the clone itself binds writable because writeScope was never provided.
     const roBindCount = result.argv.filter((tok) => tok === '--ro-bind').length;
-    expect(roBindCount).toBe(1);
+    expect(roBindCount).toBe(0);
     const bindIdx = result.argv.indexOf('--bind');
     expect(result.argv[bindIdx + 1]).toBe(clonePath);
     expect(result.argv[bindIdx + 2]).toBe(clonePath);
@@ -60,7 +71,7 @@ describe('buildJailArgs — write_scope sparse binds', () => {
     const result = buildJailArgs({ clonePath, writeScope: [] });
     expect(result.argv).toEqual([
       'bwrap',
-      '--ro-bind', '/', '/',
+      ...expectedSystemRootArgs(),
       '--proc', '/proc',
       '--dev', '/dev',
       '--tmpfs', '/tmp',
@@ -81,7 +92,7 @@ describe('buildJailArgs — wiki read axis (T25/D19)', () => {
     const result = buildJailArgs({ clonePath, wikiShape: 'tracked', mode: 'implement' });
     expect(result.argv).toEqual([
       'bwrap',
-      '--ro-bind', '/', '/',
+      ...expectedSystemRootArgs(),
       '--proc', '/proc',
       '--dev', '/dev',
       '--tmpfs', '/tmp',
@@ -103,7 +114,7 @@ describe('buildJailArgs — wiki read axis (T25/D19)', () => {
     const result = buildJailArgs({ clonePath, wikiShape: 'tracked', mode: 'redteam' });
     expect(result.argv).toEqual([
       'bwrap',
-      '--ro-bind', '/', '/',
+      ...expectedSystemRootArgs(),
       '--proc', '/proc',
       '--dev', '/dev',
       '--tmpfs', '/tmp',
@@ -118,7 +129,7 @@ describe('buildJailArgs — wiki read axis (T25/D19)', () => {
     const result = buildJailArgs({ clonePath, wikiShape: 'nested-private', mode: 'implement' });
     expect(result.argv).toEqual([
       'bwrap',
-      '--ro-bind', '/', '/',
+      ...expectedSystemRootArgs(),
       '--proc', '/proc',
       '--dev', '/dev',
       '--tmpfs', '/tmp',
@@ -139,7 +150,7 @@ describe('buildJailArgs — wiki read axis (T25/D19)', () => {
     });
     expect(result.argv).toEqual([
       'bwrap',
-      '--ro-bind', '/', '/',
+      ...expectedSystemRootArgs(),
       '--proc', '/proc',
       '--dev', '/dev',
       '--tmpfs', '/tmp',
@@ -155,7 +166,7 @@ describe('buildJailArgs — wiki read axis (T25/D19)', () => {
     const result = buildJailArgs({ clonePath, wikiShape: 'nested-private', mode: 'redteam' });
     expect(result.argv).toEqual([
       'bwrap',
-      '--ro-bind', '/', '/',
+      ...expectedSystemRootArgs(),
       '--proc', '/proc',
       '--dev', '/dev',
       '--tmpfs', '/tmp',
@@ -164,8 +175,8 @@ describe('buildJailArgs — wiki read axis (T25/D19)', () => {
       '--chdir', clonePath,
       '--',
     ]);
-    // Only the mandatory root ro-bind is present — no wiki bind was added.
-    expect(result.argv.filter((tok) => tok === '--ro-bind').length).toBe(1);
+    // No exact --ro-bind is present (system roots are --ro-bind-try, DEC-0011) — no wiki bind was added either.
+    expect(result.argv.filter((tok) => tok === '--ro-bind').length).toBe(0);
   });
 });
 
@@ -178,7 +189,7 @@ describe('buildJailArgs — data mounts', () => {
     const result = buildJailArgs({ clonePath, dataMounts: ['ro:/data/ref'] });
     expect(result.argv).toEqual([
       'bwrap',
-      '--ro-bind', '/', '/',
+      ...expectedSystemRootArgs(),
       '--proc', '/proc',
       '--dev', '/dev',
       '--tmpfs', '/tmp',
@@ -194,7 +205,7 @@ describe('buildJailArgs — data mounts', () => {
     const result = buildJailArgs({ clonePath, dataMounts: ['rw:/tmp/scratch'] });
     expect(result.argv).toEqual([
       'bwrap',
-      '--ro-bind', '/', '/',
+      ...expectedSystemRootArgs(),
       '--proc', '/proc',
       '--dev', '/dev',
       '--tmpfs', '/tmp',
@@ -210,7 +221,7 @@ describe('buildJailArgs — data mounts', () => {
     const result = buildJailArgs({ clonePath, dataMounts: ['garbage', 'ro:/data/ref'] });
     expect(result.argv).toEqual([
       'bwrap',
-      '--ro-bind', '/', '/',
+      ...expectedSystemRootArgs(),
       '--proc', '/proc',
       '--dev', '/dev',
       '--tmpfs', '/tmp',
@@ -256,7 +267,7 @@ describe('buildJailArgs — tunnel socket and relay script binds', () => {
     const result = buildJailArgs({ clonePath, tunnelSocketPath });
     expect(result.argv).toEqual([
       'bwrap',
-      '--ro-bind', '/', '/',
+      ...expectedSystemRootArgs(),
       '--proc', '/proc',
       '--dev', '/dev',
       '--tmpfs', '/tmp',
@@ -273,7 +284,7 @@ describe('buildJailArgs — tunnel socket and relay script binds', () => {
     const result = buildJailArgs({ clonePath, relayScriptPath });
     expect(result.argv).toEqual([
       'bwrap',
-      '--ro-bind', '/', '/',
+      ...expectedSystemRootArgs(),
       '--proc', '/proc',
       '--dev', '/dev',
       '--tmpfs', '/tmp',
@@ -311,7 +322,7 @@ describe('buildJailArgs — full combined recipe', () => {
 
     expect(result.argv).toEqual([
       'bwrap',
-      '--ro-bind', '/', '/',
+      ...expectedSystemRootArgs(),
       '--proc', '/proc',
       '--dev', '/dev',
       '--tmpfs', '/tmp',
@@ -412,7 +423,7 @@ describe('buildBwrapPlan — plan object shape', () => {
     const plan = buildBwrapPlan({ clonePath, command });
 
     expect(plan.bwrapArgs).toEqual([
-      '--ro-bind', '/', '/',
+      ...expectedSystemRootArgs(),
       '--proc', '/proc',
       '--dev', '/dev',
       '--tmpfs', '/tmp',
@@ -422,8 +433,8 @@ describe('buildBwrapPlan — plan object shape', () => {
       '--',
       'pi', '-p',
     ]);
-    expect(plan.mounts[0]).toEqual({ kind: 'ro-bind', src: '/', dst: '/' });
-    expect(plan.mounts[1]).toEqual({ kind: 'proc', dst: '/proc' });
+    expect(plan.mounts.slice(0, SYSTEM_ROOTS.length)).toEqual(expectedSystemRootMounts());
+    expect(plan.mounts[SYSTEM_ROOTS.length]).toEqual({ kind: 'proc', dst: '/proc' });
   });
 
   it('honors an explicit cwd distinct from clonePath, placed right after --chdir and mirrored on plan.cwd', () => {
@@ -468,7 +479,7 @@ describe('buildBwrapPlan — injectedFiles', () => {
     expect(plan.injectedFiles).toEqual(expectedInjected);
 
     expect(plan.bwrapArgs).toEqual([
-      '--ro-bind', '/', '/',
+      ...expectedSystemRootArgs(),
       '--proc', '/proc',
       '--dev', '/dev',
       '--tmpfs', '/tmp',
@@ -497,7 +508,7 @@ describe('buildBwrapPlan — write_scope sparse binds', () => {
   it('ro-binds the clone, then rw-binds each write_scope path, with --tmpfs /tmp present', () => {
     const plan = buildBwrapPlan({ clonePath, writeScope: ['src/', 'test/'], command: ['pi'] });
     expect(plan.bwrapArgs).toEqual([
-      '--ro-bind', '/', '/',
+      ...expectedSystemRootArgs(),
       '--proc', '/proc',
       '--dev', '/dev',
       '--tmpfs', '/tmp',
@@ -514,7 +525,7 @@ describe('buildBwrapPlan — write_scope sparse binds', () => {
   it('keeps the clone fully writable (legacy shape) when writeScope is absent', () => {
     const plan = buildBwrapPlan({ clonePath, unshareNet: true, command: ['pi'] });
     const roBindMounts = plan.mounts.filter((m) => m.kind === 'ro-bind');
-    expect(roBindMounts).toHaveLength(1); // only the mandatory root ro-bind
+    expect(roBindMounts).toHaveLength(0); // system roots are ro-bind-try (DEC-0011), not ro-bind
     const cloneMount: BwrapMount | undefined = plan.mounts.find((m) => m.dst === clonePath);
     expect(cloneMount).toEqual({ kind: 'bind', src: clonePath, dst: clonePath });
   });
@@ -522,7 +533,7 @@ describe('buildBwrapPlan — write_scope sparse binds', () => {
   it('ro-binds the clone with zero write binds when writeScope is an empty array (the code_review shape)', () => {
     const plan = buildBwrapPlan({ clonePath, writeScope: [], command: ['pi'] });
     expect(plan.bwrapArgs).toEqual([
-      '--ro-bind', '/', '/',
+      ...expectedSystemRootArgs(),
       '--proc', '/proc',
       '--dev', '/dev',
       '--tmpfs', '/tmp',
@@ -543,7 +554,7 @@ describe('buildBwrapPlan — data mounts', () => {
   it('ro data mount produces --ro-bind, reflected in both bwrapArgs and mounts', () => {
     const plan = buildBwrapPlan({ clonePath, dataMounts: ['ro:/data/ref'], command: ['pi'] });
     expect(plan.bwrapArgs).toEqual([
-      '--ro-bind', '/', '/',
+      ...expectedSystemRootArgs(),
       '--proc', '/proc',
       '--dev', '/dev',
       '--tmpfs', '/tmp',
@@ -560,7 +571,7 @@ describe('buildBwrapPlan — data mounts', () => {
   it('rw data mount produces --bind, reflected in both bwrapArgs and mounts', () => {
     const plan = buildBwrapPlan({ clonePath, dataMounts: ['rw:/tmp/scratch'], command: ['pi'] });
     expect(plan.bwrapArgs).toEqual([
-      '--ro-bind', '/', '/',
+      ...expectedSystemRootArgs(),
       '--proc', '/proc',
       '--dev', '/dev',
       '--tmpfs', '/tmp',
@@ -577,7 +588,7 @@ describe('buildBwrapPlan — data mounts', () => {
   it('skips malformed data_mounts entries silently, same as buildJailArgs', () => {
     const plan = buildBwrapPlan({ clonePath, dataMounts: ['garbage', 'ro:/data/ref'], command: ['pi'] });
     expect(plan.bwrapArgs).toEqual([
-      '--ro-bind', '/', '/',
+      ...expectedSystemRootArgs(),
       '--proc', '/proc',
       '--dev', '/dev',
       '--tmpfs', '/tmp',
@@ -599,7 +610,7 @@ describe('buildBwrapPlan — wiki read axis (T25/D19)', () => {
   it('tracked + implement: masks wiki with --tmpfs', () => {
     const plan = buildBwrapPlan({ clonePath, wikiShape: 'tracked', mode: 'implement', command: ['pi'] });
     expect(plan.bwrapArgs).toEqual([
-      '--ro-bind', '/', '/',
+      ...expectedSystemRootArgs(),
       '--proc', '/proc',
       '--dev', '/dev',
       '--tmpfs', '/tmp',
@@ -615,8 +626,8 @@ describe('buildBwrapPlan — wiki read axis (T25/D19)', () => {
   it('tracked + redteam: no wiki mask — wiki stays visible as part of the clone', () => {
     const plan = buildBwrapPlan({ clonePath, wikiShape: 'tracked', mode: 'redteam', command: ['pi'] });
     expect(plan.bwrapArgs).not.toContain(`${clonePath}/wiki`);
-    // Only the mandatory root ro-bind is present — no wiki mask was added.
-    expect(plan.mounts.filter((m) => m.kind === 'ro-bind')).toHaveLength(1);
+    // No exact ro-bind is present (system roots are ro-bind-try, DEC-0011) — no wiki mask was added.
+    expect(plan.mounts.filter((m) => m.kind === 'ro-bind')).toHaveLength(0);
   });
 
   it('nested-private + research with motherWikiPath: ro-binds the mother wiki into the clone', () => {
@@ -629,7 +640,7 @@ describe('buildBwrapPlan — wiki read axis (T25/D19)', () => {
       command: ['pi'],
     });
     expect(plan.bwrapArgs).toEqual([
-      '--ro-bind', '/', '/',
+      ...expectedSystemRootArgs(),
       '--proc', '/proc',
       '--dev', '/dev',
       '--tmpfs', '/tmp',
@@ -645,8 +656,8 @@ describe('buildBwrapPlan — wiki read axis (T25/D19)', () => {
   it('nested-private + redteam WITHOUT motherWikiPath: no wiki bind — nothing to bind against', () => {
     const plan = buildBwrapPlan({ clonePath, wikiShape: 'nested-private', mode: 'redteam', command: ['pi'] });
     expect(plan.mounts.filter((m) => m.dst === `${clonePath}/wiki`)).toHaveLength(0);
-    // Only the mandatory root ro-bind is present.
-    expect(plan.mounts.filter((m) => m.kind === 'ro-bind')).toHaveLength(1);
+    // No exact ro-bind is present (system roots are ro-bind-try, DEC-0011).
+    expect(plan.mounts.filter((m) => m.kind === 'ro-bind')).toHaveLength(0);
   });
 });
 
@@ -669,5 +680,160 @@ describe('buildBwrapPlan — no trailing bare "--"', () => {
     expect(plan.bwrapArgs.lastIndexOf('--')).toBe(dashIdx);
     expect(plan.bwrapArgs.slice(dashIdx + 1)).toEqual(command);
     expect(plan.bwrapArgs[plan.bwrapArgs.length - 1]).not.toBe('--');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// DEC-0011 visibility wall assertions (WK-0103) — permanent enforcement,
+// every build, forever (s6c0-rulings.md Wave 1 item 4 / WK-0103 acceptance
+// criteria: "no `/` bind in any emitted plan; `$HOME` not present except the
+// family's auth leaf; auth leaf exact path + correct ro/rw per mode;
+// declared data_mounts present, undeclared paths absent").
+//
+// jail.ts itself has no notion of "family" — systemRoots, toolchainPaths,
+// and authLeafBinds are opts a family-aware CALLER (pipeline.ts, Wave 2)
+// populates. These tests build the opts each family WOULD receive, per the
+// evidence captured for this wave: pi/codex/claude CLIs live under
+// ~/.npm-global-wsl/ (under $HOME — needs an exact toolchainPaths leaf);
+// claude's auth leaf is ~/.claude/.credentials.json (rw for implement, ro
+// for advisory modes, e.g. code_review); codex's is ~/.codex/auth.json
+// (ro); Pi needs no auth leaf at all (its API key is env-injected and
+// PI_CODING_AGENT_DIR lives on the jail's own /tmp tmpfs) — and assert
+// buildJailArgs/buildBwrapPlan render them correctly.
+// ---------------------------------------------------------------------------
+
+describe('DEC-0011 visibility wall assertions (WK-0103)', () => {
+  const HOME = '/home/testuser';
+  type Family = 'pi' | 'codex' | 'claude';
+  const families: Family[] = ['pi', 'codex', 'claude'];
+
+  /** The toolchain + auth-leaf opts a family-aware caller would pass for `mode`. */
+  function familyOpts(family: Family, mode: string): JailOpts {
+    const toolchainPaths = [`${HOME}/.npm-global-wsl/bin/${family}`];
+    if (family === 'claude') {
+      return {
+        clonePath,
+        mode,
+        toolchainPaths,
+        authLeafBinds: [{ path: `${HOME}/.claude/.credentials.json`, access: mode === 'implement' ? 'rw' : 'ro' }],
+      };
+    }
+    if (family === 'codex') {
+      return {
+        clonePath,
+        mode,
+        toolchainPaths,
+        authLeafBinds: [{ path: `${HOME}/.codex/auth.json`, access: 'ro' }],
+      };
+    }
+    // pi: no auth leaf at all — API key is env-injected, PI_CODING_AGENT_DIR lives on the jail's own tmpfs.
+    return { clonePath, mode, toolchainPaths };
+  }
+
+  it('1. no plan for any family contains a whole-root "--ro-bind / /" bind', () => {
+    for (const family of families) {
+      const { argv } = buildJailArgs(familyOpts(family, 'implement'));
+      let sawWholeRootBind = false;
+      for (let i = 0; i + 2 < argv.length; i++) {
+        if (argv[i] === '--ro-bind' && argv[i + 1] === '/' && argv[i + 2] === '/') sawWholeRootBind = true;
+      }
+      expect(sawWholeRootBind).toBe(false);
+    }
+  });
+
+  it('2. no $HOME directory bind exists for any family — only the exact declared auth leaf', () => {
+    for (const family of families) {
+      // Auth-leaf-only fixture (no toolchainPaths) isolates the property under
+      // test: $HOME is visible ONLY through the declared auth leaf, nothing
+      // broader (toolchain-leaf exemption is proven separately by test 4).
+      const opts: JailOpts =
+        family === 'claude'
+          ? { clonePath, mode: 'implement', authLeafBinds: [{ path: `${HOME}/.claude/.credentials.json`, access: 'rw' }] }
+          : family === 'codex'
+            ? { clonePath, mode: 'implement', authLeafBinds: [{ path: `${HOME}/.codex/auth.json`, access: 'ro' }] }
+            : { clonePath, mode: 'implement' }; // pi: no auth leaf binds at all
+
+      const { mounts } = buildBwrapPlan({ ...opts, command: ['agent'] });
+      const authLeafPaths = new Set((opts.authLeafBinds ?? []).map((l) => l.path));
+      const homeSrcs = mounts
+        .map((m) => m.src)
+        .filter((src): src is string => typeof src === 'string' && src.startsWith(HOME));
+
+      if (family === 'pi') {
+        expect(homeSrcs).toHaveLength(0);
+      }
+      for (const src of homeSrcs) {
+        expect(authLeafPaths.has(src)).toBe(true);
+      }
+    }
+  });
+
+  describe('3. auth leaf binds: exact path + correct access per family/mode', () => {
+    it('claude implement: ~/.claude/.credentials.json is writable', () => {
+      const path = `${HOME}/.claude/.credentials.json`;
+      const plan = buildBwrapPlan({
+        clonePath,
+        mode: 'implement',
+        authLeafBinds: [{ path, access: 'rw' }],
+        command: ['claude'],
+      });
+      expect(plan.mounts).toEqual(expect.arrayContaining([{ kind: 'bind', src: path, dst: path }]));
+    });
+
+    it('claude advisory (code_review): ~/.claude/.credentials.json is read-only', () => {
+      const path = `${HOME}/.claude/.credentials.json`;
+      const plan = buildBwrapPlan({
+        clonePath,
+        mode: 'code_review',
+        authLeafBinds: [{ path, access: 'ro' }],
+        command: ['claude'],
+      });
+      expect(plan.mounts).toEqual(expect.arrayContaining([{ kind: 'ro-bind', src: path, dst: path }]));
+    });
+
+    it('codex: ~/.codex/auth.json is read-only', () => {
+      const path = `${HOME}/.codex/auth.json`;
+      const plan = buildBwrapPlan({
+        clonePath,
+        mode: 'implement',
+        authLeafBinds: [{ path, access: 'ro' }],
+        command: ['codex'],
+      });
+      expect(plan.mounts).toEqual(expect.arrayContaining([{ kind: 'ro-bind', src: path, dst: path }]));
+    });
+
+    it('pi: no auth leaf binds at all', () => {
+      const plan = buildBwrapPlan({ clonePath, mode: 'implement', command: ['pi', '-p'] });
+      const homeMounts = plan.mounts.filter((m) => m.src !== undefined && m.src.startsWith(HOME));
+      expect(homeMounts).toHaveLength(0);
+    });
+  });
+
+  it('4. toolchain paths are bound --ro-bind-try, as exact leaves', () => {
+    const toolchainPaths = [
+      `${HOME}/.npm-global-wsl/bin/pi`,
+      `${HOME}/.npm-global-wsl/lib/node_modules/pi-agent/index.js`,
+    ];
+
+    const { argv } = buildJailArgs({ clonePath, toolchainPaths });
+    for (const p of toolchainPaths) {
+      const idx = argv.indexOf(p);
+      expect(idx).toBeGreaterThan(0);
+      expect(argv[idx - 1]).toBe('--ro-bind-try');
+    }
+
+    const plan = buildBwrapPlan({ clonePath, toolchainPaths, command: ['pi'] });
+    for (const p of toolchainPaths) {
+      expect(plan.mounts).toEqual(expect.arrayContaining([{ kind: 'ro-bind-try', src: p, dst: p }]));
+    }
+  });
+
+  it('5. declared data_mounts are present; an undeclared path never appears anywhere in the plan', () => {
+    const declared = '/opt/central-envs/team-foo'; // e.g. an operator-declared conda env dir (s6c0-rulings.md ruling 6)
+    const undeclared = `${HOME}/.ssh/id_rsa`;
+
+    const { argv } = buildJailArgs({ clonePath, dataMounts: [`ro:${declared}`] });
+    expect(argv).toEqual(expect.arrayContaining(['--ro-bind', declared, declared]));
+    expect(argv).not.toContain(undeclared);
   });
 });
