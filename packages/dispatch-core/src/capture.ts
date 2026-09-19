@@ -20,6 +20,7 @@ import { fail, ok } from './errors.js';
 import type { DeliveryOutcome } from './delivery.js';
 import type { BackendFingerprint } from './model-registry.js';
 import type { RecoveryBlockEvidence, RecoveryBlockPayload } from './recovery-block.js';
+import type { PiCompaction } from './adapters/pi.js';
 
 export interface CaptureOpts {
   /** Windows path to the run dir */
@@ -30,6 +31,8 @@ export interface CaptureOpts {
   delivery: DeliveryOutcome;
   /** Pi adapter result (usage, outcome) */
   piResult?: { outcome: string; usage: { totalTokens: number; costUsd: number } };
+  /** Compaction statistics from parsePiOutput (T33 Phase 3). */
+  compaction?: PiCompaction;
   /** Model used */
   model?: string;
   /** Isolation backend */
@@ -324,6 +327,11 @@ export async function writeResponseDoc(opts: CaptureOpts): Promise<DispatchResul
     `changed_files: ${changedFilesYaml}`,
     `credentials_granted: ${credentialsGrantedYaml}`,
   ];
+  if (opts.compaction && opts.compaction.total > 0) {
+    frontmatterLines.push(`compaction_total: ${opts.compaction.total}`);
+    frontmatterLines.push(`compaction_succeeded: ${opts.compaction.succeeded}`);
+    frontmatterLines.push(`compaction_failed: ${opts.compaction.failed}`);
+  }
   if (verdict.reason) frontmatterLines.push(`reason: ${verdict.reason}`);
   // Resolved-value provenance (S3 ruling 8): stamped only when the caller has
   // them (e.g. never for the delivery-gate refusal callers, which pass no
@@ -352,6 +360,13 @@ export async function writeResponseDoc(opts: CaptureOpts): Promise<DispatchResul
     formatWorkerReportSection(opts.lastAssistantText),
     '',
   ];
+  if (opts.compaction && opts.compaction.total > 0) {
+    bodyLines.push(
+      '## Compaction',
+      `${opts.compaction.total} compaction events: ${opts.compaction.succeeded} succeeded, ${opts.compaction.failed} failed.`,
+      '',
+    );
+  }
   if (opts.recoveryEvidence) {
     bodyLines.push(...formatRecoveryBlockSection(opts.recoveryEvidence));
   }
@@ -400,6 +415,11 @@ export function buildProvenanceWriteBack(opts: CaptureOpts): ProvenanceWriteBack
   if (opts.backend) fields.backend = opts.backend;
   if (opts.piVersion) fields.pi_version = opts.piVersion;
   if (opts.backendFingerprint) fields.backend_fingerprint = formatBackendFingerprint(opts.backendFingerprint);
+  if (opts.compaction && opts.compaction.total > 0) {
+    fields.compaction_total = String(opts.compaction.total);
+    fields.compaction_succeeded = String(opts.compaction.succeeded);
+    fields.compaction_failed = String(opts.compaction.failed);
+  }
 
   return { fields };
 }
