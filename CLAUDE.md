@@ -36,8 +36,8 @@ the initial retrieval pass.
 - Dispatch: multi-agent handoff protocol — author HOs (`create-handoff`), dispatch workers
   (Pi/codex/claude in bwrap jail), capture results, review, merge. The dispatch MCP server
   instructions carry the full orchestration recipe (dispatch loop, polling, kind routing,
-  fix-up budget, merge/cleanup). Prefer `kb-dispatch` MCP tools; CLI fallback
-  `npm run dispatch -- …`.
+  fix-up budget, merge/cleanup, wiki-update-after-completion). Prefer `kb-dispatch` MCP
+  tools; CLI fallback `npm run dispatch -- …`.
 - Graph: kb CLI (`npm run graph -- --dir <this repo>`).
 - Dashboard: `npm run dashboard -- <ID> --dir <this repo>` generates a self-contained HTML tracker
   for PLN, IN, or WK-set records. Output: `wiki/dashboard/<ID>.html`. See `docs/dashboard.md`.
