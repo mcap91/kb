@@ -45,6 +45,7 @@ function makeProfilesConfig(profiles: Record<string, ProfileEntry> = {}): Profil
 
 function makeBackend(overrides: Partial<BackendEntry> = {}): BackendEntry {
   return {
+    family: 'pi' as const,
     base_url: 'https://openrouter.ai/api/v1',
     api_key_env: null,
     secrets_file: null,

@@ -44,7 +44,7 @@ to configure models and backends for your repository.
 | File | Purpose | Blank default |
 |------|---------|---------------|
 | \`models.json\` | Model slug → available backends + provider model_id | \`{}\` |
-| \`backends.json\` | Backend name → base_url, api_key_env, secrets_file | \`{}\` |
+| \`backends.json\` | Backend name → family, base_url, api_key_env, secrets_file | \`{}\` |
 | \`profiles.json\` | Credential profiles (schema_version 1, inject: {VAR: path}) | \`{"schema_version": 1}\` |
 
 ## Example models.json
@@ -61,14 +61,23 @@ to configure models and backends for your repository.
 
 ## Example backends.json
 
+Every entry needs a \`family\` (\`"pi"\` | \`"codex"\` | \`"claude"\`) naming which adapter
+handles it. Set \`api_key_env\` (paired with \`secrets_file\`) to inject an API key, or
+leave both \`null\` to use the CLI's own authentication (subscription seat, SSO).
+\`base_url\` may be \`null\` too — for a SaaS backend the CLI reaches on its own (the
+common case for codex/claude); set it only to point at a custom endpoint (Azure
+OpenAI, a proxy, a local Ollama/vLLM server).
+
 \`\`\`json
 {
   "openrouter": {
+    "family": "pi",
     "base_url": "https://openrouter.ai/api/v1",
     "api_key_env": "OPENROUTER_API_KEY",
     "secrets_file": "/home/user/.config/kb-dispatch/secrets.env"
   },
   "ollama": {
+    "family": "pi",
     "base_url": "http://localhost:11434/v1",
     "api_key_env": null,
     "secrets_file": null

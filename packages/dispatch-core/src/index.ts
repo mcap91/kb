@@ -193,6 +193,23 @@ export { assemblePrompt } from './assemble.js';
 export type { PiModelsJson, PiInvocation, PiUsage, PiResult } from './adapters/pi.js';
 export { buildModelsJson, buildInvocation, parsePiOutput } from './adapters/pi.js';
 
+// Codex adapter (facts-only; D10 / DEC-0009). NOTE: codex.ts's own build
+// function is named `buildInvocation` (mirrors pi.ts's naming exactly), so
+// it is re-exported here under `buildCodexInvocation` — re-exporting two
+// different bindings under the same bare name from this barrel is a
+// duplicate-identifier compile error. `parseCodexOutput` has no such
+// collision and keeps its own name.
+export type { CodexInvocation, CodexUsage, CodexResult } from './adapters/codex.js';
+export { buildInvocation as buildCodexInvocation, parseCodexOutput } from './adapters/codex.js';
+
+// Claude adapter (facts-only; D10 / DEC-0009). Same collision as codex.ts:
+// claude.ts's own build function is also named `buildInvocation` (mirrors
+// pi.ts's naming exactly), so it is re-exported here under
+// `buildClaudeInvocation`. `parseClaudeOutput` has no such collision and
+// keeps its own name.
+export type { ClaudeInvocation, ClaudeUsage, ClaudeResult } from './adapters/claude.js';
+export { buildInvocation as buildClaudeInvocation, parseClaudeOutput } from './adapters/claude.js';
+
 // Direct bash execution (D6 Phase 2 — replaces wsl2.ts's execViaWsl2)
 export type { ExecBashOpts, ExecBashResult } from './exec-direct.js';
 export { execBash } from './exec-direct.js';
@@ -244,7 +261,7 @@ export { launchDispatchBackground } from './dispatch-background.js';
 // profiles.json loaders + types
 // ---------------------------------------------------------------------------
 
-export type { BackendEntry, ModelTableEntry, ProfileEntry, ProfilesConfig, RepoDispatchConfig } from './repo-config.js';
+export type { BackendEntry, BackendFamily, ModelTableEntry, ProfileEntry, ProfilesConfig, RepoDispatchConfig } from './repo-config.js';
 export { loadModelsTable, loadBackendsTable, loadProfilesConfig } from './repo-config.js';
 
 // ---------------------------------------------------------------------------

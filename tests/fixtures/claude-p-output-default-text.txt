@@ -1,0 +1,1 @@
+The write to `src/hello.mjs` needs your approval — please grant permission when prompted so I can create the file.

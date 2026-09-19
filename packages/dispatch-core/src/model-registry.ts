@@ -13,6 +13,7 @@ import { parse, lt, gt } from 'semver';
 
 import type { DispatchResult } from './errors.js';
 import { fail, ok } from './errors.js';
+import type { BackendFamily } from './repo-config.js';
 import { loadModelsTable, loadBackendsTable } from './repo-config.js';
 
 // ---------------------------------------------------------------------------
@@ -100,8 +101,11 @@ export function resolveModel(registry: ModelRegistry, alias: string): DispatchRe
 export interface ResolvedModel {
   slug: string;
   backend: string;
+  /** Which adapter handles this backend (threaded from backends.json's `family`; s3-rulings.md ruling 1 two-table config). */
+  family: BackendFamily;
   modelId: string;
-  baseUrl: string;
+  /** null for SaaS backends (codex/claude) whose CLIs connect directly; a real endpoint is required for the "pi" family (enforced below). */
+  baseUrl: string | null;
   apiKeyEnv: string | null;
   secretsFile: string | null;
   availableOn: string[];
@@ -171,6 +175,20 @@ export async function resolveModelFromConfig(
     );
   }
 
+  // A null base_url means the family's own CLI reaches its SaaS provider
+  // directly (codex/claude — repo-config.ts's BackendEntry doc comment).
+  // Only the "pi" pipeline requires a real endpoint (buildPiBaseUrl in
+  // pipeline.ts, which calls `new URL()` on it) — refuse here, loudly,
+  // rather than let a null base_url reach that call unchecked. codex/claude
+  // backends resolve through with `baseUrl: null` (T33 family-aware pipeline).
+  if (backendEntry.base_url === null && backendEntry.family === 'pi') {
+    return fail(
+      'BAD_RECORD',
+      `Backend "${backend}" in backends.json has no base_url configured; the "pi" family requires one.`,
+      { backend },
+    );
+  }
+
   const contextWindow = backendEntry.serving?.context_window ?? DEFAULT_CONTEXT_WINDOW;
   if (contextWindow < MIN_CONTEXT_WINDOW) {
     return fail(
@@ -183,6 +201,7 @@ export async function resolveModelFromConfig(
   return ok({
     slug,
     backend,
+    family: backendEntry.family,
     modelId: modelEntry.model_id,
     baseUrl: backendEntry.base_url,
     apiKeyEnv: backendEntry.api_key_env,
@@ -298,12 +317,17 @@ function detectBackendKind(resolvedModel: ResolvedModel): BackendKind {
  * to probe and is stamped `"unknown"` directly.
  */
 export function buildFingerprintFragment(resolvedModel: ResolvedModel): string[] {
-  const kind = detectBackendKind(resolvedModel);
-  const rootUrl = stripV1Suffix(resolvedModel.baseUrl);
+  // T33: codex/claude resolve with baseUrl: null (SaaS backends whose CLIs
+  // connect directly) — there is no endpoint to probe or extract a hostname
+  // from, so both fall back the same way `kind === 'other'` already does for
+  // un-probed backend kinds below; `_FP_HOST` falls back to the backend name.
+  const { baseUrl } = resolvedModel;
+  const kind = baseUrl !== null ? detectBackendKind(resolvedModel) : 'other';
+  const rootUrl = baseUrl !== null ? stripV1Suffix(baseUrl) : '';
 
   const lines: string[] = [
     '# Backend fingerprint (best-effort, never gating; s3 ruling 8)',
-    `_FP_HOST=${shQuote(extractHostname(resolvedModel.baseUrl))}`,
+    `_FP_HOST=${shQuote(baseUrl !== null ? extractHostname(baseUrl) : resolvedModel.backend)}`,
     `_FP_MODEL=${shQuote(resolvedModel.modelId)}`,
   ];
 

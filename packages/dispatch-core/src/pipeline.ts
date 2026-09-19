@@ -28,7 +28,7 @@ import { spawn } from 'node:child_process';
 import { closeSync, existsSync, openSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { join, relative, resolve } from 'node:path';
 
 import type { DispatchResult } from './errors.js';
 import { ok, fail } from './errors.js';
@@ -44,8 +44,18 @@ import {
 } from './model-registry.js';
 import { assemblePrompt } from './assemble.js';
 import { buildInvocation, parsePiOutput } from './adapters/pi.js';
+import { buildInvocation as buildCodexInvocation, parseCodexOutput } from './adapters/codex.js';
+import { buildInvocation as buildClaudeInvocation, parseClaudeOutput } from './adapters/claude.js';
 import { execBash } from './exec-direct.js';
-import { buildBwrapPlan, classifyWikiShape, type WikiShape } from './jail.js';
+import {
+  buildBwrapPlan,
+  buildSecretMaskArgs,
+  classifyWikiShape,
+  deriveDirectoryScopedMounts,
+  deriveExactFileMounts,
+  type BwrapPlan,
+  type WikiShape,
+} from './jail.js';
 import { spawnIsolated, type SpawnResult } from './spawn-isolated.js';
 import { buildWorkerEnv } from './env-policy.js';
 import { createClone, removeClone, sweepOrphanClones } from './clone.js';
@@ -60,7 +70,7 @@ import {
 import { writeResponseDoc, buildProvenanceWriteBack } from './capture.js';
 import { runPreflight } from './preflight.js';
 import { getRunDir } from './paths.js';
-import { loadProfilesConfig } from './repo-config.js';
+import { loadProfilesConfig, type BackendFamily } from './repo-config.js';
 import {
   resolveCredentials,
   checkCredentialPolicy,
@@ -230,6 +240,94 @@ function spawnAndWait(
   });
 }
 
+/**
+ * Per-family write_scope override for the bwrap plan's mount list (D2 ruling
+ * 2, PLN-0004
+ * `wiki/plans/PLN-0004/execution/mid_project_review_rulings.md:149-201`):
+ * Pi's current sparse-bind recipe is unchanged (identity — every entry binds
+ * exactly as written); Claude widens file-shaped entries to their parent
+ * directory (atomic-rename write pattern needs write+exec on the containing
+ * dir, not just the target file); Codex classifies exact files vs
+ * directories explicitly (mechanically the same per-entry self-bind
+ * `buildBwrapPlan`'s own write_scope loop already applies to any entry —
+ * computed here via `deriveExactFileMounts` to mirror agent-chassis's
+ * separate Codex code path rather than relying on that coincidence). Returns
+ * clone-RELATIVE paths: `buildBwrapPlan`'s own `joinUnderClone` re-resolves
+ * relative entries onto `clonePath`, the same contract `handoff.write_scope`
+ * itself already satisfies, so this is a drop-in override either way.
+ */
+export function familyWriteScope(family: BackendFamily, writeScope: string[], clonePath: string): string[] {
+  if (family === 'claude') {
+    return deriveDirectoryScopedMounts(writeScope, clonePath).map((dir) => relative(clonePath, dir));
+  }
+  if (family === 'codex') {
+    const { writableDirs, writableFiles } = deriveExactFileMounts(writeScope, clonePath);
+    return [...writableDirs, ...writableFiles].map((p) => relative(clonePath, p));
+  }
+  return writeScope;
+}
+
+/**
+ * Build the Claude settings.json content injected at
+ * `/tmp/.claude-settings/settings.json` (D2 ruling 2 item 2, mirrors
+ * agent-chassis). Grants Claude's OWN internal permission engine an Edit
+ * allow-entry per write_scope path — the exact DECLARED grant
+ * (`Edit(<file>)` for a file entry, `Edit(<dir>/**)` for a directory entry,
+ * via `deriveExactFileMounts`'s unwidened classification), deliberately NOT
+ * the OS-level widened parent-directory mount `deriveDirectoryScopedMounts`
+ * computes for the bwrap bind (step 12d below): Claude's permission check
+ * runs before its own Edit tool ever reaches a `rename(2)` syscall, so the
+ * kernel-level widening reason doesn't apply at this layer. `Read` is
+ * granted over the whole clone (workers need to read outside write_scope for
+ * context) and `Bash` is allowed outright; the deny list closes off
+ * subagent/web tools entirely — `--permission-mode default` +
+ * `--settings <path>` (pipeline.ts's Claude branch) make this allow-list the
+ * SOLE grant. Advisory modes (non-implement) also deny Edit/Write/
+ * NotebookEdit outright — belt-and-suspenders alongside their already-empty
+ * write_scope (D2 ruling 2 item 3).
+ */
+export function buildClaudeSettingsJson(writeScope: string[], clonePath: string, mode: string): string {
+  const { writableDirs, writableFiles } = deriveExactFileMounts(writeScope, clonePath);
+  const editEntries = [
+    ...writableDirs.map((dir) => `Edit(${dir}/**)`),
+    ...writableFiles.map((file) => `Edit(${file})`),
+  ];
+  const deny = ['WebFetch', 'WebSearch', 'Task', 'Agent', 'Workflow', 'Skill', 'Monitor'];
+  if (mode !== 'implement') {
+    deny.push('Edit', 'Write', 'NotebookEdit');
+  }
+  const settings = {
+    permissions: {
+      allow: [`Read(//${clonePath}/**)`, 'Bash', ...editEntries],
+      deny,
+      disableBypassPermissionsMode: 'disable',
+    },
+  };
+  return JSON.stringify(settings, null, 2);
+}
+
+/**
+ * Layer D2 ruling 2 item 5's `.env`/`.claude/` secret-mask args onto an
+ * already-built bwrap plan, right before the `--chdir` terminator — bwrap
+ * resolves LATER binds over EARLIER ones (jail.ts's own recipe-order
+ * comment), so appending here means these masks win over anything
+ * `buildBwrapPlan`'s own write_scope/data_mount binds already laid down for
+ * the same clone. `buildBwrapPlan` itself stays unmodified (jail.ts's
+ * additive-only contract) — this is pipeline.ts's own post-processing step,
+ * applied uniformly to every family (Pi included: masking is dormant unless
+ * the clone actually carries a `.env`/`.claude/` — see `buildSecretMaskArgs`).
+ */
+export function withSecretMaskArgs(plan: BwrapPlan, clonePath: string): BwrapPlan {
+  const maskArgs = buildSecretMaskArgs(clonePath);
+  if (maskArgs.length === 0) return plan;
+  const chdirIdx = plan.bwrapArgs.indexOf('--chdir');
+  const insertAt = chdirIdx === -1 ? plan.bwrapArgs.length : chdirIdx;
+  return {
+    ...plan,
+    bwrapArgs: [...plan.bwrapArgs.slice(0, insertAt), ...maskArgs, ...plan.bwrapArgs.slice(insertAt)],
+  };
+}
+
 export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<DispatchResult2>> {
   const dir = resolve(opts.dir);
   const { verbose } = opts;
@@ -285,6 +383,7 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
   }
   const profilesConfig = profilesResult.ok ? profilesResult.data : { schemaVersion: 1 as const, profiles: {} };
   const credResult = resolveCredentials(handoff, profilesConfig, {
+    family: model.family,
     base_url: model.baseUrl,
     api_key_env: model.apiKeyEnv,
     secrets_file: model.secretsFile,
@@ -429,46 +528,122 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       }
     }
 
-    // 10. Build Pi invocation. workerDir (PI_CODING_AGENT_DIR) is a path
-    // INSIDE THE JAIL, not under clonePath: jail.ts's S5 recipe mounts a
-    // fresh --tmpfs /tmp (step 4 of the §11 recipe) that is always writable
-    // regardless of write_scope, unlike the rest of the ro-bound clone. A
-    // clone-relative path here (the old S0 shape) would put Pi's config dir
-    // outside write_scope and hit EROFS the moment Pi tries to write
-    // auth.json/models.json, since S5 made the clone read-only except for
-    // declared write_scope paths. The bwrap plan's `injectedFiles` (D6
-    // component 15) materializes models.json inside the jail for the same
-    // reason this path is chosen here: the tmpfs does not exist until bwrap
-    // itself mounts it, so nothing pre-jail can see or populate it.
-    const workerDir = '/tmp/.pi-agent';
+    // 10. Build the family-specific worker invocation (T33 family-aware
+    // pipeline). Each branch below produces two family-agnostic outputs
+    // consumed downstream: `execLines` (the bash line(s) appended to the
+    // in-jail inner script at step 12c) and `bwrapInjectedFiles` (bwrap
+    // `--file` materializations needed at plan-build time, step 12d).
+    // `workerDir` (PI_CODING_AGENT_DIR) is Pi-only and also feeds step 12b's
+    // worker env. Declared here (rather than `const` inside each branch) so
+    // they survive into the later, family-agnostic steps without needing
+    // per-callsite `model.family` re-narrowing.
+    let workerDir = '';
+    let execLines: string[] = [];
+    let bwrapInjectedFiles: Array<{ content: string; dest: string }> = [];
 
-    // S5 T26: the worker's own baseUrl now points at the in-jail relay
-    // loopback — the forwarder (started pre-jail, outside bwrap) is the only
-    // process that actually reaches the real endpoint; the worker itself runs
-    // under --unshare-net and can reach nothing but 127.0.0.1. This retires
-    // the {{WIN_HOST}} template from models.json entirely; WIN_HOST is still
-    // resolved below, but only to feed the tunnel's own targetUrl.
-    // S6a fix (gate-2 bug, 2026-09-13): the loopback origin alone is not
-    // enough — buildPiBaseUrl preserves model.baseUrl's own path (`/v1` for
-    // Ollama, `/api/v1` for OpenRouter, per init-dispatch.ts's backends.json
-    // README) so Pi's relative-to-baseUrl requests still land on the right
-    // route once the forwarder puts the real host back.
-    const piBaseUrl = buildPiBaseUrl(model.baseUrl);
-    // adapters/pi.ts still expects the legacy ModelEntry shape; build one from the
-    // resolved two-table model (S3 ruling 1) rather than widening the adapter's
-    // facts-only interface (D10) for a single-slice-old type.
-    const piModelEntry: ModelEntry = {
-      provider: model.backend,
-      modelId: model.modelId,
-      displayName: `${model.slug} (${model.backend})`,
-      baseUrl: piBaseUrl,
-      api: 'openai-completions',
-      apiKeyEnv: model.apiKeyEnv,
-      contextWindow: model.contextWindow,
-      maxTokens: 8192,
-      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    };
-    const invocation = buildInvocation(promptPath, piModelEntry, clonePath, workerDir);
+    if (model.family === 'pi') {
+      // workerDir is a path INSIDE THE JAIL, not under clonePath: jail.ts's
+      // S5 recipe mounts a fresh --tmpfs /tmp (step 4 of the §11 recipe) that
+      // is always writable regardless of write_scope, unlike the rest of the
+      // ro-bound clone. A clone-relative path here (the old S0 shape) would
+      // put Pi's config dir outside write_scope and hit EROFS the moment Pi
+      // tries to write auth.json/models.json, since S5 made the clone
+      // read-only except for declared write_scope paths. The bwrap plan's
+      // `injectedFiles` (D6 component 15) materializes models.json inside the
+      // jail for the same reason this path is chosen here: the tmpfs does
+      // not exist until bwrap itself mounts it, so nothing pre-jail can see
+      // or populate it.
+      workerDir = '/tmp/.pi-agent';
+
+      // S5 T26: the worker's own baseUrl now points at the in-jail relay
+      // loopback — the forwarder (started pre-jail, outside bwrap) is the only
+      // process that actually reaches the real endpoint; the worker itself runs
+      // under --unshare-net and can reach nothing but 127.0.0.1. This retires
+      // the {{WIN_HOST}} template from models.json entirely; WIN_HOST is still
+      // resolved below, but only to feed the tunnel's own targetUrl.
+      // S6a fix (gate-2 bug, 2026-09-13): the loopback origin alone is not
+      // enough — buildPiBaseUrl preserves model.baseUrl's own path (`/v1` for
+      // Ollama, `/api/v1` for OpenRouter, per init-dispatch.ts's backends.json
+      // README) so Pi's relative-to-baseUrl requests still land on the right
+      // route once the forwarder puts the real host back.
+      //
+      // model.baseUrl is `string | null` (ResolvedModel, model-registry.ts),
+      // but resolveModelFromConfig already refuses BAD_RECORD pre-spawn for
+      // any pi-family backend with a null base_url, so this is guaranteed
+      // non-null by this point — the check below only satisfies the type
+      // checker (never pass a possibly-null value into buildPiBaseUrl's own
+      // `new URL()` call).
+      if (model.baseUrl === null) {
+        return fail(
+          'PIPELINE_FAILED',
+          `Model "${opts.model}" on backend "${opts.backend}" resolved with family "pi" but no base_url.`,
+        );
+      }
+      const piBaseUrl = buildPiBaseUrl(model.baseUrl);
+      // adapters/pi.ts still expects the legacy ModelEntry shape; build one from the
+      // resolved two-table model (S3 ruling 1) rather than widening the adapter's
+      // facts-only interface (D10) for a single-slice-old type.
+      const piModelEntry: ModelEntry = {
+        provider: model.backend,
+        modelId: model.modelId,
+        displayName: `${model.slug} (${model.backend})`,
+        baseUrl: piBaseUrl,
+        api: 'openai-completions',
+        apiKeyEnv: model.apiKeyEnv,
+        contextWindow: model.contextWindow,
+        maxTokens: 8192,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      };
+      const invocation = buildInvocation(promptPath, piModelEntry, clonePath, workerDir);
+      execLines = [`exec ${[invocation.cmd, ...invocation.args].map(shQuote).join(' ')}`];
+      bwrapInjectedFiles = [{ content: invocation.modelsJsonContent, dest: `${workerDir}/models.json` }];
+    } else if (model.family === 'codex') {
+      // codexOutputPath lives under the jail's writable /tmp tmpfs — same
+      // EROFS reasoning as Pi's workerDir above applies here: codex itself
+      // (running inside the jail) writes its `-o` mirror file, and `runDir`
+      // (a host path outside the clone) is only ro-bound into the jail.
+      // pipeline.ts never reads this file back (step 15 parses the captured
+      // stdout instead — same event data, per adapters/codex.ts's own doc
+      // comment), so its exact location only needs to be writable, not
+      // host-visible.
+      const codexOutputPath = '/tmp/codex-last-message.txt';
+      // D2 ruling 2: bwrap's exact-file kernel binds (deriveExactFileMounts,
+      // wired into the plan at step 12d below) are the real enforcement
+      // boundary for implement mode now — `danger-full-access` disables
+      // Codex's OWN sandbox so it doesn't double-restrict inside a jail
+      // that already confines it. Advisory modes carry no write_scope at
+      // all, so they keep Codex's own `read-only` sandbox as an extra layer.
+      const sandbox = handoff.mode === 'implement' ? 'danger-full-access' as const : 'read-only' as const;
+      // Built for shape/parity with the adapter's D10 contract (facts-only:
+      // "adapters may not... build shell strings elsewhere"). The actual exec
+      // line below is hand-built rather than `codexInvocation.args`, because
+      // that array embeds the full prompt TEXT inline — accurate as a fact
+      // report, but too large to splice verbatim into the generated bash
+      // script. The prompt is read from `promptPath` at container runtime
+      // instead, mirroring Pi's own `@promptFilePath` file-reference
+      // convention (adapters/pi.ts's buildInvocation).
+      buildCodexInvocation(assembled.data.text, model, clonePath, codexOutputPath, sandbox);
+      execLines = [
+        `PROMPT=$(cat ${shQuote(promptPath)})`,
+        `exec codex exec "$PROMPT" --sandbox ${sandbox} --json -o ${shQuote(codexOutputPath)} --model ${shQuote(model.modelId)}`,
+      ];
+    } else {
+      // Claude family (D2 ruling 2): a settings.json allow-list keyed off
+      // write_scope (buildClaudeSettingsJson) replaces the old blanket
+      // `acceptEdits` bypass — `--permission-mode default` makes that
+      // allow-list the SOLE grant. Same file-read rationale as the codex
+      // branch above for calling claude.ts's buildInvocation (shape/parity
+      // only; the actual exec line is hand-built to read the prompt from
+      // promptPath at container runtime).
+      const claudeSettingsPath = '/tmp/.claude-settings/settings.json';
+      const claudeSettingsContent = buildClaudeSettingsJson(handoff.write_scope, clonePath, handoff.mode);
+      buildClaudeInvocation(assembled.data.text, model, clonePath, claudeSettingsPath);
+      execLines = [
+        `PROMPT=$(cat ${shQuote(promptPath)})`,
+        `exec claude -p --output-format json --permission-mode default --settings ${shQuote(claudeSettingsPath)} --model ${shQuote(model.modelId)} -- "$PROMPT"`,
+      ];
+      bwrapInjectedFiles = [{ content: claudeSettingsContent, dest: claudeSettingsPath }];
+    }
 
     // 10b. Resolved tunnel target endpoint. D6/D3: the orchestrator IS the
     // Linux host now (no separate Windows host whose loopback could be
@@ -476,8 +651,15 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
     // same-host loopback like `http://localhost:11434/v1` — is already the
     // correct address to hand the forwarder. (Formerly resolved via a
     // WIN_HOST lookup on bwrap-wsl2 only; that tier and its lookup are
-    // retired post-D3 — see the D6 dead-code deletion list.)
-    const resolvedTargetUrl = model.baseUrl;
+    // retired post-D3 — see the D6 dead-code deletion list.) codex/claude
+    // backends resolve with `baseUrl: null` (their CLIs reach their SaaS
+    // provider directly — s3 two-table config, repo-config.ts's BackendEntry)
+    // — the forwarder still needs SOME targetUrl argument, but it is only
+    // dereferenced in web:false single-destination mode; codex/claude HOs run
+    // web:true (T33), where the forwarder's own destination policy is
+    // widened to allow all traffic (s5-rulings.md ruling 4) and this
+    // placeholder is never dereferenced.
+    const resolvedTargetUrl = model.baseUrl ?? 'https://api.placeholder.local';
 
     // 11. Tunnel config (T26/D21) — the socket/relay/log all live under the
     // clone / run dir (never inside enumerate/delivery's view: they are
@@ -519,18 +701,18 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
     const fingerprint = fingerprintExec.ok ? parseFingerprintOutput(fingerprintExec.data.stdout) : null;
 
     // 12b. Worker env (D6 component 9: env-policy deny-list as the base,
-    // credential/vars/PI_*/proxy vars layered on top — never the other way
+    // credential/vars/proxy vars layered on top — never the other way
     // around, so an operator's own ambient HTTP_PROXY can never silently
-    // survive into the jail alongside kb's relay address).
+    // survive into the jail alongside kb's relay address). PI_* vars are
+    // Pi-only (T33) — codex/claude have no equivalent config-dir/offline env
+    // contract.
     const credentialEnvResult = await resolveCredentialEnv(credResult.data);
     if (!credentialEnvResult.ok) return credentialEnvResult;
     const proxyUrl = `http://127.0.0.1:${TUNNEL_RELAY_PORT}`;
-    const workerEnv: Record<string, string> = {
+    const baseWorkerEnv: Record<string, string> = {
       ...buildWorkerEnv({}),
       ...credentialEnvResult.data,
       ...parseHandoffVarsEnv(handoff.vars),
-      PI_CODING_AGENT_DIR: workerDir,
-      PI_OFFLINE: '1',
       HTTP_PROXY: proxyUrl,
       HTTPS_PROXY: proxyUrl,
       http_proxy: proxyUrl,
@@ -538,12 +720,16 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       NO_PROXY: '127.0.0.1,localhost',
       no_proxy: '127.0.0.1,localhost',
     };
+    const workerEnv: Record<string, string> = model.family === 'pi'
+      ? { ...baseWorkerEnv, PI_CODING_AGENT_DIR: workerDir, PI_OFFLINE: '1' }
+      : { ...baseWorkerEnv };
 
     // 12c. In-jail command wrapper: bring lo up (a fresh netns starts with it
     // down), start the relay, run `npm rebuild` under containment when a
     // lockfile is present (F12 fix, WK-0089: no `|| true` — `set -e` makes a
     // rebuild failure fail the whole command), then `exec` the worker so its
-    // own exit code/signal becomes bwrap's.
+    // own exit code/signal becomes bwrap's. The exec line(s) themselves are
+    // `execLines`, built per-family at step 10 above.
     const lockfilePath = join(clonePath, 'package-lock.json');
     const hasLockfile = existsSync(lockfilePath);
     const innerScript = [
@@ -552,16 +738,25 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       `node ${shQuote(relayScriptPath)} ${shQuote(String(TUNNEL_RELAY_PORT))} ${shQuote(tunnelSocketPath)} < /dev/null > /dev/null 2>&1 &`,
       'sleep 0.2',
       ...(hasLockfile ? ['npm rebuild'] : []),
-      `exec ${[invocation.cmd, ...invocation.args].map(shQuote).join(' ')}`,
+      ...execLines,
     ].join('\n');
 
     // 12d. Build the frozen bwrap plan (D6 ruling 7 components 1-4/15).
     // data_mounts still needs the suffix->prefix format bridge
     // (toDataMountPrefixForm) — independent of the (retired) Windows path
-    // conversion the old toJailDataMount also did.
-    const plan = buildBwrapPlan({
+    // conversion the old toJailDataMount also did. `bwrapInjectedFiles` is
+    // Pi's models.json or Claude's settings.json (step 10 above) — empty for
+    // codex. Per-family write mount shape via `familyWriteScope` (D2 ruling
+    // 2) — Pi's own shape is unchanged (identity passthrough); the post-hoc
+    // scope check at step 17 below still verifies the delivered diff against
+    // the UNWIDENED `handoff.write_scope`, so this override only widens the
+    // PREVENTIVE bwrap mount, never the actual granted scope. `.env`/
+    // `.claude/` secret masking (D2 ruling 2 item 5) is layered on
+    // afterward for every family via `withSecretMaskArgs` — `buildBwrapPlan`
+    // itself stays unmodified (jail.ts's additive-only contract).
+    const rawPlan = buildBwrapPlan({
       clonePath,
-      writeScope: handoff.write_scope,
+      writeScope: familyWriteScope(model.family, handoff.write_scope, clonePath),
       wikiShape,
       mode: handoff.mode,
       motherWikiPath,
@@ -571,8 +766,9 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       relayScriptPath,
       command: ['bash', '-c', innerScript],
       env: workerEnv,
-      injectedFiles: [{ content: invocation.modelsJsonContent, dest: `${workerDir}/models.json` }],
+      injectedFiles: bwrapInjectedFiles,
     });
+    const plan = withSecretMaskArgs(rawPlan, clonePath);
 
     // 12e. Pre-jail: lockfile-gated `npm ci --ignore-scripts` (s5-rulings.md
     // ruling 2), direct spawn, no bwrap — best-effort, never gating (only the
@@ -624,8 +820,13 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       );
     }
 
-    // 15. Parse Pi output (timedOut = watchdog fired; recoverable only if Pi
-    // wrote agent_end before the kill — the pi#4303 post-completion flavor).
+    // 15. Parse worker output (timedOut = watchdog fired). For Pi, recoverable
+    // only if Pi wrote agent_end before the kill — the pi#4303 post-completion
+    // flavor; the codex/claude adapters report no equivalent "already
+    // finished" signal, so a timeout there is always a hard failure. The
+    // stdout capture file is still named pi-output.log for every family
+    // (spawnIsolated's stdoutLogPath, wired at step 13/14 above) — only the
+    // parser consulted below differs.
     const piOutputLogPath = join(runDir, 'pi-output.log');
     let piOutputContent: string;
     try {
@@ -633,22 +834,66 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
     } catch (err) {
       return fail('PIPELINE_FAILED', `Failed to read pi-output.log: ${piOutputLogPath}`, err);
     }
-    const piParsed = parsePiOutput(piOutputContent);
-    if (!piParsed.ok) {
-      if (spawnData.timedOut) {
-        return fail('PIPELINE_FAILED', `Worker timed out after ${WORKER_TIMEOUT_SECS}s (watchdog fired; no parseable output).`, spawnData);
+
+    let workerOutcome: string;
+    let workerUsage: { totalTokens: number; costUsd: number };
+    let lastAssistantText: string;
+    let compaction = { total: 0, succeeded: 0, failed: 0 };
+
+    if (model.family === 'pi') {
+      const piParsed = parsePiOutput(piOutputContent);
+      if (!piParsed.ok) {
+        if (spawnData.timedOut) {
+          return fail('PIPELINE_FAILED', `Worker timed out after ${WORKER_TIMEOUT_SECS}s (watchdog fired; no parseable output).`, spawnData);
+        }
+        return piParsed;
       }
-      return piParsed;
-    }
 
-    if (spawnData.timedOut && !piParsed.data.hasAgentEnd) {
-      return fail('PIPELINE_FAILED', `Worker timed out after ${WORKER_TIMEOUT_SECS}s (watchdog fired).`, { timedOut: true, piOutcome: piParsed.data.outcome });
-    }
+      if (spawnData.timedOut && !piParsed.data.hasAgentEnd) {
+        return fail('PIPELINE_FAILED', `Worker timed out after ${WORKER_TIMEOUT_SECS}s (watchdog fired).`, { timedOut: true, piOutcome: piParsed.data.outcome });
+      }
 
-    if (spawnData.timedOut) {
-      logVerbose(verbose, 'watchdog reaped pi after completion (pi#4303 flavor)');
+      if (spawnData.timedOut) {
+        logVerbose(verbose, 'watchdog reaped pi after completion (pi#4303 flavor)');
+      }
+      logVerbose(verbose, `pi outcome: ${piParsed.data.outcome}`);
+
+      workerOutcome = piParsed.data.outcome;
+      workerUsage = piParsed.data.usage;
+      lastAssistantText = piParsed.data.lastAssistantText;
+      compaction = piParsed.data.compaction;
+    } else if (model.family === 'codex') {
+      if (spawnData.timedOut) {
+        return fail('PIPELINE_FAILED', `Worker timed out after ${WORKER_TIMEOUT_SECS}s (watchdog fired).`, spawnData);
+      }
+      const codexParsed = parseCodexOutput(piOutputContent);
+      if (!codexParsed.ok) return codexParsed;
+      logVerbose(verbose, `codex outcome: ${codexParsed.data.outcome}`);
+
+      workerOutcome = codexParsed.data.outcome;
+      // CodexUsage carries no cost figure (adapters/codex.ts module doc) —
+      // costUsd stays 0. capture.ts's usage shape ({totalTokens, costUsd}) is
+      // already family-agnostic, so no capture.ts change is needed here.
+      workerUsage = {
+        totalTokens: codexParsed.data.usage.inputTokens + codexParsed.data.usage.outputTokens,
+        costUsd: 0,
+      };
+      lastAssistantText = codexParsed.data.lastAssistantText;
+    } else {
+      if (spawnData.timedOut) {
+        return fail('PIPELINE_FAILED', `Worker timed out after ${WORKER_TIMEOUT_SECS}s (watchdog fired).`, spawnData);
+      }
+      const claudeParsed = parseClaudeOutput(piOutputContent);
+      if (!claudeParsed.ok) return claudeParsed;
+      logVerbose(verbose, `claude outcome: ${claudeParsed.data.outcome}`);
+
+      workerOutcome = claudeParsed.data.outcome;
+      workerUsage = {
+        totalTokens: claudeParsed.data.usage.inputTokens + claudeParsed.data.usage.outputTokens,
+        costUsd: claudeParsed.data.usage.costUsd,
+      };
+      lastAssistantText = claudeParsed.data.lastAssistantText;
     }
-    logVerbose(verbose, `pi outcome: ${piParsed.data.outcome}`);
 
     // 15b. Extract the kb-dispatch-recovery.v1 recovery block (D1 ruling 1,
     // mid_project_review_rulings.md; V4 note 3 role asymmetry). Transport is
@@ -663,7 +908,7 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
     // the block IS the deliverable) is enforced downstream in capture.ts's
     // `deriveVerdict`, not here.
     const recoveryEvidence: RecoveryBlockEvidence | undefined =
-      handoff.mode === 'research' ? undefined : extractRecoveryBlock(piParsed.data.lastAssistantText);
+      handoff.mode === 'research' ? undefined : extractRecoveryBlock(lastAssistantText);
     if (recoveryEvidence && !recoveryEvidence.valid) {
       logVerbose(verbose, `recovery block invalid: ${recoveryEvidence.diagnostics.map((d) => d.code).join(', ')}`);
     }
@@ -730,6 +975,20 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       // pattern-based scanSecrets() leg — it checks only the exact values
       // the worker was granted, not heuristic patterns, so it is fully
       // deterministic.)
+      //
+      // D2 ruling 2 item 3 (belt-and-suspenders): this IS the post-hoc half
+      // of scope enforcement — `enumerated`/`allChangedFiles` above already
+      // comes from `git diff`/`git status --porcelain` + `git ls-files
+      // --others` in the clone (delivery.ts's buildEnumerateScript /
+      // parseEnumerateOutput), `checkWriteScope` below checks every changed
+      // path against the UNWIDENED `handoff.write_scope` (exact or
+      // dir-prefix match), and a non-zero-exit or exec failure on the
+      // enumerate script already returns the failed DispatchResult above
+      // (fail-closed on git errors, never falls through to delivery). The
+      // per-family bwrap mounts built at step 12d (deriveDirectoryScopedMounts
+      // for Claude, deriveExactFileMounts for Codex) are the PREVENTIVE half;
+      // this is the backstop that catches anything they missed. No
+      // additional code needed here — both halves already existed/now exist.
       const scopeCheck = checkWriteScope(allChangedFiles, handoff.write_scope);
 
       if (!scopeCheck.ok) {
@@ -804,16 +1063,22 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       delivery = { status: 'no_changes' };
     }
 
-    // 20. Capture
+    // 20. Capture. `piResult`/`compaction`/`lastAssistantText` are
+    // capture.ts's pre-existing field names (CaptureOpts); their shapes
+    // ({outcome: string; usage: {totalTokens, costUsd}} and PiCompaction)
+    // are already family-agnostic, so the normalized codex/claude values
+    // computed at step 15 fit them unchanged — no capture.ts edit needed for
+    // this. (The `piResult`/`agent: 'pi'` NAMES are Pi-only leftovers — see
+    // the TODO at the provenance write-back call below.)
     const captureResult = await writeResponseDoc({
       runDir,
       handoff: { id: handoff.id, title: handoff.title, mode: handoff.mode },
       delivery,
-      piResult: { outcome: piParsed.data.outcome, usage: piParsed.data.usage },
-      compaction: piParsed.data.compaction,
+      piResult: { outcome: workerOutcome, usage: workerUsage },
+      compaction,
       model: canonicalModel,
       isolationBackend,
-      lastAssistantText: piParsed.data.lastAssistantText,
+      lastAssistantText,
       credentialsGranted: credResult.data.granted,
       recoveryEvidence,
       // Resolved-value provenance (S3 ruling 8): the real endpoint the tunnel
@@ -846,6 +1111,12 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
     // Write-back dirt rule (s1-rulings.md): dispatch writes the pair +
     // frontmatter but NEVER commits to the mother repo — this is file I/O
     // only. Best-effort, same as the canonical copy above.
+    // TODO(capture.ts): buildProvenanceWriteBack hardcodes fields.agent =
+    // 'pi' unconditionally in its own body (not a parameter) — now that
+    // codex/claude runs can reach here, HO provenance frontmatter will read
+    // "agent: pi" even for a codex/claude run. capture.ts needs an `agent`
+    // (or `family`) input threaded from model.family; out of scope here
+    // since capture.ts is not to be modified as part of this change.
     const provenance = buildProvenanceWriteBack({
       runDir,
       handoff: { id: handoff.id, title: handoff.title, mode: handoff.mode },
@@ -853,7 +1124,7 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       model: canonicalModel,
       isolationBackend,
       credentialsGranted: credResult.data.granted,
-      compaction: piParsed.data.compaction,
+      compaction,
       // Resolved-value provenance (S3 ruling 8): the real endpoint the tunnel
       // forwarder was configured to reach (resolvedTargetUrl === model.baseUrl
       // post-D3/D6 — there is no more WIN_HOST template to resolve).
