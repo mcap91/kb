@@ -9,8 +9,10 @@
  *   - The FORWARDER runs OUTSIDE bwrap, in WSL2 — it is the process that
  *     actually owns a network interface. It listens on a unix domain socket
  *     staged under the run dir (ext4) and relays HTTP traffic onward: on
- *     `web:false` ONLY to the run's one granted inference endpoint (every
- *     other destination is refused and logged); on `web:true` to anywhere
+ *     `web:false` ONLY to the run's granted endpoint SET (DEC-0011/WK-0104:
+ *     Pi = its one model endpoint; codex/claude = their vendor domain set;
+ *     plus any granted credential profile's endpoint set — every other
+ *     destination is refused and logged); on `web:true` to anywhere
  *     (ruling 4 — the flag itself is the grant). TLS to an `https://` target
  *     originates AT the forwarder; the hop across the socket is always plain
  *     HTTP — kernel-local memory, never a wire.
@@ -44,9 +46,14 @@
 export interface TunnelConfig {
   /** Unix socket path on ext4 (under run dir) */
   socketPath: string;
-  /** The real inference endpoint URL (e.g. 'http://172.26.0.1:11434/v1' or 'https://openrouter.ai/api/v1') */
+  /** The real inference endpoint URL — used for origin-form routing (Pi sends requests directly to this address via the relay). SaaS families use proxy protocol instead. */
   targetUrl: string;
-  /** web:true = open egress; web:false = single destination */
+  /** Allowed destination hostnames. Exact matches + *.suffix wildcards.
+   *  Pi = [targetUrl's hostname]. Codex/Claude = vendor domain set.
+   *  Credential endpoint sets are appended by the pipeline.
+   *  web:true short-circuits past this list. */
+  allowedHosts: string[];
+  /** web:true = open egress; web:false = allowlist-restricted (DEC-0011/WK-0104) */
   webEnabled: boolean;
   /** In-jail relay port (default 18787) */
   relayPort?: number;
@@ -111,7 +118,7 @@ export function buildTunnelScripts(config: TunnelConfig): TunnelScripts {
 // ever touches a real network interface for egress.
 //
 // Self-contained: Node.js built-ins only, no npm packages.
-// Usage: node forwarder.js <socketPath> <targetUrl> <webEnabled:true|false> <logPath>
+// Usage: node forwarder.js <socketPath> <targetUrl> <webEnabled:true|false> <logPath> <allowedHostsJson>
 
 const http = require('node:http');
 const https = require('node:https');
@@ -123,9 +130,10 @@ const SOCKET_PATH = process.argv[2];
 const TARGET_URL = process.argv[3];
 const WEB_ENABLED_ARG = process.argv[4];
 const LOG_PATH = process.argv[5];
+const ALLOWED_HOSTS_JSON = process.argv[6];
 
 if (!SOCKET_PATH || !TARGET_URL || !WEB_ENABLED_ARG || !LOG_PATH) {
-  console.error('usage: node forwarder.js <socketPath> <targetUrl> <webEnabled:true|false> <logPath>');
+  console.error('usage: node forwarder.js <socketPath> <targetUrl> <webEnabled:true|false> <logPath> <allowedHostsJson>');
   process.exit(1);
 }
 
@@ -133,6 +141,27 @@ const WEB_ENABLED = WEB_ENABLED_ARG === 'true';
 const TARGET = new URL(TARGET_URL);
 const TARGET_IS_TLS = TARGET.protocol === 'https:';
 const TARGET_PORT = Number(TARGET.port) || (TARGET_IS_TLS ? 443 : 80);
+
+// Allowed destination hostnames (DEC-0011/WK-0104): exact matches + *.suffix
+// wildcards, JSON-encoded by pipeline.ts (buildAllowedHosts) and passed as
+// argv[6]. Falls back to an empty allowlist on missing/malformed JSON — a
+// closed default, never an open one.
+const ALLOWED_HOSTS = (() => {
+  try { return JSON.parse(ALLOWED_HOSTS_JSON || '[]'); }
+  catch { return []; }
+})();
+
+function matchesAllowlist(hostname) {
+  for (const entry of ALLOWED_HOSTS) {
+    if (entry.startsWith('*.')) {
+      const suffix = entry.slice(1);
+      if (hostname.endsWith(suffix) || hostname === entry.slice(2)) return true;
+    } else {
+      if (hostname === entry) return true;
+    }
+  }
+  return false;
+}
 
 // Every attempted destination is logged, allowed or not — redteam forensics
 // (execution/s5-rulings.md ruling 1): timestamp, method, destination, verdict.
@@ -145,11 +174,18 @@ function logDestination(method, destination, allowed) {
   }
 }
 
-// web:false — single destination (the granted inference endpoint) only.
+// web:false — the granted endpoint set only (DEC-0011/WK-0104): Pi's one
+// model endpoint, or the SaaS family's vendor domain set, plus any granted
+// credential profile's endpoint set — all folded into ALLOWED_HOSTS by
+// pipeline.ts before spawn. Origin-form requests (no destination named at
+// all — Pi's baseUrl points straight at this forwarder) still resolve to
+// TARGET below, which the pipeline always includes in ALLOWED_HOSTS for the
+// "pi" family, so this check alone is sufficient — no separate TARGET
+// special-case is needed here.
 // web:true — open egress (ruling 4): the flag itself is the grant.
 function destinationAllowed(hostname, port) {
   if (WEB_ENABLED) return true;
-  return hostname === TARGET.hostname && port === TARGET_PORT;
+  return matchesAllowlist(hostname);
 }
 
 // Plain HTTP: handles an absolute-URI request line (a bash tool under
@@ -377,6 +413,7 @@ export function buildTunnelBashLines(config: TunnelConfig, runDirWsl: string): T
   const forwarderLogPath = `${runDirWsl}/forwarder.log`;
   const { forwarderScript, relayScript } = buildTunnelScripts(config);
   const webEnabledArg = config.webEnabled ? 'true' : 'false';
+  const allowedHostsJson = JSON.stringify(config.allowedHosts);
   const proxyUrl = `http://127.0.0.1:${relayPort}`;
 
   const preJailLines: string[] = [
@@ -389,7 +426,7 @@ export function buildTunnelBashLines(config: TunnelConfig, runDirWsl: string): T
     relayScript,
     'TUNNEL_RELAY_EOF',
     '',
-    `node ${shQuote(forwarderScriptPath)} ${shQuote(config.socketPath)} ${shQuote(config.targetUrl)} ${shQuote(webEnabledArg)} ${shQuote(logPath)} < /dev/null > ${shQuote(forwarderLogPath)} 2>&1 &`,
+    `node ${shQuote(forwarderScriptPath)} ${shQuote(config.socketPath)} ${shQuote(config.targetUrl)} ${shQuote(webEnabledArg)} ${shQuote(logPath)} ${shQuote(allowedHostsJson)} < /dev/null > ${shQuote(forwarderLogPath)} 2>&1 &`,
     'FORWARDER_PID=$!',
     '# brief sleep so the forwarder is bound before the jail (and its relay) starts',
     'sleep 0.3',

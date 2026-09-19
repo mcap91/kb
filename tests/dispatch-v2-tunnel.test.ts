@@ -15,6 +15,8 @@
  * suite, per the task's no-live-networking instruction.
  */
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 import {
   buildTunnelBashLines,
@@ -27,6 +29,7 @@ import type { TunnelConfig } from '../packages/dispatch-core/src/tunnel.js';
 const baseConfig: TunnelConfig = {
   socketPath: '/mnt/c/Users/test/.kb-dispatch/runs/HO-0001/RUN-1/tunnel.sock',
   targetUrl: 'http://172.26.0.1:11434/v1',
+  allowedHosts: ['172.26.0.1'],
   webEnabled: false,
 };
 
@@ -189,6 +192,78 @@ describe('buildTunnelScripts', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Allowlist matching (DEC-0011 ruling 2/3, WK-0104) — destinationAllowed()
+// widened from a single granted target to an allowlist SET (exact hostnames
+// + *.suffix wildcards): Pi's one model endpoint, a SaaS family's vendor
+// domain set, or a credential profile's endpoint set, all folded into one
+// ALLOWED_HOSTS array by pipeline.ts's buildAllowedHosts before spawn.
+// ---------------------------------------------------------------------------
+
+describe('allowlist matching in generated forwarder', () => {
+  it('forwarder script contains matchesAllowlist function', () => {
+    const config: TunnelConfig = {
+      socketPath: '/tmp/test.sock',
+      targetUrl: 'http://localhost:11434/v1',
+      allowedHosts: ['localhost', 'api.anthropic.com'],
+      webEnabled: false,
+    };
+    const { forwarderScript } = buildTunnelScripts(config);
+    expect(forwarderScript).toContain('matchesAllowlist');
+  });
+
+  it('forwarder script parses ALLOWED_HOSTS_JSON from argv[6]', () => {
+    const config: TunnelConfig = {
+      socketPath: '/tmp/test.sock',
+      targetUrl: 'http://localhost:11434/v1',
+      allowedHosts: ['localhost'],
+      webEnabled: false,
+    };
+    const { forwarderScript } = buildTunnelScripts(config);
+    expect(forwarderScript).toContain('process.argv[6]');
+    expect(forwarderScript).toContain('ALLOWED_HOSTS_JSON');
+  });
+
+  it('forwarder checks against allowlist instead of single target hostname', () => {
+    const config: TunnelConfig = {
+      socketPath: '/tmp/test.sock',
+      targetUrl: 'http://localhost:11434/v1',
+      allowedHosts: ['localhost'],
+      webEnabled: false,
+    };
+    const { forwarderScript } = buildTunnelScripts(config);
+    // Must NOT contain the old single-target check
+    expect(forwarderScript).not.toContain('hostname === TARGET.hostname && port === TARGET_PORT');
+    // Must contain the new allowlist check
+    expect(forwarderScript).toContain('matchesAllowlist(hostname)');
+  });
+
+  it('wildcard matching supports *.suffix entries', () => {
+    const config: TunnelConfig = {
+      socketPath: '/tmp/test.sock',
+      targetUrl: 'http://localhost:11434/v1',
+      allowedHosts: ['*.amazonaws.com'],
+      webEnabled: false,
+    };
+    const { forwarderScript } = buildTunnelScripts(config);
+    expect(forwarderScript).toContain("entry.startsWith('*.')");
+  });
+
+  it('falls back to an empty (closed) allowlist on malformed ALLOWED_HOSTS_JSON, never throws', () => {
+    // The forwarder script parses ALLOWED_HOSTS_JSON in a try/catch that
+    // degrades to '[]' -- a parse failure must never open the destination
+    // policy wide by accident (fail-closed, not fail-open).
+    const config: TunnelConfig = {
+      socketPath: '/tmp/test.sock',
+      targetUrl: 'http://localhost:11434/v1',
+      allowedHosts: ['localhost'],
+      webEnabled: false,
+    };
+    const { forwarderScript } = buildTunnelScripts(config);
+    expect(forwarderScript).toMatch(/catch\s*\{\s*return \[\];\s*\}/);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // buildTunnelBashLines
 // ---------------------------------------------------------------------------
 
@@ -218,6 +293,16 @@ describe('buildTunnelBashLines', () => {
     it('preJailLines passes web:false through to the forwarder argv', () => {
       const joined = lines.preJailLines.join('\n');
       expect(joined).toMatch(/node .*forwarder\.js[^\n]*'false'/);
+    });
+
+    it('preJailLines passes the JSON-encoded allowedHosts as a 5th forwarder argv (DEC-0011/WK-0104)', () => {
+      const joined = lines.preJailLines.join('\n');
+      const expectedJson = JSON.stringify(baseConfig.allowedHosts);
+      expect(joined).toContain(expectedJson);
+      // Ordering: socketPath, targetUrl, webEnabled, logPath, THEN allowedHostsJson.
+      const forwarderLine = lines.preJailLines.find((l) => l.trim().startsWith('node ') && l.includes('forwarder.js'));
+      expect(forwarderLine).toBeDefined();
+      expect(forwarderLine!.indexOf(expectedJson)).toBeGreaterThan(forwarderLine!.indexOf(baseConfig.targetUrl));
     });
 
     it('preJailLines exports all four proxy env var casings at the relay address', () => {
@@ -326,5 +411,27 @@ describe('buildTunnelBashLines', () => {
     expect(forwarderInvocation).toBeDefined();
     expect(forwarderInvocation).toContain(`'${baseConfig.socketPath}'`);
     expect(forwarderInvocation).toContain(`'${baseConfig.targetUrl}'`);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// DEC-0011 per-family forwarder policy assertions
+// ---------------------------------------------------------------------------
+
+describe('DEC-0011 per-family forwarder policy assertions', () => {
+  it('unshareNet is true for all families — no family-conditional bypass', () => {
+    // Structural assertion on the ONE call site that decides this: pipeline.ts
+    // passes a single unconditional `unshareNet: true` into buildBwrapPlan for
+    // every family (pi/codex/claude alike) -- there is no per-family ternary
+    // or bypass anywhere in the pipeline. buildJailArgs/buildBwrapPlan's own
+    // --unshare-net threading (opts.unshareNet -> '--unshare-net' argv) is
+    // already covered by dispatch-v2-jail.test.ts's "unshareNet:true adds
+    // --unshare-net..." -- that proves the plumbing works, not that pipeline.ts
+    // actually calls it with `true` for all families, which is what this test
+    // guards (DEC-0011 ruling 3 / WK-0104 AC 1: "no family-conditional bypass
+    // of the network namespace exists anywhere in the pipeline").
+    const pipelineSrc = readFileSync(join(process.cwd(), 'packages', 'dispatch-core', 'src', 'pipeline.ts'), 'utf8');
+    expect(pipelineSrc).toContain('unshareNet: true,');
+    expect(pipelineSrc).not.toMatch(/unshareNet:\s*(model\.family|family\s*===|handoff\.web|opts\.web)/);
   });
 });

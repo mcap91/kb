@@ -33,6 +33,10 @@ export interface CredentialResolution {
   /** The resolved backend's api_key_env (if any) — also injected script-side. */
   backendApiKeyEnv: string | null;
   backendSecretsFile: string | null;
+  /** Endpoint hostnames from all granted profiles' endpoints arrays (DEC-0011/WK-0104) —
+   *  appended to the forwarder's allowed destinations by pipeline.ts's buildAllowedHosts.
+   *  Always an array, never undefined, even when no credentials are granted. */
+  credentialEndpoints: string[];
 }
 
 export interface InjectionScriptLines {
@@ -74,6 +78,7 @@ export function resolveCredentials(
 ): DispatchResult<CredentialResolution> {
   const granted: string[] = [];
   const injections: CredentialResolution['injections'] = [];
+  const credentialEndpoints: string[] = [];
 
   for (const profileName of handoff.credentials) {
     const profile: ProfileEntry | undefined = profilesConfig.profiles[profileName];
@@ -88,6 +93,9 @@ export function resolveCredentials(
     for (const [varName, filePath] of Object.entries(profile.inject)) {
       injections.push({ profileName, varName, filePath });
     }
+    if (profile.endpoints) {
+      credentialEndpoints.push(...profile.endpoints);
+    }
   }
 
   return ok({
@@ -95,6 +103,7 @@ export function resolveCredentials(
     injections,
     backendApiKeyEnv: backend.api_key_env,
     backendSecretsFile: backend.secrets_file,
+    credentialEndpoints,
   });
 }
 

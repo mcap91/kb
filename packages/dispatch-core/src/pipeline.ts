@@ -87,6 +87,31 @@ import {
 import { probeBwrap, APPARMOR_REMEDIATION_TEXT, MISSING_BWRAP_TEXT } from './tier.js';
 import { extractRecoveryBlock, type RecoveryBlockEvidence } from './recovery-block.js';
 
+/**
+ * Claude vendor domain set (DEC-0011 ruling 2, WK-0104). Seed from Anthropic's
+ * published network-config. Telemetry excluded — CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
+ * is set in the worker env instead.
+ */
+const CLAUDE_VENDOR_HOSTS: readonly string[] = [
+  'api.anthropic.com',
+  'auth.anthropic.com',
+  'console.anthropic.com',
+  'claude.ai',
+];
+
+/**
+ * Codex vendor domain set (DEC-0011 ruling 2, WK-0104). Covers both API-key
+ * backend (api.openai.com) and ChatGPT-seat backend (chatgpt.com, auth.openai.com,
+ * ab.chatgpt.com). Evidence-gated: refine from the forwarder's denied-destination
+ * log on real runs.
+ */
+const CODEX_VENDOR_HOSTS: readonly string[] = [
+  'api.openai.com',
+  'auth.openai.com',
+  'chatgpt.com',
+  'ab.chatgpt.com',
+];
+
 const WORKER_TIMEOUT_SECS = 1800;
 const WORKER_TIMEOUT_MS = WORKER_TIMEOUT_SECS * 1000;
 
@@ -328,6 +353,125 @@ export function withSecretMaskArgs(plan: BwrapPlan, clonePath: string): BwrapPla
   };
 }
 
+/**
+ * Build the run's forwarder allowlist (DEC-0011 ruling 2/3, WK-0104): Pi's
+ * one model endpoint, or the SaaS family's vendor domain set (`CLAUDE_VENDOR_HOSTS`/
+ * `CODEX_VENDOR_HOSTS` above), unioned with every granted credential profile's
+ * `endpoints` set (`credResolution.credentialEndpoints` — credentials.ts's
+ * `resolveCredentials`). Pure/sync — never gates, never fails.
+ * @internal pipeline.ts internal — exported only for direct unit testing.
+ */
+export function buildAllowedHosts(
+  model: ResolvedModel,
+  credResolution: CredentialResolution,
+): string[] {
+  let familyHosts: string[];
+  if (model.family === 'pi') {
+    // Pi: single endpoint = target hostname
+    const hostname = model.baseUrl ? new URL(model.baseUrl).hostname : 'localhost';
+    familyHosts = [hostname];
+  } else if (model.family === 'claude') {
+    familyHosts = [...CLAUDE_VENDOR_HOSTS];
+  } else {
+    familyHosts = [...CODEX_VENDOR_HOSTS];
+  }
+  // Append credential endpoint sets (WK-0104 ruling 3)
+  return [...familyHosts, ...credResolution.credentialEndpoints];
+}
+
+/**
+ * Resolve the family's CLI toolchain paths living under $HOME, for the
+ * visibility wall's toolchain leaf binds (DEC-0011 ruling 1, WK-0103).
+ * Evidence-gated (AGENTS.md rule 23): probes the REAL binary location via
+ * `which`/`readlink -f`/`npm prefix -g` at dispatch time rather than
+ * hand-inventing a path. Best-effort — a probe failure (missing binary,
+ * non-$HOME install) yields fewer/no paths rather than failing the dispatch;
+ * jail.ts's `toolchainPaths` binds are `--ro-bind-try`, so an empty/
+ * incomplete list only narrows visibility, it never breaks the jail itself.
+ * @internal pipeline.ts internal — exported only for direct unit testing.
+ */
+export async function resolveToolchainPaths(family: BackendFamily): Promise<string[]> {
+  const paths: string[] = [];
+  const home = process.env.HOME ?? '';
+  if (!home) return paths;
+
+  // Resolve the family's CLI binary
+  const cliName = family === 'pi' ? 'pi' : family === 'codex' ? 'codex' : 'claude';
+  const whichResult = await execBash({ scriptContent: `which ${cliName} 2>/dev/null`, timeoutMs: 5000 });
+  if (whichResult.ok) {
+    const cliPath = whichResult.data.stdout.trim();
+    if (cliPath.startsWith(home)) {
+      // Resolve the real path (may be a symlink into node_modules)
+      const realResult = await execBash({ scriptContent: `readlink -f ${cliPath} 2>/dev/null`, timeoutMs: 5000 });
+      if (realResult.ok) {
+        const realPath = realResult.data.stdout.trim();
+        if (realPath.startsWith(home)) {
+          // Bind the npm package root (3 levels up from the binary)
+          // e.g. ~/.npm-global-wsl/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe
+          // → ~/.npm-global-wsl/ (the npm prefix)
+          const npmPrefixResult = await execBash({ scriptContent: 'npm prefix -g 2>/dev/null', timeoutMs: 5000 });
+          if (npmPrefixResult.ok) {
+            const prefix = npmPrefixResult.data.stdout.trim();
+            if (prefix.startsWith(home)) {
+              paths.push(prefix);
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // Also check if node itself is under $HOME (nvm setups)
+  const nodeResult = await execBash({ scriptContent: 'which node 2>/dev/null', timeoutMs: 5000 });
+  if (nodeResult.ok) {
+    const nodePath = nodeResult.data.stdout.trim();
+    if (nodePath.startsWith(home)) {
+      // readlink to get real path, bind its directory
+      const realResult = await execBash({ scriptContent: `readlink -f ${nodePath} 2>/dev/null`, timeoutMs: 5000 });
+      if (realResult.ok) {
+        const realDir = realResult.data.stdout.trim().replace(/\/[^/]+$/, '');
+        if (realDir.startsWith(home)) {
+          paths.push(realDir);
+        }
+      }
+    }
+  }
+
+  return [...new Set(paths)];
+}
+
+/**
+ * Per-family auth leaf binds — the ONLY $HOME paths let through the
+ * visibility wall (DEC-0011 ruling 1, WK-0103). Claude's credentials file
+ * gets rw for implement (token refresh persists mid-run) and ro for advisory
+ * modes (code_review/redteam/research — no write authority to begin with);
+ * Codex's auth.json + config.toml are always ro (codex itself only reads
+ * them); Pi needs no auth leaf (its API key is env-injected and its config
+ * dir lives on the jail's own tmpfs, never under $HOME).
+ * @internal pipeline.ts internal — exported only for direct unit testing.
+ */
+export function buildAuthLeafBinds(family: BackendFamily, mode: string): Array<{ path: string; access: 'ro' | 'rw' }> {
+  const home = process.env.HOME ?? '';
+  if (!home) return [];
+
+  if (family === 'claude') {
+    const credPath = `${home}/.claude/.credentials.json`;
+    // Implement gets rw (token refresh persists); advisory modes get ro
+    const access = mode === 'implement' ? 'rw' as const : 'ro' as const;
+    return [{ path: credPath, access }];
+  }
+
+  if (family === 'codex') {
+    return [
+      { path: `${home}/.codex/auth.json`, access: 'ro' },
+      { path: `${home}/.codex/config.toml`, access: 'ro' },
+    ];
+  }
+
+  // Pi: no auth leaf needed (API key is env-injected, config dir is jail tmpfs)
+  return [];
+}
+
 export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<DispatchResult2>> {
   const dir = resolve(opts.dir);
   const { verbose } = opts;
@@ -392,6 +536,14 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
 
   const policyResult = checkCredentialPolicy(handoff, credResult.data);
   if (!policyResult.ok) return policyResult;
+
+  // 3d. Resolve toolchain paths + auth leaf binds for the visibility wall
+  // (DEC-0011, WK-0103) — depends only on model.family/handoff.mode (already
+  // resolved above), so this runs alongside the other pre-spawn resolution
+  // steps and well before the clone/jail work at step 9+.
+  logVerbose(verbose, 'resolving toolchain paths for the visibility wall');
+  const toolchainPaths = await resolveToolchainPaths(model.family);
+  const authLeafBinds = buildAuthLeafBinds(model.family, handoff.mode);
 
   // 5. Run ID — injected by the background controller, or minted here for standalone callers.
   const runId = opts.runId ?? `RUN-${randomUUID()}`;
@@ -645,21 +797,22 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       bwrapInjectedFiles = [{ content: claudeSettingsContent, dest: claudeSettingsPath }];
     }
 
-    // 10b. Resolved tunnel target endpoint. D6/D3: the orchestrator IS the
-    // Linux host now (no separate Windows host whose loopback could be
-    // confused with the jail's own), so `model.baseUrl` — including a
-    // same-host loopback like `http://localhost:11434/v1` — is already the
-    // correct address to hand the forwarder. (Formerly resolved via a
+    // 10b. Resolved tunnel target endpoint + allowlist (DEC-0011, WK-0104).
+    // D6/D3: the orchestrator IS the Linux host now (no separate Windows host
+    // whose loopback could be confused with the jail's own), so
+    // `model.baseUrl` — including a same-host loopback like
+    // `http://localhost:11434/v1` — is already the correct address to hand
+    // the forwarder for Pi's origin-form routing. (Formerly resolved via a
     // WIN_HOST lookup on bwrap-wsl2 only; that tier and its lookup are
     // retired post-D3 — see the D6 dead-code deletion list.) codex/claude
     // backends resolve with `baseUrl: null` (their CLIs reach their SaaS
     // provider directly — s3 two-table config, repo-config.ts's BackendEntry)
-    // — the forwarder still needs SOME targetUrl argument, but it is only
-    // dereferenced in web:false single-destination mode; codex/claude HOs run
-    // web:true (T33), where the forwarder's own destination policy is
-    // widened to allow all traffic (s5-rulings.md ruling 4) and this
-    // placeholder is never dereferenced.
-    const resolvedTargetUrl = model.baseUrl ?? 'https://api.placeholder.local';
+    // — SaaS CLIs use proxy protocol (absolute-URI / CONNECT) exclusively,
+    // never origin-form, so 'https://unused.local' is never dereferenced;
+    // egress for those families is enforced entirely by `allowedHosts` below,
+    // not by targetUrl.
+    const resolvedTargetUrl = model.baseUrl ?? 'https://unused.local';
+    const allowedHosts = buildAllowedHosts(model, credResult.data);
 
     // 11. Tunnel config (T26/D21) — the socket/relay/log all live under the
     // clone / run dir (never inside enumerate/delivery's view: they are
@@ -675,6 +828,7 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
     const tunnelConfig: TunnelConfig = {
       socketPath: tunnelSocketPath,
       targetUrl: resolvedTargetUrl,
+      allowedHosts,
       webEnabled: handoff.web,
       relayPort: TUNNEL_RELAY_PORT,
       logPath: tunnelDestinationsLogPath,
@@ -722,7 +876,9 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
     };
     const workerEnv: Record<string, string> = model.family === 'pi'
       ? { ...baseWorkerEnv, PI_CODING_AGENT_DIR: workerDir, PI_OFFLINE: '1' }
-      : { ...baseWorkerEnv };
+      : model.family === 'claude'
+        ? { ...baseWorkerEnv, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1' }
+        : { ...baseWorkerEnv };
 
     // 12c. In-jail command wrapper: bring lo up (a fresh netns starts with it
     // down), start the relay, run `npm rebuild` under containment when a
@@ -764,6 +920,8 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       unshareNet: true,
       tunnelSocketPath,
       relayScriptPath,
+      toolchainPaths,
+      authLeafBinds,
       command: ['bash', '-c', innerScript],
       env: workerEnv,
       injectedFiles: bwrapInjectedFiles,
@@ -788,7 +946,7 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
     const forwarderLogFd = openSync(forwarderLogPath, 'a');
     const forwarderChild = spawn(
       'node',
-      [forwarderScriptPath, tunnelSocketPath, resolvedTargetUrl, handoff.web ? 'true' : 'false', tunnelDestinationsLogPath],
+      [forwarderScriptPath, tunnelSocketPath, resolvedTargetUrl, handoff.web ? 'true' : 'false', tunnelDestinationsLogPath, JSON.stringify(allowedHosts)],
       { stdio: ['ignore', forwarderLogFd, forwarderLogFd] },
     );
     closeSync(forwarderLogFd);

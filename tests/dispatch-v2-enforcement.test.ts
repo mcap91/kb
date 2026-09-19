@@ -625,6 +625,12 @@ directly against a real temp git repo and a real WSL2 clone.
         const tunnelConfig: TunnelConfig = {
           socketPath: tunnelSocketWsl,
           targetUrl: `http://127.0.0.1:${stubPort}/v1`,
+          // Mirrors pipeline.ts's buildAllowedHosts for the "pi" family: the
+          // target's own hostname is the sole granted destination on
+          // web:false (DEC-0011/WK-0104) -- the origin-form probe below
+          // resolves to this host, the absolute-URI probe to example.com
+          // does not, so both probes keep exercising allow vs deny.
+          allowedHosts: ['127.0.0.1'],
           webEnabled: false,
           relayPort: TUNNEL_RELAY_PORT,
           logPath: `${runDirWsl}/tunnel-destinations.log`,

@@ -354,6 +354,7 @@ describe('dispatch v2 e2e (fake-tier) — full pipeline chain', () => {
         injections: [{ profileName: 'hf', varName: 'HF_TOKEN', filePath: '/home/operator/.secrets/hf-token.env' }],
         backendApiKeyEnv: null,
         backendSecretsFile: null,
+        credentialEndpoints: [],
       };
       const valueScanLines = buildInjectedValueScanFragment(resolution);
       expect(valueScanLines.length).toBeGreaterThan(0);
