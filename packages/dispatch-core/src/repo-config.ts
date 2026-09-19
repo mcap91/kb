@@ -42,6 +42,10 @@ export interface ModelTableEntry {
 export interface ProfileEntry {
   /** VAR_NAME -> file path holding that var's value (read Linux-side only; S3 wave 2). */
   inject: Record<string, string>;
+  /** Endpoint hostnames this credential grants access to (exact + *.suffix wildcards).
+   *  Appended to the forwarder's allowed destinations when this profile is granted
+   *  (DEC-0011/WK-0104). */
+  endpoints?: string[];
 }
 
 export interface ProfilesConfig {
@@ -185,7 +189,7 @@ function validateProfileEntry(name: string, raw: unknown): DispatchResult<Profil
   // (D8) and an unrecognized key here could silently fail to gate what it looks
   // like it gates, so this refuses instead of warning.
   for (const key of Object.keys(raw)) {
-    if (key !== 'inject') {
+    if (key !== 'inject' && key !== 'endpoints') {
       return fail('BAD_RECORD', `Unknown key "${key}" in profile "${name}" in profiles.json`);
     }
   }
@@ -202,7 +206,16 @@ function validateProfileEntry(name: string, raw: unknown): DispatchResult<Profil
     inject[varName] = value;
   }
 
-  return ok({ inject });
+  const profileEntry: ProfileEntry = { inject };
+
+  if (raw.endpoints !== undefined) {
+    if (!Array.isArray(raw.endpoints) || !raw.endpoints.every((host) => typeof host === 'string')) {
+      return fail('BAD_RECORD', `Profile "${name}" in profiles.json: "endpoints" must be an array of strings when present.`);
+    }
+    profileEntry.endpoints = raw.endpoints as string[];
+  }
+
+  return ok(profileEntry);
 }
 
 /**

@@ -45,7 +45,7 @@ to configure models and backends for your repository.
 |------|---------|---------------|
 | \`models.json\` | Model slug → available backends + provider model_id | \`{}\` |
 | \`backends.json\` | Backend name → family, base_url, api_key_env, secrets_file | \`{}\` |
-| \`profiles.json\` | Credential profiles (schema_version 1, inject: {VAR: path}) | \`{"schema_version": 1}\` |
+| \`profiles.json\` | Credential profiles (schema_version 1, inject + optional endpoints) | \`{"schema_version": 1}\` |
 
 ## Example models.json
 
@@ -94,9 +94,24 @@ OpenAI, a proxy, a local Ollama/vLLM server).
     "inject": {
       "HF_TOKEN": "/home/user/.secrets/hf-token.env"
     }
+  },
+  "aws": {
+    "inject": {
+      "AWS_ACCESS_KEY_ID": "/home/user/.aws/kb-dispatch-creds.env",
+      "AWS_SECRET_ACCESS_KEY": "/home/user/.aws/kb-dispatch-creds.env",
+      "AWS_DEFAULT_REGION": "/home/user/.aws/kb-dispatch-creds.env"
+    },
+    "endpoints": ["*.amazonaws.com", "*.aws.amazon.com"]
   }
 }
 \`\`\`
+
+## SaaS backends (codex/claude)
+
+SaaS backends work under \`web:false\` — each family has a built-in vendor domain
+allowlist. Setting \`web: true\` on a handoff is NOT needed to make codex or claude
+function; use it only when the worker itself needs to fetch external resources
+(research mode, dataset downloads, etc.).
 
 Run \`init-dispatch\` again to refresh this section without touching your JSON files.
 ${MANAGED_END}`;

@@ -59,6 +59,7 @@ function makeResolution(overrides: Partial<CredentialResolution> = {}): Credenti
     injections: [],
     backendApiKeyEnv: null,
     backendSecretsFile: null,
+    credentialEndpoints: [],
     ...overrides,
   };
 }
@@ -130,6 +131,69 @@ describe('credentials.ts — resolveCredentials', () => {
     if (!result.ok) return;
     expect(result.data.backendApiKeyEnv).toBe('OPENROUTER_API_KEY');
     expect(result.data.backendSecretsFile).toBe('/home/operator/.config/kb-dispatch/secrets.env');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resolveCredentials — credentialEndpoints collection (DEC-0011 ruling 3, WK-0104)
+// ---------------------------------------------------------------------------
+
+describe('credentials.ts — resolveCredentials collects credentialEndpoints', () => {
+  const AWS_PROFILES = makeProfilesConfig({
+    hf: { inject: { HF_TOKEN: '/home/operator/.secrets/hf-token.env' } },
+    aws: {
+      inject: { AWS_ACCESS_KEY_ID: '/home/operator/.secrets/aws.env' },
+      endpoints: ['*.amazonaws.com', '*.aws.amazon.com'],
+    },
+  });
+
+  it('HO with no credentials resolves credentialEndpoints to an empty array (always an array, never undefined)', () => {
+    const handoff = makeHandoff({ credentials: [] });
+    const result = resolveCredentials(handoff, AWS_PROFILES, makeBackend());
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.credentialEndpoints).toEqual([]);
+  });
+
+  it('a granted profile with no endpoints field contributes nothing to credentialEndpoints', () => {
+    const handoff = makeHandoff({ credentials: ['hf'] });
+    const result = resolveCredentials(handoff, AWS_PROFILES, makeBackend());
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.credentialEndpoints).toEqual([]);
+  });
+
+  it('a granted profile carrying endpoints collects them into credentialEndpoints', () => {
+    const handoff = makeHandoff({ credentials: ['aws'] });
+    const result = resolveCredentials(handoff, AWS_PROFILES, makeBackend());
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.credentialEndpoints).toEqual(['*.amazonaws.com', '*.aws.amazon.com']);
+  });
+
+  it('multiple granted profiles union all their endpoints sets, in grant order', () => {
+    const profiles = makeProfilesConfig({
+      aws: { inject: {}, endpoints: ['*.amazonaws.com'] },
+      gcp: { inject: {}, endpoints: ['*.googleapis.com'] },
+    });
+    const handoff = makeHandoff({ credentials: ['aws', 'gcp'] });
+    const result = resolveCredentials(handoff, profiles, makeBackend());
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.credentialEndpoints).toEqual(['*.amazonaws.com', '*.googleapis.com']);
+  });
+
+  it('an unrelated ungranted profile with endpoints never contributes them', () => {
+    const handoff = makeHandoff({ credentials: ['hf'] });
+    const result = resolveCredentials(handoff, AWS_PROFILES, makeBackend());
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.credentialEndpoints).not.toContain('*.amazonaws.com');
   });
 });
 

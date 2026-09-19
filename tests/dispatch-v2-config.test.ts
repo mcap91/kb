@@ -297,6 +297,84 @@ describe('repo-config.ts — wiki/.dispatch/ table loaders', () => {
       });
     });
 
+    it('parses a profile with an endpoints array (DEC-0011/WK-0104 credential allowlist)', async () => {
+      await writeDispatchConfig(
+        dir,
+        'profiles.json',
+        JSON.stringify({
+          schema_version: 1,
+          aws: {
+            inject: { AWS_ACCESS_KEY_ID: '/home/operator/.secrets/aws.env' },
+            endpoints: ['*.amazonaws.com', '*.aws.amazon.com'],
+          },
+        }),
+      );
+
+      const result = await loadProfilesConfig(dir);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.data).toEqual({
+        schemaVersion: 1,
+        profiles: {
+          aws: {
+            inject: { AWS_ACCESS_KEY_ID: '/home/operator/.secrets/aws.env' },
+            endpoints: ['*.amazonaws.com', '*.aws.amazon.com'],
+          },
+        },
+      });
+    });
+
+    it('omits endpoints from the parsed entry when absent (no stray undefined field)', async () => {
+      await writeDispatchConfig(
+        dir,
+        'profiles.json',
+        JSON.stringify({
+          schema_version: 1,
+          hf: { inject: { HF_TOKEN: '/home/operator/.secrets/hf-token.env' } },
+        }),
+      );
+
+      const result = await loadProfilesConfig(dir);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(Object.keys(result.data.profiles.hf)).toEqual(['inject']);
+    });
+
+    it('refuses a profile whose endpoints value is not an array of strings', async () => {
+      await writeDispatchConfig(
+        dir,
+        'profiles.json',
+        JSON.stringify({
+          schema_version: 1,
+          aws: { inject: {}, endpoints: 'not-an-array' },
+        }),
+      );
+
+      const result = await loadProfilesConfig(dir);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error).toBe('BAD_RECORD');
+      expect(result.message).toContain('endpoints');
+      expect(result.message).toContain('aws');
+    });
+
+    it('refuses a profile whose endpoints array contains a non-string entry', async () => {
+      await writeDispatchConfig(
+        dir,
+        'profiles.json',
+        JSON.stringify({
+          schema_version: 1,
+          aws: { inject: {}, endpoints: ['*.amazonaws.com', 42] },
+        }),
+      );
+
+      const result = await loadProfilesConfig(dir);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error).toBe('BAD_RECORD');
+      expect(result.message).toContain('endpoints');
+    });
+
     it('refuses an unknown key inside a profile entry, naming the key and the profile', async () => {
       await writeDispatchConfig(
         dir,

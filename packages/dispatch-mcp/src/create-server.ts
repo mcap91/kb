@@ -72,13 +72,15 @@ const INSTRUCTIONS = [
   '',
   "Credential liveness is the orchestrator's job — kb verifies files exist and contain the named var, but never executes credential commands.",
   '',
+  'Credential profiles carry an optional `endpoints` array — the hostnames the credential grants network access to (e.g. `["*.amazonaws.com"]` for AWS). The forwarder allows these destinations only when the profile is granted. Credentials are usable under `web:false` only; `credentials_granted` + `web: true` is a hard refusal (`CREDENTIALS_WITH_WEB`).',
+  '',
   'Run `check-environment` for host-tier facts and the invocation contract.',
   '',
   '## Orchestration recipe',
   '',
   '**Loop spine:**',
   '',
-  '1. Author HO(s) for the work item (use `create-handoff` or hand-author). Feature-sized — one coherent, independently reviewable unit with ACs and validation command. Not function-sized.',
+  '1. Author HO(s) for the work item (use `create-handoff` or hand-author). Feature-sized — one coherent, independently reviewable unit with ACs and validation command. Not function-sized. **Visibility:** workers see ONLY system toolchain + the clone + declared `data_mounts`. Any out-of-repo directory (conda/mamba/uv envs, datasets, reference data) must be declared as a data mount; envs should also be named in `vars`. A missing mount surfaces as `dependency_missing` — widen the data_mounts and re-dispatch (existing fix-up routing).',
   '2. Dispatch: `dispatch` with handoff path, model, backend. Background by default — returns immediately with a runId.',
   '3. Poll: `status` or `wait-for-run` at turn boundaries to track progress. Do not block the interactive session with long waits.',
   '4. Read result: `wiki/handoffs/HO-XXXX.response.md`. Check verdict and recovery signal.',
@@ -97,6 +99,8 @@ const INSTRUCTIONS = [
   '**Autonomy boundary:** the orchestrator returns to the operator ONLY for: completion report, failure past fix-up budget, gate refusal requiring operator action, dead credential, or a genuine new design decision. Everything else is autonomous.',
   '',
   "**Session hygiene:** at session end, verify `git branch --list 'dispatch/*'` is empty. Failed-run branches persist as crime scene until operator disposition.",
+  '',
+  '**SaaS backends (codex/claude):** these function under `web:false` — each has a built-in vendor domain allowlist. Never set `web: true` just to make a SaaS family work.',
 ].join('\n');
 
 export function createServer(): McpServer {
