@@ -55,13 +55,18 @@ import {
   parseDeliveryOutput,
 } from '../packages/dispatch-core/src/delivery.js';
 import { execBash, type ExecBashResult } from '../packages/dispatch-core/src/exec-direct.js';
-import { buildJailArgs } from '../packages/dispatch-core/src/jail.js';
+import { buildJailArgs, SYSTEM_ROOTS } from '../packages/dispatch-core/src/jail.js';
 import {
   buildTunnelBashLines,
   TUNNEL_RELAY_PORT,
   TUNNEL_SOCKET_NAME,
   type TunnelConfig,
 } from '../packages/dispatch-core/src/tunnel.js';
+
+/** Expected system-root args for test assertions (DEC-0011: replaces the former whole-root `--ro-bind / /`; mirrors dispatch-v2-jail.test.ts's own helper). */
+function expectedSystemRootArgs(): string[] {
+  return SYSTEM_ROOTS.flatMap((root) => ['--ro-bind-try', root, root]);
+}
 
 // ---------------------------------------------------------------------------
 // T29 env gate
@@ -207,7 +212,7 @@ describe('buildJailArgs — wiki-shape x mode matrix gap-fill (T25/D19; compleme
     const result = buildJailArgs({ clonePath, wikiShape: 'tracked', mode: 'research' });
     expect(result.argv).toEqual([
       'bwrap',
-      '--ro-bind', '/', '/',
+      ...expectedSystemRootArgs(),
       '--proc', '/proc',
       '--dev', '/dev',
       '--tmpfs', '/tmp',
@@ -225,7 +230,7 @@ describe('buildJailArgs — wiki-shape x mode matrix gap-fill (T25/D19; compleme
     const result = buildJailArgs({ clonePath, wikiShape: 'nested-private', mode: 'code_review' });
     expect(result.argv).toEqual([
       'bwrap',
-      '--ro-bind', '/', '/',
+      ...expectedSystemRootArgs(),
       '--proc', '/proc',
       '--dev', '/dev',
       '--tmpfs', '/tmp',
@@ -241,7 +246,7 @@ describe('buildJailArgs — wiki-shape x mode matrix gap-fill (T25/D19; compleme
     const result = buildJailArgs({ clonePath, wikiShape: 'nested-private', mode: 'redteam', motherWikiPath });
     expect(result.argv).toEqual([
       'bwrap',
-      '--ro-bind', '/', '/',
+      ...expectedSystemRootArgs(),
       '--proc', '/proc',
       '--dev', '/dev',
       '--tmpfs', '/tmp',

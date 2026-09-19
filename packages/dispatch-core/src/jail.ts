@@ -15,7 +15,10 @@
  * ## S5 full recipe (spec §11), applied in argument order — bwrap resolves
  * later binds over earlier ones:
  *
- *   1.  --ro-bind / /                 entire host read-only
+ *   1.  --ro-bind-try <root> <root>   curated system roots only (DEC-0011,
+ *                                      WK-0103 visibility wall — replaces the
+ *                                      former whole-root `--ro-bind / /`; see
+ *                                      SYSTEM_ROOTS)
  *   2.  --proc /proc                  live procfs (child spawning)
  *   3.  --dev /dev                    device nodes (WK-0086: `nodev` on the
  *                                      ro-bind root broke nested bash spawn)
@@ -25,6 +28,10 @@
  *                                      recipe runs
  *   5.  --die-with-parent             cleanup on parent exit
  *   6.  --unshare-net                 opt-in (T26/D21): no network stack
+ *   6a. toolchain leaf binds (DEC-0011) --ro-bind-try each opts.toolchainPaths
+ *                                      entry (CLI binaries living under $HOME)
+ *   6b. auth leaf binds (DEC-0011)    the ONLY $HOME paths let through —
+ *                                      opts.authLeafBinds, ro or rw per entry
  *   7.  clone bind                    ro-bind first if write_scope is
  *                                      sparse, else writable (legacy shape)
  *   8.  write_scope binds             selective rw layered over step 7
@@ -70,6 +77,20 @@ export interface JailOpts {
   tunnelSocketPath?: string;
   /** Path inside the jail where the relay script lives (for bind-mounting). */
   relayScriptPath?: string;
+
+  // --- DEC-0011 / WK-0103 additions: curated visibility wall ---
+
+  /** Curated system-root dirs to bind read-only-try (replaces the whole-root bind).
+   *  Default: SYSTEM_ROOTS constant. The caller may extend but never narrow. */
+  systemRoots?: readonly string[];
+
+  /** Toolchain paths under $HOME that the worker's CLI binary needs (resolved at
+   *  dispatch time via `which`). Each gets an --ro-bind-try. */
+  toolchainPaths?: readonly string[];
+
+  /** Per-family auth leaf file binds — the ONLY $HOME paths let through.
+   *  Each entry is { path, access } where access = 'ro' | 'rw'. */
+  authLeafBinds?: ReadonlyArray<{ path: string; access: 'ro' | 'rw' }>;
 }
 
 export interface JailArgs {
@@ -120,6 +141,16 @@ const WIKI_MASKED_MODES: ReadonlySet<string> = new Set(['implement', 'code_revie
 const WIKI_VISIBLE_MODES: ReadonlySet<string> = new Set(['redteam', 'research']);
 
 /**
+ * Curated system-root dirs bound read-only into every jail (chassis pattern:
+ * buildSystemBaselineArgs's systemReadOnlyRoots loop,
+ * launch-isolation-bwrap.mjs:59-95). --ro-bind-try so absent dirs (e.g.
+ * /lib64 on non-x86) are silently skipped rather than failing bwrap.
+ */
+export const SYSTEM_ROOTS: readonly string[] = [
+  '/usr', '/bin', '/sbin', '/lib', '/lib64', '/etc', '/opt', '/var',
+];
+
+/**
  * Join a write_scope-style relative path onto the clone root. Strips leading
  * and trailing slashes from the relative segment so both "src/" and "src"
  * (the write_scope directory-prefix convention — see delivery.ts's
@@ -156,8 +187,9 @@ function buildJailPlanSteps(opts: JailOpts): JailPlanSteps {
   const mountArgv: string[] = [];
   const mounts: BwrapMount[] = [];
 
-  const bind = (kind: 'ro-bind' | 'bind', src: string, dst: string): void => {
-    mountArgv.push(kind === 'ro-bind' ? '--ro-bind' : '--bind', src, dst);
+  const bind = (kind: 'ro-bind' | 'ro-bind-try' | 'bind', src: string, dst: string): void => {
+    const flag = kind === 'ro-bind' ? '--ro-bind' : kind === 'ro-bind-try' ? '--ro-bind-try' : '--bind';
+    mountArgv.push(flag, src, dst);
     mounts.push({ kind, src, dst });
   };
   const synthetic = (kind: 'tmpfs' | 'proc' | 'dev', dst: string): void => {
@@ -165,8 +197,15 @@ function buildJailPlanSteps(opts: JailOpts): JailPlanSteps {
     mounts.push({ kind, dst });
   };
 
-  // 1-3: host read-only root + live procfs + device nodes (unchanged since S0).
-  bind('ro-bind', '/', '/');
+  // 1. Curated system-root ro-bind-try (DEC-0011: deny-by-default visibility;
+  //    replaces the whole-root ro-bind that gave every jail blanket $HOME
+  //    access). --ro-bind-try so a root absent on this host (e.g. /lib64 on
+  //    a non-multilib arch) is silently skipped rather than failing bwrap.
+  const roots = opts.systemRoots ?? SYSTEM_ROOTS;
+  for (const root of roots) {
+    bind('ro-bind-try', root, root);
+  }
+  // 2-3: live procfs + device nodes (unchanged since S0).
   synthetic('proc', '/proc');
   synthetic('dev', '/dev');
   // 4: writable scratch space — new at S5, unconditional whenever the full
@@ -177,6 +216,20 @@ function buildJailPlanSteps(opts: JailOpts): JailPlanSteps {
   // 6: network namespace removal (T26/D21) — opt-in.
   if (opts.unshareNet) {
     mountArgv.push('--unshare-net');
+  }
+
+  // 6a. Toolchain binary paths under $HOME — exact leaves, never a $HOME directory bind.
+  if (opts.toolchainPaths) {
+    for (const p of opts.toolchainPaths) {
+      bind('ro-bind-try', p, p);
+    }
+  }
+
+  // 6b. Per-family auth leaf binds — the ONLY $HOME paths (DEC-0011 wall 1).
+  if (opts.authLeafBinds) {
+    for (const leaf of opts.authLeafBinds) {
+      bind(leaf.access === 'rw' ? 'bind' : 'ro-bind', leaf.path, leaf.path);
+    }
   }
 
   // 7-8: clone bind(s). Sparse write_scope mode (writeScope provided, even
@@ -268,7 +321,7 @@ export function buildJailArgs(opts: JailOpts): JailArgs {
  * already renders the equivalent flag pairs into `bwrapArgs`.
  */
 export interface BwrapMount {
-  kind: 'ro-bind' | 'bind' | 'tmpfs' | 'proc' | 'dev';
+  kind: 'ro-bind' | 'ro-bind-try' | 'bind' | 'tmpfs' | 'proc' | 'dev';
   src?: string;
   dst: string;
 }
