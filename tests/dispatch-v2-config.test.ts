@@ -191,11 +191,13 @@ describe('repo-config.ts — wiki/.dispatch/ table loaders', () => {
         'backends.json',
         JSON.stringify({
           openrouter: {
+            family: 'pi',
             base_url: 'https://openrouter.ai/api/v1',
             api_key_env: 'OPENROUTER_API_KEY',
             secrets_file: '/home/operator/.config/kb-dispatch/secrets.env',
           },
           ollama: {
+            family: 'pi',
             base_url: 'http://localhost:11434/v1',
             api_key_env: null,
             secrets_file: null,
@@ -208,11 +210,13 @@ describe('repo-config.ts — wiki/.dispatch/ table loaders', () => {
       expect(result.ok).toBe(true);
       if (!result.ok) return;
       expect(result.data.openrouter).toEqual({
+        family: 'pi',
         base_url: 'https://openrouter.ai/api/v1',
         api_key_env: 'OPENROUTER_API_KEY',
         secrets_file: '/home/operator/.config/kb-dispatch/secrets.env',
       });
       expect(result.data.ollama).toEqual({
+        family: 'pi',
         base_url: 'http://localhost:11434/v1',
         api_key_env: null,
         secrets_file: null,
@@ -231,7 +235,7 @@ describe('repo-config.ts — wiki/.dispatch/ table loaders', () => {
     });
 
     it('refuses an entry missing the required base_url field', async () => {
-      await writeDispatchConfig(dir, 'backends.json', JSON.stringify({ openrouter: { api_key_env: null, secrets_file: null } }));
+      await writeDispatchConfig(dir, 'backends.json', JSON.stringify({ openrouter: { family: 'pi', api_key_env: null, secrets_file: null } }));
 
       const result = await loadBackendsTable(dir);
       expect(result.ok).toBe(false);
@@ -245,7 +249,7 @@ describe('repo-config.ts — wiki/.dispatch/ table loaders', () => {
       await writeDispatchConfig(
         dir,
         'backends.json',
-        JSON.stringify({ openrouter: { base_url: 'https://openrouter.ai/api/v1', api_key_env: 42, secrets_file: null } }),
+        JSON.stringify({ openrouter: { family: 'pi', base_url: 'https://openrouter.ai/api/v1', api_key_env: 42, secrets_file: null } }),
       );
 
       const result = await loadBackendsTable(dir);

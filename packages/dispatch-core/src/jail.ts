@@ -39,6 +39,8 @@
  *   14. --                            terminates bwrap's own argv; the
  *                                      caller appends the worker invocation
  */
+import { existsSync, statSync } from 'node:fs';
+import { dirname } from 'node:path';
 
 /** Wiki shape in the mother repo — the dual-shape read axis (T25, D19). */
 export type WikiShape = 'tracked' | 'nested-private';
@@ -366,4 +368,122 @@ export function buildBwrapPlan(opts: BuildBwrapPlanOpts): BwrapPlan {
     cwd,
     command: [...opts.command],
   };
+}
+
+// ---------------------------------------------------------------------------
+// Per-family bwrap plan differentiation (D2 ruling 2, PLN-0004
+// `wiki/plans/PLN-0004/execution/mid_project_review_rulings.md:149-201`;
+// design source agent-chassis `docs/enforcement-model.md:505-550` — ELv2,
+// design mirrored only, no chassis source copied). Pi's existing sparse-bind
+// recipe above (buildJailPlanSteps's write_scope loop, unmodified) stays the
+// default for any family that isn't claude/codex. These are standalone
+// classification helpers — pipeline.ts (step 12d) uses their output to build
+// a family-specific `writeScope` override before calling the UNMODIFIED
+// `buildBwrapPlan` above; they are not new recipe steps inside
+// `buildJailPlanSteps` itself.
+//
+// Both functions need to know whether a write_scope entry names a FILE or a
+// DIRECTORY, which — unlike the rest of this file — requires real filesystem
+// I/O (`stat`). `classifyEntry` below is the shared classifier: `statSync`
+// when the path already exists in the clone, falling back to an extension
+// heuristic when it doesn't (a write_scope entry may legitimately name a
+// file the worker hasn't created yet).
+// ---------------------------------------------------------------------------
+
+type EntryKind = 'file' | 'directory';
+
+/**
+ * Heuristic used only when a write_scope path does not yet exist on disk: a
+ * dot followed by one or more alphanumeric characters at the end of the
+ * final path segment reads as a file extension (`.ts`, `.js`, `.mjs`,
+ * `.json`, `.md`, `.yaml`, `.yml`, and any other conventional extension);
+ * anything else (no dot, or a trailing-slash directory entry, whose final
+ * split segment is empty) reads as a directory.
+ */
+function looksLikeFile(relPath: string): boolean {
+  const basename = relPath.split('/').pop() ?? relPath;
+  return /\.[A-Za-z0-9]+$/.test(basename);
+}
+
+/**
+ * Classify one write_scope entry (already resolved onto the clone root) as a
+ * file or a directory: `stat()` when the path exists on disk; the extension
+ * heuristic above when it doesn't (ENOENT) — or, defensively, on any other
+ * stat error, since this module's "cannot fail" contract (top-of-file doc)
+ * means a permission error must degrade to the heuristic rather than throw.
+ */
+function classifyEntry(absPath: string, relPath: string): EntryKind {
+  try {
+    return statSync(absPath).isDirectory() ? 'directory' : 'file';
+  } catch {
+    return looksLikeFile(relPath) ? 'file' : 'directory';
+  }
+}
+
+/**
+ * Claude: widen file-scope write_scope entries to their PARENT DIRECTORY.
+ * Claude Code writes via atomic rename (temp sibling + `rename(2)`), which
+ * needs write+execute on the CONTAINING directory, not just the target file
+ * — binding only the exact file (as Codex's `deriveExactFileMounts` below
+ * does) would make every Claude edit fail at the rename step. Directory
+ * entries stay as-is. Returns de-duplicated ABSOLUTE directory paths under
+ * `clonePath` — pipeline.ts converts these back to clone-relative paths
+ * before handing them to `buildBwrapPlan`'s own `writeScope` param (which
+ * re-resolves relative entries itself via this module's `joinUnderClone`).
+ */
+export function deriveDirectoryScopedMounts(writeScope: string[], clonePath: string): string[] {
+  const dirs = new Set<string>();
+  for (const rel of writeScope) {
+    const absPath = joinUnderClone(clonePath, rel);
+    const kind = classifyEntry(absPath, rel);
+    dirs.add(kind === 'file' ? dirname(absPath) : absPath);
+  }
+  return Array.from(dirs);
+}
+
+/**
+ * Codex: classify write_scope entries as exact files or directories — Codex
+ * gets exact-file kernel binds (`--bind <file> <file>`, parent directory
+ * stays read-only) rather than Claude's directory-widened mounts above.
+ * Returns ABSOLUTE paths in each bucket, same convention as
+ * `deriveDirectoryScopedMounts`.
+ */
+export function deriveExactFileMounts(
+  writeScope: string[],
+  clonePath: string,
+): { writableDirs: string[]; writableFiles: string[] } {
+  const writableDirs: string[] = [];
+  const writableFiles: string[] = [];
+  for (const rel of writeScope) {
+    const absPath = joinUnderClone(clonePath, rel);
+    if (classifyEntry(absPath, rel) === 'file') {
+      writableFiles.push(absPath);
+    } else {
+      writableDirs.push(absPath);
+    }
+  }
+  return { writableDirs, writableFiles };
+}
+
+/**
+ * `.env` / `.claude/` secret-masking bwrap args (D2 ruling 2 item 5, mirrors
+ * agent-chassis): mask `<clone>/.env` with `/dev/null` (a worker must never
+ * be able to read secrets baked into the mother repo's own working-tree
+ * `.env`) and mask `<clone>/.claude/` with a fresh tmpfs (a committed
+ * `.claude/` config must never reach the jail). `buildBwrapPlan` requires
+ * bind TARGETS to already exist (this module's own top-of-file doc) — this
+ * checks existence itself so it never emits an arg bwrap would reject; empty
+ * array when neither path exists in the clone.
+ */
+export function buildSecretMaskArgs(clonePath: string): string[] {
+  const args: string[] = [];
+  const envPath = `${clonePath}/.env`;
+  const claudeDirPath = `${clonePath}/.claude`;
+  if (existsSync(envPath)) {
+    args.push('--ro-bind', '/dev/null', envPath);
+  }
+  if (existsSync(claudeDirPath)) {
+    args.push('--tmpfs', claudeDirPath);
+  }
+  return args;
 }

@@ -35,6 +35,7 @@ async function writeDispatchConfig(dir: string, filename: string, content: strin
 
 function makeResolvedModel(overrides: Partial<ResolvedModel> = {}): ResolvedModel {
   return {
+    family: 'pi' as const,
     slug: 'deepseek',
     backend: 'openrouter',
     modelId: 'deepseek/deepseek-v4-flash-0731',
@@ -77,11 +78,12 @@ describe('model-registry.ts — resolveModelFromConfig', () => {
       'backends.json',
       JSON.stringify({
         openrouter: {
+          family: 'pi',
           base_url: 'https://openrouter.ai/api/v1',
           api_key_env: 'OPENROUTER_API_KEY',
           secrets_file: '/home/operator/.config/kb-dispatch/secrets.env',
         },
-        ollama: { base_url: 'http://localhost:11434/v1', api_key_env: null, secrets_file: null },
+        ollama: { family: 'pi', base_url: 'http://localhost:11434/v1', api_key_env: null, secrets_file: null },
       }),
     );
   }
@@ -95,6 +97,7 @@ describe('model-registry.ts — resolveModelFromConfig', () => {
     expect(result.data).toEqual({
       slug: 'deepseek',
       backend: 'openrouter',
+      family: 'pi',
       modelId: 'deepseek/deepseek-v4-flash-0731',
       baseUrl: 'https://openrouter.ai/api/v1',
       apiKeyEnv: 'OPENROUTER_API_KEY',
@@ -136,7 +139,7 @@ describe('model-registry.ts — resolveModelFromConfig', () => {
     await writeDispatchConfig(
       dir,
       'backends.json',
-      JSON.stringify({ ollama: { base_url: 'http://localhost:11434/v1', api_key_env: null, secrets_file: null } }),
+      JSON.stringify({ ollama: { family: 'pi', base_url: 'http://localhost:11434/v1', api_key_env: null, secrets_file: null } }),
     );
 
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});

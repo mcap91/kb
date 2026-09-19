@@ -16,8 +16,13 @@ import { join } from 'node:path';
 import type { DispatchResult } from './errors.js';
 import { fail, ok } from './errors.js';
 
+/** Which agent CLI adapter handles a backend: Pi coding agent, Codex CLI, or Claude Code CLI. */
+export type BackendFamily = 'pi' | 'codex' | 'claude';
+
 export interface BackendEntry {
-  base_url: string;
+  family: BackendFamily;
+  /** Custom endpoint URL; null when the family's own CLI reaches its SaaS provider directly (no operator-configured endpoint). */
+  base_url: string | null;
   api_key_env: string | null;
   secrets_file: string | null;
   notes?: string;
@@ -89,7 +94,9 @@ function warnUnknownKeys(entry: Record<string, unknown>, knownKeys: ReadonlySet<
   }
 }
 
-const BACKEND_ENTRY_KNOWN_KEYS = new Set(['base_url', 'api_key_env', 'secrets_file', 'notes', 'serving']);
+const BACKEND_ENTRY_KNOWN_KEYS = new Set(['family', 'base_url', 'api_key_env', 'secrets_file', 'notes', 'serving']);
+
+const BACKEND_FAMILIES: readonly BackendFamily[] = ['pi', 'codex', 'claude'];
 
 function validateBackendEntry(name: string, raw: unknown): DispatchResult<BackendEntry> {
   if (!isPlainObject(raw)) {
@@ -98,8 +105,14 @@ function validateBackendEntry(name: string, raw: unknown): DispatchResult<Backen
 
   warnUnknownKeys(raw, BACKEND_ENTRY_KNOWN_KEYS, `backend "${name}" in backends.json`);
 
-  if (typeof raw.base_url !== 'string') {
-    return fail('BAD_RECORD', `Backend "${name}" in backends.json must have a string "base_url".`);
+  if (typeof raw.family !== 'string' || !BACKEND_FAMILIES.includes(raw.family as BackendFamily)) {
+    return fail(
+      'BAD_RECORD',
+      `Backend "${name}" in backends.json must have "family" as one of: ${BACKEND_FAMILIES.join(', ')}.`,
+    );
+  }
+  if (raw.base_url !== null && typeof raw.base_url !== 'string') {
+    return fail('BAD_RECORD', `Backend "${name}" in backends.json must have "base_url" as a string or null.`);
   }
   if (raw.api_key_env !== null && typeof raw.api_key_env !== 'string') {
     return fail('BAD_RECORD', `Backend "${name}" in backends.json must have "api_key_env" as a string or null.`);
@@ -118,7 +131,8 @@ function validateBackendEntry(name: string, raw: unknown): DispatchResult<Backen
   }
 
   const entry: BackendEntry = {
-    base_url: raw.base_url,
+    family: raw.family as BackendFamily,
+    base_url: raw.base_url as string | null,
     api_key_env: raw.api_key_env as string | null,
     secrets_file: raw.secrets_file as string | null,
   };
@@ -214,7 +228,7 @@ export async function loadModelsTable(dir: string): Promise<DispatchResult<Recor
 }
 
 /**
- * Load `wiki/.dispatch/backends.json` (name -> base_url/api_key_env/secrets_file/notes).
+ * Load `wiki/.dispatch/backends.json` (name -> family/base_url/api_key_env/secrets_file/notes).
  * Absent file = valid empty table.
  */
 export async function loadBackendsTable(dir: string): Promise<DispatchResult<Record<string, BackendEntry>>> {
