@@ -1241,7 +1241,11 @@ describe('validatePlan', () => {
     await create({ dir: tmp.dir, prefix: 'PLN', title: 'Bad phase column' });
 
     const trackerPath = path.join(tmp.dir, 'wiki/plans/PLN-0001/execution/tracker.md');
-    const tracker = fs.readFileSync(trackerPath, 'utf-8');
+    // The tracker template may be checked out with CRLF or LF line endings;
+    // normalize before the literal replace so the mutation always lands.
+    const tracker = fs
+      .readFileSync(trackerPath, 'utf-8')
+      .replace(/\r\n/g, '\n');
     const broken = tracker.replace(
       '| Slice | Status | Started | Completed | Notes |\n|-------|--------|---------|-----------|-------|',
       '| Stage | Status | Started | Completed | Notes |\n|-------|--------|---------|-----------|-------|',
