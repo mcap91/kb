@@ -54,13 +54,19 @@ export interface PiUsage {
   costUsd: number;
 }
 
+/** Compaction event statistics extracted from the Pi event stream (T33 Phase 3). */
+export interface PiCompaction {
+  total: number;
+  succeeded: number;
+  failed: number;
+}
+
 export interface PiResult {
   outcome: 'completed' | 'failed' | 'error';
   stopReason?: string;
   hasAgentEnd: boolean;
   usage: PiUsage;
-  /** Raw parsed JSON-lines events, in stream order. */
-  events: unknown[];
+  compaction: PiCompaction;
   /**
    * Concatenated `type === 'text'` content blocks from EVERY assistant
    * `message_end` event in the stream, in stream order — the worker's raw
@@ -225,31 +231,29 @@ export function parsePiOutput(stdout: string): DispatchResult<PiResult> {
     .map((line) => line.trim())
     .filter((line) => line.length > 0);
 
-  const events: unknown[] = [];
-  for (const line of lines) {
-    try {
-      events.push(JSON.parse(line));
-    } catch {
-      // Skip non-JSON lines (stray banners, etc.) — facts-only parsing tolerates them.
-    }
-  }
-
-  if (lines.length > 0 && events.length === 0) {
-    return fail('No parseable JSON-lines events found in Pi output.', { rawLineCount: lines.length });
-  }
-
-  if (events.length === 0) {
-    return ok({ outcome: 'failed', stopReason: 'empty_stream', hasAgentEnd: false, usage: { totalTokens: 0, costUsd: 0 }, events: [], accumulatedText: '', lastAssistantText: '' });
-  }
-
+  let parsedCount = 0;
   let totalTokens = 0;
   let costUsd = 0;
   let sawError = false;
   let stopReason: string | undefined;
   let accumulatedText = '';
   let lastAssistantText = '';
+  let hasAgentEnd = false;
+  let allAttemptsErrored = false;
+  let compactionTotal = 0;
+  let compactionSucceeded = 0;
+  let compactionFailed = 0;
 
-  for (const event of events) {
+  for (const line of lines) {
+    let event: unknown;
+    try {
+      event = JSON.parse(line);
+    } catch {
+      // Skip non-JSON lines (stray banners, etc.) — facts-only parsing tolerates them.
+      continue;
+    }
+    parsedCount++;
+
     if (!isRecord(event)) continue;
     const type = event.type;
 
@@ -280,6 +284,41 @@ export function parsePiOutput(stdout: string): DispatchResult<PiResult> {
       accumulatedText += messageText;
       lastAssistantText = messageText;
     }
+
+    if (type === 'agent_end') {
+      hasAgentEnd = true;
+    }
+
+    if (type === 'auto_retry_end' && event.success === false) {
+      allAttemptsErrored = true;
+    }
+
+    if (type === 'compaction_end') {
+      compactionTotal++;
+      const hasResult = isRecord(event) && event.result !== undefined && event.result !== null;
+      const notAborted = isRecord(event) && event.aborted === false;
+      if (hasResult && notAborted) {
+        compactionSucceeded++;
+      } else {
+        compactionFailed++;
+      }
+    }
+  }
+
+  if (lines.length > 0 && parsedCount === 0) {
+    return fail('No parseable JSON-lines events found in Pi output.', { rawLineCount: lines.length });
+  }
+
+  if (parsedCount === 0) {
+    return ok({
+      outcome: 'failed',
+      stopReason: 'empty_stream',
+      hasAgentEnd: false,
+      usage: { totalTokens: 0, costUsd: 0 },
+      compaction: { total: compactionTotal, succeeded: compactionSucceeded, failed: compactionFailed },
+      accumulatedText: '',
+      lastAssistantText: '',
+    });
   }
 
   // Facts-only: the launcher (not this adapter) owns outcome policy beyond
@@ -288,10 +327,6 @@ export function parsePiOutput(stdout: string): DispatchResult<PiResult> {
   // mechanically by capture.ts from delivery-gate facts and per-mode
   // deliverable checks, never from the worker's response text — that text
   // is embedded verbatim as evidence only (`## Worker Report`).
-  const hasAgentEnd = events.some(e => isRecord(e) && e.type === 'agent_end');
-  const allAttemptsErrored = events.some(
-    (e) => isRecord(e) && e.type === 'auto_retry_end' && e.success === false,
-  );
   const outcome: PiResult['outcome'] = allAttemptsErrored
     ? 'failed'
     : sawError
@@ -305,5 +340,13 @@ export function parsePiOutput(stdout: string): DispatchResult<PiResult> {
     stopReason = 'truncated_stream';
   }
 
-  return ok({ outcome, stopReason, hasAgentEnd, usage: { totalTokens, costUsd }, events, accumulatedText, lastAssistantText });
+  return ok({
+    outcome,
+    stopReason,
+    hasAgentEnd,
+    usage: { totalTokens, costUsd },
+    compaction: { total: compactionTotal, succeeded: compactionSucceeded, failed: compactionFailed },
+    accumulatedText,
+    lastAssistantText,
+  });
 }

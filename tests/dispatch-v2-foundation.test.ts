@@ -507,7 +507,6 @@ describe('adapters/pi.ts — facts-only Pi adapter', () => {
     expect(result.data.outcome).toBe('completed');
     expect(result.data.usage.totalTokens).toBe(125);
     expect(result.data.usage.costUsd).toBeCloseTo(0.0012, 6);
-    expect(result.data.events).toHaveLength(4);
   });
 
   it('parsePiOutput detects a stopReason:"error" event and reports outcome error', () => {
@@ -553,9 +552,6 @@ describe('adapters/pi.ts — facts-only Pi adapter', () => {
   it('tolerates stray non-JSON lines but fails when nothing parses at all', () => {
     const tolerant = parsePiOutput('not json\n{"type":"agent_end"}\n');
     expect(tolerant.ok).toBe(true);
-    if (tolerant.ok) {
-      expect(tolerant.data.events).toHaveLength(1);
-    }
 
     const failing = parsePiOutput('this is not json at all\nneither is this');
     expect(failing.ok).toBe(false);

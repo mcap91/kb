@@ -603,21 +603,13 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
     let spawnData: SpawnResult;
     try {
       logVerbose(verbose, `invoking ${canonicalModel} via bwrap+pi`);
-      const spawnResult = await spawnIsolated(plan, { timeoutMs: WORKER_TIMEOUT_MS });
+      const spawnResult = await spawnIsolated(plan, { timeoutMs: WORKER_TIMEOUT_MS, stdoutLogPath: join(runDir, 'pi-output.log') });
       if (!spawnResult.ok) return spawnResult;
       spawnData = spawnResult.data;
     } finally {
       // Post-jail: stop the host-side forwarder — nothing else reaps it,
       // since it runs outside bwrap and --die-with-parent doesn't reach it.
       forwarderChild.kill();
-    }
-
-    // PI_LOG (no more `tee` — spawnIsolated already captured stdout
-    // directly, bounded at 1 MiB).
-    try {
-      await writeFile(join(runDir, 'pi-output.log'), spawnData.stdout, 'utf8');
-    } catch (err) {
-      logVerbose(verbose, `warning: could not write pi-output.log: ${err}`);
     }
 
     // Exit/signal interpretation (D6 ruling 7 component 8; chassis
@@ -634,7 +626,14 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
 
     // 15. Parse Pi output (timedOut = watchdog fired; recoverable only if Pi
     // wrote agent_end before the kill — the pi#4303 post-completion flavor).
-    const piParsed = parsePiOutput(spawnData.stdout);
+    const piOutputLogPath = join(runDir, 'pi-output.log');
+    let piOutputContent: string;
+    try {
+      piOutputContent = await readFile(piOutputLogPath, 'utf8');
+    } catch (err) {
+      return fail('PIPELINE_FAILED', `Failed to read pi-output.log: ${piOutputLogPath}`, err);
+    }
+    const piParsed = parsePiOutput(piOutputContent);
     if (!piParsed.ok) {
       if (spawnData.timedOut) {
         return fail('PIPELINE_FAILED', `Worker timed out after ${WORKER_TIMEOUT_SECS}s (watchdog fired; no parseable output).`, spawnData);
@@ -811,6 +810,7 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       handoff: { id: handoff.id, title: handoff.title, mode: handoff.mode },
       delivery,
       piResult: { outcome: piParsed.data.outcome, usage: piParsed.data.usage },
+      compaction: piParsed.data.compaction,
       model: canonicalModel,
       isolationBackend,
       lastAssistantText: piParsed.data.lastAssistantText,
@@ -853,6 +853,7 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       model: canonicalModel,
       isolationBackend,
       credentialsGranted: credResult.data.granted,
+      compaction: piParsed.data.compaction,
       // Resolved-value provenance (S3 ruling 8): the real endpoint the tunnel
       // forwarder was configured to reach (resolvedTargetUrl === model.baseUrl
       // post-D3/D6 — there is no more WIN_HOST template to resolve).

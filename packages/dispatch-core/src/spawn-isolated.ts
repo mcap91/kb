@@ -17,6 +17,7 @@
  * `DispatchResult` failure.
  */
 import { spawn } from 'node:child_process';
+import { createWriteStream } from 'node:fs';
 
 import type { BwrapPlan } from './jail.js';
 import type { DispatchResult } from './errors.js';
@@ -40,6 +41,8 @@ export interface SpawnIsolatedOpts {
   streamDrainMs?: number;
   /** Bound on retained stdout bytes (head-capped: stop retaining past the cap, keep counting so `truncated` is accurate). Default 1_048_576 (1 MiB). */
   maxCaptureBytes?: number;
+  /** When set, every stdout chunk is also streamed unbounded to this file as it arrives — the run's PRIMARY capture (the bounded in-memory `stdout` above is the FALLBACK), so long/compaction-heavy runs don't lose tail events like agent_end past the 1 MiB head cap. */
+  stdoutLogPath?: string;
   /** Bound on retained stderr bytes (tail-capped: keeps the MOST RECENT bytes — the diagnostically useful end of a crash, not the start). Default 4_096 (4 KiB). */
   maxStderrBytes?: number;
   signal?: AbortSignal;
@@ -57,6 +60,8 @@ export interface SpawnIsolatedOpts {
 
 export interface SpawnResult {
   stdout: string;
+  /** Echoes `opts.stdoutLogPath` when set — the file holds the full unbounded stdout capture; `stdout` above may be head-truncated. */
+  stdoutLogPath?: string;
   stderr: string;
   exitCode: number | null;
   signal: string | null;
@@ -212,8 +217,18 @@ export async function spawnIsolated(
 
   const stdoutCapture = boundedHeadCapture(maxCaptureBytes);
   const stderrCapture = boundedTailCapture(maxStderrBytes);
-  child.stdout?.on('data', (chunk: Buffer) => stdoutCapture.push(chunk));
+  const stdoutLogStream = opts.stdoutLogPath !== undefined ? createWriteStream(opts.stdoutLogPath) : null;
+  // WriteStream 'error' is otherwise uncaught-exception fatal — a full disk or
+  // permissions problem writing the log must not take down an in-flight run.
+  stdoutLogStream?.on('error', (err) => {
+    process.stderr.write(`[spawn-isolated] warning: failed to write ${opts.stdoutLogPath}: ${err.message}\n`);
+  });
+  child.stdout?.on('data', (chunk: Buffer) => {
+    stdoutCapture.push(chunk);
+    stdoutLogStream?.write(chunk);
+  });
   child.stderr?.on('data', (chunk: Buffer) => stderrCapture.push(chunk));
+  child.stdout?.once('close', () => stdoutLogStream?.end());
 
   return new Promise((resolve) => {
     let settled = false;
@@ -245,6 +260,7 @@ export async function spawnIsolated(
       resolve(
         ok({
           stdout: stdoutCapture.text(),
+          stdoutLogPath: opts.stdoutLogPath,
           stderr: stderrCapture.text(),
           exitCode: exitInfo?.code ?? null,
           signal: exitInfo?.signal ?? null,
