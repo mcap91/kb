@@ -100,6 +100,14 @@ function fail<T = never>(message: string, detail?: unknown): DispatchResult<T> {
  * (code_review/redteam/research). `workspace-write` remains a valid value
  * this adapter will pass through unchanged; no caller in this codebase
  * currently selects it.
+ *
+ * `effort` (WK-0122), when present, appends `-c model_reasoning_effort=<level>`
+ * — no quotes around the value (WK-0069 note: codex's `-c` parser accepts a
+ * bare `key=value` token). This is the adapter's own facts-only report of
+ * Codex's one real invocation shape; the pipeline's separate, config-driven
+ * splice into its hand-built exec line (pipeline.ts's buildEffortArgs) is
+ * what actually runs, and currently produces the same tokens for the codex
+ * family.
  */
 export function buildInvocation(
   promptText: string,
@@ -107,6 +115,7 @@ export function buildInvocation(
   clonePath: string,
   outputPath: string,
   sandbox: 'workspace-write' | 'read-only' | 'danger-full-access',
+  effort?: string,
 ): CodexInvocation {
   const env: Record<string, string> = {};
   if (model.apiKeyEnv) {
@@ -115,9 +124,14 @@ export function buildInvocation(
     env[model.apiKeyEnv] = `$${model.apiKeyEnv}`;
   }
 
+  const args = ['exec', promptText, '--sandbox', sandbox, '--json', '-o', outputPath, '--model', model.modelId];
+  if (effort) {
+    args.push('-c', `model_reasoning_effort=${effort}`);
+  }
+
   return {
     cmd: 'codex',
-    args: ['exec', promptText, '--sandbox', sandbox, '--json', '-o', outputPath, '--model', model.modelId],
+    args,
     env,
     cwd: clonePath,
     outputLastMessagePath: outputPath,

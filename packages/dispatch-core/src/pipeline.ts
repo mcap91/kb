@@ -71,7 +71,7 @@ import {
 import { writeResponseDoc, buildProvenanceWriteBack } from './capture.js';
 import { runPreflight } from './preflight.js';
 import { getRunDir } from './paths.js';
-import { loadProfilesConfig, type BackendFamily } from './repo-config.js';
+import { loadProfilesConfig, type BackendFamily, type EffortMapping } from './repo-config.js';
 import {
   resolveCredentials,
   checkCredentialPolicy,
@@ -455,6 +455,26 @@ export function buildAuthLeafBinds(family: BackendFamily, mode: string): Array<{
   return [];
 }
 
+/**
+ * Build the raw CLI tokens for an effort/reasoning-level splice, per the
+ * resolved backend's `effort_mapping` config (repo-config.ts's
+ * `EffortMapping`; WK-0122). `flag_value` style emits `<flag> <level>`
+ * (Claude: `--effort high`); `key_equals_value` style emits `<flag>
+ * <key>=<level>` (Codex: `-c model_reasoning_effort=high`, no quotes around
+ * the value — WK-0069 note). Pure/sync — never gates; the EFFORT_UNSUPPORTED
+ * refusal already ran at step 3b before this is ever called. This is the
+ * generic, config-driven splice used for the hand-built exec line strings
+ * (step 10) — distinct from (but currently producing the same tokens as)
+ * each adapter's own hardcoded facts-only `effort` param.
+ * @internal pipeline.ts internal — exported only for direct unit testing.
+ */
+export function buildEffortArgs(mapping: EffortMapping, effort: string): string[] {
+  if (mapping.style === 'key_equals_value') {
+    return [mapping.flag, `${mapping.key}=${effort}`];
+  }
+  return [mapping.flag, effort];
+}
+
 export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<DispatchResult2>> {
   const dir = resolve(opts.dir);
   const { verbose } = opts;
@@ -490,9 +510,11 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
   const model = modelResult.data;
   const canonicalModel = `${model.backend}/${model.modelId}`;
 
-  // 3b. Effort gate (S3 ruling 9) — refuse pre-spawn when the resolved model/backend
-  // cannot carry an effort/reasoning parameter.
-  if (opts.effort && !model.supportsEffort) {
+  // 3b. Effort gate (S3 ruling 9; WK-0122 — keyed on effort_mapping existence,
+  // not the old supportsEffort boolean: the mapping IS the capability
+  // declaration) — refuse pre-spawn when the resolved model/backend cannot
+  // carry an effort/reasoning parameter.
+  if (opts.effort && !model.effortMapping) {
     return fail(
       'EFFORT_UNSUPPORTED',
       `Model "${opts.model}" on backend "${opts.backend}" does not support effort/reasoning parameters.`,
@@ -774,10 +796,19 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       // script. The prompt is read from `promptPath` at container runtime
       // instead, mirroring Pi's own `@promptFilePath` file-reference
       // convention (adapters/pi.ts's buildInvocation).
-      buildCodexInvocation(assembled.data.text, model, clonePath, codexOutputPath, sandbox);
+      buildCodexInvocation(assembled.data.text, model, clonePath, codexOutputPath, sandbox, opts.effort);
+      // WK-0122: config-driven effort splice (distinct from the adapter call
+      // above — both must reflect effort, per the WK's own scope note). The
+      // step 3b gate already refused EFFORT_UNSUPPORTED when opts.effort is
+      // set and model.effortMapping is absent, so effortMapping is guaranteed
+      // present here whenever opts.effort is; the `&&` guard is defensive.
+      const codexEffortSuffix =
+        opts.effort && model.effortMapping
+          ? ` ${buildEffortArgs(model.effortMapping, opts.effort).map(shQuote).join(' ')}`
+          : '';
       execLines = [
         `PROMPT=$(cat ${shQuote(promptPath)})`,
-        `exec codex exec "$PROMPT" --sandbox ${sandbox} --json -o ${shQuote(codexOutputPath)} --model ${shQuote(model.modelId)}`,
+        `exec codex exec "$PROMPT" --sandbox ${sandbox} --json -o ${shQuote(codexOutputPath)} --model ${shQuote(model.modelId)}${codexEffortSuffix}`,
       ];
     } else {
       // Claude family (D2 ruling 2): a settings.json allow-list keyed off
@@ -789,10 +820,18 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       // promptPath at container runtime).
       const claudeSettingsPath = '/tmp/.claude-settings/settings.json';
       const claudeSettingsContent = buildClaudeSettingsJson(handoff.write_scope, clonePath, handoff.mode);
-      buildClaudeInvocation(assembled.data.text, model, clonePath, claudeSettingsPath);
+      buildClaudeInvocation(assembled.data.text, model, clonePath, claudeSettingsPath, opts.effort);
+      // WK-0122: config-driven effort splice, inserted BEFORE the `--`
+      // terminator (same positional constraint as the adapter above — the
+      // prompt must stay the last positional arg after `--`). Same
+      // effortMapping-guaranteed-present reasoning as the codex branch.
+      const claudeEffortSuffix =
+        opts.effort && model.effortMapping
+          ? ` ${buildEffortArgs(model.effortMapping, opts.effort).map(shQuote).join(' ')}`
+          : '';
       execLines = [
         `PROMPT=$(cat ${shQuote(promptPath)})`,
-        `exec claude -p --output-format json --permission-mode default --settings ${shQuote(claudeSettingsPath)} --model ${shQuote(model.modelId)} -- "$PROMPT"`,
+        `exec claude -p --output-format json --permission-mode default --settings ${shQuote(claudeSettingsPath)} --model ${shQuote(model.modelId)}${claudeEffortSuffix} -- "$PROMPT"`,
       ];
       bwrapInjectedFiles = [{ content: claudeSettingsContent, dest: claudeSettingsPath }];
     }
@@ -1248,6 +1287,7 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       backend: model.backend,
       piVersion,
       backendFingerprint: fingerprint ?? undefined,
+      effort: opts.effort,
     });
     if (!captureResult.ok) return captureResult;
 

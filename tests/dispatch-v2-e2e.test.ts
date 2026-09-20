@@ -30,6 +30,7 @@
  */
 import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -57,7 +58,12 @@ import { writeResponseDoc } from '../packages/dispatch-core/src/capture.js';
 import { parsePreflightOutput } from '../packages/dispatch-core/src/preflight.js';
 import * as preflightModule from '../packages/dispatch-core/src/preflight.js';
 import * as tierModule from '../packages/dispatch-core/src/tier.js';
+import * as spawnIsolatedModule from '../packages/dispatch-core/src/spawn-isolated.js';
 import { runDispatch } from '../packages/dispatch-core/src/pipeline.js';
+
+function readFixtureFile(name: string): string {
+  return readFileSync(join(__dirname, 'fixtures', name), 'utf8');
+}
 
 // ---------------------------------------------------------------------------
 // Fixture — a small, purpose-built HO-TEST.md (distinct from the frozen
@@ -801,6 +807,193 @@ describe('dispatch v2 e2e (fake-tier) — isolation route (mocked bwrap probe)',
       expect(result.ok).toBe(false);
       if (result.ok) return;
       expect(result.error).toBe('NO_ISOLATION_ROUTE');
+    } finally {
+      await rm(repoRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// WK-0122 — effort passthrough, full runDispatch() (mocked spawnIsolated).
+//
+// spawnIsolated (spawn-isolated.ts) is the one seam that needs a live
+// bwrap+worker-CLI host to run for real (D6's direct spawn, no script
+// indirection) — mocking just that seam mirrors this file's own established
+// technique for probeBwrap/runPreflight above. Everything else (clone
+// creation, jail-plan build, enumerate, delivery, capture) runs for REAL
+// against a real temp git repo, so these tests exercise the actual step-10
+// config-driven effort splice into pipeline.ts's hand-built exec line and
+// the step-20 effort_requested threading into capture.ts — not a simulation
+// of that wiring. The mocked worker "output" written to pi-output.log is the
+// real DEC-0009 golden fixture content (tests/fixtures/claude-p-output.txt /
+// codex-exec-output-stream-json.jsonl) — no hand-invented shape (DEC-0009).
+// The clone tree is never actually mutated (the mock never touches the
+// filesystem the worker would have written to), so delivery always resolves
+// 'no_delta' here; that's expected and irrelevant to what these tests check
+// (capture.ts writes effort_requested unconditionally, regardless of
+// delivery outcome).
+// ---------------------------------------------------------------------------
+
+describe('dispatch v2 e2e (fake-tier) — WK-0122 effort passthrough (mocked spawnIsolated)', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  /**
+   * Mock spawnIsolated: capture the bwrap plan's command (`plan.command[2]`
+   * is the innerScript bash string pipeline.ts builds at step 10-12c, which
+   * embeds the exec line under test), write a real golden fixture to the
+   * requested stdoutLogPath as the "worker output", and resolve as a clean,
+   * un-truncated, non-timed-out exit — exactly the shape spawnIsolated
+   * itself returns for a worker that ran to completion.
+   */
+  function mockSpawnIsolated(fixtureContent: string): { getInnerScript: () => string | undefined } {
+    let capturedInnerScript: string | undefined;
+    vi.spyOn(spawnIsolatedModule, 'spawnIsolated').mockImplementation(async (plan, opts) => {
+      capturedInnerScript = plan.command[2];
+      if (opts?.stdoutLogPath) {
+        await writeFile(opts.stdoutLogPath, fixtureContent, 'utf8');
+      }
+      return {
+        ok: true,
+        data: {
+          stdout: '',
+          stderr: '',
+          exitCode: 0,
+          signal: null,
+          truncated: false,
+          timedOut: false,
+          streamDrainTimedOut: false,
+        },
+      };
+    });
+    return { getInnerScript: () => capturedInnerScript };
+  }
+
+  it('claude backend with effort_mapping: effort spliced into the exec line + effort_requested in the response doc', async () => {
+    const repoRoot = await setupS3Repo({
+      backends: {
+        'claude-saas': {
+          family: 'claude',
+          base_url: null,
+          api_key_env: null,
+          secrets_file: null,
+          effort_mapping: { flag: '--effort', style: 'flag_value' },
+        },
+      },
+      models: {
+        'claude-sonnet-5': { available_on: ['claude-saas'], model_id: 'claude-sonnet-5' },
+      },
+    });
+    const { getInnerScript } = mockSpawnIsolated(readFixtureFile('claude-p-output.txt'));
+    try {
+      const result = await runDispatch({
+        dir: repoRoot,
+        handoff: 'wiki/handoffs/HO-S3TEST.md',
+        model: 'claude-sonnet-5',
+        backend: 'claude-saas',
+        effort: 'high',
+        preflight: false,
+      });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      const innerScript = getInnerScript();
+      expect(innerScript).toBeDefined();
+      // Each token is single-quoted for safe bash embedding (pipeline.ts's
+      // shQuote), so the spliced pair reads as '--effort' 'high', not a bare
+      // '--effort high'.
+      expect(innerScript).toContain("'--effort' 'high'");
+      // The prompt must stay the LAST positional arg after -- (DEC-0024) —
+      // effort must land BEFORE the terminator, never smuggled in after it.
+      const effortIdx = innerScript!.indexOf("'--effort'");
+      const terminatorIdx = innerScript!.indexOf('-- "$PROMPT"');
+      expect(terminatorIdx).toBeGreaterThan(-1);
+      expect(effortIdx).toBeLessThan(terminatorIdx);
+
+      const responseContent = await readFile(result.data.responsePath, 'utf8');
+      expect(responseContent).toContain('effort_requested: high');
+    } finally {
+      await rm(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('codex backend with effort_mapping: effort spliced as -c model_reasoning_effort=<level> into the exec line', async () => {
+    const repoRoot = await setupS3Repo({
+      backends: {
+        'codex-saas': {
+          family: 'codex',
+          base_url: null,
+          api_key_env: null,
+          secrets_file: null,
+          effort_mapping: { flag: '-c', style: 'key_equals_value', key: 'model_reasoning_effort' },
+        },
+      },
+      models: {
+        'gpt-5.5': { available_on: ['codex-saas'], model_id: 'gpt-5.5' },
+      },
+    });
+    const { getInnerScript } = mockSpawnIsolated(readFixtureFile('codex-exec-output-stream-json.jsonl'));
+    try {
+      const result = await runDispatch({
+        dir: repoRoot,
+        handoff: 'wiki/handoffs/HO-S3TEST.md',
+        model: 'gpt-5.5',
+        backend: 'codex-saas',
+        effort: 'high',
+        preflight: false,
+      });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      const innerScript = getInnerScript();
+      expect(innerScript).toBeDefined();
+      // Each token is single-quoted for safe bash embedding (pipeline.ts's
+      // shQuote); the value itself carries no internal quotes (WK-0069 note).
+      expect(innerScript).toContain("'-c' 'model_reasoning_effort=high'");
+
+      const responseContent = await readFile(result.data.responsePath, 'utf8');
+      expect(responseContent).toContain('effort_requested: high');
+    } finally {
+      await rm(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('without --effort: no splice in the exec line, empty effort_requested in the response doc (no regression)', async () => {
+    const repoRoot = await setupS3Repo({
+      backends: {
+        'claude-saas': {
+          family: 'claude',
+          base_url: null,
+          api_key_env: null,
+          secrets_file: null,
+          effort_mapping: { flag: '--effort', style: 'flag_value' },
+        },
+      },
+      models: {
+        'claude-sonnet-5': { available_on: ['claude-saas'], model_id: 'claude-sonnet-5' },
+      },
+    });
+    const { getInnerScript } = mockSpawnIsolated(readFixtureFile('claude-p-output.txt'));
+    try {
+      const result = await runDispatch({
+        dir: repoRoot,
+        handoff: 'wiki/handoffs/HO-S3TEST.md',
+        model: 'claude-sonnet-5',
+        backend: 'claude-saas',
+        preflight: false,
+        // effort intentionally omitted — proves "mapping present but effort
+        // not requested" still produces no splice (not just "no mapping").
+      });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      const innerScript = getInnerScript();
+      expect(innerScript).toBeDefined();
+      expect(innerScript).not.toContain('--effort');
+
+      const responseContent = await readFile(result.data.responsePath, 'utf8');
+      expect(responseContent).toContain('effort_requested: \n');
     } finally {
       await rm(repoRoot, { recursive: true, force: true });
     }

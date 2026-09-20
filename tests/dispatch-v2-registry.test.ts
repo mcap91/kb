@@ -43,7 +43,6 @@ function makeResolvedModel(overrides: Partial<ResolvedModel> = {}): ResolvedMode
     apiKeyEnv: 'OPENROUTER_API_KEY',
     secretsFile: '/home/operator/.config/kb-dispatch/secrets.env',
     availableOn: ['openrouter'],
-    supportsEffort: false,
     contextWindow: 131072,
     ...overrides,
   };
@@ -103,7 +102,6 @@ describe('model-registry.ts — resolveModelFromConfig', () => {
       apiKeyEnv: 'OPENROUTER_API_KEY',
       secretsFile: '/home/operator/.config/kb-dispatch/secrets.env',
       availableOn: ['openrouter'],
-      supportsEffort: false,
       contextWindow: 131072,
     });
   });

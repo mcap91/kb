@@ -16,6 +16,14 @@
  *  - `claude-p-output-permission-denied.txt` — `is_error: false` but a
  *    non-empty `permission_denials` array (module doc: "is_error stays false
  *    on a tool-permission block").
+ *  - `claude-p-output-with-effort.txt` / `codex-exec-output-with-effort.jsonl`
+ *    (WK-0122) — `claude -p --effort high --output-format json` /
+ *    `codex exec "echo hello" --sandbox read-only -c model_reasoning_effort=high
+ *    --json`. Confirms the WK-0122 design note: neither shape carries a
+ *    direct effort/level echo field — only token counts (`usage.output_tokens`
+ *    for claude, `usage.reasoning_output_tokens` for codex) — so the response
+ *    doc's `effort_requested` field is correctly sourced from deterministic
+ *    pipeline opts (capture.ts), never from parsed worker output.
  *
  * No personal/absolute paths appear in this file (WK-0043) — fixture paths
  * are resolved relative to this test file via `__dirname` (this file compiles
@@ -45,7 +53,6 @@ function makeResolvedModel(overrides: Partial<ResolvedModel> = {}): ResolvedMode
     apiKeyEnv: null,
     secretsFile: null,
     availableOn: ['codex'],
-    supportsEffort: false,
     contextWindow: 131072,
     ...overrides,
   };
@@ -86,6 +93,25 @@ describe('adapters/codex.ts — parseCodexOutput (S6c, golden fixture)', () => {
     expect(result.error).toBe('ADAPTER_FAILED');
   });
 
+  it('WK-0122 DEC-0009: parses the with-effort capture, and it carries no effort echo field', () => {
+    const fixturePath = join(__dirname, 'fixtures', 'codex-exec-output-with-effort.jsonl');
+    const stdout = readFileSync(fixturePath, 'utf8');
+    const raw = stdout.trim();
+
+    const result = parseCodexOutput(stdout);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.outcome).toBe('completed');
+    expect(result.data.lastAssistantText).toBe('hello');
+    // Real capture from `codex exec "echo hello" --sandbox read-only
+    // -c model_reasoning_effort=high --json` — reasoning tokens ride the
+    // usual usage object; no distinct "effort"/"reasoning_effort" echo field
+    // exists anywhere in the stream (verifies the WK-0122 design note).
+    expect(raw).not.toContain('"effort"');
+    expect(raw).not.toContain('"reasoning_effort"');
+    expect(raw).toContain('reasoning_output_tokens');
+  });
+
   it('reports failed/empty_stream for empty input', () => {
     const result = parseCodexOutput('');
     expect(result.ok).toBe(true);
@@ -116,6 +142,30 @@ describe('adapters/codex.ts — buildInvocation', () => {
     expect(result.args).toContain('--model');
     expect(result.args).toContain('gpt-5.5');
     expect(result.cwd).toBe(clonePath);
+  });
+
+  it('WK-0122: splices -c model_reasoning_effort=<level> when effort is supplied', () => {
+    const model = makeResolvedModel({ family: 'codex', modelId: 'gpt-5.5' });
+    const clonePath = '/tmp/kb-codex-clone';
+    const outputPath = '/tmp/codex-last-message.txt';
+
+    const result = buildCodexInvocation('Test prompt text', model, clonePath, outputPath, 'workspace-write', 'high');
+
+    expect(result.args).toContain('-c');
+    expect(result.args).toContain('model_reasoning_effort=high');
+    // No quotes around the value (WK-0069 note).
+    expect(result.args).not.toContain('model_reasoning_effort="high"');
+  });
+
+  it('WK-0122: omits -c/model_reasoning_effort entirely when effort is not supplied', () => {
+    const model = makeResolvedModel({ family: 'codex', modelId: 'gpt-5.5' });
+    const clonePath = '/tmp/kb-codex-clone';
+    const outputPath = '/tmp/codex-last-message.txt';
+
+    const result = buildCodexInvocation('Test prompt text', model, clonePath, outputPath, 'workspace-write');
+
+    expect(result.args).not.toContain('-c');
+    expect(result.args.some((arg) => arg.startsWith('model_reasoning_effort='))).toBe(false);
   });
 });
 
@@ -172,6 +222,22 @@ describe('adapters/claude.ts — parseClaudeOutput (S6c, golden fixtures)', () =
     if (result.ok) return;
     expect(result.error).toBe('ADAPTER_FAILED');
   });
+
+  it('WK-0122 DEC-0009: parses the with-effort capture, and it carries no effort echo field', () => {
+    const fixturePath = join(__dirname, 'fixtures', 'claude-p-output-with-effort.txt');
+    const stdout = readFileSync(fixturePath, 'utf8');
+
+    const result = parseClaudeOutput(stdout);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.outcome).toBe('completed');
+    // Real capture from `claude -p --effort high --output-format json` — no
+    // distinct "effort"/"level" echo field exists anywhere in the result
+    // object (verifies the WK-0122 design note); only usage/cost counts do.
+    expect(stdout).not.toContain('"effort"');
+    expect(stdout).not.toContain('"reasoning_effort"');
+    expect(result.data.usage.outputTokens).toBeGreaterThan(0);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -202,6 +268,46 @@ describe('adapters/claude.ts — buildInvocation', () => {
     expect(result.args).toContain('claude-sonnet-5');
     expect(result.args).toContain('--');
     expect(result.args[result.args.length - 1]).toBe(promptText);
+  });
+
+  it('WK-0122: splices --effort <level> before the -- terminator when effort is supplied', () => {
+    const model = makeResolvedModel({
+      family: 'claude',
+      backend: 'claude',
+      slug: 'claude-sonnet-5',
+      modelId: 'claude-sonnet-5',
+      availableOn: ['claude'],
+    });
+    const clonePath = '/tmp/kb-claude-clone';
+    const promptText = 'Test prompt text';
+
+    const result = buildClaudeInvocation(promptText, model, clonePath, undefined, 'high');
+
+    expect(result.args).toContain('--effort');
+    expect(result.args).toContain('high');
+    // The prompt must stay the LAST positional arg after -- (DEC-0024) — effort
+    // must not land after the terminator alongside it.
+    expect(result.args[result.args.length - 1]).toBe(promptText);
+    expect(result.args[result.args.length - 2]).toBe('--');
+    const effortIdx = result.args.indexOf('--effort');
+    const terminatorIdx = result.args.indexOf('--');
+    expect(effortIdx).toBeLessThan(terminatorIdx);
+  });
+
+  it('WK-0122: omits --effort entirely when effort is not supplied', () => {
+    const model = makeResolvedModel({
+      family: 'claude',
+      backend: 'claude',
+      slug: 'claude-sonnet-5',
+      modelId: 'claude-sonnet-5',
+      availableOn: ['claude'],
+    });
+    const clonePath = '/tmp/kb-claude-clone';
+    const promptText = 'Test prompt text';
+
+    const result = buildClaudeInvocation(promptText, model, clonePath);
+
+    expect(result.args).not.toContain('--effort');
   });
 });
 

@@ -19,6 +19,20 @@ import { fail, ok } from './errors.js';
 /** Which agent CLI adapter handles a backend: Pi coding agent, Codex CLI, or Claude Code CLI. */
 export type BackendFamily = 'pi' | 'codex' | 'claude';
 
+/**
+ * Per-family effort/reasoning-level CLI mapping (WK-0122). The mapping IS the
+ * capability declaration — a backend with no `effort_mapping` does not
+ * support effort, full stop; there is no separate boolean flag to keep in
+ * sync. `flag_value` splices `<flag> <level>` (Claude: `--effort high`);
+ * `key_equals_value` splices `<flag> <key>=<level>` (Codex: `-c
+ * model_reasoning_effort=high`).
+ */
+export interface EffortMapping {
+  flag: string;
+  style: 'flag_value' | 'key_equals_value';
+  key?: string;
+}
+
 export interface BackendEntry {
   family: BackendFamily;
   /** Custom endpoint URL; null when the family's own CLI reaches its SaaS provider directly (no operator-configured endpoint). */
@@ -30,6 +44,8 @@ export interface BackendEntry {
     context_window?: number;
     [key: string]: unknown;
   };
+  /** Optional per-family effort/reasoning CLI mapping (WK-0122). Absent = effort not supported for this backend. */
+  effort_mapping?: EffortMapping;
 }
 
 export interface ModelTableEntry {
@@ -98,7 +114,9 @@ function warnUnknownKeys(entry: Record<string, unknown>, knownKeys: ReadonlySet<
   }
 }
 
-const BACKEND_ENTRY_KNOWN_KEYS = new Set(['family', 'base_url', 'api_key_env', 'secrets_file', 'notes', 'serving']);
+const BACKEND_ENTRY_KNOWN_KEYS = new Set(['family', 'base_url', 'api_key_env', 'secrets_file', 'notes', 'serving', 'effort_mapping']);
+
+const EFFORT_MAPPING_STYLES: readonly EffortMapping['style'][] = ['flag_value', 'key_equals_value'];
 
 const BACKEND_FAMILIES: readonly BackendFamily[] = ['pi', 'codex', 'claude'];
 
@@ -134,6 +152,33 @@ function validateBackendEntry(name: string, raw: unknown): DispatchResult<Backen
     }
   }
 
+  let effortMapping: EffortMapping | undefined;
+  if (raw.effort_mapping !== undefined) {
+    if (!isPlainObject(raw.effort_mapping)) {
+      return fail('BAD_RECORD', `Backend "${name}" in backends.json: "effort_mapping" must be an object.`);
+    }
+    const { flag, style, key } = raw.effort_mapping;
+    if (typeof flag !== 'string' || flag.length === 0) {
+      return fail('BAD_RECORD', `Backend "${name}" in backends.json: "effort_mapping.flag" must be a non-empty string.`);
+    }
+    if (typeof style !== 'string' || !EFFORT_MAPPING_STYLES.includes(style as EffortMapping['style'])) {
+      return fail(
+        'BAD_RECORD',
+        `Backend "${name}" in backends.json: "effort_mapping.style" must be one of: ${EFFORT_MAPPING_STYLES.join(', ')}.`,
+      );
+    }
+    if (key !== undefined && typeof key !== 'string') {
+      return fail('BAD_RECORD', `Backend "${name}" in backends.json: "effort_mapping.key" must be a string when present.`);
+    }
+    if (style === 'key_equals_value' && (typeof key !== 'string' || key.length === 0)) {
+      return fail(
+        'BAD_RECORD',
+        `Backend "${name}" in backends.json: "effort_mapping.key" is required (non-empty string) when "effort_mapping.style" is "key_equals_value".`,
+      );
+    }
+    effortMapping = { flag, style: style as EffortMapping['style'], ...(key !== undefined ? { key } : {}) };
+  }
+
   const entry: BackendEntry = {
     family: raw.family as BackendFamily,
     base_url: raw.base_url as string | null,
@@ -149,6 +194,7 @@ function validateBackendEntry(name: string, raw: unknown): DispatchResult<Backen
     }
     entry.serving = serving;
   }
+  if (effortMapping) entry.effort_mapping = effortMapping;
   return ok(entry);
 }
 

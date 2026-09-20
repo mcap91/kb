@@ -52,6 +52,13 @@ export interface CaptureOpts {
   backend?: string;
   /** Pi harness version captured by preflight's PI_VERSION probe (S3 ruling 7). */
   piVersion?: string;
+  /**
+   * Effort/reasoning level requested for this run (WK-0122) — deterministic
+   * pipeline input (`DispatchOpts.effort`), never LLM output. Rendered as
+   * `effort_requested` in the response doc frontmatter; empty string when
+   * effort was not requested.
+   */
+  effort?: string;
   /** Best-effort backend fingerprint — host/model always present when probed, serverVersion null when the backend has no version endpoint (S3 ruling 8). */
   backendFingerprint?: BackendFingerprint;
   /**
@@ -326,6 +333,7 @@ export async function writeResponseDoc(opts: CaptureOpts): Promise<DispatchResul
     `branch: ${branch}`,
     `changed_files: ${changedFilesYaml}`,
     `credentials_granted: ${credentialsGrantedYaml}`,
+    `effort_requested: ${opts.effort ?? ''}`,
   ];
   if (opts.compaction && opts.compaction.total > 0) {
     frontmatterLines.push(`compaction_total: ${opts.compaction.total}`);
