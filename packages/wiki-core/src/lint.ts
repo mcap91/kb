@@ -30,6 +30,17 @@
  *                                     checked but status has not advanced past an open state
  *   - UNCHECKED_CHECKLIST           — (error) closed/terminal-status record has unchecked
  *                                     items in its "## Acceptance criteria" section
+ *   - OPEN_CHILD_UNDER_TERMINAL_PARENT — (warning, cross-record, WK-0114) a WK's
+ *                                     initiative has a terminal status (done/cancelled) but
+ *                                     the WK's own status is not done/cancelled/parked
+ *   - INITIATIVE_READY_TO_CLOSE     — (warning, cross-record, WK-0114) an initiative has
+ *                                     >=1 WK child, is not itself closed, and every child
+ *                                     is closed — advisory only, never auto-closes
+ *   - STALE_ACTIVE_ISSUE            — (warning, cross-record, WK-0114) a WK in an active
+ *                                     status (in_progress/blocked/review) has not been
+ *                                     updated in >=14 days, measured against a
+ *                                     corpus-relative clock (max "updated" across all
+ *                                     records), never wall-clock time
  */
 
 import * as fs from 'node:fs';
@@ -212,6 +223,58 @@ function extractAcceptanceCriteriaCheckboxes(body: string): string[] {
 /** True if a checkbox line (as returned by extractAcceptanceCriteriaCheckboxes) is checked. */
 function isCheckedBox(line: string): boolean {
   return /^-\s*\[[xX]\]/.test(line);
+}
+
+// ---------------------------------------------------------------------------
+// Cross-record status-coherence helpers (WK-0114)
+// ---------------------------------------------------------------------------
+
+/**
+ * Parse a strict `YYYY-MM-DD` date string into a UTC Date. Returns null for anything
+ * that isn't exactly that shape, or that doesn't round-trip to a real calendar date
+ * (e.g. "2025-13-40" would otherwise silently roll forward under plain `Date` parsing).
+ */
+function parseDate(dateStr: string): Date | null {
+  if (typeof dateStr !== 'string') return null;
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateStr);
+  if (!match) return null;
+
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const date = new Date(Date.UTC(year, month - 1, day));
+
+  // Reject overflowed components (Date otherwise rolls Feb 30 into Mar 2, etc.).
+  if (
+    date.getUTCFullYear() !== year ||
+    date.getUTCMonth() !== month - 1 ||
+    date.getUTCDate() !== day
+  ) {
+    return null;
+  }
+  return date;
+}
+
+/**
+ * The corpus-relative "now": the maximum parseable `updated` date across all records.
+ * STALE_ACTIVE_ISSUE measures staleness against this instead of wall-clock time, so
+ * `lint()` stays a pure function of the file tree — same tree in, same diagnostics out,
+ * forever (no `Date.now()`, no bare `new Date()`). Accepted limitation: "stale" is
+ * relative to whichever record was most recently touched, not to real elapsed time —
+ * documented in contract/lint.md.
+ */
+function corpusLatestDate(records: ParsedRecord[]): Date | null {
+  let latest: Date | null = null;
+  for (const rec of records) {
+    if (!rec.frontmatter) continue;
+    const updated = rec.frontmatter['updated'];
+    if (typeof updated !== 'string') continue;
+    const parsed = parseDate(updated);
+    if (parsed && (!latest || parsed.getTime() > latest.getTime())) {
+      latest = parsed;
+    }
+  }
+  return latest;
 }
 
 // ---------------------------------------------------------------------------
@@ -634,6 +697,122 @@ export async function lint(opts: LintOpts): Promise<Result<LintResult>> {
         message: `Dependency cycle detected: ${diag.ids.join(' -> ')}`,
         severity: 'error',
       });
+    }
+  }
+
+  // Rules: OPEN_CHILD_UNDER_TERMINAL_PARENT / INITIATIVE_READY_TO_CLOSE /
+  // STALE_ACTIVE_ISSUE (all warnings, WK-0114) — cross-record status-coherence checks
+  // over the full repo-wide `records` set built above. Design-mirror only (ELv2) of
+  // upstream's initiative-status + lint-coordination-rules checks. Flag only; never
+  // mutate a record.
+  {
+    const issuesByInitiative = new Map<string, ParsedRecord[]>();
+    const initiatives: ParsedRecord[] = [];
+
+    for (const rec of records) {
+      if (!rec.frontmatter) continue;
+      if (rec.typeDef.prefix === 'IN') {
+        initiatives.push(rec);
+      } else if (rec.typeDef.prefix === 'WK') {
+        const initiative = rec.frontmatter['initiative'];
+        if (typeof initiative === 'string' && initiative) {
+          const list = issuesByInitiative.get(initiative) ?? [];
+          list.push(rec);
+          issuesByInitiative.set(initiative, list);
+        }
+      }
+    }
+
+    // Terminal parent = done/cancelled only — narrower than CLOSED_STATUSES below,
+    // since a deprecated/superseded/wont_do initiative doesn't imply its children
+    // should have stopped.
+    const TERMINAL_PARENT_STATUSES = new Set(['done', 'cancelled']);
+    // A child is "actionable" (and so drift-worthy under a terminal parent) unless its
+    // status is one of these. `parked` is deliberately excluded — a parked child under
+    // a terminal parent is expected, not drift.
+    const CHILD_NOT_ACTIONABLE_STATUSES = new Set(['done', 'cancelled', 'parked']);
+    // kb CLOSED_STATUSES = upstream's set minus `expired` (not a kb status — confirmed
+    // against contract/manifest.json).
+    const CLOSED_STATUSES = new Set([
+      'done', 'cancelled', 'deprecated', 'duplicate', 'superseded', 'wont_do',
+    ]);
+    const ACTIVE_STATUSES = new Set(['in_progress', 'blocked', 'review']);
+    const STALE_THRESHOLD_DAYS = 14;
+    const MS_PER_DAY = 24 * 60 * 60 * 1000;
+
+    for (const initiative of initiatives) {
+      const fm = initiative.frontmatter;
+      if (!fm) continue;
+      const initiativeId = typeof fm['id'] === 'string' ? fm['id'] : undefined;
+      const initiativeStatus = typeof fm['status'] === 'string' ? fm['status'] : undefined;
+      if (!initiativeId || !initiativeStatus) continue;
+
+      const children = issuesByInitiative.get(initiativeId) ?? [];
+
+      // Rule: OPEN_CHILD_UNDER_TERMINAL_PARENT
+      if (TERMINAL_PARENT_STATUSES.has(initiativeStatus)) {
+        for (const child of children) {
+          const childFm = child.frontmatter;
+          if (!childFm) continue;
+          const childStatus =
+            typeof childFm['status'] === 'string' ? childFm['status'] : undefined;
+          if (childStatus && !CHILD_NOT_ACTIONABLE_STATUSES.has(childStatus)) {
+            diagnostics.push({
+              file: child.relPath,
+              field: 'status',
+              code: 'OPEN_CHILD_UNDER_TERMINAL_PARENT',
+              message: `Status "${childStatus}" is still open under terminal parent initiative "${initiativeId}" (initiative status "${initiativeStatus}")`,
+              severity: 'warning',
+            });
+          }
+        }
+      }
+
+      // Rule: INITIATIVE_READY_TO_CLOSE — advisory only; never auto-closes the initiative.
+      if (children.length > 0 && !CLOSED_STATUSES.has(initiativeStatus)) {
+        const allChildrenClosed = children.every(child => {
+          const childFm = child.frontmatter;
+          const childStatus =
+            childFm && typeof childFm['status'] === 'string' ? childFm['status'] : undefined;
+          return childStatus !== undefined && CLOSED_STATUSES.has(childStatus);
+        });
+        if (allChildrenClosed) {
+          diagnostics.push({
+            file: initiative.relPath,
+            field: 'status',
+            code: 'INITIATIVE_READY_TO_CLOSE',
+            message: `All ${children.length} child WK record(s) under "${initiativeId}" are closed but initiative status is still "${initiativeStatus}"`,
+            severity: 'warning',
+          });
+        }
+      }
+    }
+
+    // Rule: STALE_ACTIVE_ISSUE — measured against the corpus-relative clock, never
+    // wall-clock time (see corpusLatestDate doc comment + contract/lint.md).
+    const asOf = corpusLatestDate(records);
+    if (asOf) {
+      for (const rec of records) {
+        if (rec.typeDef.prefix !== 'WK' || !rec.frontmatter) continue;
+        const status = rec.frontmatter['status'];
+        if (typeof status !== 'string' || !ACTIVE_STATUSES.has(status)) continue;
+
+        const updated = rec.frontmatter['updated'];
+        if (typeof updated !== 'string') continue;
+        const updatedDate = parseDate(updated);
+        if (!updatedDate) continue;
+
+        const ageDays = Math.floor((asOf.getTime() - updatedDate.getTime()) / MS_PER_DAY);
+        if (ageDays >= STALE_THRESHOLD_DAYS) {
+          diagnostics.push({
+            file: rec.relPath,
+            field: 'updated',
+            code: 'STALE_ACTIVE_ISSUE',
+            message: `Status "${status}" has not been updated in ${ageDays} day(s), relative to the corpus's latest "updated" date`,
+            severity: 'warning',
+          });
+        }
+      }
     }
   }
 
