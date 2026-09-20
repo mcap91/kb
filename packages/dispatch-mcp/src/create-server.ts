@@ -25,9 +25,9 @@ export function toErrorEnvelope(err: unknown) {
 // WK-0046 T15: advertise side-effects and audience so an agent can distinguish routine
 // read tools from operator-setup / execution tools. Kept name-keyed here so the
 // declarations in tools.ts stay lean; update these sets when adding a tool.
-const READ_ONLY = new Set(['status', 'wait-for-run', 'get-response']);
-const OPERATOR_ONLY = new Set(['init-config', 'init-dispatch', 'review', 'launch', 'review-and-launch', 'dispatch']);
-const DESTRUCTIVE = new Set(['launch', 'review-and-launch', 'cleanup', 'dispatch']);
+const READ_ONLY = new Set(['status', 'wait-for-run']);
+const OPERATOR_ONLY = new Set(['init-config', 'init-dispatch', 'dispatch']);
+const DESTRUCTIVE = new Set(['cleanup', 'dispatch']);
 
 // WK-0046-style MCP instructions (PLN-0004 S1 Wave 3, s1-rulings ruling 8): built
 // at startup from in-process constants only — pure/static, no probes, no I/O. Boot
@@ -45,20 +45,16 @@ const INSTRUCTIONS = [
   '',
   '## Tools',
   '',
-  '| Tool | Purpose | v1/v2 |',
-  '|------|---------|-------|',
-  '| dispatch | Gate + launch (background, atomic) | v2 |',
-  '| init-dispatch | Scaffold wiki/.dispatch/ config tables | v2 |',
-  '| status | Repo-wide run state + v2 runs[] | both |',
-  '| wait-for-run | Poll a run to terminal | both |',
-  '| check-environment | Host tier probes | both |',
-  '| create-handoff | Scaffold an HO | both |',
-  '| init-config | Operator setup | both |',
-  '| cleanup | Stale state removal | both |',
-  '| review | v1 review step | v1 (legacy) |',
-  '| launch | v1 launch step | v1 (legacy) |',
-  '| review-and-launch | v1 combined | v1 (legacy) |',
-  '| get-response | v1 response reader | v1 (legacy) |',
+  '| Tool | Purpose |',
+  '|------|---------|',
+  '| dispatch | Gate + launch (background, atomic) |',
+  '| init-dispatch | Scaffold wiki/.dispatch/ config tables |',
+  '| status | Repo-wide run state + v2 runs[] |',
+  '| wait-for-run | Poll a run to terminal |',
+  '| check-environment | Host tier probes |',
+  '| create-handoff | Scaffold an HO |',
+  '| init-config | Operator setup |',
+  '| cleanup | Stale state removal |',
   '',
   '## Refusal codes',
   '',

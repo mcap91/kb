@@ -4,37 +4,9 @@ import { z } from 'zod';
 // Handoff frontmatter Zod schema
 // ---------------------------------------------------------------------------
 
+// `handoffModeSchema` predates the v1 handoff-frontmatter schema it once fed (removed
+// under WK-0118 Phase 1) but survives because `tokenPayloadSchema` below still embeds it.
 export const handoffModeSchema = z.enum(['redteam', 'code_review', 'implement']);
-
-export const handoffStatusSchema = z.enum([
-  'draft',
-  'reviewed',
-  'launched',
-  'completed',
-  'failed',
-]);
-
-/**
- * Zod schema for HO-* handoff frontmatter validation.
- *
- * Dispatch-owned: HO-* records are not manifest-driven wiki record types.
- */
-export const handoffFrontmatterSchema = z.object({
-  schema_version: z.literal(1),
-  id: z.string(),
-  title: z.string(),
-  subject: z.string(),
-  allowed_agents: z.array(z.string()),
-  mode: handoffModeSchema,
-  status: handoffStatusSchema.optional(),
-  created: z.string().optional(),
-  updated: z.string().optional(),
-  depends_on: z.array(z.string()).optional(),
-  area: z.string().optional(),
-  initiative: z.string().optional(),
-  work_item: z.string().optional(),
-  write_scope: z.array(z.string()).optional(),
-});
 
 // ---------------------------------------------------------------------------
 // Agent registry Zod schema

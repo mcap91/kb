@@ -160,15 +160,11 @@ describe('MCP smoke tests', () => {
     const names = tools.map((t: { name: string }) => t.name);
     expect(names).toContain('check-environment');
     expect(names).toContain('create-handoff');
-    expect(names).toContain('review');
-    expect(names).toContain('launch');
-    expect(names).toContain('review-and-launch');
     expect(names).toContain('status');
     expect(names).toContain('cleanup');
     expect(names).toContain('wait-for-run');
-    expect(names).toContain('get-response');
     expect(names).toContain('dispatch');
     expect(names).toContain('init-dispatch');
-    expect(names).toHaveLength(12);
+    expect(names).toHaveLength(8);
   });
 });

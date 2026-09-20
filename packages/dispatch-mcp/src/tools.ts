@@ -3,15 +3,9 @@ import {
   checkEnvironment,
   cleanup,
   createHandoff,
-  getResponse,
   initConfig,
   initDispatch,
-  launch,
-  launchBackground,
   launchDispatchBackground,
-  review,
-  reviewAndLaunch,
-  reviewAndLaunchBackground,
   status,
   waitForRun,
 } from '@kb/dispatch-core';
@@ -75,68 +69,15 @@ export const tools: ToolDef[] = [
       constraints: z.array(z.string()).optional(),
       expected_output: z.string().optional(),
       context: z.string().optional(),
+      acceptance: z.array(z.string()).min(1),
+      validation: z.array(z.string()).min(1),
+      web: z.boolean().optional(),
+      credentials: z.array(z.string()).optional(),
+      data_mounts: z.array(z.string()).optional(),
+      base_ref: z.string().optional(),
+      vars: z.array(z.string()).optional(),
     }),
     handler: async (input) => createHandoff(input as unknown as Parameters<typeof createHandoff>[0]),
-  },
-  {
-    name: 'review',
-    description: 'Review a handoff document and create a reviewed bundle',
-    inputSchema: dirSchema.extend({
-      handoff: z.string().describe('Repo-relative path to the handoff file, e.g. wiki/handoffs/HO-0001.md'),
-      agent: z.string(),
-      reviewedAndAcceptRisks: z.boolean(),
-    }),
-    handler: async (input) => review(input as unknown as Parameters<typeof review>[0]),
-  },
-  {
-    name: 'launch',
-    description: 'Launch a previously reviewed handoff. Defaults to background mode for MCP callers.',
-    inputSchema: dirSchema.extend({
-      reviewId: z.string(),
-      background: z.boolean().optional(),
-      model: z.string().optional().describe('Model to use for this run'),
-      effort: z.string().optional().describe('Effort/reasoning level for this run'),
-    }),
-    handler: async (input) => {
-      if (input.background === false) {
-        return launch(input as unknown as Parameters<typeof launch>[0]);
-      }
-
-      return launchBackground({
-        dir: input.dir as string,
-        reviewId: input.reviewId as string,
-        verbose: input.verbose as boolean | undefined,
-        model: input.model as string | undefined,
-        effort: input.effort as string | undefined,
-      });
-    },
-  },
-  {
-    name: 'review-and-launch',
-    description: 'Review a handoff and immediately launch it. Defaults to background mode for MCP callers.',
-    inputSchema: dirSchema.extend({
-      handoff: z.string().describe('Repo-relative path to the handoff file, e.g. wiki/handoffs/HO-0001.md'),
-      agent: z.string(),
-      reviewedAndAcceptRisks: z.boolean(),
-      background: z.boolean().optional(),
-      model: z.string().optional().describe('Model to use for this run'),
-      effort: z.string().optional().describe('Effort/reasoning level for this run'),
-    }),
-    handler: async (input) => {
-      if (input.background === false) {
-        return reviewAndLaunch(input as unknown as Parameters<typeof reviewAndLaunch>[0]);
-      }
-
-      return reviewAndLaunchBackground({
-        dir: input.dir as string,
-        handoff: input.handoff as string,
-        agent: input.agent as string,
-        reviewedAndAcceptRisks: input.reviewedAndAcceptRisks as boolean,
-        verbose: input.verbose as boolean | undefined,
-        model: input.model as string | undefined,
-        effort: input.effort as string | undefined,
-      });
-    },
   },
   {
     name: 'status',
@@ -171,15 +112,6 @@ export const tools: ToolDef[] = [
         timeoutSeconds,
       });
     },
-  },
-  {
-    name: 'get-response',
-    description: 'Retrieve response content and metadata for an active or completed dispatch run. Requires at least one of reviewId or runId.',
-    inputSchema: requireRunIdentifier(runIdentifierSchema.extend({
-      includeMeta: z.boolean().optional(),
-      includeLogs: z.boolean().optional(),
-    })),
-    handler: async (input) => getResponse(input as unknown as Parameters<typeof getResponse>[0]),
   },
   {
     name: 'dispatch',
