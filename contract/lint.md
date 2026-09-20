@@ -70,6 +70,43 @@ A record file is in a directory that does not match its `id` prefix. For example
 
 A record with a terminal status (`done`, `cancelled`, `completed`, etc.) contains unchecked checklist items (`- [ ]`) in its body.
 
+## Cross-Record Rules (WK-0114)
+
+The rules below run once, after every per-record rule above (and after `DUPLICATE_ID` /
+`DEPENDENCY_CYCLE`), over the full repo-wide record set. They reason about relationships
+between records — a WK and its parent initiative, or a WK against the rest of the corpus —
+rather than about a single record in isolation. All three are warnings: they flag, they never
+mutate a record.
+
+### OPEN_CHILD_UNDER_TERMINAL_PARENT (warning)
+
+A WK record's `initiative` points at an initiative whose status is `done` or `cancelled` (a
+terminal parent), but the WK's own status is not `done`, `cancelled`, or `parked`. Flagged on
+the **child** WK's file, naming the parent initiative. `parked` is deliberately excluded from
+the actionable set — a parked child under a terminal parent is expected, not drift.
+
+### INITIATIVE_READY_TO_CLOSE (warning)
+
+An initiative has at least one WK child, is not itself in a closed status (`done`, `cancelled`,
+`deprecated`, `duplicate`, `superseded`, `wont_do`), and every one of its WK children is in a
+closed status. Flagged on the **initiative's** file. Advisory only — the initiative is never
+auto-closed by lint.
+
+### STALE_ACTIVE_ISSUE (warning)
+
+A WK record in an active status (`in_progress`, `blocked`, or `review`) whose `updated` date is
+14 or more days older than the corpus-relative clock (see below). A WK in `todo` does not
+trigger this rule — `todo` is not considered part of the active set.
+
+**Determinism / corpus-relative clock.** `wiki lint` never reads the wall clock — there is no
+`Date.now()` and no bare `new Date()` anywhere in the lint pass. Staleness is measured against
+`corpusLatestDate`: the maximum parseable `updated` date across *all* records in the repo, not
+today's real date. This keeps `lint()` a pure function of the file tree: the same tree always
+produces byte-identical diagnostics, regardless of when or on what machine it runs. Accepted
+limitation: "stale" is relative to whichever record was most recently touched, not to real
+elapsed time — if nothing in the repo has been touched in months, a WK updated yesterday can
+still register as far from "stale" by this clock even though it is stale by the calendar.
+
 ## Output Format
 
 Lint results are reported as a list of diagnostics:

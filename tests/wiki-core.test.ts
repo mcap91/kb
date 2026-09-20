@@ -2515,6 +2515,252 @@ describe('lint WK-0047 reference-integrity + coordination rules', () => {
 });
 
 // ---------------------------------------------------------------------------
+// WK-0114: cross-record status-coherence lint rules
+// ---------------------------------------------------------------------------
+
+describe('lint WK-0114 cross-record status-coherence', () => {
+  let tmp: TmpRepo;
+
+  afterEach(() => {
+    tmp?.cleanup();
+  });
+
+  it('OPEN_CHILD_UNDER_TERMINAL_PARENT: done initiative + in_progress child warns on the child, naming the parent', async () => {
+    tmp = await createBootstrappedRepo();
+
+    writeRecord(tmp.dir, 'wiki/initiatives/IN-0001.md', {
+      id: 'IN-0001',
+      title: 'Closed initiative',
+      status: 'done',
+      priority: 'medium',
+      owner: 'test',
+      created: '2025-01-01',
+      updated: '2025-01-01',
+    });
+    writeRecord(tmp.dir, 'wiki/issues/WK-0001.md', {
+      id: 'WK-0001',
+      title: 'Still open child',
+      type: 'task',
+      status: 'in_progress',
+      priority: 'medium',
+      owner: 'test',
+      created: '2025-01-01',
+      updated: '2025-01-01',
+      initiative: 'IN-0001',
+    });
+
+    const result = await lint({ dir: tmp.dir });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const diags = result.data.diagnostics.filter(
+        d => d.code === 'OPEN_CHILD_UNDER_TERMINAL_PARENT',
+      );
+      expect(diags.length).toBe(1);
+      expect(diags[0].file).toBe('wiki/issues/WK-0001.md');
+      expect(diags[0].severity).toBe('warning');
+      expect(diags[0].message).toContain('IN-0001');
+    }
+  });
+
+  it('OPEN_CHILD_UNDER_TERMINAL_PARENT excluded: cancelled initiative + parked child produces no finding', async () => {
+    tmp = await createBootstrappedRepo();
+
+    writeRecord(tmp.dir, 'wiki/initiatives/IN-0001.md', {
+      id: 'IN-0001',
+      title: 'Cancelled initiative',
+      status: 'cancelled',
+      priority: 'medium',
+      owner: 'test',
+      created: '2025-01-01',
+      updated: '2025-01-01',
+    });
+    writeRecord(tmp.dir, 'wiki/issues/WK-0001.md', {
+      id: 'WK-0001',
+      title: 'Parked child',
+      type: 'task',
+      status: 'parked',
+      priority: 'medium',
+      owner: 'test',
+      created: '2025-01-01',
+      updated: '2025-01-01',
+      initiative: 'IN-0001',
+    });
+
+    const result = await lint({ dir: tmp.dir });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const diags = result.data.diagnostics.filter(
+        d => d.code === 'OPEN_CHILD_UNDER_TERMINAL_PARENT',
+      );
+      expect(diags).toEqual([]);
+    }
+  });
+
+  it('INITIATIVE_READY_TO_CLOSE: in_progress initiative with all children done warns on the initiative and does not modify it', async () => {
+    tmp = await createBootstrappedRepo();
+
+    writeRecord(tmp.dir, 'wiki/initiatives/IN-0001.md', {
+      id: 'IN-0001',
+      title: 'Should be closeable',
+      status: 'in_progress',
+      priority: 'medium',
+      owner: 'test',
+      created: '2025-01-01',
+      updated: '2025-01-01',
+    });
+    writeRecord(tmp.dir, 'wiki/issues/WK-0001.md', {
+      id: 'WK-0001',
+      title: 'Finished child',
+      type: 'task',
+      status: 'done',
+      priority: 'medium',
+      owner: 'test',
+      created: '2025-01-01',
+      updated: '2025-01-01',
+      initiative: 'IN-0001',
+    });
+
+    const initiativePath = 'wiki/initiatives/IN-0001.md';
+    const before = readText(tmp.dir, initiativePath);
+
+    const result = await lint({ dir: tmp.dir });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const diags = result.data.diagnostics.filter(d => d.code === 'INITIATIVE_READY_TO_CLOSE');
+      expect(diags.length).toBe(1);
+      expect(diags[0].file).toBe(initiativePath);
+      expect(diags[0].severity).toBe('warning');
+    }
+
+    // Advisory only — lint must never mutate the record it flags.
+    const after = readText(tmp.dir, initiativePath);
+    expect(after).toBe(before);
+    expect(after).toContain('status: "in_progress"');
+  });
+
+  it('INITIATIVE_READY_TO_CLOSE excluded: done initiative with a done child produces no finding (parent already closed)', async () => {
+    tmp = await createBootstrappedRepo();
+
+    writeRecord(tmp.dir, 'wiki/initiatives/IN-0001.md', {
+      id: 'IN-0001',
+      title: 'Already closed',
+      status: 'done',
+      priority: 'medium',
+      owner: 'test',
+      created: '2025-01-01',
+      updated: '2025-01-01',
+    });
+    writeRecord(tmp.dir, 'wiki/issues/WK-0001.md', {
+      id: 'WK-0001',
+      title: 'Finished child',
+      type: 'task',
+      status: 'done',
+      priority: 'medium',
+      owner: 'test',
+      created: '2025-01-01',
+      updated: '2025-01-01',
+      initiative: 'IN-0001',
+    });
+
+    const result = await lint({ dir: tmp.dir });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const diags = result.data.diagnostics.filter(d => d.code === 'INITIATIVE_READY_TO_CLOSE');
+      expect(diags).toEqual([]);
+    }
+  });
+
+  it('STALE_ACTIVE_ISSUE: two active WKs 30 days apart — older is flagged (age 30), newer is not, and re-running is byte-identical', async () => {
+    tmp = await createBootstrappedRepo();
+
+    // The IN's own `updated` must not exceed the newer WK's `updated`, or it would
+    // become the corpus asOf and skew both ages away from the expected 30/0 split.
+    writeRecord(tmp.dir, 'wiki/initiatives/IN-0001.md', {
+      id: 'IN-0001',
+      title: 'Init',
+      status: 'todo',
+      priority: 'medium',
+      owner: 'test',
+      created: '2026-01-01',
+      updated: '2026-01-01',
+    });
+    writeRecord(tmp.dir, 'wiki/issues/WK-0001.md', {
+      id: 'WK-0001',
+      title: 'Older active issue',
+      type: 'task',
+      status: 'in_progress',
+      priority: 'medium',
+      owner: 'test',
+      created: '2026-01-01',
+      updated: '2026-01-01',
+      initiative: 'IN-0001',
+    });
+    writeRecord(tmp.dir, 'wiki/issues/WK-0002.md', {
+      id: 'WK-0002',
+      title: 'Newer active issue',
+      type: 'task',
+      status: 'blocked',
+      priority: 'medium',
+      owner: 'test',
+      created: '2026-01-01',
+      updated: '2026-01-31', // corpus asOf: 30 days after WK-0001, 0 days after itself
+      initiative: 'IN-0001',
+    });
+
+    const result = await lint({ dir: tmp.dir });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const stale = result.data.diagnostics.filter(d => d.code === 'STALE_ACTIVE_ISSUE');
+      expect(stale.length).toBe(1);
+      expect(stale[0].file).toBe('wiki/issues/WK-0001.md');
+      expect(stale[0].severity).toBe('warning');
+      expect(stale[0].message).toContain('30');
+    }
+
+    // Re-running lint on the exact same, unchanged tree must produce byte-identical
+    // diagnostics — proof the clock is corpus-relative, not wall-clock (which would
+    // drift the "age" on every real-world day that passes).
+    const rerun = await lint({ dir: tmp.dir });
+    expect(rerun.ok).toBe(true);
+    if (result.ok && rerun.ok) {
+      expect(JSON.stringify(rerun.data.diagnostics)).toBe(JSON.stringify(result.data.diagnostics));
+    }
+  });
+
+  it('STALE_ACTIVE_ISSUE excluded: a todo WK with an old updated date produces no finding (todo is not in the active set)', async () => {
+    tmp = await createBootstrappedRepo();
+
+    writeRecord(tmp.dir, 'wiki/initiatives/IN-0001.md', {
+      id: 'IN-0001',
+      title: 'Init',
+      status: 'todo',
+      priority: 'medium',
+      owner: 'test',
+      created: '2026-01-01',
+      updated: '2026-01-31',
+    });
+    writeRecord(tmp.dir, 'wiki/issues/WK-0001.md', {
+      id: 'WK-0001',
+      title: 'Old but still todo',
+      type: 'task',
+      status: 'todo',
+      priority: 'medium',
+      owner: 'test',
+      created: '2026-01-01',
+      updated: '2026-01-01',
+      initiative: 'IN-0001',
+    });
+
+    const result = await lint({ dir: tmp.dir });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const stale = result.data.diagnostics.filter(d => d.code === 'STALE_ACTIVE_ISSUE');
+      expect(stale).toEqual([]);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Generate Tests
 // ---------------------------------------------------------------------------
 
