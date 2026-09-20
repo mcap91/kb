@@ -2,6 +2,7 @@
 id: "{{id}}"
 title: "{{title}}"
 mode: implement
+work_item:
 write_scope: []
 base_ref:
 web: false

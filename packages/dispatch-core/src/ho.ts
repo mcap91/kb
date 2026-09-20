@@ -40,6 +40,7 @@ export interface Handoff {
   read_first: string[];
   vars: string[]; // Array of "KEY=value" strings; non-secret literal env for the worker
   fixup_context?: string; // Prior review findings injected verbatim as coordination context (s6-rulings.md ruling 3)
+  work_item?: string; // WK-#### this HO's work traces to; required for mode=implement, whose initiative must resolve to a real IN-#### (WK-0116 / IN-0006)
   acceptance: string[];
   validation: string[];
   status: string;
@@ -227,6 +228,12 @@ export function parseHandoffContent(content: string, filename: string): Dispatch
     return fail('Handoff fixup_context must be a string.');
   }
 
+  if (raw.work_item !== undefined && raw.work_item !== null) {
+    if (typeof raw.work_item !== 'string' || !/^WK-\d{4}$/.test(raw.work_item)) {
+      return fail(`Handoff work_item must match /^WK-\\d{4}$/; got: ${String(raw.work_item)}`);
+    }
+  }
+
   const handoff: Handoff = {
     id,
     title,
@@ -244,6 +251,7 @@ export function parseHandoffContent(content: string, filename: string): Dispatch
   };
 
   if (typeof raw.fixup_context === 'string') handoff.fixup_context = raw.fixup_context;
+  if (typeof raw.work_item === 'string') handoff.work_item = raw.work_item;
   if (typeof raw.run_id === 'string') handoff.run_id = raw.run_id;
   if (typeof raw.agent === 'string') handoff.agent = raw.agent;
   if (typeof raw.model === 'string') handoff.model = raw.model;

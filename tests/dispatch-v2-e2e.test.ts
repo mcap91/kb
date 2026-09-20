@@ -74,6 +74,7 @@ web: false
 credentials: []
 data_mounts: []
 read_first: ["README.md"]
+work_item: WK-9004
 acceptance:
   - "AC-1: greet('World') returns 'Hello, World!'"
   - "AC-2: \`node --test test/\` passes"
@@ -106,6 +107,22 @@ async function setupRepo(): Promise<string> {
   await mkdir(join(repoRoot, 'wiki', 'handoffs'), { recursive: true });
   await writeFile(join(repoRoot, 'wiki', 'handoffs', 'HO-TEST.md'), HO_TEST_CONTENT, 'utf8');
   await writeFile(join(repoRoot, 'README.md'), 'kb-e2e-fixture: a minimal fixture repo.\n', 'utf8');
+
+  // WK-0116: HO-TEST is mode=implement, so it must declare a work_item resolving
+  // to a real initiative, or admission trips UNRESOLVED_INITIATIVE before this
+  // full-pipeline-chain test ever reaches baseSha resolution.
+  await mkdir(join(repoRoot, 'wiki', 'issues'), { recursive: true });
+  await writeFile(
+    join(repoRoot, 'wiki', 'issues', 'WK-9004.md'),
+    '---\nid: "WK-9004"\ntitle: "Fixture WK"\nstatus: todo\ninitiative: IN-9004\n---\n\n# WK-9004: Fixture\n',
+    'utf8',
+  );
+  await mkdir(join(repoRoot, 'wiki', 'initiatives'), { recursive: true });
+  await writeFile(
+    join(repoRoot, 'wiki', 'initiatives', 'IN-9004.md'),
+    '---\nid: "IN-9004"\ntitle: "Fixture initiative"\nstatus: todo\n---\n\n# IN-9004: Fixture\n',
+    'utf8',
+  );
 
   execFileSync('git', ['add', '-A'], { cwd: repoRoot });
   execFileSync('git', ['commit', '-m', 'initial commit'], { cwd: repoRoot });
@@ -598,6 +615,7 @@ credentials: ${JSON.stringify(credentials)}
 data_mounts: []
 read_first: []
 vars: ${JSON.stringify(vars)}
+work_item: WK-9003
 acceptance:
   - "AC-1: placeholder — this HO is never actually dispatched to a worker"
 validation: ["node --test test/"]
@@ -612,6 +630,22 @@ clone/jail/worker step runs, so this body is never read by a worker.
   await mkdir(join(repoRoot, 'wiki', 'handoffs'), { recursive: true });
   await writeFile(join(repoRoot, 'wiki', 'handoffs', 'HO-S3TEST.md'), hoContent, 'utf8');
   await writeFile(join(repoRoot, 'README.md'), 'kb-e2e-s3-fixture: a minimal fixture repo.\n', 'utf8');
+
+  // WK-0116: the fixture HO is mode=implement, so it must declare a work_item
+  // resolving to a real initiative, or every test below trips UNRESOLVED_INITIATIVE
+  // before ever reaching the gate under test.
+  await mkdir(join(repoRoot, 'wiki', 'issues'), { recursive: true });
+  await writeFile(
+    join(repoRoot, 'wiki', 'issues', 'WK-9003.md'),
+    '---\nid: "WK-9003"\ntitle: "Fixture WK"\nstatus: todo\ninitiative: IN-9003\n---\n\n# WK-9003: Fixture\n',
+    'utf8',
+  );
+  await mkdir(join(repoRoot, 'wiki', 'initiatives'), { recursive: true });
+  await writeFile(
+    join(repoRoot, 'wiki', 'initiatives', 'IN-9003.md'),
+    '---\nid: "IN-9003"\ntitle: "Fixture initiative"\nstatus: todo\n---\n\n# IN-9003: Fixture\n',
+    'utf8',
+  );
 
   await mkdir(join(repoRoot, 'wiki', '.dispatch'), { recursive: true });
   const models = opts.models ?? {

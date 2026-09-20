@@ -159,7 +159,7 @@ export { parseHandoff, parseHandoffContent } from './ho.js';
 
 // Admission gate (§7 S0 subset)
 export type { AdmissionResult } from './admission.js';
-export { checkAdmission } from './admission.js';
+export { checkAdmission, checkUnresolvedInitiative } from './admission.js';
 
 // Model registry (T23 S0 seed) — deprecated; superseded by resolveModelFromConfig (S3 block below)
 export type { ModelEntry, ModelRegistry } from './model-registry.js';

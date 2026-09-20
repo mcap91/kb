@@ -15,7 +15,7 @@ import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { pathToFileURL } from 'node:url';
 import { randomUUID } from 'node:crypto';
-import type { EnvironmentCapabilityStatus, HostCapabilitiesRecord } from '@kb/dispatch-core';
+import type { EnvironmentCapabilityStatus, Handoff, HostCapabilitiesRecord } from '@kb/dispatch-core';
 
 const TESTS_DIR = resolve(process.cwd(), 'tests');
 const DISPATCH_CLI = resolve(process.cwd(), 'packages', 'dispatch-cli', 'src', 'index.ts');
@@ -519,6 +519,161 @@ describe('dispatch', () => {
       expect(parsed.data.base_ref).toBe('main');
       expect(parsed.data.read_first).toEqual(['AGENTS.md']);
       expect(parsed.data.vars).toEqual(['DEBUG=1']);
+    });
+  });
+
+  describe('WK-0116 initiative-resolution gate', () => {
+    function gitInit(dir: string): void {
+      execSync('git init', { cwd: dir, stdio: 'ignore' });
+      execSync('git config user.email "test@test.com"', { cwd: dir, stdio: 'ignore' });
+      execSync('git config user.name "Test"', { cwd: dir, stdio: 'ignore' });
+    }
+
+    function gitCommitAll(dir: string, message: string): void {
+      execSync('git add -A', { cwd: dir, stdio: 'ignore' });
+      execSync(`git commit -m "${message}"`, { cwd: dir, stdio: 'ignore' });
+    }
+
+    function makeGateHandoff(overrides: Partial<Handoff> = {}): Handoff {
+      return {
+        id: 'HO-0002',
+        title: 'WK-0116 gate test handoff',
+        mode: 'implement',
+        write_scope: ['src/'],
+        base_ref: null,
+        web: false,
+        credentials: [],
+        data_mounts: [],
+        read_first: [],
+        vars: [],
+        acceptance: ['AC-1: example'],
+        validation: ['true'],
+        status: 'draft',
+        ...overrides,
+      };
+    }
+
+    async function writeWorkItem(repo: string, id: string, opts: { initiative?: string } = {}): Promise<void> {
+      await mkdir(join(repo, 'wiki', 'issues'), { recursive: true });
+      const initiativeLine = opts.initiative !== undefined ? `initiative: ${opts.initiative}\n` : '';
+      await writeFile(
+        join(repo, 'wiki', 'issues', `${id}.md`),
+        `---\nid: "${id}"\ntitle: "Fixture ${id}"\nstatus: todo\n${initiativeLine}---\n\n# ${id}: Fixture\n`,
+        'utf-8',
+      );
+    }
+
+    async function writeInitiative(repo: string, id: string): Promise<void> {
+      await mkdir(join(repo, 'wiki', 'initiatives'), { recursive: true });
+      await writeFile(
+        join(repo, 'wiki', 'initiatives', `${id}.md`),
+        `---\nid: "${id}"\ntitle: "Fixture ${id}"\nstatus: todo\n---\n\n# ${id}: Fixture\n`,
+        'utf-8',
+      );
+    }
+
+    beforeEach(() => {
+      gitInit(repoRoot);
+    });
+
+    it('refuses an implement handoff that does not declare a work_item', async () => {
+      await writeFile(join(repoRoot, 'README.md'), '# test\n');
+      gitCommitAll(repoRoot, 'init');
+
+      const { checkAdmission } = await import('@kb/dispatch-core');
+      const result = await checkAdmission(makeGateHandoff(), repoRoot);
+
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error).toBe('UNRESOLVED_INITIATIVE');
+      expect(result.message).toContain('work_item');
+    });
+
+    it('refuses an implement handoff whose work_item WK has no initiative set', async () => {
+      await writeWorkItem(repoRoot, 'WK-0201');
+      gitCommitAll(repoRoot, 'init');
+
+      const { checkAdmission } = await import('@kb/dispatch-core');
+      const result = await checkAdmission(makeGateHandoff({ work_item: 'WK-0201' }), repoRoot);
+
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error).toBe('UNRESOLVED_INITIATIVE');
+      expect(result.message).toContain('WK-0201');
+    });
+
+    it('refuses an implement handoff whose work_item WK has a malformed initiative', async () => {
+      await writeWorkItem(repoRoot, 'WK-0202', { initiative: 'NOT-AN-IN' });
+      gitCommitAll(repoRoot, 'init');
+
+      const { checkAdmission } = await import('@kb/dispatch-core');
+      const result = await checkAdmission(makeGateHandoff({ work_item: 'WK-0202' }), repoRoot);
+
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error).toBe('UNRESOLVED_INITIATIVE');
+      expect(result.message).toContain('NOT-AN-IN');
+    });
+
+    it('refuses an implement handoff whose work_item WK points at a nonexistent initiative', async () => {
+      await writeWorkItem(repoRoot, 'WK-0203', { initiative: 'IN-9999' });
+      gitCommitAll(repoRoot, 'init');
+
+      const { checkAdmission } = await import('@kb/dispatch-core');
+      const result = await checkAdmission(makeGateHandoff({ work_item: 'WK-0203' }), repoRoot);
+
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error).toBe('UNRESOLVED_INITIATIVE');
+      expect(result.message).toContain('IN-9999');
+    });
+
+    it('admits an implement handoff whose work_item WK resolves to a real initiative', async () => {
+      await writeWorkItem(repoRoot, 'WK-0204', { initiative: 'IN-0204' });
+      await writeInitiative(repoRoot, 'IN-0204');
+      gitCommitAll(repoRoot, 'init');
+
+      const { checkAdmission } = await import('@kb/dispatch-core');
+      const result = await checkAdmission(makeGateHandoff({ work_item: 'WK-0204' }), repoRoot);
+
+      expect(result.ok).toBe(true);
+    });
+
+    it('admits a research handoff with no work_item (gate is implement-only)', async () => {
+      await writeFile(join(repoRoot, 'README.md'), '# test\n');
+      gitCommitAll(repoRoot, 'init');
+
+      const { checkAdmission } = await import('@kb/dispatch-core');
+      const result = await checkAdmission(makeGateHandoff({ mode: 'research', write_scope: [] }), repoRoot);
+
+      expect(result.ok).toBe(true);
+    });
+
+    it('parseHandoffContent accepts a well-formed work_item and rejects a malformed one', async () => {
+      const { parseHandoffContent } = await import('@kb/dispatch-core');
+      const base = [
+        '---',
+        'id: HO-0002',
+        'title: Parse-time work_item validation',
+        'mode: implement',
+        'write_scope: ["src/"]',
+        'work_item: WK-0205',
+        'acceptance:',
+        '  - "AC-1: example"',
+        'validation: ["true"]',
+        'status: draft',
+        '---',
+        '',
+        '## Context',
+      ].join('\n');
+
+      const good = parseHandoffContent(base, 'HO-0002.md');
+      expect(good.ok).toBe(true);
+      if (good.ok) expect(good.data.work_item).toBe('WK-0205');
+
+      const bad = parseHandoffContent(base.replace('work_item: WK-0205', 'work_item: not-a-wk'), 'HO-0002.md');
+      expect(bad.ok).toBe(false);
+      if (!bad.ok) expect(bad.error).toBe('BAD_RECORD');
     });
   });
 
