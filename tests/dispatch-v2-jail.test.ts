@@ -836,4 +836,17 @@ describe('DEC-0011 visibility wall assertions (WK-0103)', () => {
     expect(argv).toEqual(expect.arrayContaining(['--ro-bind', declared, declared]));
     expect(argv).not.toContain(undeclared);
   });
+
+  it('6. runDirPath produces a writable bind of the run directory', () => {
+    const runDir = `${HOME}/projects/repo/.agent-runs/runs/HO-0001/RUN-abc123`;
+    const opts: JailOpts = {
+      clonePath,
+      runDirPath: runDir,
+    };
+    const plan = buildBwrapPlan({ ...opts, command: ['pi'] });
+
+    expect(plan.mounts).toEqual(expect.arrayContaining([
+      { kind: 'bind', src: runDir, dst: runDir },
+    ]));
+  });
 });
