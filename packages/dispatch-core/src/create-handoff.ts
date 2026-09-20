@@ -81,6 +81,7 @@ function renderHandoff(id: string, opts: CreateHandoffOpts): string {
     `web: ${opts.web ?? false}`,
     ...listField('credentials', opts.credentials ?? []),
     ...listField('data_mounts', opts.data_mounts ?? []),
+    ...listField('export_mounts', opts.export_mounts ?? []),
     ...listField('vars', opts.vars ?? []),
     '---',
     '',

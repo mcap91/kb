@@ -37,6 +37,7 @@ export interface Handoff {
   web: boolean;
   credentials: string[];
   data_mounts: string[];
+  export_mounts: string[];
   read_first: string[];
   vars: string[]; // Array of "KEY=value" strings; non-secret literal env for the worker
   fixup_context?: string; // Prior review findings injected verbatim as coordination context (s6-rulings.md ruling 3)
@@ -216,6 +217,10 @@ export function parseHandoffContent(content: string, filename: string): Dispatch
     return fail('Handoff data_mounts must be an array of strings.');
   }
 
+  if (raw.export_mounts !== undefined && (!Array.isArray(raw.export_mounts) || !raw.export_mounts.every((entry) => typeof entry === 'string'))) {
+    return fail('Handoff export_mounts must be an array of strings.');
+  }
+
   if (raw.read_first !== undefined && (!Array.isArray(raw.read_first) || !raw.read_first.every((entry) => typeof entry === 'string'))) {
     return fail('Handoff read_first must be an array of strings.');
   }
@@ -243,6 +248,7 @@ export function parseHandoffContent(content: string, filename: string): Dispatch
     web: raw.web === true,
     credentials: Array.isArray(raw.credentials) ? (raw.credentials as string[]) : [],
     data_mounts: Array.isArray(raw.data_mounts) ? (raw.data_mounts as string[]) : [],
+    export_mounts: Array.isArray(raw.export_mounts) ? (raw.export_mounts as string[]) : [],
     read_first: Array.isArray(raw.read_first) ? (raw.read_first as string[]) : [],
     vars: Array.isArray(raw.vars) ? (raw.vars as string[]) : [],
     acceptance: raw.acceptance as string[],

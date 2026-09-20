@@ -227,24 +227,6 @@ function parseHandoffVarsEnv(vars: string[]): Record<string, string> {
 }
 
 /**
- * Bridge admission.ts's spec-canonical `data_mounts` shape (§6:
- * `<absolute-path>:ro` / `<absolute-path>:rw`, SUFFIX form — see admission.ts's
- * own `mountPathOf`) into the shape jail.ts's `parseDataMount`/`buildBwrapPlan`
- * expect (`ro:<path>` / `rw:<path>`, PREFIX form). D6: paths are native Linux
- * already, so only the format bridge survives from the old `toJailDataMount`
- * — the Windows->WSL2 path conversion it also did no longer applies. An entry
- * with no recognizable `:ro`/`:rw` suffix is returned unchanged and silently
- * dropped downstream by `parseDataMount`, same as any other entry jail.ts
- * doesn't recognize (jail.ts is deliberately "cannot fail").
- */
-function toDataMountPrefixForm(entry: string): string {
-  const match = /^(.*):(ro|rw)$/.exec(entry);
-  if (!match) return entry;
-  const [, hostPath, access] = match;
-  return `${access}:${hostPath}`;
-}
-
-/**
  * Run a child process to completion and collect its output (never throws —
  * a spawn-level error resolves with `code: null`). Used for the pre-jail,
  * non-worker deps-provisioning leg (`npm ci`) — a direct spawn, never
@@ -916,10 +898,8 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
     ].join('\n');
 
     // 12d. Build the frozen bwrap plan (D6 ruling 7 components 1-4/15).
-    // data_mounts still needs the suffix->prefix format bridge
-    // (toDataMountPrefixForm) — independent of the (retired) Windows path
-    // conversion the old toJailDataMount also did. `bwrapInjectedFiles` is
-    // Pi's models.json or Claude's settings.json (step 10 above) — empty for
+    // `bwrapInjectedFiles` is Pi's models.json or Claude's settings.json
+    // (step 10 above) — empty for
     // codex. Per-family write mount shape via `familyWriteScope` (D2 ruling
     // 2) — Pi's own shape is unchanged (identity passthrough); the post-hoc
     // scope check at step 17 below still verifies the delivered diff against
@@ -934,7 +914,10 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       wikiShape,
       mode: handoff.mode,
       motherWikiPath,
-      dataMounts: handoff.data_mounts.map(toDataMountPrefixForm),
+      dataMounts: [
+        ...handoff.data_mounts.map((path) => ({ path, access: 'ro' as const })),
+        ...handoff.export_mounts.map((path) => ({ path, access: 'rw' as const })),
+      ],
       unshareNet: true,
       tunnelSocketPath,
       relayScriptPath,
@@ -1359,13 +1342,6 @@ export function buildPiBaseUrl(baseUrl: string): string {
   return `http://127.0.0.1:${TUNNEL_RELAY_PORT}${originalPath}`;
 }
 
-// D6 dead-code deletion (ruling 7): needsWinHostResolution/applyWinHost/
-// LOOPBACK_HOSTNAMES (WIN_HOST resolution, bwrap-wsl2-only — dead post-D3's
-// Linux-only orchestrator), toJailDataMount (superseded by
-// toDataMountPrefixForm above — the Windows path conversion it also did no
-// longer applies), and buildExecutionScript/BuildExecutionScriptOpts (the
-// generated-script assembly the D6 spawn pipeline replaces — see runDispatch
-// steps 12a-14 above) are REMOVED.
 
 // ---------------------------------------------------------------------------
 // T7-full closure (S1): provenance frontmatter write-back merge helper. Not

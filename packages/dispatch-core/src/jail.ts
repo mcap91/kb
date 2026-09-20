@@ -69,8 +69,8 @@ export interface JailOpts {
   mode?: string;
   /** Absolute path to the mother repo's wiki/ (for nested-private shape, redteam/research bind). */
   motherWikiPath?: string;
-  /** Data mount declarations from the HO (format: "ro:/path/to/data" or "rw:/path/to/data"). */
-  dataMounts?: string[];
+  /** Data mount declarations (data_mounts + export_mounts, already merged with a resolved access mode). */
+  dataMounts?: ReadonlyArray<{ path: string; access: 'ro' | 'rw' }>;
   /** Whether to unshare the network namespace (true for S5 enforcement). */
   unshareNet?: boolean;
   /** Path to the tunnel unix socket to bind-mount into the jail. */
@@ -118,25 +118,6 @@ export interface JailArgs {
  */
 export function classifyWikiShape(lsFilesOutput: string): WikiShape {
   return lsFilesOutput.trim().length > 0 ? 'tracked' : 'nested-private';
-}
-
-export interface ParsedDataMount {
-  access: 'ro' | 'rw';
-  hostPath: string;
-}
-
-/**
- * Parse a data_mounts entry like "ro:/data/reference" or "rw:/tmp/scratch".
- * Returns null for anything that doesn't match the `(ro|rw):<path>` shape.
- * Malformed entries are skipped by `buildJailArgs` rather than thrown — the
- * admission gate's `bad_data_mount` check (§7.14) is the validating gate;
- * this parser stays defensive-but-silent to hold jail.ts's "cannot fail"
- * contract.
- */
-export function parseDataMount(entry: string): ParsedDataMount | null {
-  const match = /^(ro|rw):(.+)$/.exec(entry);
-  if (!match) return null;
-  return { access: match[1] as 'ro' | 'rw', hostPath: match[2] };
 }
 
 /** Modes whose workers must never see wiki content — masked when wiki/ is tracked. */
@@ -273,10 +254,8 @@ function buildJailPlanSteps(opts: JailOpts): JailPlanSteps {
   // 10: declared data mounts (ro/rw per HO; existence/absoluteness already
   // validated by the admission gate's bad_data_mount check, §7.14).
   if (opts.dataMounts) {
-    for (const entry of opts.dataMounts) {
-      const parsed = parseDataMount(entry);
-      if (parsed === null) continue;
-      bind(parsed.access === 'ro' ? 'ro-bind' : 'bind', parsed.hostPath, parsed.hostPath);
+    for (const mount of opts.dataMounts) {
+      bind(mount.access === 'ro' ? 'ro-bind' : 'bind', mount.path, mount.path);
     }
   }
 
