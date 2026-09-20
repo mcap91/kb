@@ -173,6 +173,9 @@ export { archivePlan } from './archive-plan.js';
 // Lint
 export { lint } from './lint.js';
 
+// Dependency readiness projection (WK-0115: ready/blocked/done + cycle detection)
+export { buildDependencyProjection } from './deps.js';
+
 // View generation
 export { generate } from './generate.js';
 

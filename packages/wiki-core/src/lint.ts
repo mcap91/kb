@@ -15,6 +15,7 @@
  *   - MISSING_FIELD                 — required frontmatter field absent
  *   - INVALID_ENUM                  — field value not in manifest enum set
  *   - DUPLICATE_ID                  — multiple records share the same ID
+ *   - DEPENDENCY_CYCLE              — a depends_on edge cycle exists among records
  *   - BROKEN_REFERENCE              — depends_on / blocks / related / area / initiative
  *                                     points to a nonexistent record
  *   - INVALID_INITIATIVE_TARGET     — initiative resolves, but not to a wiki/initiatives/ record
@@ -44,6 +45,7 @@ import type {
 import { loadManifest } from './contract.js';
 import { frontmatterSchemas } from './schemas.js';
 import { debug, setVerbose } from './debug.js';
+import { buildDependencyProjection } from './deps.js';
 
 // ---------------------------------------------------------------------------
 // Frontmatter parsing
@@ -604,6 +606,34 @@ export async function lint(opts: LintOpts): Promise<Result<LintResult>> {
           severity: 'error',
         });
       }
+    }
+  }
+
+  // Rule: DEPENDENCY_CYCLE — detect cycles in depends_on edges
+  {
+    const depNodes = records
+      .filter(rec => rec.frontmatter !== null && typeof rec.frontmatter['id'] === 'string')
+      .map(rec => {
+        const fm = rec.frontmatter as Record<string, unknown>;
+        return {
+          id: fm['id'] as string,
+          status: typeof fm['status'] === 'string' ? fm['status'] : 'unknown',
+          depends_on: Array.isArray(fm['depends_on']) ? (fm['depends_on'] as string[]) : [],
+          blocks: Array.isArray(fm['blocks']) ? (fm['blocks'] as string[]) : [],
+        };
+      });
+
+    const projection = buildDependencyProjection(depNodes);
+    for (const diag of projection.diagnostics) {
+      if (diag.code !== 'cycle') continue;
+      const firstId = diag.ids[0];
+      const locs = idLocations.get(firstId) || [];
+      diagnostics.push({
+        file: locs[0] || '',
+        code: 'DEPENDENCY_CYCLE',
+        message: `Dependency cycle detected: ${diag.ids.join(' -> ')}`,
+        severity: 'error',
+      });
     }
   }
 
