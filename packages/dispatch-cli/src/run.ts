@@ -177,6 +177,11 @@ async function cmdCreateHandoff(args: string[]): Promise<number> {
     return 1;
   }
 
+  if (mode === 'implement' && !getFlagValue(args, '--work-item')) {
+    console.error('Error: --work-item is required when --mode is implement (UNRESOLVED_INITIATIVE gate)');
+    return 1;
+  }
+
   const result = await createHandoff({
     dir,
     title,

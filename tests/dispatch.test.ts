@@ -456,6 +456,7 @@ describe('dispatch', () => {
         subject: 'kb:dispatch',
         allowed_agents: ['codex'],
         mode: 'implement',
+        work_item: 'WK-0001',
         acceptance: ['Feature works as described'],
         validation: ['npm run typecheck && npm test'],
       });
@@ -469,6 +470,7 @@ describe('dispatch', () => {
         subject: 'kb:dispatch',
         allowed_agents: ['codex'],
         mode: 'implement',
+        work_item: 'WK-0002',
         acceptance: ['Feature works as described'],
         validation: ['npm run typecheck && npm test'],
       });
@@ -487,6 +489,7 @@ describe('dispatch', () => {
         subject: 'kb:dispatch',
         allowed_agents: ['claude'],
         mode: 'implement',
+        work_item: 'WK-0003',
         acceptance: ['Feature X works end-to-end', 'No regressions in existing tests'],
         validation: ['npm run typecheck && npm test'],
         write_scope: ['packages/dispatch-core/src/'],

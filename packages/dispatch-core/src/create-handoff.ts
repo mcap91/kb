@@ -110,9 +110,33 @@ function renderHandoff(id: string, opts: CreateHandoffOpts): string {
   return `${lines.join('\n').trimEnd()}\n`;
 }
 
+/**
+ * WK-0120: mirrors admission.ts's `checkUnresolvedInitiative` gate at authoring
+ * time. An implement-mode HO with no (or malformed) work_item would pass
+ * authoring only to be refused later at dispatch with UNRESOLVED_INITIATIVE
+ * (WK-0116) — refuse here instead, before a broken HO ever hits disk.
+ * Non-implement modes (code_review, redteam) stay work_item-optional (DEC-0035).
+ */
+function checkWorkItemForImplement(opts: CreateHandoffOpts): DispatchResult<null> {
+  if (opts.mode !== 'implement') return ok(null);
+
+  const workItem = opts.work_item;
+  if (workItem === undefined || workItem.trim() === '' || !/^WK-\d{4}$/.test(workItem)) {
+    return fail(
+      'MISSING_FIELD',
+      'mode=implement requires work_item matching /^WK-\\d{4}$/; without it, dispatch refuses with UNRESOLVED_INITIATIVE.',
+    );
+  }
+
+  return ok(null);
+}
+
 export async function createHandoff(
   opts: CreateHandoffOpts,
 ): Promise<DispatchResult<CreateHandoffResult>> {
+  const workItemCheck = checkWorkItemForImplement(opts);
+  if (!workItemCheck.ok) return workItemCheck;
+
   const targetDir = resolve(opts.dir);
   const templateResult = await loadHandoffTemplate(targetDir);
   if (!templateResult.ok) return templateResult;
