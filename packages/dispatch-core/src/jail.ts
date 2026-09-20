@@ -91,6 +91,10 @@ export interface JailOpts {
   /** Per-family auth leaf file binds — the ONLY $HOME paths let through.
    *  Each entry is { path, access } where access = 'ro' | 'rw'. */
   authLeafBinds?: ReadonlyArray<{ path: string; access: 'ro' | 'rw' }>;
+
+  /** Absolute path to the run directory (prompt, relay script, tunnel socket,
+   *  logs). Bound writable — chassis's `runtimeRoots` category. */
+  runDirPath?: string;
 }
 
 export interface JailArgs {
@@ -216,6 +220,12 @@ function buildJailPlanSteps(opts: JailOpts): JailPlanSteps {
   // 6: network namespace removal (T26/D21) — opt-in.
   if (opts.unshareNet) {
     mountArgv.push('--unshare-net');
+  }
+
+  // 6-rundir: run directory as a writable bind (chassis: runtimeRoots).
+  // Prompt, relay script, tunnel socket, and logs all live here.
+  if (opts.runDirPath) {
+    bind('bind', opts.runDirPath, opts.runDirPath);
   }
 
   // 6a. Toolchain binary paths under $HOME — exact leaves, never a $HOME directory bind.
