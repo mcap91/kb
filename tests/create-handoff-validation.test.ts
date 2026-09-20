@@ -1,12 +1,13 @@
 /**
  * WK-0120 — createHandoff() refuses implement-mode HOs with a missing or
  * malformed work_item at authoring time. Mirrors admission.ts's
- * checkUnresolvedInitiative gate (WK-0116, UNRESOLVED_INITIATIVE): before
- * this change, an implement HO with no work_item would author cleanly and
- * only fail later at dispatch time. This file proves the refusal now fires
- * at authoring, that a valid work_item still authors cleanly, and that
- * non-implement modes remain work_item-optional (DEC-0035). Patterned after
- * tests/dispatch-v2-admission.test.ts (vitest, temp dirs, beforeEach/afterEach).
+ * checkWorkItemExists gate (WK-0116, WORK_ITEM_NOT_FOUND; narrowed by
+ * DEC-0036 WK-0121): before this change, an implement HO with no work_item
+ * would author cleanly and only fail later at dispatch time. This file
+ * proves the refusal now fires at authoring, that a valid work_item still
+ * authors cleanly, and that non-implement modes remain work_item-optional
+ * (DEC-0035). Patterned after tests/dispatch-v2-admission.test.ts (vitest,
+ * temp dirs, beforeEach/afterEach).
  */
 import { describe, expect, it, beforeEach, afterEach } from 'vitest';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
@@ -56,7 +57,7 @@ describe('createHandoff — WK-0120 work_item-for-implement authoring gate', () 
       if (result.ok) return;
       expect(result.error).toBe('MISSING_FIELD');
       expect(result.message).toContain('work_item');
-      expect(result.message).toContain('UNRESOLVED_INITIATIVE');
+      expect(result.message).toContain('WORK_ITEM_NOT_FOUND');
     });
 
     it('refuses when work_item is an empty string', async () => {
@@ -65,7 +66,7 @@ describe('createHandoff — WK-0120 work_item-for-implement authoring gate', () 
       if (result.ok) return;
       expect(result.error).toBe('MISSING_FIELD');
       expect(result.message).toContain('work_item');
-      expect(result.message).toContain('UNRESOLVED_INITIATIVE');
+      expect(result.message).toContain('WORK_ITEM_NOT_FOUND');
     });
 
     it('refuses when work_item is blank (whitespace only)', async () => {
@@ -74,7 +75,7 @@ describe('createHandoff — WK-0120 work_item-for-implement authoring gate', () 
       if (result.ok) return;
       expect(result.error).toBe('MISSING_FIELD');
       expect(result.message).toContain('work_item');
-      expect(result.message).toContain('UNRESOLVED_INITIATIVE');
+      expect(result.message).toContain('WORK_ITEM_NOT_FOUND');
     });
 
     it('refuses when work_item does not match /^WK-\\d{4}$/', async () => {
@@ -83,7 +84,7 @@ describe('createHandoff — WK-0120 work_item-for-implement authoring gate', () 
       if (result.ok) return;
       expect(result.error).toBe('MISSING_FIELD');
       expect(result.message).toContain('work_item');
-      expect(result.message).toContain('UNRESOLVED_INITIATIVE');
+      expect(result.message).toContain('WORK_ITEM_NOT_FOUND');
     });
   });
 

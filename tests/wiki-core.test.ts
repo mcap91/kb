@@ -2419,6 +2419,93 @@ describe('lint WK-0047 reference-integrity + coordination rules', () => {
     }
   });
 
+  // WK-0121 / DEC-0036: ORPHAN_WK severity is a function of the WK's status —
+  // error for active/durable statuses, warning for the idea lane (inbox/parked),
+  // skipped entirely for terminal-dead statuses.
+  it.each([
+    ['todo', 'error'],
+    ['in_progress', 'error'],
+    ['review', 'error'],
+    ['blocked', 'error'],
+    ['done', 'error'],
+  ] as const)('ORPHAN_WK is an error for status=%s (DEC-0036)', async (status, expectedSeverity) => {
+    tmp = await createBootstrappedRepo();
+
+    writeRecord(tmp.dir, 'wiki/issues/WK-0001.md', {
+      id: 'WK-0001',
+      title: 'No initiative',
+      type: 'task',
+      status,
+      priority: 'medium',
+      owner: 'test',
+      created: '2025-01-01',
+      updated: '2025-01-01',
+    });
+
+    const result = await lint({ dir: tmp.dir });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const diags = result.data.diagnostics.filter(d => d.code === 'ORPHAN_WK');
+      expect(diags.length).toBe(1);
+      expect(diags[0].severity).toBe(expectedSeverity);
+      expect(diags[0].message).toContain('set `initiative: IN-####`');
+      expect(diags[0].message).toContain('move to inbox/parked');
+    }
+  });
+
+  it.each([
+    ['inbox', 'warning'],
+    ['parked', 'warning'],
+  ] as const)('ORPHAN_WK is a warning for status=%s (DEC-0036)', async (status, expectedSeverity) => {
+    tmp = await createBootstrappedRepo();
+
+    writeRecord(tmp.dir, 'wiki/issues/WK-0001.md', {
+      id: 'WK-0001',
+      title: 'No initiative',
+      type: 'task',
+      status,
+      priority: 'medium',
+      owner: 'test',
+      created: '2025-01-01',
+      updated: '2025-01-01',
+    });
+
+    const result = await lint({ dir: tmp.dir });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const diags = result.data.diagnostics.filter(d => d.code === 'ORPHAN_WK');
+      expect(diags.length).toBe(1);
+      expect(diags[0].severity).toBe(expectedSeverity);
+      expect(diags[0].message).toContain('set `initiative: IN-####`');
+      expect(diags[0].message).toContain('move to inbox/parked');
+    }
+  });
+
+  it.each(['cancelled', 'superseded', 'duplicate', 'wont_do', 'deprecated'])(
+    'ORPHAN_WK is skipped for terminal status=%s (DEC-0036)',
+    async status => {
+      tmp = await createBootstrappedRepo();
+
+      writeRecord(tmp.dir, 'wiki/issues/WK-0001.md', {
+        id: 'WK-0001',
+        title: 'No initiative',
+        type: 'task',
+        status,
+        priority: 'medium',
+        owner: 'test',
+        created: '2025-01-01',
+        updated: '2025-01-01',
+      });
+
+      const result = await lint({ dir: tmp.dir });
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        const diags = result.data.diagnostics.filter(d => d.code === 'ORPHAN_WK');
+        expect(diags).toEqual([]);
+      }
+    },
+  );
+
   it('SRC: flags a dangling related_docs path (MISSING_RELATED_DOCS_TARGET)', async () => {
     tmp = await createBootstrappedRepo();
 
