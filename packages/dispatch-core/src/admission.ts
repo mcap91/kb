@@ -1,8 +1,12 @@
 /**
- * §7 admission gate — S4 full 13-check gate (PLN-0004), plus the WK-0116 /
- * IN-0006 initiative-resolution gate (`checkUnresolvedInitiative`), which sits
- * outside the upstream §7 numbering. §7.11 `no_isolation_route`
- * is deferred to S5. §7.4's acceptance/validation requirement needs no separate
+ * §7 admission gate — S4 full 13-check gate (PLN-0004), plus the work-item-
+ * existence gate (`checkWorkItemExists`, DEC-0036 WK-0121), which sits outside
+ * the upstream §7 numbering. This gate narrows the original WK-0116 / IN-0006
+ * initiative-resolution gate: DEC-0036 moved WK→IN connectedness off dispatch
+ * admission and onto lint (a status-scoped `ORPHAN_WK` error), so this check
+ * now only proves the declared work_item's WK file exists on disk — no
+ * initiative read, no IN-#### resolution. §7.11 `no_isolation_route` is
+ * deferred to S5. §7.4's acceptance/validation requirement needs no separate
  * check here — ho.ts already enforces it as a required field for all four modes
  * at parse time. §7.6-§7.9 (credentials_with_web / unknown_profile /
  * credential_preflight_failed / backend_unreachable) and §7.13
@@ -12,7 +16,7 @@
  */
 import { execFile as execFileCb } from 'node:child_process';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
-import { readFile, stat } from 'node:fs/promises';
+import { stat } from 'node:fs/promises';
 import { promisify } from 'node:util';
 
 import type { DispatchResult } from './errors.js';
@@ -189,45 +193,16 @@ async function checkDataMounts(handoff: Handoff, repoRootResolved: string): Prom
   return ok(null);
 }
 
-const INITIATIVE_PATTERN = /^IN-\d{4}$/;
-
 /**
- * Extract a single top-level scalar field from a record's YAML frontmatter.
- * Deliberately not a general parser — ho.ts already owns HO-shaped parsing and
- * wiki-core owns wiki-record parsing. This reads exactly one field
- * (`initiative`) off a WK file, per WK-0116's "keep it simple" scoping (a 4th
- * inline parser is out of scope; DEC-0007 permits importing wiki-core's record
- * primitives instead, but this check doesn't need that weight).
+ * v2 work-item-existence gate (DEC-0036 WK-0121), narrowed from the original
+ * IN-0006 WK-0116 initiative-resolution gate: an `implement`-mode HO must
+ * declare a `work_item` (WK-####) whose `wiki/issues/<work_item>.md` file
+ * exists on disk. Non-implement modes are WK-optional (DEC-0035) and skip
+ * this check entirely. DEC-0036 moved WK→IN connectedness off dispatch
+ * admission entirely — that link is now enforced by lint.ts's status-scoped
+ * `ORPHAN_WK` check, not here.
  */
-function extractFrontmatterField(content: string, key: string): string | undefined {
-  const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
-  if (!match) return undefined;
-
-  const lineMatch = (match[1] ?? '').match(new RegExp(`^${key}:[ \\t]*(.*)$`, 'm'));
-  if (!lineMatch) return undefined;
-
-  let value = (lineMatch[1] ?? '').trim();
-  if (value.length >= 2) {
-    const first = value[0];
-    const last = value[value.length - 1];
-    if ((first === '"' && last === '"') || (first === "'" && last === "'")) {
-      value = value.slice(1, -1);
-    }
-  }
-  return value === '' ? undefined : value;
-}
-
-/**
- * New v2 initiative-resolution gate (IN-0006 WK-0116), design-mirrored from
- * the ancestor's `missing_initiative_ref_namespace` refusal
- * (portfolio-wiki-tools work-record-dispatch.mjs): an `implement`-mode HO must
- * declare a `work_item` (WK-####) whose `initiative` resolves to a real
- * `IN-####` record. Non-implement modes are WK-optional (DEC-0035) and skip
- * this check entirely. One step stronger than upstream: the target
- * wiki/initiatives/<id>.md file must actually exist, not just shape-match
- * (matching lint.ts's INVALID_INITIATIVE_TARGET rule).
- */
-export async function checkUnresolvedInitiative(
+export async function checkWorkItemExists(
   handoff: Handoff,
   repoRoot: string,
 ): Promise<DispatchResult<null>> {
@@ -236,48 +211,19 @@ export async function checkUnresolvedInitiative(
   const workItem = handoff.work_item;
   if (workItem === undefined || workItem.trim() === '') {
     return fail(
-      'UNRESOLVED_INITIATIVE',
-      `Handoff ${handoff.id} (mode=implement) does not declare a work_item; implement HOs must declare a WK whose initiative resolves to a real IN-####.`,
+      'WORK_ITEM_NOT_FOUND',
+      `Handoff ${handoff.id} (mode=implement) does not declare a work_item; implement HOs must reference an existing WK.`,
     );
   }
 
   const repoRootResolved = resolve(repoRoot);
   const wkPath = join(repoRootResolved, 'wiki', 'issues', `${workItem}.md`);
 
-  let wkContent: string;
-  try {
-    wkContent = await readFile(wkPath, 'utf8');
-  } catch {
+  if (!(await pathExists(wkPath))) {
     return fail(
-      'UNRESOLVED_INITIATIVE',
-      `Handoff ${handoff.id} declares work_item "${workItem}", but ${wkPath} does not exist.`,
+      'WORK_ITEM_NOT_FOUND',
+      `Handoff ${handoff.id} declares work_item "${workItem}", but wiki/issues/${workItem}.md does not exist.`,
       { work_item: workItem },
-    );
-  }
-
-  const initiative = extractFrontmatterField(wkContent, 'initiative');
-  if (initiative === undefined) {
-    return fail(
-      'UNRESOLVED_INITIATIVE',
-      `Handoff ${handoff.id}'s work_item "${workItem}" has no "initiative" set.`,
-      { work_item: workItem },
-    );
-  }
-
-  if (!INITIATIVE_PATTERN.test(initiative)) {
-    return fail(
-      'UNRESOLVED_INITIATIVE',
-      `Handoff ${handoff.id}'s work_item "${workItem}" has a malformed initiative "${initiative}" (expected to match /^IN-\\d{4}$/).`,
-      { work_item: workItem, initiative },
-    );
-  }
-
-  const initiativePath = join(repoRootResolved, 'wiki', 'initiatives', `${initiative}.md`);
-  if (!(await pathExists(initiativePath))) {
-    return fail(
-      'UNRESOLVED_INITIATIVE',
-      `Handoff ${handoff.id}'s work_item "${workItem}" declares initiative "${initiative}", but ${initiativePath} does not exist.`,
-      { work_item: workItem, initiative },
     );
   }
 
@@ -342,8 +288,8 @@ export async function checkAdmission(handoff: Handoff, repoRoot: string): Promis
   const dataMountCheck = await checkDataMounts(handoff, repoRootResolved);
   if (!dataMountCheck.ok) return dataMountCheck;
 
-  const unresolvedInitiativeCheck = await checkUnresolvedInitiative(handoff, repoRoot);
-  if (!unresolvedInitiativeCheck.ok) return unresolvedInitiativeCheck;
+  const workItemExistsCheck = await checkWorkItemExists(handoff, repoRoot);
+  if (!workItemExistsCheck.ok) return workItemExistsCheck;
 
   let baseSha: string;
   try {

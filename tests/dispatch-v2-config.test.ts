@@ -55,7 +55,7 @@ describe('errors.ts — V2_REFUSAL_CODES', () => {
       'CONTEXT_BUDGET_EXCEEDED',
       'BAD_DATA_MOUNT',
       'NO_ISOLATION_ROUTE',
-      'UNRESOLVED_INITIATIVE',
+      'WORK_ITEM_NOT_FOUND',
     ];
     expect([...V2_REFUSAL_CODES].sort()).toEqual([...expected].sort());
   });

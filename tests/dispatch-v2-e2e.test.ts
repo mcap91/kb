@@ -109,7 +109,7 @@ async function setupRepo(): Promise<string> {
   await writeFile(join(repoRoot, 'README.md'), 'kb-e2e-fixture: a minimal fixture repo.\n', 'utf8');
 
   // WK-0116: HO-TEST is mode=implement, so it must declare a work_item resolving
-  // to a real initiative, or admission trips UNRESOLVED_INITIATIVE before this
+  // to a real initiative, or admission trips WORK_ITEM_NOT_FOUND before this
   // full-pipeline-chain test ever reaches baseSha resolution.
   await mkdir(join(repoRoot, 'wiki', 'issues'), { recursive: true });
   await writeFile(
@@ -632,7 +632,7 @@ clone/jail/worker step runs, so this body is never read by a worker.
   await writeFile(join(repoRoot, 'README.md'), 'kb-e2e-s3-fixture: a minimal fixture repo.\n', 'utf8');
 
   // WK-0116: the fixture HO is mode=implement, so it must declare a work_item
-  // resolving to a real initiative, or every test below trips UNRESOLVED_INITIATIVE
+  // resolving to a real initiative, or every test below trips WORK_ITEM_NOT_FOUND
   // before ever reaching the gate under test.
   await mkdir(join(repoRoot, 'wiki', 'issues'), { recursive: true });
   await writeFile(

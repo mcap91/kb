@@ -588,50 +588,54 @@ describe('dispatch', () => {
 
       expect(result.ok).toBe(false);
       if (result.ok) return;
-      expect(result.error).toBe('UNRESOLVED_INITIATIVE');
+      expect(result.error).toBe('WORK_ITEM_NOT_FOUND');
       expect(result.message).toContain('work_item');
     });
 
-    it('refuses an implement handoff whose work_item WK has no initiative set', async () => {
+    it('refuses an implement handoff whose work_item points to a nonexistent WK file', async () => {
+      await writeFile(join(repoRoot, 'README.md'), '# test\n');
+      gitCommitAll(repoRoot, 'init');
+
+      const { checkAdmission } = await import('@kb/dispatch-core');
+      const result = await checkAdmission(makeGateHandoff({ work_item: 'WK-9999' }), repoRoot);
+
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error).toBe('WORK_ITEM_NOT_FOUND');
+      expect(result.message).toContain('WK-9999');
+    });
+
+    it('admits an implement handoff whose work_item WK has no initiative set (DEC-0036: gate checks existence only)', async () => {
       await writeWorkItem(repoRoot, 'WK-0201');
       gitCommitAll(repoRoot, 'init');
 
       const { checkAdmission } = await import('@kb/dispatch-core');
       const result = await checkAdmission(makeGateHandoff({ work_item: 'WK-0201' }), repoRoot);
 
-      expect(result.ok).toBe(false);
-      if (result.ok) return;
-      expect(result.error).toBe('UNRESOLVED_INITIATIVE');
-      expect(result.message).toContain('WK-0201');
+      expect(result.ok).toBe(true);
     });
 
-    it('refuses an implement handoff whose work_item WK has a malformed initiative', async () => {
+    it('admits an implement handoff whose work_item WK has a malformed initiative (DEC-0036: gate checks existence only)', async () => {
       await writeWorkItem(repoRoot, 'WK-0202', { initiative: 'NOT-AN-IN' });
       gitCommitAll(repoRoot, 'init');
 
       const { checkAdmission } = await import('@kb/dispatch-core');
       const result = await checkAdmission(makeGateHandoff({ work_item: 'WK-0202' }), repoRoot);
 
-      expect(result.ok).toBe(false);
-      if (result.ok) return;
-      expect(result.error).toBe('UNRESOLVED_INITIATIVE');
-      expect(result.message).toContain('NOT-AN-IN');
+      expect(result.ok).toBe(true);
     });
 
-    it('refuses an implement handoff whose work_item WK points at a nonexistent initiative', async () => {
+    it('admits an implement handoff whose work_item WK points at a nonexistent initiative (DEC-0036: gate checks existence only)', async () => {
       await writeWorkItem(repoRoot, 'WK-0203', { initiative: 'IN-9999' });
       gitCommitAll(repoRoot, 'init');
 
       const { checkAdmission } = await import('@kb/dispatch-core');
       const result = await checkAdmission(makeGateHandoff({ work_item: 'WK-0203' }), repoRoot);
 
-      expect(result.ok).toBe(false);
-      if (result.ok) return;
-      expect(result.error).toBe('UNRESOLVED_INITIATIVE');
-      expect(result.message).toContain('IN-9999');
+      expect(result.ok).toBe(true);
     });
 
-    it('admits an implement handoff whose work_item WK resolves to a real initiative', async () => {
+    it('admits an implement handoff whose work_item WK exists on disk', async () => {
       await writeWorkItem(repoRoot, 'WK-0204', { initiative: 'IN-0204' });
       await writeInitiative(repoRoot, 'IN-0204');
       gitCommitAll(repoRoot, 'init');

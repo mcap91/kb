@@ -25,7 +25,9 @@
  *   - MISSING_RELATED_WORK_TARGET   — (SRC) related_work points to a nonexistent record
  *   - STALE_WRITE_SCOPE             — (warning) write_scope path does not exist on disk
  *   - MISSING_DOCS_TARGET           — (warning) docs path does not exist on disk
- *   - ORPHAN_WK                     — (warning) WK record has no initiative set
+ *   - ORPHAN_WK                     — (error|warning, status-scoped, DEC-0036) WK record has no
+ *                                     initiative; error for active/durable statuses, warning for
+ *                                     inbox/parked, skipped for terminal
  *   - AC_COMPLETE_STATUS_OPEN       — (warning) all "## Acceptance criteria" boxes are
  *                                     checked but status has not advanced past an open state
  *   - UNCHECKED_CHECKLIST           — (error) closed/terminal-status record has unchecked
@@ -529,19 +531,40 @@ export async function lint(opts: LintOpts): Promise<Result<LintResult>> {
       }
     }
 
-    // Rule: ORPHAN_WK — (warning, kb addition — not upstream) a WK record with no
-    // initiative field at all. BROKEN_REFERENCE / INVALID_INITIATIVE_TARGET only fire on
-    // a wrong reference, never an absent one (DEC-0035: advisory, not error).
+    // Rule: ORPHAN_WK — (error|warning, status-scoped, DEC-0036 — kb addition, not
+    // upstream) a WK record with no initiative field at all. BROKEN_REFERENCE /
+    // INVALID_INITIATIVE_TARGET only fire on a wrong reference, never an absent one.
+    // Severity is scoped to status: active/durable statuses (todo, in_progress, review,
+    // blocked, done) are an error — an orphan should not reach those statuses unnoticed.
+    // inbox/parked are a warning — a loose idea not yet triaged is expected. Terminal-dead
+    // statuses (cancelled, superseded, duplicate, wont_do, deprecated) are skipped
+    // entirely — nothing to connect on a record that is never going anywhere.
     if (rec.typeDef.prefix === 'WK') {
       const val = fm['initiative'];
       if (val === undefined || val === null || val === '') {
-        diagnostics.push({
-          file: rec.relPath,
-          field: 'initiative',
-          code: 'ORPHAN_WK',
-          message: 'WK record has no "initiative" set',
-          severity: 'warning',
-        });
+        const status = typeof fm['status'] === 'string' ? fm['status'] : '';
+        const errorStatuses = ['todo', 'in_progress', 'review', 'blocked', 'done'];
+        const warningStatuses = ['inbox', 'parked'];
+        // skip (no diagnostic): cancelled, superseded, duplicate, wont_do, deprecated
+
+        let severity: 'error' | 'warning' | undefined;
+        if (errorStatuses.includes(status)) {
+          severity = 'error';
+        } else if (warningStatuses.includes(status)) {
+          severity = 'warning';
+        }
+        // else: terminal-dead statuses → skip, no diagnostic
+
+        if (severity) {
+          const wkId = typeof fm['id'] === 'string' ? fm['id'] : rec.relPath;
+          diagnostics.push({
+            file: rec.relPath,
+            field: 'initiative',
+            code: 'ORPHAN_WK',
+            message: `${wkId} is ${status} with no initiative; set \`initiative: IN-####\` to connect it, or move to inbox/parked if it is a deliberate loose idea.`,
+            severity,
+          });
+        }
       }
     }
 
