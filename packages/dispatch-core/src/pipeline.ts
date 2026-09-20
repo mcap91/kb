@@ -29,6 +29,7 @@ import { closeSync, constants as fsConstants, existsSync, openSync } from 'node:
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join, relative, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import type { DispatchResult } from './errors.js';
 import { ok, fail } from './errors.js';
@@ -117,6 +118,24 @@ const WORKER_TIMEOUT_SECS = 1800;
 const WORKER_TIMEOUT_MS = WORKER_TIMEOUT_SECS * 1000;
 
 const VALID_RUN_ID = /^RUN-[0-9a-f-]{36}$/i;
+
+/**
+ * WK-0125/DEC-0037: kb-owned location of the `kb-dispatch-recovery.v1` JSON
+ * Schema (DEC-0009 carve-out — kb authors this format, so this is a
+ * repo-root-relative lookup, not an external-shape assumption). Mirrors
+ * create-handoff.ts's own `KB_ROOT` resolution (that file lives at the same
+ * `packages/dispatch-core/src/` depth, so the same three-levels-up walk
+ * lands on the kb repo root whether running from `src/` or the compiled
+ * `dist/`). Deliberately always the RUNNING kb checkout's own contract/ dir
+ * — never `opts.dir` (the mother/consumer repo being dispatched into) — the
+ * same "kb runs from its own checkout" convention this repo's CLAUDE.md
+ * states for every kb invocation.
+ */
+const THIS_DIR = dirname(fileURLToPath(import.meta.url));
+const KB_ROOT = resolve(THIS_DIR, '..', '..', '..');
+const RECOVERY_SCHEMA_PATH = join(KB_ROOT, 'contract', 'kb-dispatch-recovery.v1.schema.json');
+/** In-jail materialization path for the injected schema (bwrapInjectedFiles — mirrors the claude settings.json convention at step 10 below). */
+const RECOVERY_SCHEMA_JAIL_PATH = '/tmp/kb-dispatch-recovery.v1.schema.json';
 
 export interface DispatchOpts {
   /** Absolute path to the mother repo */
@@ -715,6 +734,26 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
     let execLines: string[] = [];
     let bwrapInjectedFiles: Array<{ content: string; dest: string }> = [];
 
+    // WK-0125/DEC-0037: implement-mode constrained decoding. Read once here
+    // (consumed by the codex/claude branches below) — Pi has no constrained-
+    // decoding support and stays on the existing fenced-example prompt path
+    // (DEC-0037 part 1), and advisory modes (code_review/redteam/research)
+    // never get a schema flag at all (DEC-0037 part 2: the block stays
+    // opportunistic there; forcing the whole response to be schema-only
+    // JSON would conflict with wanting free review narrative). A missing/
+    // unreadable schema file fails the pipeline rather than silently
+    // dispatching without constrained decoding (fail loud) — the file is a
+    // static, checked-in artifact that should always exist once WK-0125 has
+    // shipped.
+    let recoverySchemaContent: string | undefined;
+    if (handoff.mode === 'implement' && model.family !== 'pi') {
+      try {
+        recoverySchemaContent = await readFile(RECOVERY_SCHEMA_PATH, 'utf8');
+      } catch (err) {
+        return fail('PIPELINE_FAILED', `Failed to read recovery block schema: ${RECOVERY_SCHEMA_PATH}`, err);
+      }
+    }
+
     if (model.family === 'pi') {
       // workerDir is a path INSIDE THE JAIL, not under clonePath: jail.ts's
       // S5 recipe mounts a fresh --tmpfs /tmp (step 4 of the §11 recipe) that
@@ -806,10 +845,22 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
         opts.effort && model.effortMapping
           ? ` ${buildEffortArgs(model.effortMapping, opts.effort).map(shQuote).join(' ')}`
           : '';
+      // WK-0125/DEC-0037: implement-mode constrained decoding. Codex's
+      // `--output-schema` takes a FILE PATH (verified: `codex exec --help`,
+      // 2026-09-20 — "Path to a JSON Schema file describing the model's
+      // final response shape"; live capture of a real `codex exec ...
+      // --output-schema <path>` run confirmed the final agent_message is
+      // schema-shaped JSON) — the injected in-jail path is passed directly,
+      // no read-back needed (contrast the claude branch below).
+      const codexSchemaSuffix =
+        recoverySchemaContent !== undefined ? ` --output-schema ${shQuote(RECOVERY_SCHEMA_JAIL_PATH)}` : '';
       execLines = [
         `PROMPT=$(cat ${shQuote(promptPath)})`,
-        `exec codex exec "$PROMPT" --sandbox ${sandbox} --json -o ${shQuote(codexOutputPath)} --model ${shQuote(model.modelId)}${codexEffortSuffix}`,
+        `exec codex exec "$PROMPT" --sandbox ${sandbox} --json -o ${shQuote(codexOutputPath)} --model ${shQuote(model.modelId)}${codexEffortSuffix}${codexSchemaSuffix}`,
       ];
+      if (recoverySchemaContent !== undefined) {
+        bwrapInjectedFiles = [{ content: recoverySchemaContent, dest: RECOVERY_SCHEMA_JAIL_PATH }];
+      }
     } else {
       // Claude family (D2 ruling 2): a settings.json allow-list keyed off
       // write_scope (buildClaudeSettingsJson) replaces the old blanket
@@ -829,11 +880,30 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
         opts.effort && model.effortMapping
           ? ` ${buildEffortArgs(model.effortMapping, opts.effort).map(shQuote).join(' ')}`
           : '';
+      // WK-0125/DEC-0037: implement-mode constrained decoding. Claude's
+      // `--json-schema` takes the JSON SCHEMA TEXT INLINE, not a path
+      // (verified: `claude --help`, 2026-09-20 — "JSON Schema for
+      // structured output validation. Example: {...}"; confirmed against
+      // agent-chassis's own `resolveAgentRoleResultSchemaJson()`, which
+      // reads and returns file CONTENT — contrast codex's
+      // `resolveAgentRoleResultSchemaPath()`, a bare path. Live capture of
+      // a real `claude -p --json-schema '{...}'` run confirmed the `result`
+      // field becomes schema-shaped JSON text). The schema is still
+      // injected into the jail via `bwrapInjectedFiles` (mirrors the
+      // settings.json pattern immediately below) and read into a shell var
+      // at jail runtime with the same `$(cat ...)` convention already used
+      // for `$PROMPT`, so the inline value never has to be re-embedded into
+      // the generated bash script as a literal.
+      const claudeSchemaSuffix = recoverySchemaContent !== undefined ? ' --json-schema "$SCHEMA"' : '';
       execLines = [
         `PROMPT=$(cat ${shQuote(promptPath)})`,
-        `exec claude -p --output-format json --permission-mode default --settings ${shQuote(claudeSettingsPath)} --model ${shQuote(model.modelId)}${claudeEffortSuffix} -- "$PROMPT"`,
+        ...(recoverySchemaContent !== undefined ? [`SCHEMA=$(cat ${shQuote(RECOVERY_SCHEMA_JAIL_PATH)})`] : []),
+        `exec claude -p --output-format json --permission-mode default --settings ${shQuote(claudeSettingsPath)}${claudeSchemaSuffix} --model ${shQuote(model.modelId)}${claudeEffortSuffix} -- "$PROMPT"`,
       ];
       bwrapInjectedFiles = [{ content: claudeSettingsContent, dest: claudeSettingsPath }];
+      if (recoverySchemaContent !== undefined) {
+        bwrapInjectedFiles.push({ content: recoverySchemaContent, dest: RECOVERY_SCHEMA_JAIL_PATH });
+      }
     }
 
     // 10b. Resolved tunnel target endpoint + allowlist (DEC-0011, WK-0104).

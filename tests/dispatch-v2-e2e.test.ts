@@ -35,6 +35,14 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import {
+  REPORTED_ROLES,
+  WORKER_OUTCOMES,
+  FINDINGS_OUTCOMES,
+  FINDING_SEVERITIES,
+  RECOVERY_KINDS,
+  KB_DISPATCH_RECOVERY_VERSION,
+} from '../packages/dispatch-core/src/recovery-block.js';
 import { parseHandoff } from '../packages/dispatch-core/src/ho.js';
 import { checkAdmission } from '../packages/dispatch-core/src/admission.js';
 import { getDefaultRegistry, resolveModel } from '../packages/dispatch-core/src/model-registry.js';
@@ -600,6 +608,14 @@ interface S3RepoOpts {
   models?: Record<string, unknown>;
   backends?: Record<string, unknown>;
   profiles?: Record<string, unknown>;
+  /**
+   * Handoff mode (WK-0125). Defaults to 'implement' (every pre-existing
+   * caller omits this and gets the original behavior unchanged). A
+   * non-implement mode forces write_scope to `[]` — admission.ts's
+   * envelope_exceeds_mode gate rejects a non-empty write_scope outside
+   * mode=implement.
+   */
+  mode?: 'implement' | 'code_review' | 'redteam' | 'research';
 }
 
 /** A clean, committed temp repo with an HO fixture + wiki/.dispatch/ tables (S3 ruling 1). */
@@ -609,12 +625,13 @@ async function setupS3Repo(opts: S3RepoOpts = {}): Promise<string> {
   execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: repoRoot });
   execFileSync('git', ['config', 'user.name', 'Test User'], { cwd: repoRoot });
 
-  const { credentials = [], web = false, vars = [] } = opts;
+  const { credentials = [], web = false, vars = [], mode = 'implement' } = opts;
+  const writeScope = mode === 'implement' ? ['src/'] : [];
   const hoContent = `---
 id: HO-S3TEST
 title: S3 wave 3 refusal-gate fixture
-mode: implement
-write_scope: ["src/"]
+mode: ${mode}
+write_scope: ${JSON.stringify(writeScope)}
 base_ref: null
 web: ${web}
 credentials: ${JSON.stringify(credentials)}
@@ -994,6 +1011,311 @@ describe('dispatch v2 e2e (fake-tier) — WK-0122 effort passthrough (mocked spa
 
       const responseContent = await readFile(result.data.responsePath, 'utf8');
       expect(responseContent).toContain('effort_requested: \n');
+    } finally {
+      await rm(repoRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// WK-0125/DEC-0037 — contract/kb-dispatch-recovery.v1.schema.json structural
+// shape matches recovery-block.ts's validation logic (kb-owned schema,
+// DEC-0009 carve-out: kb authors the kb-dispatch-recovery.v1 format, so this
+// is not an external-shape assumption). Cross-checks against recovery-block.ts's
+// OWN exported closed vocabularies (REPORTED_ROLES/WORKER_OUTCOMES/
+// FINDINGS_OUTCOMES/FINDING_SEVERITIES/RECOVERY_KINDS/KB_DISPATCH_RECOVERY_VERSION)
+// rather than hand-copied literals where possible, so this test fails loud if
+// the schema file and the TS validator ever drift apart. Field NAMES
+// (TOP_LEVEL_REQUIRED_FIELDS etc.) are module-private in recovery-block.ts —
+// not exported — so those are read directly from its source and hand-listed
+// below; this is still kb's own authored format (DEC-0009's carve-out), not
+// an external unverified shape.
+// ---------------------------------------------------------------------------
+
+describe('contract/kb-dispatch-recovery.v1.schema.json — structural shape matches recovery-block.ts', () => {
+  function loadSchema(): any {
+    const schemaPath = join(process.cwd(), 'contract', 'kb-dispatch-recovery.v1.schema.json');
+    return JSON.parse(readFileSync(schemaPath, 'utf8'));
+  }
+
+  it('is valid JSON with additionalProperties:false at every object level (top-level and every $defs entry)', () => {
+    const schema = loadSchema();
+    expect(schema.type).toBe('object');
+    expect(schema.additionalProperties).toBe(false);
+    expect(schema.$defs.finding.additionalProperties).toBe(false);
+    expect(schema.$defs.affected_path.additionalProperties).toBe(false);
+    expect(schema.$defs.finding_counts.additionalProperties).toBe(false);
+    expect(schema.$defs.reviewed_control.additionalProperties).toBe(false);
+  });
+
+  it('top-level required + properties match recovery-block.ts TOP_LEVEL_REQUIRED_FIELDS + TOP_LEVEL_OPTIONAL_FIELDS (OpenAI-strict subset: every field required, optional fields nullable instead of absent)', () => {
+    const schema = loadSchema();
+    const expected = [
+      'schema_version', 'reported_role', 'reported_subject', 'reported_outcome',
+      'findings', 'finding_counts', 'reviewed_controls', // TOP_LEVEL_REQUIRED_FIELDS
+      'summary', 'kind', // TOP_LEVEL_OPTIONAL_FIELDS — nullable-and-required here
+    ].sort();
+    expect([...schema.required].sort()).toEqual(expected);
+    expect(Object.keys(schema.properties).sort()).toEqual(expected);
+  });
+
+  it('reported_role enum matches recovery-block.ts REPORTED_ROLES exactly', () => {
+    const schema = loadSchema();
+    expect([...schema.properties.reported_role.enum].sort()).toEqual([...REPORTED_ROLES].sort());
+  });
+
+  it('reported_outcome enum is the union of WORKER_OUTCOMES and FINDINGS_OUTCOMES (cross-field role/outcome pairing is validateRecoveryPayload\'s job — role_outcome_mismatch — not this structural schema\'s)', () => {
+    const schema = loadSchema();
+    const expected = [...WORKER_OUTCOMES, ...FINDINGS_OUTCOMES].sort();
+    expect([...schema.properties.reported_outcome.enum].sort()).toEqual(expected);
+  });
+
+  it('kind enum matches recovery-block.ts RECOVERY_KINDS plus null (kb extension, worker-only)', () => {
+    const schema = loadSchema();
+    expect([...schema.properties.kind.type].sort()).toEqual(['null', 'string']);
+    expect([...schema.properties.kind.enum].sort()).toEqual([...RECOVERY_KINDS, null].sort());
+  });
+
+  it('schema_version enum is exactly [KB_DISPATCH_RECOVERY_VERSION]', () => {
+    const schema = loadSchema();
+    expect(schema.properties.schema_version.enum).toEqual([KB_DISPATCH_RECOVERY_VERSION]);
+  });
+
+  it('finding required fields match FINDING_REQUIRED_FIELDS + FINDING_OPTIONAL_FIELDS, severity enum matches FINDING_SEVERITIES, control_id is nullable', () => {
+    const schema = loadSchema();
+    const expected = ['id', 'title', 'severity', 'blocking', 'affected_paths', 'control_id'].sort();
+    expect([...schema.$defs.finding.required].sort()).toEqual(expected);
+    expect([...schema.$defs.finding.properties.severity.enum].sort()).toEqual([...FINDING_SEVERITIES].sort());
+    expect([...schema.$defs.finding.properties.control_id.type].sort()).toEqual(['null', 'string']);
+  });
+
+  it('affected_path required fields are exactly path+line, line is nullable', () => {
+    const schema = loadSchema();
+    expect([...schema.$defs.affected_path.required].sort()).toEqual(['line', 'path']);
+    expect([...schema.$defs.affected_path.properties.line.type].sort()).toEqual(['integer', 'null']);
+  });
+
+  it('finding_counts required fields are exactly the 7 FINDING_COUNT_FIELDS (no optional sub-fields)', () => {
+    const schema = loadSchema();
+    const expected = ['total', 'blocking', 'critical', 'high', 'medium', 'low', 'info'].sort();
+    expect([...schema.$defs.finding_counts.required].sort()).toEqual(expected);
+  });
+
+  it('reviewed_control required fields are exactly control_id+result; control_id is NON-nullable (unlike finding.control_id — recovery-block.ts validateReviewedControls requires a plain string)', () => {
+    const schema = loadSchema();
+    expect([...schema.$defs.reviewed_control.required].sort()).toEqual(['control_id', 'result']);
+    expect(schema.$defs.reviewed_control.properties.control_id.type).toBe('string');
+    expect([...schema.$defs.reviewed_control.properties.result.enum].sort()).toEqual(['fail', 'pass']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// WK-0125/DEC-0037 — implement-mode constrained decoding: pipeline.ts wires
+// `--json-schema` (claude) / `--output-schema` (codex) into the exec line,
+// and injects contract/kb-dispatch-recovery.v1.schema.json into the jail via
+// bwrapInjectedFiles, ONLY for mode=implement. Pi gets no change (no
+// constrained-decoding support — stays on the existing fenced-example
+// prompt). Advisory modes (code_review/redteam/research) never get the flag
+// even on claude/codex, which DO support it — the block stays opportunistic
+// prose there (DEC-0037 part 2).
+//
+// Mirrors the WK-0122 mocked-spawnIsolated technique above; the mock here
+// ALSO captures `plan.injectedFiles` (not just `plan.command[2]`), so these
+// tests prove the REAL contract/ schema file content was wired through, not
+// merely that some flag string appears in the exec line.
+// ---------------------------------------------------------------------------
+
+describe('dispatch v2 e2e (fake-tier) — WK-0125 implement-mode constrained decoding (mocked spawnIsolated)', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const REAL_RECOVERY_SCHEMA = readFileSync(
+    join(process.cwd(), 'contract', 'kb-dispatch-recovery.v1.schema.json'),
+    'utf8',
+  );
+
+  /** Same technique as mockSpawnIsolated above, extended to also capture plan.injectedFiles. */
+  function mockSpawnIsolatedCapturePlan(fixtureContent: string): {
+    getInnerScript: () => string | undefined;
+    getInjectedFiles: () => ReadonlyArray<{ fd: number; dest: string; content: string }> | undefined;
+  } {
+    let capturedInnerScript: string | undefined;
+    let capturedInjectedFiles: ReadonlyArray<{ fd: number; dest: string; content: string }> | undefined;
+    vi.spyOn(spawnIsolatedModule, 'spawnIsolated').mockImplementation(async (plan, opts) => {
+      capturedInnerScript = plan.command[2];
+      capturedInjectedFiles = plan.injectedFiles;
+      if (opts?.stdoutLogPath) {
+        await writeFile(opts.stdoutLogPath, fixtureContent, 'utf8');
+      }
+      return {
+        ok: true,
+        data: {
+          stdout: '',
+          stderr: '',
+          exitCode: 0,
+          signal: null,
+          truncated: false,
+          timedOut: false,
+          streamDrainTimedOut: false,
+        },
+      };
+    });
+    return { getInnerScript: () => capturedInnerScript, getInjectedFiles: () => capturedInjectedFiles };
+  }
+
+  const CLAUDE_BACKENDS = {
+    'claude-saas': { family: 'claude', base_url: null, api_key_env: null, secrets_file: null },
+  };
+  const CLAUDE_MODELS = {
+    'claude-sonnet-5': { available_on: ['claude-saas'], model_id: 'claude-sonnet-5' },
+  };
+  const CODEX_BACKENDS = {
+    'codex-saas': { family: 'codex', base_url: null, api_key_env: null, secrets_file: null },
+  };
+  const CODEX_MODELS = {
+    'gpt-5.5': { available_on: ['codex-saas'], model_id: 'gpt-5.5' },
+  };
+
+  it('implement + claude: --json-schema "$SCHEMA" is spliced into the exec line (schema read via $(cat <injected-path>), same convention as $PROMPT), and the REAL contract schema content is injected into the jail', async () => {
+    const repoRoot = await setupS3Repo({ backends: CLAUDE_BACKENDS, models: CLAUDE_MODELS, mode: 'implement' });
+    const { getInnerScript, getInjectedFiles } = mockSpawnIsolatedCapturePlan(readFixtureFile('claude-p-output.txt'));
+    try {
+      const result = await runDispatch({
+        dir: repoRoot,
+        handoff: 'wiki/handoffs/HO-S3TEST.md',
+        model: 'claude-sonnet-5',
+        backend: 'claude-saas',
+        preflight: false,
+      });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      const innerScript = getInnerScript();
+      expect(innerScript).toBeDefined();
+      expect(innerScript).toContain('SCHEMA=$(cat');
+      expect(innerScript).toContain('--json-schema "$SCHEMA"');
+      // Must land BEFORE the `-- "$PROMPT"` terminator (DEC-0024 positional
+      // contract — same invariant the WK-0122 effort test enforces).
+      const schemaIdx = innerScript!.indexOf('--json-schema');
+      const terminatorIdx = innerScript!.indexOf('-- "$PROMPT"');
+      expect(terminatorIdx).toBeGreaterThan(-1);
+      expect(schemaIdx).toBeLessThan(terminatorIdx);
+
+      const injectedFiles = getInjectedFiles();
+      const schemaInjection = injectedFiles?.find((f) => f.dest.includes('kb-dispatch-recovery.v1.schema.json'));
+      expect(schemaInjection).toBeDefined();
+      expect(schemaInjection?.content).toBe(REAL_RECOVERY_SCHEMA);
+    } finally {
+      await rm(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('implement + codex: --output-schema <injected-jail-path> is spliced into the exec line, and the REAL contract schema content is injected into the jail', async () => {
+    const repoRoot = await setupS3Repo({ backends: CODEX_BACKENDS, models: CODEX_MODELS, mode: 'implement' });
+    const { getInnerScript, getInjectedFiles } = mockSpawnIsolatedCapturePlan(
+      readFixtureFile('codex-exec-output-stream-json.jsonl'),
+    );
+    try {
+      const result = await runDispatch({
+        dir: repoRoot,
+        handoff: 'wiki/handoffs/HO-S3TEST.md',
+        model: 'gpt-5.5',
+        backend: 'codex-saas',
+        preflight: false,
+      });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      const innerScript = getInnerScript();
+      expect(innerScript).toBeDefined();
+      expect(innerScript).toMatch(/--output-schema '\/tmp\/kb-dispatch-recovery\.v1\.schema\.json'/);
+
+      const injectedFiles = getInjectedFiles();
+      const schemaInjection = injectedFiles?.find((f) => f.dest.includes('kb-dispatch-recovery.v1.schema.json'));
+      expect(schemaInjection).toBeDefined();
+      expect(schemaInjection?.content).toBe(REAL_RECOVERY_SCHEMA);
+    } finally {
+      await rm(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('implement + pi: NO schema flag, NO schema injection (Pi has no constrained-decoding support — stays on the fenced-example prompt, DEC-0037 part 1)', async () => {
+    const repoRoot = await setupS3Repo({ mode: 'implement' }); // default deepseek/openrouter pi-family config
+    const { getInnerScript, getInjectedFiles } = mockSpawnIsolatedCapturePlan(
+      readFixtureFile('pi-output-code-review.jsonl'),
+    );
+    try {
+      const result = await runDispatch({
+        dir: repoRoot,
+        handoff: 'wiki/handoffs/HO-S3TEST.md',
+        model: 'deepseek',
+        backend: 'openrouter',
+        preflight: false,
+      });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      const innerScript = getInnerScript();
+      expect(innerScript).toBeDefined();
+      expect(innerScript).not.toContain('--json-schema');
+      expect(innerScript).not.toContain('--output-schema');
+
+      const injectedFiles = getInjectedFiles();
+      expect(injectedFiles?.some((f) => f.dest.includes('kb-dispatch-recovery.v1.schema.json'))).toBe(false);
+    } finally {
+      await rm(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('code_review (advisory mode) + claude: NO schema flag and NO schema injection even though claude supports constrained decoding — advisory modes stay opportunistic prose (DEC-0037 part 2)', async () => {
+    const repoRoot = await setupS3Repo({ backends: CLAUDE_BACKENDS, models: CLAUDE_MODELS, mode: 'code_review' });
+    const { getInnerScript, getInjectedFiles } = mockSpawnIsolatedCapturePlan(readFixtureFile('claude-p-output.txt'));
+    try {
+      const result = await runDispatch({
+        dir: repoRoot,
+        handoff: 'wiki/handoffs/HO-S3TEST.md',
+        model: 'claude-sonnet-5',
+        backend: 'claude-saas',
+        preflight: false,
+      });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      const innerScript = getInnerScript();
+      expect(innerScript).toBeDefined();
+      expect(innerScript).not.toContain('--json-schema');
+      expect(innerScript).not.toContain('SCHEMA=$(cat');
+
+      const injectedFiles = getInjectedFiles();
+      expect(injectedFiles?.some((f) => f.dest.includes('kb-dispatch-recovery.v1.schema.json'))).toBe(false);
+    } finally {
+      await rm(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('redteam (advisory mode) + codex: NO schema flag and NO schema injection', async () => {
+    const repoRoot = await setupS3Repo({ backends: CODEX_BACKENDS, models: CODEX_MODELS, mode: 'redteam' });
+    const { getInnerScript, getInjectedFiles } = mockSpawnIsolatedCapturePlan(
+      readFixtureFile('codex-exec-output-stream-json.jsonl'),
+    );
+    try {
+      const result = await runDispatch({
+        dir: repoRoot,
+        handoff: 'wiki/handoffs/HO-S3TEST.md',
+        model: 'gpt-5.5',
+        backend: 'codex-saas',
+        preflight: false,
+      });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      const innerScript = getInnerScript();
+      expect(innerScript).toBeDefined();
+      expect(innerScript).not.toContain('--output-schema');
+
+      const injectedFiles = getInjectedFiles();
+      expect(injectedFiles?.some((f) => f.dest.includes('kb-dispatch-recovery.v1.schema.json'))).toBe(false);
     } finally {
       await rm(repoRoot, { recursive: true, force: true });
     }

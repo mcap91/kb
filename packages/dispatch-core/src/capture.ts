@@ -67,11 +67,16 @@ export interface CaptureOpts {
    * worker/reviewer/redteam's terminal fenced output block. Rendered as a
    * `## Recovery Signal` section whenever present — an invalid/unparseable
    * block renders as a `**Parse failed:**` notice rather than being omitted
-   * silently. V4 note 3 role asymmetry, enforced in `deriveVerdict` below:
-   * for `implement` this is diagnostic evidence only and never changes the
-   * verdict (delivery authority is the scope-checked commit); for
-   * `code_review`/`redteam` the block IS the mode deliverable, so an
-   * absent/invalid block drives the verdict to `failed`.
+   * silently. DEC-0037 role asymmetry (reverses DEC-0023 V4 note 3 for
+   * advisory modes; WK-0125), enforced in `deriveVerdict` below: for
+   * `implement` this is diagnostic evidence only and never changes the
+   * verdict (delivery authority is the scope-checked commit — WK-0125 adds
+   * constrained decoding at the pipeline layer to make the block more
+   * reliably parseable, without changing this asymmetry). For
+   * `code_review`/`redteam` the block is now opportunistic: a valid block
+   * drives mechanical merge gating (`delivered`, `delivery_method:
+   * structured`); an absent/invalid block falls back to prose (`delivered`,
+   * `delivery_method: prose_fallback`) instead of hard-failing the run.
    */
   recoveryEvidence?: RecoveryBlockEvidence;
 }
@@ -108,10 +113,20 @@ function deriveBranch(handoffId: string, delivery: DeliveryOutcome): string {
   return '';
 }
 
-/** `deriveVerdict`'s return: the mechanical outcome plus a machine-set reason code for every non-`delivered` result. */
+/**
+ * `deriveVerdict`'s return: the mechanical outcome plus a machine-set reason
+ * code for every non-`delivered` result. `deliveryMethod` (WK-0125/DEC-0037)
+ * is a SEPARATE observability field from `reason` — it names how a
+ * `code_review`/`redteam` result was obtained (`structured` from a valid
+ * recovery block vs. `prose_fallback` from the chat transcript), not to be
+ * confused with `DeliveryOutcome`/the git delivery-gate result the rest of
+ * this module calls `delivery`. Unset for `implement`/`research`, where the
+ * structured/prose fork doesn't apply.
+ */
 interface VerdictResult {
   outcome: ResponseOutcome;
   reason?: string;
+  deliveryMethod?: 'structured' | 'prose_fallback';
 }
 
 /**
@@ -120,17 +135,25 @@ interface VerdictResult {
  * facts, the handoff's mode, and (for research/redteam crash detection only)
  * the Pi adapter's facts-only process classification — never the worker's
  * chat text, and never a worker-authored self-report file as authority. The
- * one exception is `recoveryEvidence.valid` for code_review/redteam (V4 note
- * 3, below) — even there the branch reads only whether extraction/validation
+ * one exception is `recoveryEvidence.valid` for code_review/redteam (DEC-0037,
+ * below) — even there the branch reads only whether extraction/validation
  * succeeded, never the worker's narrative content inside the block.
  *
- * V4 note 3 role asymmetry (`wiki/plans/PLN-0004/execution/
- * mid_project_review_rulings.md`, re-review pass): for `implement`, the
- * `kb-dispatch-recovery.v1` block is diagnostic evidence ONLY — an absent or
- * malformed block never changes this ladder's verdict, because delivery
- * authority is the scope-checked commit. For `code_review`/`redteam`, the
- * block IS the mode deliverable (these modes land no commit) — an absent or
- * invalid block drives the verdict to `failed` directly.
+ * DEC-0037 role asymmetry (reverses DEC-0023 V4 note 3 —
+ * `wiki/plans/PLN-0004/execution/mid_project_review_rulings.md` — for
+ * advisory modes only; WK-0125): for `implement`, the `kb-dispatch-
+ * recovery.v1` block is diagnostic evidence ONLY — an absent or malformed
+ * block never changes this ladder's verdict, because delivery authority is
+ * the scope-checked commit (unchanged by DEC-0037 — implement mode gets
+ * constrained decoding at the pipeline layer instead, which makes the block
+ * more reliably parseable without touching this ladder). For
+ * `code_review`/`redteam`, the block is now opportunistic, not the
+ * deliverable: a valid block drives mechanical merge gating (`delivered`,
+ * `delivery_method: structured`); an absent or invalid block falls back to
+ * prose (`delivered`, `delivery_method: prose_fallback`) instead of the old
+ * hard `failed`/`missing_review_artifact` — the review's prose is the
+ * deliverable when the structured shortcut isn't available, never a
+ * discarded artifact.
  *
  * Ladder:
  *   1. Delivery-gate refusals (out-of-scope / secret-in-diff) -> `refused`.
@@ -143,10 +166,19 @@ interface VerdictResult {
  *        tree, so no branch was ever created) -> `failed` (`no_deliverable`
  *        — DEC-0010's "silence plus no deliverable is failure, never
  *        success"). `recoveryEvidence` is never consulted in this branch.
- *      - code_review / redteam: `recoveryEvidence?.valid` false (block never
- *        emitted, or emitted but failed extraction/validation) -> `failed`
- *        (`missing_review_artifact`); a valid block -> `delivered` (redteam
- *        additionally still fails on a crashed/errored worker process).
+ *      - code_review: a valid block -> `delivered` (`delivery_method:
+ *        structured`, no reason); an invalid/absent block -> `delivered`,
+ *        reason `prose_fallback` (`delivery_method: prose_fallback`,
+ *        DEC-0037) — the chat transcript (`## Worker Report`) is the
+ *        deliverable in that case.
+ *      - redteam: same block-validity fallback as code_review, but a
+ *        crashed/errored worker process (`piResult.outcome` `failed`/
+ *        `error`) still fails with reason `process_error` regardless of
+ *        block validity — checked FIRST and dominant, so prose fallback
+ *        only ever covers a malformed/absent BLOCK from a process that
+ *        otherwise ran, never a process that produced no real output at
+ *        all (DEC-0010: no worker-authored content can manufacture a
+ *        success verdict).
  *      - research: no deliverable block exists for this mode (prose-only,
  *        ruling 1 item 1) — the transcript IS the product (`## Worker
  *        Report`); `delivered` here claims only "the process ran to
@@ -174,22 +206,24 @@ function deriveVerdict(
     if (delivery.status === 'no_delta') return { outcome: 'failed', reason: 'no_deliverable' }; // F2: empty delta
   }
   if (handoffMode === 'code_review') {
-    // V4 note 3: the recovery block IS the code_review deliverable — absent
-    // or invalid block = failed.
+    // DEC-0037 (reverses DEC-0023 V4 note 3 for advisory modes; WK-0125):
+    // the block is opportunistic, not the deliverable — never hard-fail a
+    // genuine review over a JSON shape mismatch.
     if (!recoveryEvidence?.valid) {
-      return { outcome: 'failed', reason: 'missing_review_artifact' };
+      return { outcome: 'delivered', reason: 'prose_fallback', deliveryMethod: 'prose_fallback' };
     }
-    return { outcome: 'delivered' };
+    return { outcome: 'delivered', deliveryMethod: 'structured' };
   }
   if (handoffMode === 'redteam') {
-    // V4 note 3: same asymmetry as code_review — the block is the deliverable.
-    if (!recoveryEvidence?.valid) {
-      return { outcome: 'failed', reason: 'missing_review_artifact' };
-    }
+    // Crash detection is UNCHANGED and dominant (checked before the block-
+    // validity fallback) — see the ladder doc comment above.
     if (piResult?.outcome === 'failed' || piResult?.outcome === 'error') {
       return { outcome: 'failed', reason: 'process_error' };
     }
-    return { outcome: 'delivered' };
+    if (!recoveryEvidence?.valid) {
+      return { outcome: 'delivered', reason: 'prose_fallback', deliveryMethod: 'prose_fallback' };
+    }
+    return { outcome: 'delivered', deliveryMethod: 'structured' };
   }
   if (handoffMode === 'research') {
     if (piResult?.outcome === 'failed' || piResult?.outcome === 'error') {
@@ -341,6 +375,9 @@ export async function writeResponseDoc(opts: CaptureOpts): Promise<DispatchResul
     frontmatterLines.push(`compaction_failed: ${opts.compaction.failed}`);
   }
   if (verdict.reason) frontmatterLines.push(`reason: ${verdict.reason}`);
+  // WK-0125/DEC-0037: observability for the code_review/redteam
+  // structured-vs-prose-fallback fork (never set for implement/research).
+  if (verdict.deliveryMethod) frontmatterLines.push(`delivery_method: ${verdict.deliveryMethod}`);
   // Resolved-value provenance (S3 ruling 8): stamped only when the caller has
   // them (e.g. never for the delivery-gate refusal callers, which pass no
   // model/backend at all) — RESOLVED runtime values only, never a template.
