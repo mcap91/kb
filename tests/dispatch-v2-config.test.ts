@@ -166,6 +166,62 @@ describe('repo-config.ts — wiki/.dispatch/ table loaders', () => {
       expect(result.error).toBe('BAD_RECORD');
       expect(result.message).toContain('available_on');
     });
+
+    // -------------------------------------------------------------------
+    // tool_call_parser (WK-0129) — vLLM per-model tool-call parser metadata.
+    // -------------------------------------------------------------------
+
+    it('parses a model entry with tool_call_parser, value preserved', async () => {
+      await writeDispatchConfig(
+        dir,
+        'models.json',
+        JSON.stringify({
+          'hermes-3-llama': {
+            available_on: ['vllm'],
+            model_id: 'NousResearch/Hermes-3-Llama-3.1-8B',
+            tool_call_parser: 'hermes',
+          },
+        }),
+      );
+
+      const result = await loadModelsTable(dir);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.data['hermes-3-llama']?.tool_call_parser).toBe('hermes');
+    });
+
+    it('omits tool_call_parser from the parsed entry when absent (no stray undefined field)', async () => {
+      await writeDispatchConfig(
+        dir,
+        'models.json',
+        JSON.stringify({ deepseek: { available_on: ['openrouter'], model_id: 'deepseek/deepseek-v4-flash-0731' } }),
+      );
+
+      const result = await loadModelsTable(dir);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect('tool_call_parser' in result.data.deepseek).toBe(false);
+    });
+
+    it('refuses a model entry with an empty-string tool_call_parser', async () => {
+      await writeDispatchConfig(
+        dir,
+        'models.json',
+        JSON.stringify({
+          'hermes-3-llama': {
+            available_on: ['vllm'],
+            model_id: 'NousResearch/Hermes-3-Llama-3.1-8B',
+            tool_call_parser: '',
+          },
+        }),
+      );
+
+      const result = await loadModelsTable(dir);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error).toBe('BAD_RECORD');
+      expect(result.message).toContain('tool_call_parser');
+    });
   });
 
   describe('loadBackendsTable', () => {

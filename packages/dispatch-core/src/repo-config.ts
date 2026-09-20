@@ -53,6 +53,7 @@ export interface ModelTableEntry {
   model_id: string;
   notes?: string;
   inference?: Record<string, unknown>;
+  tool_call_parser?: string;
 }
 
 export interface ProfileEntry {
@@ -198,7 +199,7 @@ function validateBackendEntry(name: string, raw: unknown): DispatchResult<Backen
   return ok(entry);
 }
 
-const MODEL_TABLE_ENTRY_KNOWN_KEYS = new Set(['available_on', 'model_id', 'notes', 'inference']);
+const MODEL_TABLE_ENTRY_KNOWN_KEYS = new Set(['available_on', 'model_id', 'notes', 'inference', 'tool_call_parser']);
 
 function validateModelTableEntry(slug: string, raw: unknown): DispatchResult<ModelTableEntry> {
   if (!isPlainObject(raw)) {
@@ -216,6 +217,11 @@ function validateModelTableEntry(slug: string, raw: unknown): DispatchResult<Mod
   if (raw.inference !== undefined && !isPlainObject(raw.inference)) {
     return fail('BAD_RECORD', `Model "${slug}" in models.json: "inference" must be an object when present.`);
   }
+  if (raw.tool_call_parser !== undefined) {
+    if (typeof raw.tool_call_parser !== 'string' || raw.tool_call_parser.trim() === '') {
+      return fail('BAD_RECORD', `Model "${slug}" in models.json: "tool_call_parser" must be a non-empty string when present.`);
+    }
+  }
 
   const entry: ModelTableEntry = {
     available_on: raw.available_on as string[],
@@ -223,6 +229,7 @@ function validateModelTableEntry(slug: string, raw: unknown): DispatchResult<Mod
   };
   if (typeof raw.notes === 'string') entry.notes = raw.notes;
   if (isPlainObject(raw.inference)) entry.inference = raw.inference as Record<string, unknown>;
+  if (typeof raw.tool_call_parser === 'string') entry.tool_call_parser = raw.tool_call_parser;
   return ok(entry);
 }
 
