@@ -13,7 +13,7 @@ import { parse, lt, gt } from 'semver';
 
 import type { DispatchResult } from './errors.js';
 import { fail, ok } from './errors.js';
-import type { BackendFamily } from './repo-config.js';
+import type { BackendFamily, EffortMapping } from './repo-config.js';
 import { loadModelsTable, loadBackendsTable } from './repo-config.js';
 
 // ---------------------------------------------------------------------------
@@ -109,8 +109,8 @@ export interface ResolvedModel {
   apiKeyEnv: string | null;
   secretsFile: string | null;
   availableOn: string[];
-  /** Whether the backend supports effort/reasoning params (false for all current open-model backends). */
-  supportsEffort: boolean;
+  /** Per-family effort/reasoning CLI mapping, threaded from backends.json's `effort_mapping` (WK-0122). Absent = this backend does not support effort — the mapping IS the capability declaration, replacing the old `supportsEffort` boolean. */
+  effortMapping?: EffortMapping;
   /** §7.13 context-budget gate input (tokens). Defaults to DEFAULT_CONTEXT_WINDOW; floor at MIN_CONTEXT_WINDOW. */
   contextWindow: number;
 }
@@ -207,7 +207,7 @@ export async function resolveModelFromConfig(
     apiKeyEnv: backendEntry.api_key_env,
     secretsFile: backendEntry.secrets_file,
     availableOn: modelEntry.available_on,
-    supportsEffort: false,
+    effortMapping: backendEntry.effort_mapping,
     contextWindow,
   });
 }

@@ -93,12 +93,21 @@ function fail<T = never>(message: string, detail?: unknown): DispatchResult<T> {
  * <settingsPath>` is added. When omitted, behavior is unchanged
  * (`--permission-mode acceptEdits`, no `--settings`) — backward compatible
  * for any caller that hasn't adopted the settings.json path yet.
+ *
+ * `effort` (WK-0122), when present, splices `--effort <level>` in BEFORE the
+ * `--` terminator, verified via `claude --help` ("--effort <level>  Effort
+ * level for the current session"). This is the adapter's own facts-only
+ * report of Claude's one real invocation shape; the pipeline's separate,
+ * config-driven splice into its hand-built exec line (pipeline.ts's
+ * buildEffortArgs) is what actually runs, and currently produces the same
+ * tokens for the claude family.
  */
 export function buildInvocation(
   promptText: string,
   model: ResolvedModel,
   clonePath: string,
   settingsPath?: string,
+  effort?: string,
 ): ClaudeInvocation {
   const env: Record<string, string> = {};
   if (model.apiKeyEnv) {
@@ -112,18 +121,22 @@ export function buildInvocation(
       ? ['--permission-mode', 'default', '--settings', settingsPath]
       : ['--permission-mode', 'acceptEdits'];
 
+  const args: string[] = [
+    '-p',
+    '--output-format',
+    'json',
+    ...permissionArgs,
+    '--model',
+    model.modelId,
+  ];
+  if (effort) {
+    args.push('--effort', effort);
+  }
+  args.push('--', promptText);
+
   return {
     cmd: 'claude',
-    args: [
-      '-p',
-      '--output-format',
-      'json',
-      ...permissionArgs,
-      '--model',
-      model.modelId,
-      '--',
-      promptText,
-    ],
+    args,
     env,
     cwd: clonePath,
   };

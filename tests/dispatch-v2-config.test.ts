@@ -259,6 +259,135 @@ describe('repo-config.ts — wiki/.dispatch/ table loaders', () => {
       expect(result.error).toBe('BAD_RECORD');
       expect(result.message).toContain('api_key_env');
     });
+
+    // -------------------------------------------------------------------
+    // effort_mapping (WK-0122) — per-family effort/reasoning CLI mapping.
+    // -------------------------------------------------------------------
+
+    it('parses a flag_value effort_mapping (claude shape)', async () => {
+      await writeDispatchConfig(
+        dir,
+        'backends.json',
+        JSON.stringify({
+          'claude-saas': {
+            family: 'claude',
+            base_url: null,
+            api_key_env: null,
+            secrets_file: null,
+            effort_mapping: { flag: '--effort', style: 'flag_value' },
+          },
+        }),
+      );
+
+      const result = await loadBackendsTable(dir);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.data['claude-saas']?.effort_mapping).toEqual({ flag: '--effort', style: 'flag_value' });
+    });
+
+    it('parses a key_equals_value effort_mapping (codex shape)', async () => {
+      await writeDispatchConfig(
+        dir,
+        'backends.json',
+        JSON.stringify({
+          'codex-saas': {
+            family: 'codex',
+            base_url: null,
+            api_key_env: null,
+            secrets_file: null,
+            effort_mapping: { flag: '-c', style: 'key_equals_value', key: 'model_reasoning_effort' },
+          },
+        }),
+      );
+
+      const result = await loadBackendsTable(dir);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.data['codex-saas']?.effort_mapping).toEqual({
+        flag: '-c',
+        style: 'key_equals_value',
+        key: 'model_reasoning_effort',
+      });
+    });
+
+    it('omits effort_mapping from the parsed entry when absent (no stray undefined field)', async () => {
+      await writeDispatchConfig(
+        dir,
+        'backends.json',
+        JSON.stringify({ openrouter: { family: 'pi', base_url: 'https://openrouter.ai/api/v1', api_key_env: null, secrets_file: null } }),
+      );
+
+      const result = await loadBackendsTable(dir);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect('effort_mapping' in result.data.openrouter).toBe(false);
+    });
+
+    it('refuses an effort_mapping with an unrecognized style', async () => {
+      await writeDispatchConfig(
+        dir,
+        'backends.json',
+        JSON.stringify({
+          'claude-saas': {
+            family: 'claude',
+            base_url: null,
+            api_key_env: null,
+            secrets_file: null,
+            effort_mapping: { flag: '--effort', style: 'bogus_style' },
+          },
+        }),
+      );
+
+      const result = await loadBackendsTable(dir);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error).toBe('BAD_RECORD');
+      expect(result.message).toContain('effort_mapping.style');
+    });
+
+    it('refuses a key_equals_value effort_mapping missing the required key', async () => {
+      await writeDispatchConfig(
+        dir,
+        'backends.json',
+        JSON.stringify({
+          'codex-saas': {
+            family: 'codex',
+            base_url: null,
+            api_key_env: null,
+            secrets_file: null,
+            effort_mapping: { flag: '-c', style: 'key_equals_value' },
+          },
+        }),
+      );
+
+      const result = await loadBackendsTable(dir);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error).toBe('BAD_RECORD');
+      expect(result.message).toContain('effort_mapping.key');
+    });
+
+    it('refuses an effort_mapping missing the required flag', async () => {
+      await writeDispatchConfig(
+        dir,
+        'backends.json',
+        JSON.stringify({
+          'claude-saas': {
+            family: 'claude',
+            base_url: null,
+            api_key_env: null,
+            secrets_file: null,
+            effort_mapping: { style: 'flag_value' },
+          },
+        }),
+      );
+
+      const result = await loadBackendsTable(dir);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error).toBe('BAD_RECORD');
+      expect(result.message).toContain('effort_mapping.flag');
+    });
   });
 
   describe('loadProfilesConfig', () => {
