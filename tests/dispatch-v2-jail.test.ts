@@ -15,6 +15,7 @@ import {
   buildBwrapPlan,
   buildJailArgs,
   classifyWikiShape,
+  looksLikeFile,
   parseDataMount,
   SYSTEM_ROOTS,
   type BwrapInjectedFile,
@@ -848,5 +849,19 @@ describe('DEC-0011 visibility wall assertions (WK-0103)', () => {
     expect(plan.mounts).toEqual(expect.arrayContaining([
       { kind: 'bind', src: runDir, dst: runDir },
     ]));
+  });
+});
+
+describe('classifyEntry / looksLikeFile — write_scope file vs directory classification', () => {
+  it('looksLikeFile returns true for paths with file extensions', () => {
+    expect(looksLikeFile('smoke-result.txt')).toBe(true);
+    expect(looksLikeFile('src/index.ts')).toBe(true);
+    expect(looksLikeFile('docs/notes.md')).toBe(true);
+  });
+
+  it('looksLikeFile returns false for directory-shaped paths', () => {
+    expect(looksLikeFile('src/')).toBe(false);
+    expect(looksLikeFile('src')).toBe(false);
+    expect(looksLikeFile('docs/api')).toBe(false);
   });
 });

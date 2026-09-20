@@ -25,10 +25,10 @@
  * (ELv2: design mirrored only, no chassis code copied).
  */
 import { spawn } from 'node:child_process';
-import { closeSync, existsSync, openSync } from 'node:fs';
+import { closeSync, constants as fsConstants, existsSync, openSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { join, relative, resolve } from 'node:path';
+import { dirname, join, relative, resolve } from 'node:path';
 
 import type { DispatchResult } from './errors.js';
 import { ok, fail } from './errors.js';
@@ -50,6 +50,7 @@ import { execBash } from './exec-direct.js';
 import {
   buildBwrapPlan,
   buildSecretMaskArgs,
+  classifyEntry,
   classifyWikiShape,
   deriveDirectoryScopedMounts,
   deriveExactFileMounts,
@@ -663,19 +664,36 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
   const { clonePath } = cloneResult.data;
 
   try {
-    // 9b. Pre-create skeleton dirs for write_scope sparse binds — bwrap
-    // cannot mkdir a new path under a ro-bound root (jail.ts's own module
-    // doc), so every write_scope path must already exist on disk before
-    // buildBwrapPlan's bind list is handed to bwrap. D6: the clone is a plain
-    // host path now — a direct `fs.mkdir` replaces the old mkdir-script round trip.
+    // 9b. Pre-create skeleton for write_scope sparse binds — bwrap cannot
+    // mkdir a new path under a ro-bound root (jail.ts's own module doc), so
+    // every write_scope path must already exist on disk before buildBwrapPlan.
+    // File entries: mkdir the parent, touch the file (chassis pattern:
+    // O_CREAT | O_EXCL). Directory entries: mkdir the entry itself.
     if (handoff.write_scope.length > 0) {
       for (const rel of handoff.write_scope) {
         const trimmed = rel.replace(/^\/+/, '').replace(/\/+$/, '');
         if (!trimmed) continue;
-        try {
-          await mkdir(join(clonePath, trimmed), { recursive: true });
-        } catch (err) {
-          return fail('PIPELINE_FAILED', `Failed to create write_scope skeleton dir: ${join(clonePath, trimmed)}`, err);
+        const entryPath = join(clonePath, trimmed);
+        if (classifyEntry(entryPath, trimmed) === 'file') {
+          const parentDir = dirname(entryPath);
+          try {
+            await mkdir(parentDir, { recursive: true });
+          } catch (err) {
+            return fail('PIPELINE_FAILED', `Failed to create write_scope skeleton dir: ${parentDir}`, err);
+          }
+          try {
+            closeSync(openSync(entryPath, fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY, 0o644));
+          } catch (err) {
+            if ((err as NodeJS.ErrnoException)?.code !== 'EEXIST') {
+              return fail('PIPELINE_FAILED', `Failed to create write_scope skeleton file: ${entryPath}`, err);
+            }
+          }
+        } else {
+          try {
+            await mkdir(entryPath, { recursive: true });
+          } catch (err) {
+            return fail('PIPELINE_FAILED', `Failed to create write_scope skeleton dir: ${entryPath}`, err);
+          }
         }
       }
     }

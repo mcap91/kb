@@ -453,7 +453,7 @@ export function buildBwrapPlan(opts: BuildBwrapPlanOpts): BwrapPlan {
 // file the worker hasn't created yet).
 // ---------------------------------------------------------------------------
 
-type EntryKind = 'file' | 'directory';
+export type EntryKind = 'file' | 'directory';
 
 /**
  * Heuristic used only when a write_scope path does not yet exist on disk: a
@@ -463,7 +463,7 @@ type EntryKind = 'file' | 'directory';
  * anything else (no dot, or a trailing-slash directory entry, whose final
  * split segment is empty) reads as a directory.
  */
-function looksLikeFile(relPath: string): boolean {
+export function looksLikeFile(relPath: string): boolean {
   const basename = relPath.split('/').pop() ?? relPath;
   return /\.[A-Za-z0-9]+$/.test(basename);
 }
@@ -475,7 +475,7 @@ function looksLikeFile(relPath: string): boolean {
  * stat error, since this module's "cannot fail" contract (top-of-file doc)
  * means a permission error must degrade to the heuristic rather than throw.
  */
-function classifyEntry(absPath: string, relPath: string): EntryKind {
+export function classifyEntry(absPath: string, relPath: string): EntryKind {
   try {
     return statSync(absPath).isDirectory() ? 'directory' : 'file';
   } catch {
