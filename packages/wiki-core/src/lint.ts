@@ -25,7 +25,10 @@
  *   - STALE_WRITE_SCOPE             — (warning) write_scope path does not exist on disk
  *   - MISSING_DOCS_TARGET           — (warning) docs path does not exist on disk
  *   - ORPHAN_WK                     — (warning) WK record has no initiative set
- *   - UNCHECKED_CHECKLIST           — (warning) closed/done record has unchecked items
+ *   - AC_COMPLETE_STATUS_OPEN       — (warning) all "## Acceptance criteria" boxes are
+ *                                     checked but status has not advanced past an open state
+ *   - UNCHECKED_CHECKLIST           — (error) closed/terminal-status record has unchecked
+ *                                     items in its "## Acceptance criteria" section
  */
 
 import * as fs from 'node:fs';
@@ -169,6 +172,44 @@ function listMarkdownFiles(dirPath: string): string[] {
 function isGenerated(fm: Record<string, unknown> | null): boolean {
   if (!fm) return false;
   return fm['_generated'] === true || fm['_generated'] === 'true';
+}
+
+// ---------------------------------------------------------------------------
+// Acceptance-criteria section helpers (WK-0050)
+// ---------------------------------------------------------------------------
+
+/**
+ * Extract the checkbox lines (`- [ ]` / `- [x]`) from a record body's
+ * "## Acceptance criteria" section — from that heading up to (but not
+ * including) the next `##` heading, or EOF. Returns an empty array if the
+ * section is absent.
+ *
+ * Scoping to this section only (rather than the whole body) is deliberate:
+ * a stray open box under an unrelated `## Checklist` heading must not trip
+ * AC_COMPLETE_STATUS_OPEN or the build-breaking UNCHECKED_CHECKLIST error.
+ * Both rules call this single helper so the section-slicing isn't duplicated.
+ */
+function extractAcceptanceCriteriaCheckboxes(body: string): string[] {
+  const lines = body.split('\n');
+  const headingIdx = lines.findIndex(line =>
+    /^##\s+Acceptance criteria\s*$/i.test(line.trim()),
+  );
+  if (headingIdx === -1) return [];
+
+  const checkboxes: string[] = [];
+  for (let i = headingIdx + 1; i < lines.length; i++) {
+    const trimmed = lines[i].trim();
+    if (/^##\s+/.test(trimmed)) break;
+    if (/^-\s*\[[ xX]\]/.test(trimmed)) {
+      checkboxes.push(trimmed);
+    }
+  }
+  return checkboxes;
+}
+
+/** True if a checkbox line (as returned by extractAcceptanceCriteriaCheckboxes) is checked. */
+function isCheckedBox(line: string): boolean {
+  return /^-\s*\[[xX]\]/.test(line);
 }
 
 // ---------------------------------------------------------------------------
@@ -475,16 +516,48 @@ export async function lint(opts: LintOpts): Promise<Result<LintResult>> {
       }
     }
 
-    // Rule: UNCHECKED_CHECKLIST — warn on closed/done records with unchecked items
-    const status = fm['status'];
-    const closedStatuses = ['closed', 'done'];
-    if (typeof status === 'string' && closedStatuses.includes(status)) {
-      if (rec.body.includes('- [ ]')) {
+    // Rule: AC_COMPLETE_STATUS_OPEN — (warning, WK-0050) all boxes in "## Acceptance
+    // criteria" are checked but status has not advanced past an open state. `review`
+    // is deliberately excluded — AC-complete awaiting review is legitimate, not drift.
+    {
+      const status = fm['status'];
+      const acBoxes = extractAcceptanceCriteriaCheckboxes(rec.body);
+      const openStatuses = ['todo', 'in_progress', 'blocked'];
+      if (
+        typeof status === 'string' &&
+        openStatuses.includes(status) &&
+        acBoxes.length > 0 &&
+        acBoxes.every(isCheckedBox)
+      ) {
+        diagnostics.push({
+          file: rec.relPath,
+          code: 'AC_COMPLETE_STATUS_OPEN',
+          message: `Acceptance criteria are all checked but status is still "${status}"`,
+          severity: 'warning',
+        });
+      }
+    }
+
+    // Rule: UNCHECKED_CHECKLIST — (error, WK-0050 upgrade from warning) a closed/
+    // terminal-status record has unchecked items in "## Acceptance criteria". Scoped
+    // to that section only (not the whole body via `rec.body.includes('- [ ]')` as
+    // before) so a stray open box under an unrelated "## Checklist" heading does not
+    // trip a build-breaking error. `parked` is deliberately excluded — open AC on a
+    // parked record is expected, not drift.
+    {
+      const status = fm['status'];
+      const acBoxes = extractAcceptanceCriteriaCheckboxes(rec.body);
+      const closedStatuses = ['done', 'cancelled', 'deprecated', 'duplicate', 'superseded', 'wont_do'];
+      if (
+        typeof status === 'string' &&
+        closedStatuses.includes(status) &&
+        acBoxes.some(line => !isCheckedBox(line))
+      ) {
         diagnostics.push({
           file: rec.relPath,
           code: 'UNCHECKED_CHECKLIST',
-          message: 'Record is marked as closed/done but has unchecked checklist items',
-          severity: 'warning',
+          message: `Record status is "${status}" but its "## Acceptance criteria" section has unchecked items`,
+          severity: 'error',
         });
       }
     }

@@ -410,6 +410,7 @@ Both must pass. The gate must be green on Linux (WSL2 ext4).
 - **Do not import across subsystem boundaries.** wiki-cli uses wiki-core. dispatch-cli uses dispatch-core. graph-explore is standalone. Sole ratified exception (DEC-0007): dispatch-core may import wiki-core's record primitives, one-way, never the reverse.
 - **Do not describe features that do not exist.** No semantic search, no embeddings, no function-level graphs.
 - **Do not modify files under `scratch_space/`.** That directory is for planning and reference only.
+- **Do not use git worktrees.** Multiple agents share this checkout. Worktrees cause branch switches, stash collisions, and lost work. Work on one branch at a time; if branches diverge, rebase and merge — never create parallel worktrees.
 
 ## Interaction Contract
 

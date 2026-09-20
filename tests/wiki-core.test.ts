@@ -1700,7 +1700,7 @@ describe('lint', () => {
     }
   });
 
-  it('warns on closed records with unchecked checklists', async () => {
+  it('errors on closed records with an unchecked box in Acceptance criteria (WK-0050: upgraded from warning, scoped to the acceptance section)', async () => {
     tmp = await createBootstrappedRepo();
 
     writeRecord(
@@ -1716,16 +1716,16 @@ describe('lint', () => {
         created: '2025-01-01',
         updated: '2025-01-01',
       },
-      '# WK-0001\n\n- [ ] unchecked item\n',
+      '# WK-0001\n\n## Acceptance criteria\n\n- [ ] unchecked item\n',
     );
 
     const result = await lint({ dir: tmp.dir });
     expect(result.ok).toBe(true);
     if (result.ok) {
-      const warnings = result.data.diagnostics.filter(
-        d => d.code === 'UNCHECKED_CHECKLIST' && d.severity === 'warning',
+      const errors = result.data.diagnostics.filter(
+        d => d.code === 'UNCHECKED_CHECKLIST' && d.severity === 'error',
       );
-      expect(warnings.length).toBeGreaterThan(0);
+      expect(errors.length).toBeGreaterThan(0);
     }
   });
 
@@ -1764,6 +1764,283 @@ describe('lint', () => {
         d.file.includes('handoffs'),
       );
       expect(handoffDiags.length).toBe(0);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// WK-0050: status↔acceptance-criteria lint rules
+// ---------------------------------------------------------------------------
+
+describe('lint WK-0050 status↔acceptance-criteria rules', () => {
+  let tmp: TmpRepo;
+
+  afterEach(() => {
+    tmp?.cleanup();
+  });
+
+  it('warns AC_COMPLETE_STATUS_OPEN when all acceptance boxes are checked but status is in_progress', async () => {
+    tmp = await createBootstrappedRepo();
+
+    writeRecord(tmp.dir, 'wiki/initiatives/IN-0001.md', {
+      id: 'IN-0001',
+      title: 'Init',
+      status: 'todo',
+      priority: 'medium',
+      owner: 'test',
+      created: '2025-01-01',
+      updated: '2025-01-01',
+    });
+    writeRecord(
+      tmp.dir,
+      'wiki/issues/WK-0001.md',
+      {
+        id: 'WK-0001',
+        title: 'All boxes checked, still in progress',
+        type: 'task',
+        status: 'in_progress',
+        priority: 'medium',
+        owner: 'test',
+        created: '2025-01-01',
+        updated: '2025-01-01',
+        initiative: 'IN-0001',
+      },
+      '# WK-0001\n\n## Acceptance criteria\n\n- [x] done thing\n- [x] another done thing\n',
+    );
+
+    const result = await lint({ dir: tmp.dir });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const diags = result.data.diagnostics.filter(d => d.code === 'AC_COMPLETE_STATUS_OPEN');
+      expect(diags.length).toBe(1);
+      expect(diags[0].severity).toBe('warning');
+    }
+  });
+
+  it('does not warn AC_COMPLETE_STATUS_OPEN when all acceptance boxes are checked but status is review', async () => {
+    tmp = await createBootstrappedRepo();
+
+    writeRecord(tmp.dir, 'wiki/initiatives/IN-0001.md', {
+      id: 'IN-0001',
+      title: 'Init',
+      status: 'todo',
+      priority: 'medium',
+      owner: 'test',
+      created: '2025-01-01',
+      updated: '2025-01-01',
+    });
+    writeRecord(
+      tmp.dir,
+      'wiki/issues/WK-0001.md',
+      {
+        id: 'WK-0001',
+        title: 'All boxes checked, awaiting review',
+        type: 'task',
+        status: 'review',
+        priority: 'medium',
+        owner: 'test',
+        created: '2025-01-01',
+        updated: '2025-01-01',
+        initiative: 'IN-0001',
+      },
+      '# WK-0001\n\n## Acceptance criteria\n\n- [x] done thing\n- [x] another done thing\n',
+    );
+
+    const result = await lint({ dir: tmp.dir });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const diags = result.data.diagnostics.filter(d => d.code === 'AC_COMPLETE_STATUS_OPEN');
+      expect(diags).toEqual([]);
+    }
+  });
+
+  it('does not warn AC_COMPLETE_STATUS_OPEN when only some acceptance boxes are checked and status is in_progress', async () => {
+    tmp = await createBootstrappedRepo();
+
+    writeRecord(tmp.dir, 'wiki/initiatives/IN-0001.md', {
+      id: 'IN-0001',
+      title: 'Init',
+      status: 'todo',
+      priority: 'medium',
+      owner: 'test',
+      created: '2025-01-01',
+      updated: '2025-01-01',
+    });
+    writeRecord(
+      tmp.dir,
+      'wiki/issues/WK-0001.md',
+      {
+        id: 'WK-0001',
+        title: 'Partially checked, in progress',
+        type: 'task',
+        status: 'in_progress',
+        priority: 'medium',
+        owner: 'test',
+        created: '2025-01-01',
+        updated: '2025-01-01',
+        initiative: 'IN-0001',
+      },
+      '# WK-0001\n\n## Acceptance criteria\n\n- [x] done thing\n- [ ] not done thing\n',
+    );
+
+    const result = await lint({ dir: tmp.dir });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const diags = result.data.diagnostics.filter(d => d.code === 'AC_COMPLETE_STATUS_OPEN');
+      expect(diags).toEqual([]);
+    }
+  });
+
+  it('errors UNCHECKED_CHECKLIST when status is cancelled and an acceptance box is unchecked', async () => {
+    tmp = await createBootstrappedRepo();
+
+    writeRecord(tmp.dir, 'wiki/initiatives/IN-0001.md', {
+      id: 'IN-0001',
+      title: 'Init',
+      status: 'todo',
+      priority: 'medium',
+      owner: 'test',
+      created: '2025-01-01',
+      updated: '2025-01-01',
+    });
+    writeRecord(
+      tmp.dir,
+      'wiki/issues/WK-0001.md',
+      {
+        id: 'WK-0001',
+        title: 'Cancelled with open AC box',
+        type: 'task',
+        status: 'cancelled',
+        priority: 'medium',
+        owner: 'test',
+        created: '2025-01-01',
+        updated: '2025-01-01',
+        initiative: 'IN-0001',
+      },
+      '# WK-0001\n\n## Acceptance criteria\n\n- [ ] thing\n',
+    );
+
+    const result = await lint({ dir: tmp.dir });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const diags = result.data.diagnostics.filter(d => d.code === 'UNCHECKED_CHECKLIST');
+      expect(diags.length).toBe(1);
+      expect(diags[0].severity).toBe('error');
+    }
+  });
+
+  it('does not error UNCHECKED_CHECKLIST when status is parked and an acceptance box is unchecked', async () => {
+    tmp = await createBootstrappedRepo();
+
+    writeRecord(tmp.dir, 'wiki/initiatives/IN-0001.md', {
+      id: 'IN-0001',
+      title: 'Init',
+      status: 'todo',
+      priority: 'medium',
+      owner: 'test',
+      created: '2025-01-01',
+      updated: '2025-01-01',
+    });
+    writeRecord(
+      tmp.dir,
+      'wiki/issues/WK-0001.md',
+      {
+        id: 'WK-0001',
+        title: 'Parked with open AC box',
+        type: 'task',
+        status: 'parked',
+        priority: 'medium',
+        owner: 'test',
+        created: '2025-01-01',
+        updated: '2025-01-01',
+        initiative: 'IN-0001',
+      },
+      '# WK-0001\n\n## Acceptance criteria\n\n- [ ] thing\n',
+    );
+
+    const result = await lint({ dir: tmp.dir });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const diags = result.data.diagnostics.filter(d => d.code === 'UNCHECKED_CHECKLIST');
+      expect(diags).toEqual([]);
+    }
+  });
+
+  it('neither rule fires when the only open box is under ## Checklist and no ## Acceptance criteria section exists', async () => {
+    tmp = await createBootstrappedRepo();
+
+    writeRecord(tmp.dir, 'wiki/initiatives/IN-0001.md', {
+      id: 'IN-0001',
+      title: 'Init',
+      status: 'todo',
+      priority: 'medium',
+      owner: 'test',
+      created: '2025-01-01',
+      updated: '2025-01-01',
+    });
+    writeRecord(
+      tmp.dir,
+      'wiki/issues/WK-0001.md',
+      {
+        id: 'WK-0001',
+        title: 'Done, open box only under Checklist',
+        type: 'task',
+        status: 'done',
+        priority: 'medium',
+        owner: 'test',
+        created: '2025-01-01',
+        updated: '2025-01-01',
+        initiative: 'IN-0001',
+      },
+      '# WK-0001\n\n## Checklist\n\n- [ ] unchecked\n',
+    );
+
+    const result = await lint({ dir: tmp.dir });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const unchecked = result.data.diagnostics.filter(d => d.code === 'UNCHECKED_CHECKLIST');
+      const acOpen = result.data.diagnostics.filter(d => d.code === 'AC_COMPLETE_STATUS_OPEN');
+      expect(unchecked).toEqual([]);
+      expect(acOpen).toEqual([]);
+    }
+  });
+
+  it('AC_COMPLETE_STATUS_OPEN fires and UNCHECKED_CHECKLIST does not when acceptance is fully checked but an unrelated ## Checklist box is open', async () => {
+    tmp = await createBootstrappedRepo();
+
+    writeRecord(tmp.dir, 'wiki/initiatives/IN-0001.md', {
+      id: 'IN-0001',
+      title: 'Init',
+      status: 'todo',
+      priority: 'medium',
+      owner: 'test',
+      created: '2025-01-01',
+      updated: '2025-01-01',
+    });
+    writeRecord(
+      tmp.dir,
+      'wiki/issues/WK-0001.md',
+      {
+        id: 'WK-0001',
+        title: 'AC complete, in progress, open Checklist box',
+        type: 'task',
+        status: 'in_progress',
+        priority: 'medium',
+        owner: 'test',
+        created: '2025-01-01',
+        updated: '2025-01-01',
+        initiative: 'IN-0001',
+      },
+      '# WK-0001\n\n## Acceptance criteria\n\n- [x] done\n\n## Checklist\n\n- [ ] not done\n',
+    );
+
+    const result = await lint({ dir: tmp.dir });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const acOpen = result.data.diagnostics.filter(d => d.code === 'AC_COMPLETE_STATUS_OPEN');
+      const unchecked = result.data.diagnostics.filter(d => d.code === 'UNCHECKED_CHECKLIST');
+      expect(acOpen.length).toBe(1);
+      expect(unchecked).toEqual([]);
     }
   });
 });
