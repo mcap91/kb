@@ -622,6 +622,11 @@ Body text.
 // capture.ts — Recovery Signal section rendering (S6a.1). Replaces the
 // deleted reviewResult/reviewParseError fields (response-header.ts's
 // StructuredReviewResult) with recoveryEvidence: RecoveryBlockEvidence.
+//
+// The verdict-ladder assertions below (outcome/reason/delivery_method) cover
+// DEC-0037 (WK-0125): code_review/redteam no longer hard-fail on an invalid
+// block (reverses DEC-0023 V4 note 3 for advisory modes) — they fall back to
+// prose (`delivered`, `delivery_method: prose_fallback`) instead.
 // ---------------------------------------------------------------------------
 
 describe('capture.ts — Recovery Signal section rendering (S6a.1)', () => {
@@ -676,7 +681,7 @@ describe('capture.ts — Recovery Signal section rendering (S6a.1)', () => {
     expect(written).toContain('schema_version is required');
   });
 
-  it('code_review with invalid evidence -> outcome: failed, reason: missing_review_artifact (V4 note 3 role asymmetry: the recovery block IS the code_review deliverable)', async () => {
+  it('code_review with invalid evidence -> outcome: delivered, reason/delivery_method: prose_fallback (DEC-0037 reverses DEC-0023 V4 note 3: the block is opportunistic, not the deliverable — a malformed block falls back to prose instead of hard-failing the run)', async () => {
     const recoveryEvidence: RecoveryBlockEvidence = validateRecoveryPayload({ not: 'a valid payload' });
 
     const result = await writeResponseDoc({ runDir, handoff, delivery, recoveryEvidence });
@@ -684,18 +689,36 @@ describe('capture.ts — Recovery Signal section rendering (S6a.1)', () => {
     if (!result.ok) return;
 
     const written = await readFile(result.data.responsePath, 'utf8');
-    expect(written).toContain('outcome: failed');
-    expect(written).toContain('reason: missing_review_artifact');
+    expect(written).toContain('outcome: delivered');
+    expect(written).toContain('reason: prose_fallback');
+    expect(written).toContain('delivery_method: prose_fallback');
+    expect(written).not.toContain('outcome: failed');
+    expect(written).not.toContain('missing_review_artifact');
   });
 
-  it('code_review with absent evidence -> outcome: failed, reason: missing_review_artifact (same asymmetry: no block at all is treated the same as an invalid one)', async () => {
+  it('code_review with absent evidence -> outcome: delivered, reason/delivery_method: prose_fallback (same fallback: no block at all is treated the same as an invalid one)', async () => {
     const result = await writeResponseDoc({ runDir, handoff, delivery });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
 
     const written = await readFile(result.data.responsePath, 'utf8');
-    expect(written).toContain('outcome: failed');
-    expect(written).toContain('reason: missing_review_artifact');
+    expect(written).toContain('outcome: delivered');
+    expect(written).toContain('reason: prose_fallback');
+    expect(written).toContain('delivery_method: prose_fallback');
+  });
+
+  it('code_review with valid evidence -> outcome: delivered, delivery_method: structured, no reason (the opportunistic shortcut — unchanged by DEC-0037)', async () => {
+    const recoveryEvidence: RecoveryBlockEvidence = validateRecoveryPayload(VALID_REVIEWER_PAYLOAD);
+    expect(recoveryEvidence.valid).toBe(true); // sanity: fixture itself must validate
+
+    const result = await writeResponseDoc({ runDir, handoff, delivery, recoveryEvidence });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const written = await readFile(result.data.responsePath, 'utf8');
+    expect(written).toContain('outcome: delivered');
+    expect(written).toContain('delivery_method: structured');
+    expect(written).not.toContain('reason:');
   });
 });
 
@@ -704,11 +727,16 @@ describe('capture.ts — Recovery Signal section rendering (S6a.1)', () => {
 // outcome.yaml channel above is deleted outright, not re-scoped:
 // `deriveVerdict` (module-private in capture.ts) computes the response-doc
 // outcome exclusively from delivery-gate facts, per-mode deliverable checks,
-// and (for code_review/redteam only, V4 note 3) `recoveryEvidence.valid` —
-// never the worker's chat text, never a worker-authored self-report file.
-// Exercised here through `writeResponseDoc`'s public surface (the response
-// doc's `outcome`/`reason` frontmatter), the same approach the Recovery
-// Signal tests above use for recoveryEvidence.
+// and (for code_review/redteam only) `recoveryEvidence.valid` — never the
+// worker's chat text, never a worker-authored self-report file. DEC-0037
+// (WK-0125) reverses DEC-0023 V4 note 3 for these two advisory modes: the
+// block is opportunistic (drives `delivery_method: structured` when valid),
+// falling back to prose (`delivered`, `delivery_method: prose_fallback`)
+// rather than hard-failing when absent/invalid — see the redteam-specific
+// tests below for the crash-detection-still-dominates case. Exercised here
+// through `writeResponseDoc`'s public surface (the response doc's
+// `outcome`/`reason`/`delivery_method` frontmatter), the same approach the
+// Recovery Signal tests above use for recoveryEvidence.
 // ---------------------------------------------------------------------------
 
 describe('capture.ts — mechanical verdict ladder (DEC-0010 / WK-0095)', () => {
@@ -790,7 +818,7 @@ describe('capture.ts — mechanical verdict ladder (DEC-0010 / WK-0095)', () => 
     expect(written).toContain('reason: secret_in_diff');
   });
 
-  it("code_review mode + no_changes delivery + a valid recovery block -> outcome: delivered (the advisory path's normal shape: reviewers land no diff, so the block is the deliverable — V4 note 3)", async () => {
+  it("code_review mode + no_changes delivery + a valid recovery block -> outcome: delivered, delivery_method: structured (the advisory path's normal shape: reviewers land no diff, and a valid block drives mechanical merge gating)", async () => {
     const handoff = { id: 'HO-TEST', title: 'Test task', mode: 'code_review' };
     const delivery: DeliveryOutcome = { status: 'no_changes' };
     const recoveryEvidence = validateRecoveryPayload(VALID_REVIEWER_PAYLOAD);
@@ -799,6 +827,66 @@ describe('capture.ts — mechanical verdict ladder (DEC-0010 / WK-0095)', () => 
     if (!result.ok) return;
     const written = await readFile(result.data.responsePath, 'utf8');
     expect(written).toContain('outcome: delivered');
+    expect(written).toContain('delivery_method: structured');
+  });
+
+  it('redteam mode + no_changes delivery + an invalid recovery block + a completed process -> outcome: delivered, delivery_method: prose_fallback (DEC-0037: a malformed block from an otherwise-successful run falls back to prose, not a hard fail)', async () => {
+    const handoff = { id: 'HO-TEST', title: 'Test task', mode: 'redteam' };
+    const delivery: DeliveryOutcome = { status: 'no_changes' };
+    const recoveryEvidence = validateRecoveryPayload({ not: 'a valid payload' });
+    const result = await writeResponseDoc({
+      runDir,
+      handoff,
+      delivery,
+      recoveryEvidence,
+      piResult: { outcome: 'completed', usage: { totalTokens: 50, costUsd: 0 } },
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const written = await readFile(result.data.responsePath, 'utf8');
+    expect(written).toContain('outcome: delivered');
+    expect(written).toContain('reason: prose_fallback');
+    expect(written).toContain('delivery_method: prose_fallback');
+  });
+
+  it('redteam mode + a crashed process + an invalid recovery block -> outcome: failed, reason: process_error (crash detection stays dominant over the DEC-0037 prose fallback — a crashed process has no real deliverable, block validity notwithstanding)', async () => {
+    const handoff = { id: 'HO-TEST', title: 'Test task', mode: 'redteam' };
+    const delivery: DeliveryOutcome = { status: 'no_changes' };
+    const recoveryEvidence = validateRecoveryPayload({ not: 'a valid payload' });
+    const result = await writeResponseDoc({
+      runDir,
+      handoff,
+      delivery,
+      recoveryEvidence,
+      piResult: { outcome: 'error', usage: { totalTokens: 10, costUsd: 0 } },
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const written = await readFile(result.data.responsePath, 'utf8');
+    expect(written).toContain('outcome: failed');
+    expect(written).toContain('reason: process_error');
+    expect(written).not.toContain('prose_fallback');
+    expect(written).not.toContain('delivery_method');
+  });
+
+  it('redteam mode + a crashed process + a VALID recovery block -> outcome: failed, reason: process_error (a crashed process cannot be resurrected to delivered by a late-arriving well-formed block — DEC-0010: no worker-authored content can manufacture a success verdict)', async () => {
+    const handoff = { id: 'HO-TEST', title: 'Test task', mode: 'redteam' };
+    const delivery: DeliveryOutcome = { status: 'no_changes' };
+    const recoveryEvidence = validateRecoveryPayload(VALID_REVIEWER_PAYLOAD);
+    expect(recoveryEvidence.valid).toBe(true); // sanity: fixture itself must validate
+    const result = await writeResponseDoc({
+      runDir,
+      handoff,
+      delivery,
+      recoveryEvidence,
+      piResult: { outcome: 'failed', usage: { totalTokens: 10, costUsd: 0 } },
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const written = await readFile(result.data.responsePath, 'utf8');
+    expect(written).toContain('outcome: failed');
+    expect(written).toContain('reason: process_error');
+    expect(written).not.toContain('outcome: delivered');
   });
 
   it('research mode + a clean piResult -> outcome: delivered (the transcript is the product, not a file)', async () => {

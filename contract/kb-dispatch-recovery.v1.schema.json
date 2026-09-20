@@ -1,0 +1,145 @@
+{
+  "title": "kb-dispatch-recovery.v1",
+  "description": "Structural JSON Schema for the kb-dispatch-recovery.v1 terminal block (WK-0125, DEC-0037). Passed to `claude --json-schema` / `codex --output-schema` for implement-mode constrained decoding ONLY (pipeline.ts) — advisory modes (code_review/redteam) never receive this schema; the block stays opportunistic prose there (DEC-0037). Reshaped to the OpenAI/Anthropic strict structured-output subset: every property is required and optional fields are nullable (null == absent), no unsupported validation keywords (const/minLength/maxLength/minimum/pattern/format), no oneOf/allOf/anyOf combinator anywhere. Cross-field semantics this structural schema cannot express (which reported_outcome values are valid for which reported_role, finding_counts consistency with findings, outcome/findings consistency, kind being worker-only) remain enforced by recovery-block.ts's validateRecoveryPayload, which re-validates every block regardless of whether it was constrained-decoded — this schema only makes wrong FIELD NAMES/TYPES structurally impossible, the failure mode WK-0125 observed 4/4 times across 3/3 model families. Derived from and must be kept in sync with packages/dispatch-core/src/recovery-block.ts (TOP_LEVEL_REQUIRED_FIELDS/TOP_LEVEL_OPTIONAL_FIELDS/FINDING_REQUIRED_FIELDS/FINDING_OPTIONAL_FIELDS/AFFECTED_PATH_FIELDS/FINDING_COUNT_FIELDS/REVIEWED_CONTROL_FIELDS and the closed vocabularies). kb-owned schema (DEC-0009 carve-out: kb authors the kb-dispatch-recovery.v1 format, so this is not an external-shape assumption). Design mirrors agent-chassis's agent-role-result.v1.schema.json (ELv2: shape mirrored, authored fresh) with one kb-specific addition: the `kind` field (recovery-block.ts divergence 2 in its module doc).",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "reported_role",
+    "reported_subject",
+    "reported_outcome",
+    "summary",
+    "findings",
+    "finding_counts",
+    "reviewed_controls",
+    "kind"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "enum": ["kb-dispatch-recovery.v1"]
+    },
+    "reported_role": {
+      "type": "string",
+      "enum": ["worker", "reviewer", "redteam"]
+    },
+    "reported_subject": {
+      "type": "string",
+      "description": "The handoff id this block reports on (e.g. HO-0042)."
+    },
+    "reported_outcome": {
+      "type": "string",
+      "description": "Worker outcomes (completed|partial|blocked|failed) or reviewer/redteam findings outcomes (no_findings|passed_no_blocking_or_medium_findings|changes_requested) — the full union; which subset is valid for which reported_role is a cross-field rule recovery-block.ts's validateRecoveryPayload enforces (role_outcome_mismatch), not this structural schema.",
+      "enum": [
+        "completed",
+        "partial",
+        "blocked",
+        "failed",
+        "no_findings",
+        "passed_no_blocking_or_medium_findings",
+        "changes_requested"
+      ]
+    },
+    "summary": {
+      "type": ["string", "null"],
+      "description": "One-paragraph free-text summary. Optional in recovery-block.ts; null when omitted."
+    },
+    "findings": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/finding" }
+    },
+    "finding_counts": {
+      "$ref": "#/$defs/finding_counts"
+    },
+    "reviewed_controls": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/reviewed_control" }
+    },
+    "kind": {
+      "type": ["string", "null"],
+      "description": "kb extension (recovery-block.ts divergence 2): worker-only diagnostic routing hint. Always null for reviewer/redteam payloads (recovery-block.ts's kind_not_allowed_for_role check).",
+      "enum": [
+        "scope_insufficient",
+        "dependency_missing",
+        "spec_unclear",
+        "partial_progress",
+        "resource_limit",
+        null
+      ]
+    }
+  },
+  "$defs": {
+    "finding": {
+      "type": "object",
+      "required": ["id", "title", "severity", "blocking", "affected_paths", "control_id"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique within findings[] (recovery-block.ts's duplicate_finding_id check)."
+        },
+        "title": {
+          "type": "string"
+        },
+        "severity": {
+          "type": "string",
+          "enum": ["critical", "high", "medium", "low", "info"]
+        },
+        "blocking": {
+          "type": "boolean"
+        },
+        "affected_paths": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/affected_path" }
+        },
+        "control_id": {
+          "type": ["string", "null"]
+        }
+      }
+    },
+    "affected_path": {
+      "type": "object",
+      "required": ["path", "line"],
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "Repo-relative path — no leading slash, no drive letter, no '.'/'..' segments (recovery-block.ts's isRepoRelativePath)."
+        },
+        "line": {
+          "type": ["integer", "null"]
+        }
+      }
+    },
+    "finding_counts": {
+      "type": "object",
+      "required": ["total", "blocking", "critical", "high", "medium", "low", "info"],
+      "additionalProperties": false,
+      "description": "Must match the recomputed aggregate of findings[] (recovery-block.ts's validateFindingCountConsistency) — a cross-field rule this structural schema cannot express.",
+      "properties": {
+        "total": { "type": "integer" },
+        "blocking": { "type": "integer" },
+        "critical": { "type": "integer" },
+        "high": { "type": "integer" },
+        "medium": { "type": "integer" },
+        "low": { "type": "integer" },
+        "info": { "type": "integer" }
+      }
+    },
+    "reviewed_control": {
+      "type": "object",
+      "required": ["control_id", "result"],
+      "additionalProperties": false,
+      "properties": {
+        "control_id": {
+          "type": "string",
+          "description": "Non-null (unlike finding.control_id) and unique within reviewed_controls[] (recovery-block.ts's duplicate_reviewed_control check)."
+        },
+        "result": {
+          "type": "string",
+          "enum": ["pass", "fail"]
+        }
+      }
+    }
+  }
+}
