@@ -11,13 +11,21 @@
  *   - Excludes generated views (files with `_generated: true` frontmatter)
  *
  * Lint rules:
- *   - PARSE_ERROR          — YAML frontmatter cannot be parsed
- *   - MISSING_FIELD        — required frontmatter field absent
- *   - INVALID_ENUM         — field value not in manifest enum set
- *   - DUPLICATE_ID         — multiple records share the same ID
- *   - BROKEN_REFERENCE     — depends_on / blocks / related / area / initiative
- *                            points to a nonexistent record
- *   - UNCHECKED_CHECKLIST  — (warning) closed/done record has unchecked items
+ *   - PARSE_ERROR                   — YAML frontmatter cannot be parsed
+ *   - MISSING_FIELD                 — required frontmatter field absent
+ *   - INVALID_ENUM                  — field value not in manifest enum set
+ *   - DUPLICATE_ID                  — multiple records share the same ID
+ *   - BROKEN_REFERENCE              — depends_on / blocks / related / area / initiative
+ *                                     points to a nonexistent record
+ *   - INVALID_INITIATIVE_TARGET     — initiative resolves, but not to a wiki/initiatives/ record
+ *   - MISSING_SUPERSEDES_TARGET     — supersedes points to a nonexistent record
+ *   - MISSING_SUPERSEDED_BY_TARGET  — superseded_by points to a nonexistent record
+ *   - MISSING_RELATED_DOCS_TARGET   — (SRC) related_docs path does not exist on disk
+ *   - MISSING_RELATED_WORK_TARGET   — (SRC) related_work points to a nonexistent record
+ *   - STALE_WRITE_SCOPE             — (warning) write_scope path does not exist on disk
+ *   - MISSING_DOCS_TARGET           — (warning) docs path does not exist on disk
+ *   - ORPHAN_WK                     — (warning) WK record has no initiative set
+ *   - UNCHECKED_CHECKLIST           — (warning) closed/done record has unchecked items
  */
 
 import * as fs from 'node:fs';
@@ -331,6 +339,139 @@ export async function lint(opts: LintOpts): Promise<Result<LintResult>> {
           message: `Reference "${val}" in "${field}" does not match any known record ID`,
           severity: 'error',
         });
+      }
+    }
+
+    // Rule: INVALID_INITIATIVE_TARGET — initiative resolves to a real record (the
+    // BROKEN_REFERENCE check above did not fire), but that record does not live under
+    // wiki/initiatives/.
+    {
+      const val = fm['initiative'];
+      if (typeof val === 'string' && val && allIds.has(val)) {
+        const locs = idLocations.get(val) || [];
+        if (!locs.some(loc => loc.startsWith('wiki/initiatives/'))) {
+          diagnostics.push({
+            file: rec.relPath,
+            field: 'initiative',
+            code: 'INVALID_INITIATIVE_TARGET',
+            message: `Reference "${val}" in "initiative" does not point to a record under wiki/initiatives/`,
+            severity: 'error',
+          });
+        }
+      }
+    }
+
+    // Rule: MISSING_SUPERSEDES_TARGET / MISSING_SUPERSEDED_BY_TARGET — set-but-unresolvable
+    const supersedeFields: Array<[string, string]> = [
+      ['supersedes', 'MISSING_SUPERSEDES_TARGET'],
+      ['superseded_by', 'MISSING_SUPERSEDED_BY_TARGET'],
+    ];
+    for (const [field, code] of supersedeFields) {
+      const val = fm[field];
+      if (typeof val === 'string' && val && !allIds.has(val)) {
+        diagnostics.push({
+          file: rec.relPath,
+          field,
+          code,
+          message: `Reference "${val}" in "${field}" does not match any known record ID`,
+          severity: 'error',
+        });
+      }
+    }
+
+    // Rule: STALE_WRITE_SCOPE — each write_scope entry (minus any #anchor) must exist on disk
+    {
+      const val = fm['write_scope'];
+      if (Array.isArray(val)) {
+        for (const entry of val) {
+          if (typeof entry === 'string' && entry) {
+            const strippedPath = entry.split('#')[0];
+            const absPath = path.join(targetDir, strippedPath);
+            if (!fs.existsSync(absPath)) {
+              diagnostics.push({
+                file: rec.relPath,
+                field: 'write_scope',
+                code: 'STALE_WRITE_SCOPE',
+                message: `Path "${entry}" in "write_scope" does not exist on disk`,
+                severity: 'warning',
+              });
+            }
+          }
+        }
+      }
+    }
+
+    // Rule: MISSING_DOCS_TARGET — each docs entry must exist on disk. Plain existence,
+    // NOT scoped to docs/** — records legitimately point docs at arbitrary repo paths.
+    {
+      const val = fm['docs'];
+      if (Array.isArray(val)) {
+        for (const entry of val) {
+          if (typeof entry === 'string' && entry) {
+            const absPath = path.join(targetDir, entry);
+            if (!fs.existsSync(absPath)) {
+              diagnostics.push({
+                file: rec.relPath,
+                field: 'docs',
+                code: 'MISSING_DOCS_TARGET',
+                message: `Path "${entry}" in "docs" does not exist on disk`,
+                severity: 'warning',
+              });
+            }
+          }
+        }
+      }
+    }
+
+    // Rule: ORPHAN_WK — (warning, kb addition — not upstream) a WK record with no
+    // initiative field at all. BROKEN_REFERENCE / INVALID_INITIATIVE_TARGET only fire on
+    // a wrong reference, never an absent one (DEC-0035: advisory, not error).
+    if (rec.typeDef.prefix === 'WK') {
+      const val = fm['initiative'];
+      if (val === undefined || val === null || val === '') {
+        diagnostics.push({
+          file: rec.relPath,
+          field: 'initiative',
+          code: 'ORPHAN_WK',
+          message: 'WK record has no "initiative" set',
+          severity: 'warning',
+        });
+      }
+    }
+
+    // Rule: MISSING_RELATED_DOCS_TARGET / MISSING_RELATED_WORK_TARGET — SRC only
+    if (rec.typeDef.prefix === 'SRC') {
+      const relatedDocs = fm['related_docs'];
+      if (Array.isArray(relatedDocs)) {
+        for (const docPath of relatedDocs) {
+          if (typeof docPath === 'string' && docPath) {
+            const absPath = path.join(targetDir, docPath);
+            if (!fs.existsSync(absPath)) {
+              diagnostics.push({
+                file: rec.relPath,
+                field: 'related_docs',
+                code: 'MISSING_RELATED_DOCS_TARGET',
+                message: `Path "${docPath}" in "related_docs" does not exist on disk`,
+                severity: 'error',
+              });
+            }
+          }
+        }
+      }
+
+      const relatedWork = fm['related_work'];
+      if (Array.isArray(relatedWork)) {
+        for (const ref of relatedWork) {
+          if (typeof ref === 'string' && ref && !allIds.has(ref)) {
+            diagnostics.push({
+              file: rec.relPath,
+              field: 'related_work',
+              code: 'MISSING_RELATED_WORK_TARGET',
+              message: `Reference "${ref}" in "related_work" does not match any known record ID`,
+              severity: 'error',
+            });
+          }
+        }
       }
     }
 
