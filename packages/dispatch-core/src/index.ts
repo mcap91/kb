@@ -327,6 +327,7 @@ export type {
   RecoveryBlockPayload,
   RecoveryDiagnostic,
   RecoveryKind,
+  RecoveryExtractionKind,
   RecoveryFinding,
   FindingCounts,
   ReviewedControl,

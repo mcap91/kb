@@ -168,6 +168,74 @@ describe('recovery-block.ts — extractRecoveryBlock (S6a.1, ruling 1)', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// recovery-block.ts — extractRecoveryBlock: bare JSON auto-detect (WK-0130).
+// Constrained decoding (WK-0125) makes the CLI emit bare JSON with no fence
+// at all; the fence-only extractor above reported `missing_result` on every
+// such run. `extractRecoveryBlock` now tries the whole-trimmed-text-is-one-
+// JSON-object shape FIRST (mirroring agent-chassis's
+// `extractTerminalJsonCandidate` / `extractWholeRawJsonCandidate`,
+// `agent-role-result.mjs:496`/`566-572`), only falling through to the
+// existing fence scan (describe block above, unchanged) when that shape
+// check fails. `RecoveryBlockEvidence.extractionKind` records which path
+// supplied the candidate (`raw_json` vs `marked_fence`).
+// ---------------------------------------------------------------------------
+
+describe('recovery-block.ts — extractRecoveryBlock: bare JSON auto-detect (WK-0130)', () => {
+  it('accepts bare JSON when the whole trimmed output is exactly one recovery block object (constrained decoding shape)', () => {
+    const text = `\n${JSON.stringify(VALID_WORKER_PAYLOAD, null, 2)}\n`;
+    const evidence = extractRecoveryBlock(text);
+    expect(evidence.valid).toBe(true);
+    expect(evidence.diagnostics).toEqual([]);
+    expect(evidence.result?.reported_role).toBe('worker');
+    expect(evidence.extractionKind).toBe('raw_json');
+  });
+
+  it('records extractionKind: marked_fence for the existing fenced happy path (no regression)', () => {
+    const text = `Some narrative text.\n\n${recoveryFence(VALID_WORKER_PAYLOAD)}`;
+    const evidence = extractRecoveryBlock(text);
+    expect(evidence.valid).toBe(true);
+    expect(evidence.extractionKind).toBe('marked_fence');
+  });
+
+  it('falls through to the fence scan when prose precedes a fenced block, still finding it (mixed input, no raw_json regression)', () => {
+    const text = [
+      'Let me think about this change carefully.',
+      'I will check every affected file before reporting.',
+      '',
+      recoveryFence(VALID_REVIEWER_PAYLOAD),
+    ].join('\n');
+    const evidence = extractRecoveryBlock(text);
+    expect(evidence.valid).toBe(true);
+    expect(evidence.result?.reported_role).toBe('reviewer');
+    expect(evidence.extractionKind).toBe('marked_fence');
+  });
+
+  it('bare JSON that parses but fails schema validation stays on the raw_json path instead of falling back to the fence scan', () => {
+    const text = JSON.stringify({ not: 'a valid payload' });
+    const evidence = extractRecoveryBlock(text);
+    expect(evidence.valid).toBe(false);
+    expect(evidence.extractionKind).toBe('raw_json');
+    expect(evidence.diagnostics.map((d) => d.code)).toContain('missing_required_field');
+  });
+
+  it('falls through to the fence scan for ordinary prose with no JSON shape at all, yielding missing_result', () => {
+    const text = 'I looked at everything and nothing needs fixing. No code block here either.';
+    const evidence = extractRecoveryBlock(text);
+    expect(evidence.valid).toBe(false);
+    expect(evidence.diagnostics.map((d) => d.code)).toContain('missing_result');
+    expect(evidence.extractionKind).toBeUndefined();
+  });
+
+  it('does not accept bare JSON followed by trailing text as raw_json — the whole trimmed output must be the JSON object', () => {
+    const text = `${JSON.stringify(VALID_WORKER_PAYLOAD)}\n\nThanks for reviewing!`;
+    const evidence = extractRecoveryBlock(text);
+    expect(evidence.valid).toBe(false);
+    expect(evidence.extractionKind).not.toBe('raw_json');
+    expect(evidence.diagnostics.map((d) => d.code)).toContain('missing_result');
+  });
+});
+
 describe('recovery-block.ts — validateRecoveryPayload (S6a.1, ruling 1)', () => {
   it('accepts a valid worker payload with a kind', () => {
     const payload = { ...VALID_WORKER_PAYLOAD, reported_outcome: 'partial', kind: 'scope_insufficient' };

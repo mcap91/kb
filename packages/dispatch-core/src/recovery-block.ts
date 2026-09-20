@@ -38,17 +38,30 @@
  *    are deliberately not implemented; see the comment at their would-be
  *    call site in `validateRecoveryPayload` for exactly how to re-enable
  *    them if a future ruling reverses this.
- * 4. Extraction is fence-only. agent-chassis also accepts a whole-response
- *    raw JSON object with no fence at all; kb's transport contract (ruling 1
- *    item 2) commits to "one fenced block" as the terminal content, and
- *    accepting an unfenced blob would reopen exactly the prose-parsing
- *    ambiguity ruling 1 closes (see "Old fenced-block problem resolved" in
- *    the ruling doc). Only fenced candidates are scanned.
+ * 4. [Partially reversed by WK-0130 — see note below.] Originally
+ *    fence-only: agent-chassis also accepts a whole-response raw JSON
+ *    object with no fence at all; kb's transport contract (ruling 1 item 2)
+ *    commits to "one fenced block" as the terminal content, and accepting
+ *    an unfenced blob would reopen exactly the prose-parsing ambiguity
+ *    ruling 1 closes (see "Old fenced-block problem resolved" in the
+ *    ruling doc).
  * 5. No duplicate-JSON-key detection and no summary-prose-vs-count
  *    cross-check (agent-chassis has both). Neither is in this slice's
  *    stated validation list; omitted per simplicity-first rather than
  *    silently dropped — flagged here for anyone diffing against
  *    agent-chassis.
+ *
+ * WK-0130 partially reverses divergence 4 above: `extractRecoveryBlock` now
+ * auto-detects the whole-output raw-JSON shape FIRST (mirroring
+ * agent-chassis's `extractTerminalJsonCandidate` /
+ * `extractWholeRawJsonCandidate`, `agent-role-result.mjs:496`/`566-572`) —
+ * constrained decoding (WK-0125) makes the CLI emit bare JSON with no fence
+ * at all, so a fence-only extractor reported `missing_result` on every
+ * constrained-decoded run. Only when the WHOLE trimmed output is not itself
+ * one JSON object does extraction fall through to the fence scan below;
+ * mixed prose + fenced-block output (FENCED-mode) is unaffected.
+ * `RecoveryBlockEvidence.extractionKind` records which of the two paths
+ * supplied the candidate.
  *
  * Fail-closed and non-throwing: every exported function always returns a
  * `RecoveryBlockEvidence` envelope, never throws, and always stamps
@@ -157,6 +170,15 @@ export interface RecoveryDiagnostic {
 }
 
 /**
+ * Which extraction path supplied the JSON text that was parsed/validated
+ * (WK-0130): `raw_json` when the whole trimmed output was exactly one JSON
+ * object (constrained decoding's bare-JSON shape — WK-0125); `marked_fence`
+ * when the terminal `kb-dispatch-recovery.v1`-marked fenced block supplied
+ * it (the original fence-scan path, ruling 1 item 3).
+ */
+export type RecoveryExtractionKind = 'raw_json' | 'marked_fence';
+
+/**
  * Extraction/validation result envelope. `authority: "child_evidence_only"`
  * is stamped unconditionally (ruling 1 item 6) — this object is never
  * delivery authority, regardless of `valid`.
@@ -166,6 +188,14 @@ export interface RecoveryBlockEvidence {
   result: RecoveryBlockPayload | null;
   diagnostics: RecoveryDiagnostic[];
   authority: 'child_evidence_only';
+  /**
+   * Set whenever a JSON candidate was located (even if parsing or
+   * validation of it then failed); left `undefined` when no candidate was
+   * found at all (e.g. `invalid_response_text`, `missing_result`,
+   * `multiple_json_candidates`, `ordinary_json_code_block`,
+   * `trailing_prose_after_result`).
+   */
+  extractionKind?: RecoveryExtractionKind;
 }
 
 // ---------------------------------------------------------------------------
@@ -290,6 +320,29 @@ function isRepoRelativePath(value: string): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// Extraction: whole-text raw JSON (WK-0130)
+// ---------------------------------------------------------------------------
+
+/**
+ * WK-0130: if the whole trimmed `text` is exactly one JSON object (starts
+ * with `{`, ends with `}`, parses as valid JSON, and the parsed value is a
+ * plain object — `isJsonObjectText` below, shared with the ordinary-fence
+ * check in the terminal-block scan), return that trimmed text as the
+ * raw-JSON candidate. Mirrors agent-chassis's `extractWholeRawJsonCandidate`
+ * (`agent-role-result.mjs:566-572`): shape-only — it does not care whether
+ * the object satisfies this schema, only whether the ENTIRE output is one
+ * JSON object with nothing else around it (constrained decoding, WK-0125,
+ * emits exactly this shape, with no fence at all). Any leading or trailing
+ * non-whitespace content (narration, a trailing sign-off) fails the
+ * `startsWith('{')`/`endsWith('}')` check and correctly falls through to
+ * the fence scan below instead.
+ */
+function extractWholeRawJsonCandidate(text: string): string | null {
+  const trimmed = text.trim();
+  return isJsonObjectText(trimmed) ? trimmed : null;
+}
+
+// ---------------------------------------------------------------------------
 // Extraction: terminal fenced-block scan (ruling 1 item 3)
 // ---------------------------------------------------------------------------
 
@@ -347,9 +400,11 @@ type TerminalCandidate = { ok: true; jsonText: string } | { ok: false; diagnosti
  * Terminal-position scan (ruling 1 item 3): finds the fenced block whose
  * info-string carries the `kb-dispatch-recovery.v1` marker, requires it to
  * be the sole JSON-shaped candidate in the output, and requires it to be the
- * terminal content (trailing whitespace OK, trailing prose not OK). No
- * unfenced/raw-JSON fallback (divergence 4 above) — the transport contract
- * is fence-only.
+ * terminal content (trailing whitespace OK, trailing prose not OK). Fence-only
+ * by design (divergence 4 above) — this function itself never looks for an
+ * unfenced candidate; the caller (`extractRecoveryBlock`) tries the
+ * whole-text raw-JSON shape FIRST and only reaches this scan as the
+ * fallback (WK-0130).
  */
 function extractTerminalCandidate(text: string): TerminalCandidate {
   const trimEnd = text.search(/\s*$/);
@@ -413,10 +468,15 @@ function extractTerminalCandidate(text: string): TerminalCandidate {
 }
 
 /**
- * Extract and validate the terminal `kb-dispatch-recovery.v1` block from a
- * worker/reviewer/redteam's raw LLM output. Fail-closed: a missing or
- * malformed block returns `valid: false` with diagnostics — it never
- * throws, and (per ruling 1 item 6) a closed envelope never by itself
+ * Extract and validate the `kb-dispatch-recovery.v1` payload from a
+ * worker/reviewer/redteam's raw LLM output. Auto-detects the input shape
+ * (WK-0130, mirroring agent-chassis's `extractTerminalJsonCandidate`): tries
+ * the whole-text raw-JSON candidate first (`raw_json` — constrained-decoding
+ * output, WK-0125, has no fence at all), and only when that shape check
+ * fails falls through to the terminal fenced-block scan (`marked_fence` —
+ * FENCED-mode output, prose plus a marked fence). Fail-closed either way: a
+ * missing or malformed block returns `valid: false` with diagnostics — it
+ * never throws, and (per ruling 1 item 6) a closed envelope never by itself
  * invalidates an authenticated delivery; the caller decides what that means
  * for its own control flow.
  */
@@ -426,19 +486,39 @@ export function extractRecoveryBlock(workerOutput: string): RecoveryBlockEvidenc
   }
 
   const normalized = workerOutput.replace(/\r\n/g, '\n');
+
+  const rawJsonText = extractWholeRawJsonCandidate(normalized);
+  if (rawJsonText !== null) {
+    return parseAndValidateRecoveryJson(rawJsonText, 'raw_json');
+  }
+
   const candidate = extractTerminalCandidate(normalized);
   if (!candidate.ok) {
     return closedEvidence(candidate.diagnostics);
   }
 
+  return parseAndValidateRecoveryJson(candidate.jsonText, 'marked_fence');
+}
+
+/**
+ * Shared JSON.parse + `validateRecoveryPayload` tail for both extraction
+ * paths (WK-0130): stamps `extractionKind` onto whatever
+ * `RecoveryBlockEvidence` results — valid, schema-invalid, or
+ * `malformed_json` — so the response doc can always show which path
+ * supplied the candidate that was (attempted to be) validated, independent
+ * of whether that validation succeeded.
+ */
+function parseAndValidateRecoveryJson(jsonText: string, extractionKind: RecoveryExtractionKind): RecoveryBlockEvidence {
   let parsed: unknown;
   try {
-    parsed = JSON.parse(candidate.jsonText);
+    parsed = JSON.parse(jsonText);
   } catch {
-    return closedEvidence([diag('malformed_json', `${KB_DISPATCH_RECOVERY_VERSION} block is not valid JSON`)]);
+    return {
+      ...closedEvidence([diag('malformed_json', `${KB_DISPATCH_RECOVERY_VERSION} block is not valid JSON`)]),
+      extractionKind,
+    };
   }
-
-  return validateRecoveryPayload(parsed);
+  return { ...validateRecoveryPayload(parsed), extractionKind };
 }
 
 // ---------------------------------------------------------------------------
