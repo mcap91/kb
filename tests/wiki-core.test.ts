@@ -846,6 +846,12 @@ describe('create', () => {
     await create({ dir: tmp.dir, prefix: 'PLN', title: 'Plan' });
     await create({ dir: tmp.dir, prefix: 'VAL', title: 'Value report' });
 
+    // WK-0047: ORPHAN_WK now advises on a WK with no initiative — link the freshly
+    // created WK to the freshly created IN so this all-prefixes-clean fixture stays clean.
+    const wkPath = path.join(tmp.dir, 'wiki/issues/WK-0001.md');
+    const wkContent = fs.readFileSync(wkPath, 'utf-8');
+    fs.writeFileSync(wkPath, wkContent.replace('initiative:\n', 'initiative: "IN-0001"\n'), 'utf-8');
+
     const result = await lint({ dir: tmp.dir });
     expect(result.ok).toBe(true);
     if (result.ok) {
@@ -1758,6 +1764,474 @@ describe('lint', () => {
         d.file.includes('handoffs'),
       );
       expect(handoffDiags.length).toBe(0);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// WK-0047: Reference-integrity + coordination lint rules
+// ---------------------------------------------------------------------------
+
+describe('lint WK-0047 reference-integrity + coordination rules', () => {
+  let tmp: TmpRepo;
+
+  afterEach(() => {
+    tmp?.cleanup();
+  });
+
+  it('initiative pointing to a nonexistent id is still BROKEN_REFERENCE (no new code)', async () => {
+    // WHY: MISSING_INITIATIVE is deliberately NOT a separate code — a dangling
+    // initiative reference is already caught by the pre-existing BROKEN_REFERENCE
+    // scalar loop. This locks in that the two rule families don't double-report.
+    tmp = await createBootstrappedRepo();
+
+    writeRecord(tmp.dir, 'wiki/issues/WK-0001.md', {
+      id: 'WK-0001',
+      title: 'Test',
+      type: 'task',
+      status: 'inbox',
+      priority: 'medium',
+      owner: 'test',
+      created: '2025-01-01',
+      updated: '2025-01-01',
+      initiative: 'IN-9999',
+    });
+
+    const result = await lint({ dir: tmp.dir });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const initiativeDiags = result.data.diagnostics.filter(d => d.field === 'initiative');
+      expect(initiativeDiags.length).toBe(1);
+      expect(initiativeDiags[0].code).toBe('BROKEN_REFERENCE');
+    }
+  });
+
+  it('initiative pointing to a real non-initiative record is INVALID_INITIATIVE_TARGET, not BROKEN_REFERENCE', async () => {
+    tmp = await createBootstrappedRepo();
+
+    // A real record that exists but is not an initiative.
+    writeRecord(tmp.dir, 'wiki/issues/WK-0001.md', {
+      id: 'WK-0001',
+      title: 'Not an initiative',
+      type: 'task',
+      status: 'inbox',
+      priority: 'medium',
+      owner: 'test',
+      created: '2025-01-01',
+      updated: '2025-01-01',
+      initiative: 'IN-0001',
+    });
+    writeRecord(tmp.dir, 'wiki/initiatives/IN-0001.md', {
+      id: 'IN-0001',
+      title: 'Real initiative',
+      status: 'todo',
+      priority: 'medium',
+      owner: 'test',
+      created: '2025-01-01',
+      updated: '2025-01-01',
+    });
+    // WK-0002's initiative points at WK-0001 — a real record, but the wrong type.
+    writeRecord(tmp.dir, 'wiki/issues/WK-0002.md', {
+      id: 'WK-0002',
+      title: 'Bad initiative ref',
+      type: 'task',
+      status: 'inbox',
+      priority: 'medium',
+      owner: 'test',
+      created: '2025-01-01',
+      updated: '2025-01-01',
+      initiative: 'WK-0001',
+    });
+
+    const result = await lint({ dir: tmp.dir });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const wk2Diags = result.data.diagnostics.filter(d => d.file === 'wiki/issues/WK-0002.md');
+      const invalidTarget = wk2Diags.filter(d => d.code === 'INVALID_INITIATIVE_TARGET');
+      expect(invalidTarget.length).toBe(1);
+      expect(invalidTarget[0].severity).toBe('error');
+      // Must not ALSO be double-reported as BROKEN_REFERENCE on the same field.
+      const brokenRef = wk2Diags.filter(d => d.field === 'initiative' && d.code === 'BROKEN_REFERENCE');
+      expect(brokenRef.length).toBe(0);
+    }
+  });
+
+  it('flags a nonexistent supersedes target (MISSING_SUPERSEDES_TARGET)', async () => {
+    tmp = await createBootstrappedRepo();
+
+    writeRecord(tmp.dir, 'wiki/decisions/DEC-0001.md', {
+      id: 'DEC-0001',
+      title: 'Test decision',
+      status: 'accepted',
+      date: '2025-01-01',
+      owners: ['test'],
+      supersedes: 'DEC-9999',
+    });
+
+    const result = await lint({ dir: tmp.dir });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const diags = result.data.diagnostics.filter(d => d.code === 'MISSING_SUPERSEDES_TARGET');
+      expect(diags.length).toBe(1);
+      expect(diags[0].field).toBe('supersedes');
+      expect(diags[0].severity).toBe('error');
+    }
+  });
+
+  it('flags a nonexistent superseded_by target (MISSING_SUPERSEDED_BY_TARGET)', async () => {
+    tmp = await createBootstrappedRepo();
+
+    writeRecord(tmp.dir, 'wiki/decisions/DEC-0001.md', {
+      id: 'DEC-0001',
+      title: 'Test decision',
+      status: 'accepted',
+      date: '2025-01-01',
+      owners: ['test'],
+      superseded_by: 'DEC-9999',
+    });
+
+    const result = await lint({ dir: tmp.dir });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const diags = result.data.diagnostics.filter(d => d.code === 'MISSING_SUPERSEDED_BY_TARGET');
+      expect(diags.length).toBe(1);
+      expect(diags[0].field).toBe('superseded_by');
+      expect(diags[0].severity).toBe('error');
+    }
+  });
+
+  it('does not flag supersedes/superseded_by when they resolve to real records', async () => {
+    tmp = await createBootstrappedRepo();
+
+    writeRecord(tmp.dir, 'wiki/decisions/DEC-0001.md', {
+      id: 'DEC-0001',
+      title: 'Old decision',
+      status: 'superseded',
+      date: '2025-01-01',
+      owners: ['test'],
+      superseded_by: 'DEC-0002',
+    });
+    writeRecord(tmp.dir, 'wiki/decisions/DEC-0002.md', {
+      id: 'DEC-0002',
+      title: 'New decision',
+      status: 'accepted',
+      date: '2025-01-02',
+      owners: ['test'],
+      supersedes: 'DEC-0001',
+    });
+
+    const result = await lint({ dir: tmp.dir });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const diags = result.data.diagnostics.filter(
+        d => d.code === 'MISSING_SUPERSEDES_TARGET' || d.code === 'MISSING_SUPERSEDED_BY_TARGET',
+      );
+      expect(diags).toEqual([]);
+    }
+  });
+
+  it('warns on a write_scope path that does not exist on disk (STALE_WRITE_SCOPE)', async () => {
+    tmp = await createBootstrappedRepo();
+
+    writeRecord(tmp.dir, 'wiki/initiatives/IN-0001.md', {
+      id: 'IN-0001',
+      title: 'Init',
+      status: 'todo',
+      priority: 'medium',
+      owner: 'test',
+      created: '2025-01-01',
+      updated: '2025-01-01',
+    });
+    writeRecord(tmp.dir, 'wiki/issues/WK-0001.md', {
+      id: 'WK-0001',
+      title: 'Test',
+      type: 'task',
+      status: 'inbox',
+      priority: 'medium',
+      owner: 'test',
+      created: '2025-01-01',
+      updated: '2025-01-01',
+      initiative: 'IN-0001',
+      write_scope: ['packages/nope/does-not-exist.ts'],
+    });
+
+    const result = await lint({ dir: tmp.dir });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const diags = result.data.diagnostics.filter(d => d.code === 'STALE_WRITE_SCOPE');
+      expect(diags.length).toBe(1);
+      expect(diags[0].severity).toBe('warning');
+    }
+  });
+
+  it('does not warn when a write_scope path exists on disk (a #anchor suffix is stripped before the check)', async () => {
+    tmp = await createBootstrappedRepo();
+
+    // wiki/schema.md is created by bootstrap and always exists.
+    writeRecord(tmp.dir, 'wiki/initiatives/IN-0001.md', {
+      id: 'IN-0001',
+      title: 'Init',
+      status: 'todo',
+      priority: 'medium',
+      owner: 'test',
+      created: '2025-01-01',
+      updated: '2025-01-01',
+    });
+    writeRecord(tmp.dir, 'wiki/issues/WK-0001.md', {
+      id: 'WK-0001',
+      title: 'Test',
+      type: 'task',
+      status: 'inbox',
+      priority: 'medium',
+      owner: 'test',
+      created: '2025-01-01',
+      updated: '2025-01-01',
+      initiative: 'IN-0001',
+      write_scope: ['wiki/schema.md#some-heading'],
+    });
+
+    const result = await lint({ dir: tmp.dir });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const diags = result.data.diagnostics.filter(d => d.code === 'STALE_WRITE_SCOPE');
+      expect(diags).toEqual([]);
+    }
+  });
+
+  it('warns on a docs path that does not exist on disk (MISSING_DOCS_TARGET)', async () => {
+    tmp = await createBootstrappedRepo();
+
+    writeRecord(tmp.dir, 'wiki/initiatives/IN-0001.md', {
+      id: 'IN-0001',
+      title: 'Init',
+      status: 'todo',
+      priority: 'medium',
+      owner: 'test',
+      created: '2025-01-01',
+      updated: '2025-01-01',
+    });
+    writeRecord(tmp.dir, 'wiki/issues/WK-0001.md', {
+      id: 'WK-0001',
+      title: 'Test',
+      type: 'task',
+      status: 'inbox',
+      priority: 'medium',
+      owner: 'test',
+      created: '2025-01-01',
+      updated: '2025-01-01',
+      initiative: 'IN-0001',
+      docs: ['docs/does-not-exist.md'],
+    });
+
+    const result = await lint({ dir: tmp.dir });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const diags = result.data.diagnostics.filter(d => d.code === 'MISSING_DOCS_TARGET');
+      expect(diags.length).toBe(1);
+      expect(diags[0].severity).toBe('warning');
+    }
+  });
+
+  it('does not warn when a docs path exists on disk', async () => {
+    tmp = await createBootstrappedRepo();
+
+    writeRecord(tmp.dir, 'wiki/initiatives/IN-0001.md', {
+      id: 'IN-0001',
+      title: 'Init',
+      status: 'todo',
+      priority: 'medium',
+      owner: 'test',
+      created: '2025-01-01',
+      updated: '2025-01-01',
+    });
+    writeRecord(tmp.dir, 'wiki/issues/WK-0001.md', {
+      id: 'WK-0001',
+      title: 'Test',
+      type: 'task',
+      status: 'inbox',
+      priority: 'medium',
+      owner: 'test',
+      created: '2025-01-01',
+      updated: '2025-01-01',
+      initiative: 'IN-0001',
+      docs: ['wiki/schema.md'],
+    });
+
+    const result = await lint({ dir: tmp.dir });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const diags = result.data.diagnostics.filter(d => d.code === 'MISSING_DOCS_TARGET');
+      expect(diags).toEqual([]);
+    }
+  });
+
+  it('warns on a WK record with no initiative at all (ORPHAN_WK)', async () => {
+    tmp = await createBootstrappedRepo();
+
+    writeRecord(tmp.dir, 'wiki/issues/WK-0001.md', {
+      id: 'WK-0001',
+      title: 'No initiative',
+      type: 'task',
+      status: 'inbox',
+      priority: 'medium',
+      owner: 'test',
+      created: '2025-01-01',
+      updated: '2025-01-01',
+    });
+
+    const result = await lint({ dir: tmp.dir });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const diags = result.data.diagnostics.filter(d => d.code === 'ORPHAN_WK');
+      expect(diags.length).toBe(1);
+      expect(diags[0].severity).toBe('warning');
+    }
+  });
+
+  it('does not warn ORPHAN_WK when a WK has a valid initiative', async () => {
+    tmp = await createBootstrappedRepo();
+
+    writeRecord(tmp.dir, 'wiki/initiatives/IN-0001.md', {
+      id: 'IN-0001',
+      title: 'Init',
+      status: 'todo',
+      priority: 'medium',
+      owner: 'test',
+      created: '2025-01-01',
+      updated: '2025-01-01',
+    });
+    writeRecord(tmp.dir, 'wiki/issues/WK-0001.md', {
+      id: 'WK-0001',
+      title: 'Has initiative',
+      type: 'task',
+      status: 'inbox',
+      priority: 'medium',
+      owner: 'test',
+      created: '2025-01-01',
+      updated: '2025-01-01',
+      initiative: 'IN-0001',
+    });
+
+    const result = await lint({ dir: tmp.dir });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const diags = result.data.diagnostics.filter(d => d.code === 'ORPHAN_WK');
+      expect(diags).toEqual([]);
+    }
+  });
+
+  it('ORPHAN_WK is scoped to WK records only (a non-WK record never triggers it)', async () => {
+    tmp = await createBootstrappedRepo();
+
+    writeRecord(tmp.dir, 'wiki/initiatives/IN-0001.md', {
+      id: 'IN-0001',
+      title: 'Initiative with no initiative field (N/A for IN)',
+      status: 'todo',
+      priority: 'medium',
+      owner: 'test',
+      created: '2025-01-01',
+      updated: '2025-01-01',
+    });
+
+    const result = await lint({ dir: tmp.dir });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const diags = result.data.diagnostics.filter(d => d.code === 'ORPHAN_WK');
+      expect(diags).toEqual([]);
+    }
+  });
+
+  it('SRC: flags a dangling related_docs path (MISSING_RELATED_DOCS_TARGET)', async () => {
+    tmp = await createBootstrappedRepo();
+
+    writeRecord(tmp.dir, 'wiki/sources/SRC-0001.md', {
+      id: 'SRC-0001',
+      title: 'Test source',
+      kind: 'article',
+      captured: '2025-01-01',
+      updated: '2025-01-01',
+      source_uri: 'https://example.com',
+      authority: 'unknown',
+      immutable_hint: false,
+      related_docs: ['docs/does-not-exist.md'],
+    });
+
+    const result = await lint({ dir: tmp.dir });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const diags = result.data.diagnostics.filter(d => d.code === 'MISSING_RELATED_DOCS_TARGET');
+      expect(diags.length).toBe(1);
+      expect(diags[0].severity).toBe('error');
+    }
+  });
+
+  it('SRC: flags a dangling related_work id (MISSING_RELATED_WORK_TARGET)', async () => {
+    tmp = await createBootstrappedRepo();
+
+    writeRecord(tmp.dir, 'wiki/sources/SRC-0001.md', {
+      id: 'SRC-0001',
+      title: 'Test source',
+      kind: 'article',
+      captured: '2025-01-01',
+      updated: '2025-01-01',
+      source_uri: 'https://example.com',
+      authority: 'unknown',
+      immutable_hint: false,
+      related_work: ['WK-9999'],
+    });
+
+    const result = await lint({ dir: tmp.dir });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const diags = result.data.diagnostics.filter(d => d.code === 'MISSING_RELATED_WORK_TARGET');
+      expect(diags.length).toBe(1);
+      expect(diags[0].severity).toBe('error');
+    }
+  });
+
+  it('SRC: valid related_docs and related_work produce no diagnostics', async () => {
+    tmp = await createBootstrappedRepo();
+
+    writeRecord(tmp.dir, 'wiki/initiatives/IN-0001.md', {
+      id: 'IN-0001',
+      title: 'Init',
+      status: 'todo',
+      priority: 'medium',
+      owner: 'test',
+      created: '2025-01-01',
+      updated: '2025-01-01',
+    });
+    writeRecord(tmp.dir, 'wiki/issues/WK-0001.md', {
+      id: 'WK-0001',
+      title: 'Real work item',
+      type: 'task',
+      status: 'inbox',
+      priority: 'medium',
+      owner: 'test',
+      created: '2025-01-01',
+      updated: '2025-01-01',
+      initiative: 'IN-0001',
+    });
+    writeRecord(tmp.dir, 'wiki/sources/SRC-0001.md', {
+      id: 'SRC-0001',
+      title: 'Test source',
+      kind: 'article',
+      captured: '2025-01-01',
+      updated: '2025-01-01',
+      source_uri: 'https://example.com',
+      authority: 'unknown',
+      immutable_hint: false,
+      related_docs: ['wiki/schema.md'],
+      related_work: ['WK-0001'],
+    });
+
+    const result = await lint({ dir: tmp.dir });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const diags = result.data.diagnostics.filter(
+        d => d.code === 'MISSING_RELATED_DOCS_TARGET' || d.code === 'MISSING_RELATED_WORK_TARGET',
+      );
+      expect(diags).toEqual([]);
     }
   });
 });
