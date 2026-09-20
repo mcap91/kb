@@ -4,8 +4,8 @@
  *
  * This file covers the S5 surface: write_scope sparse binds,
  * the wiki read axis (T25/D19), data mounts, the T26/D21 egress-bind wiring,
- * full-recipe ordering, and the two new pure helpers `classifyWikiShape` and
- * `parseDataMount`. Pure/synchronous throughout — no WSL2/bwrap required,
+ * full-recipe ordering, and the pure helper `classifyWikiShape`.
+ * Pure/synchronous throughout — no WSL2/bwrap required,
  * runs everywhere including Windows. No personal/absolute paths in fixtures
  * (WK-0043 rule) — clonePath etc. below are synthetic.
  */
@@ -16,7 +16,6 @@ import {
   buildJailArgs,
   classifyWikiShape,
   looksLikeFile,
-  parseDataMount,
   SYSTEM_ROOTS,
   type BwrapInjectedFile,
   type BwrapMount,
@@ -187,7 +186,7 @@ describe('buildJailArgs — wiki read axis (T25/D19)', () => {
 
 describe('buildJailArgs — data mounts', () => {
   it('ro data mount produces --ro-bind', () => {
-    const result = buildJailArgs({ clonePath, dataMounts: ['ro:/data/ref'] });
+    const result = buildJailArgs({ clonePath, dataMounts: [{ path: '/data/ref', access: 'ro' }] });
     expect(result.argv).toEqual([
       'bwrap',
       ...expectedSystemRootArgs(),
@@ -203,7 +202,7 @@ describe('buildJailArgs — data mounts', () => {
   });
 
   it('rw data mount produces --bind', () => {
-    const result = buildJailArgs({ clonePath, dataMounts: ['rw:/tmp/scratch'] });
+    const result = buildJailArgs({ clonePath, dataMounts: [{ path: '/tmp/scratch', access: 'rw' }] });
     expect(result.argv).toEqual([
       'bwrap',
       ...expectedSystemRootArgs(),
@@ -218,8 +217,14 @@ describe('buildJailArgs — data mounts', () => {
     ]);
   });
 
-  it('skips malformed data_mounts entries silently (pure function, cannot fail)', () => {
-    const result = buildJailArgs({ clonePath, dataMounts: ['garbage', 'ro:/data/ref'] });
+  it('mixed ro and rw entries each produce their own correct bind flag', () => {
+    const result = buildJailArgs({
+      clonePath,
+      dataMounts: [
+        { path: '/data/ref', access: 'ro' },
+        { path: '/tmp/scratch', access: 'rw' },
+      ],
+    });
     expect(result.argv).toEqual([
       'bwrap',
       ...expectedSystemRootArgs(),
@@ -229,6 +234,7 @@ describe('buildJailArgs — data mounts', () => {
       '--die-with-parent',
       '--bind', clonePath, clonePath,
       '--ro-bind', '/data/ref', '/data/ref',
+      '--bind', '/tmp/scratch', '/tmp/scratch',
       '--chdir', clonePath,
       '--',
     ]);
@@ -313,7 +319,10 @@ describe('buildJailArgs — full combined recipe', () => {
       writeScope: ['src/', 'docs/notes.md'],
       wikiShape: 'tracked',
       mode: 'implement',
-      dataMounts: ['ro:/data/reference', 'rw:/tmp/scratch-area'],
+      dataMounts: [
+        { path: '/data/reference', access: 'ro' },
+        { path: '/tmp/scratch-area', access: 'rw' },
+      ],
       unshareNet: true,
       tunnelSocketPath,
       relayScriptPath,
@@ -358,36 +367,6 @@ describe('classifyWikiShape', () => {
 
   it('returns tracked for non-empty git ls-files output', () => {
     expect(classifyWikiShape('wiki/issues/WK-0001.md\nwiki/plans/PLN-0001.md\n')).toBe('tracked');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// parseDataMount
-// ---------------------------------------------------------------------------
-
-describe('parseDataMount', () => {
-  it('parses a ro entry', () => {
-    expect(parseDataMount('ro:/data/reference')).toEqual({ access: 'ro', hostPath: '/data/reference' });
-  });
-
-  it('parses a rw entry', () => {
-    expect(parseDataMount('rw:/tmp/scratch')).toEqual({ access: 'rw', hostPath: '/tmp/scratch' });
-  });
-
-  it('returns null when the access prefix is missing', () => {
-    expect(parseDataMount('/data/reference')).toBeNull();
-  });
-
-  it('returns null for an unrecognized access prefix', () => {
-    expect(parseDataMount('xx:/data/reference')).toBeNull();
-  });
-
-  it('returns null when the path after the prefix is empty', () => {
-    expect(parseDataMount('ro:')).toBeNull();
-  });
-
-  it('returns null for an empty string', () => {
-    expect(parseDataMount('')).toBeNull();
   });
 });
 
@@ -553,7 +532,7 @@ describe('buildBwrapPlan — write_scope sparse binds', () => {
 
 describe('buildBwrapPlan — data mounts', () => {
   it('ro data mount produces --ro-bind, reflected in both bwrapArgs and mounts', () => {
-    const plan = buildBwrapPlan({ clonePath, dataMounts: ['ro:/data/ref'], command: ['pi'] });
+    const plan = buildBwrapPlan({ clonePath, dataMounts: [{ path: '/data/ref', access: 'ro' }], command: ['pi'] });
     expect(plan.bwrapArgs).toEqual([
       ...expectedSystemRootArgs(),
       '--proc', '/proc',
@@ -570,7 +549,7 @@ describe('buildBwrapPlan — data mounts', () => {
   });
 
   it('rw data mount produces --bind, reflected in both bwrapArgs and mounts', () => {
-    const plan = buildBwrapPlan({ clonePath, dataMounts: ['rw:/tmp/scratch'], command: ['pi'] });
+    const plan = buildBwrapPlan({ clonePath, dataMounts: [{ path: '/tmp/scratch', access: 'rw' }], command: ['pi'] });
     expect(plan.bwrapArgs).toEqual([
       ...expectedSystemRootArgs(),
       '--proc', '/proc',
@@ -586,8 +565,15 @@ describe('buildBwrapPlan — data mounts', () => {
     expect(plan.mounts).toEqual(expect.arrayContaining([{ kind: 'bind', src: '/tmp/scratch', dst: '/tmp/scratch' }]));
   });
 
-  it('skips malformed data_mounts entries silently, same as buildJailArgs', () => {
-    const plan = buildBwrapPlan({ clonePath, dataMounts: ['garbage', 'ro:/data/ref'], command: ['pi'] });
+  it('mixed ro and rw entries each produce their own correct bind flag, reflected in both bwrapArgs and mounts', () => {
+    const plan = buildBwrapPlan({
+      clonePath,
+      dataMounts: [
+        { path: '/data/ref', access: 'ro' },
+        { path: '/tmp/scratch', access: 'rw' },
+      ],
+      command: ['pi'],
+    });
     expect(plan.bwrapArgs).toEqual([
       ...expectedSystemRootArgs(),
       '--proc', '/proc',
@@ -596,10 +582,15 @@ describe('buildBwrapPlan — data mounts', () => {
       '--die-with-parent',
       '--bind', clonePath, clonePath,
       '--ro-bind', '/data/ref', '/data/ref',
+      '--bind', '/tmp/scratch', '/tmp/scratch',
       '--chdir', clonePath,
       '--',
       'pi',
     ]);
+    expect(plan.mounts).toEqual(expect.arrayContaining([
+      { kind: 'ro-bind', src: '/data/ref', dst: '/data/ref' },
+      { kind: 'bind', src: '/tmp/scratch', dst: '/tmp/scratch' },
+    ]));
   });
 });
 
@@ -833,7 +824,7 @@ describe('DEC-0011 visibility wall assertions (WK-0103)', () => {
     const declared = '/opt/central-envs/team-foo'; // e.g. an operator-declared conda env dir (s6c0-rulings.md ruling 6)
     const undeclared = `${HOME}/.ssh/id_rsa`;
 
-    const { argv } = buildJailArgs({ clonePath, dataMounts: [`ro:${declared}`] });
+    const { argv } = buildJailArgs({ clonePath, dataMounts: [{ path: declared, access: 'ro' }] });
     expect(argv).toEqual(expect.arrayContaining(['--ro-bind', declared, declared]));
     expect(argv).not.toContain(undeclared);
   });

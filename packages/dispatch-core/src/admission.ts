@@ -49,12 +49,6 @@ function isWithinRoot(root: string, target: string): boolean {
   return rel !== '' && !rel.startsWith('..') && !isAbsolute(rel);
 }
 
-/** Strip a trailing `:ro`/`:rw` mode suffix (§6 data_mounts shape) to get the bare filesystem path. */
-function mountPathOf(entry: string): string {
-  const match = entry.match(/^(.*):(?:ro|rw)$/);
-  return match ? match[1]! : entry;
-}
-
 /**
  * §7.2 `envelope_exceeds_mode`. Per §6's ceiling table, the only violations
  * possible are: write_scope declared outside `implement` (implement's own
@@ -166,18 +160,20 @@ async function checkBaseRef(handoff: Handoff, repoRoot: string): Promise<Dispatc
  * repo root. No rw policy surface.
  */
 async function checkDataMounts(handoff: Handoff, repoRootResolved: string): Promise<DispatchResult<null>> {
-  for (const entry of handoff.data_mounts) {
-    const mountPath = mountPathOf(entry);
-
-    if (!isAbsolute(mountPath)) {
-      return fail('BAD_DATA_MOUNT', `Handoff ${handoff.id} data_mounts entry "${entry}" is not an absolute path.`, {
+  const labeled: Array<[string, string]> = [
+    ...handoff.data_mounts.map((e): [string, string] => [e, 'data_mounts']),
+    ...handoff.export_mounts.map((e): [string, string] => [e, 'export_mounts']),
+  ];
+  for (const [entry, field] of labeled) {
+    if (!isAbsolute(entry)) {
+      return fail('BAD_DATA_MOUNT', `Handoff ${handoff.id} ${field} entry "${entry}" is not an absolute path.`, {
         entry,
       });
     }
 
-    const resolved = resolve(mountPath);
+    const resolved = resolve(entry);
     if (!(await pathExists(resolved))) {
-      return fail('BAD_DATA_MOUNT', `Handoff ${handoff.id} data_mounts entry "${entry}" does not exist on disk.`, {
+      return fail('BAD_DATA_MOUNT', `Handoff ${handoff.id} ${field} entry "${entry}" does not exist on disk.`, {
         entry,
       });
     }
@@ -185,7 +181,7 @@ async function checkDataMounts(handoff: Handoff, repoRootResolved: string): Prom
     if (isWithinRoot(repoRootResolved, resolved)) {
       return fail(
         'BAD_DATA_MOUNT',
-        `Handoff ${handoff.id} data_mounts entry "${entry}" resolves inside the repo root; data mounts must be outside the repo.`,
+        `Handoff ${handoff.id} ${field} entry "${entry}" resolves inside the repo root; data mounts must be outside the repo.`,
         { entry },
       );
     }

@@ -74,6 +74,7 @@ export const tools: ToolDef[] = [
       web: z.boolean().optional(),
       credentials: z.array(z.string()).optional(),
       data_mounts: z.array(z.string()).optional(),
+      export_mounts: z.array(z.string()).optional(),
       base_ref: z.string().optional(),
       vars: z.array(z.string()).optional(),
     }),

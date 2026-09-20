@@ -487,6 +487,7 @@ function makeHandoff(overrides: Partial<Handoff> = {}): Handoff {
     web: false,
     credentials: [],
     data_mounts: [],
+    export_mounts: [],
     read_first: ['README.md'],
     vars: [],
     acceptance: ['AC-1: example'],

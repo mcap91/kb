@@ -82,6 +82,7 @@ Command Options:
     --web                    Optional flag: worker needs web access
     --credentials <csv>      Optional credential names, comma-separated
     --data-mounts <csv>      Optional data mount paths, comma-separated
+    --export-mounts <csv>    Optional export mount paths, comma-separated
     --base-ref <ref>         Optional base ref (branch/commit) for the worker
     --vars <csv>             Optional KEY=value vars, comma-separated
 
@@ -202,6 +203,7 @@ async function cmdCreateHandoff(args: string[]): Promise<number> {
     web: getFlag(args, '--web'),
     credentials: parseCsv(getFlagValue(args, '--credentials')),
     data_mounts: parseCsv(getFlagValue(args, '--data-mounts')),
+    export_mounts: parseCsv(getFlagValue(args, '--export-mounts')),
     base_ref: getFlagValue(args, '--base-ref'),
     vars: parseCsv(getFlagValue(args, '--vars')),
   });

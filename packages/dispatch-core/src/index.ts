@@ -290,8 +290,8 @@ export type { TunnelConfig, TunnelScripts, TunnelBashLines } from './tunnel.js';
 export { buildTunnelScripts, buildTunnelBashLines, TUNNEL_RELAY_PORT, TUNNEL_SOCKET_NAME } from './tunnel.js';
 
 // jail.ts S5 exports (T15/T25 — buildJailArgs already exported above at S0)
-export type { WikiShape, ParsedDataMount } from './jail.js';
-export { classifyWikiShape, parseDataMount } from './jail.js';
+export type { WikiShape } from './jail.js';
+export { classifyWikiShape } from './jail.js';
 
 // ---------------------------------------------------------------------------
 // D6 native spawn pipeline (PLN-0004 mid_project_review_rulings.md ruling 7) —

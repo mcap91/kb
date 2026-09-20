@@ -348,6 +348,7 @@ export interface CreateHandoffOpts {
   web?: boolean;
   credentials?: string[];
   data_mounts?: string[];
+  export_mounts?: string[];
   base_ref?: string;
   vars?: string[];
   verbose?: boolean;
