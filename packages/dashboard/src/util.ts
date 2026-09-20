@@ -1,6 +1,7 @@
 import { readFileSync, existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import dagre from 'dagre';
+import { buildDependencyProjection } from '@kb/wiki-core';
 import type { WorkItem, Dependency, Lane, Summary, DependencyDag, DagNode, DagEdge } from './schema.js';
 
 export function parseFrontmatter(content: string): Record<string, string> {
@@ -45,19 +46,39 @@ export function readRecordMeta(repoRoot: string, id: string): { title: string; s
   return { title: fm['title'] || id, status: fm['status'] || 'unknown' };
 }
 
-/** A dependency stops blocking once it reaches a terminal state. */
-const MET_STATUSES = new Set(['done', 'cancelled', 'superseded', 'wont_do', 'duplicate', 'deprecated']);
+/**
+ * Lenient "met"/terminal bucket for DISPLAY coloring only (WK-0115) -- done plus kb's
+ * terminal statuses that can never progress further. NOT a second readiness predicate:
+ * the canonical readiness gate (lint, dispatch) is wiki-core's buildDependencyProjection
+ * with its strict done-only default. Passing this lenient set as `satisfiedStatuses`
+ * keeps a cancelled/superseded/etc. dependency rendering as met / lane done, matching
+ * pre-WK-0115 dashboard behavior.
+ */
+const LENIENT_SATISFIED_STATUSES = new Set([
+  'done', 'cancelled', 'superseded', 'wont_do', 'duplicate', 'deprecated',
+]);
 
-export function isDependencyMet(status: string): boolean {
-  return MET_STATUSES.has(status);
+/**
+ * True when `status` falls in the dashboard's lenient done bucket. Thin wrapper over
+ * wiki-core's per-node `state` (WK-0115) rather than a locally re-derived predicate --
+ * a single no-edge node's state reduces to exactly this status check.
+ */
+function isLenientlySatisfied(status: string): boolean {
+  const projection = buildDependencyProjection(
+    [{ id: '_status', status, depends_on: [], blocks: [] }],
+    { satisfiedStatuses: LENIENT_SATISFIED_STATUSES },
+  );
+  return projection.nodes[0].state === 'done';
 }
 
-const TERMINAL_STATUSES = new Set(['done', 'cancelled', 'superseded', 'wont_do', 'duplicate', 'deprecated']);
+export function isDependencyMet(status: string): boolean {
+  return isLenientlySatisfied(status);
+}
 
 /** Single source of truth for status -> lane. Explicit statuses are authoritative; unmet deps only block active work. */
 export function laneOf(status: string, hasUnmetDeps: boolean): Lane {
   if (status === 'complete') return 'done';
-  if (TERMINAL_STATUSES.has(status)) return 'done';
+  if (isLenientlySatisfied(status)) return 'done';
   if (status === 'in_progress' || status === 'review') {
     return hasUnmetDeps ? 'blocked' : 'in_progress';
   }
@@ -67,10 +88,16 @@ export function laneOf(status: string, hasUnmetDeps: boolean): Lane {
 }
 
 export function resolveDependencies(repoRoot: string, ids: string[]): Dependency[] {
-  return ids.map(id => {
-    const meta = readRecordMeta(repoRoot, id);
+  const metas = ids.map(id => readRecordMeta(repoRoot, id));
+  const projection = buildDependencyProjection(
+    ids.map((id, i) => ({ id, status: metas[i]?.status || 'unknown', depends_on: [], blocks: [] })),
+    { satisfiedStatuses: LENIENT_SATISFIED_STATUSES },
+  );
+  const stateById = new Map(projection.nodes.map(n => [n.id, n.state]));
+  return ids.map((id, i) => {
+    const meta = metas[i];
     const status = meta?.status || 'unknown';
-    return { id, title: meta?.title || id, status, met: isDependencyMet(status) };
+    return { id, title: meta?.title || id, status, met: stateById.get(id) === 'done' };
   });
 }
 

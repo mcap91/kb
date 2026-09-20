@@ -22,6 +22,7 @@ import {
   generate,
   buildSearchIndex,
   search,
+  buildDependencyProjection,
 } from '../packages/wiki-core/src/index.js';
 
 import type {
@@ -3097,6 +3098,128 @@ describe('VAL value-report record type', () => {
         d => d.code === 'INVALID_ENUM' && d.file.includes('value-reports'),
       );
       expect(enumDiags.length).toBeGreaterThan(0);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildDependencyProjection (WK-0115): ready/blocked/done + cycle detection
+// ---------------------------------------------------------------------------
+
+describe('buildDependencyProjection (WK-0115)', () => {
+  it('a single node with no deps is ready', () => {
+    const result = buildDependencyProjection([
+      { id: 'WK-0001', status: 'todo', depends_on: [], blocks: [] },
+    ]);
+
+    expect(result.nodes).toEqual([
+      { id: 'WK-0001', status: 'todo', state: 'ready', blocked_by: [] },
+    ]);
+    expect(result.frontier).toEqual(['WK-0001']);
+    expect(result.blocked).toEqual([]);
+    expect(result.done).toEqual([]);
+    expect(result.diagnostics).toEqual([]);
+  });
+
+  it('A depends on in_progress B: A is blocked (unsatisfied), B is ready', () => {
+    const result = buildDependencyProjection([
+      { id: 'WK-0001', status: 'todo', depends_on: ['WK-0002'], blocks: [] },
+      { id: 'WK-0002', status: 'in_progress', depends_on: [], blocks: [] },
+    ]);
+
+    const a = result.nodes.find(n => n.id === 'WK-0001')!;
+    const b = result.nodes.find(n => n.id === 'WK-0002')!;
+    expect(a.state).toBe('blocked');
+    expect(a.blocked_by).toEqual([{ id: 'WK-0002', reason: 'unsatisfied' }]);
+    expect(b.state).toBe('ready');
+    expect(b.blocked_by).toEqual([]);
+    expect(result.frontier).toEqual(['WK-0002']);
+    expect(result.blocked).toEqual(['WK-0001']);
+  });
+
+  it('a single node with status done is done', () => {
+    const result = buildDependencyProjection([
+      { id: 'WK-0001', status: 'done', depends_on: [], blocks: [] },
+    ]);
+
+    expect(result.nodes[0].state).toBe('done');
+    expect(result.nodes[0].blocked_by).toEqual([]);
+    expect(result.done).toEqual(['WK-0001']);
+    expect(result.frontier).toEqual([]);
+    expect(result.blocked).toEqual([]);
+  });
+
+  it('a 2-node mutual cycle: both blocked, one cycle diagnostic containing both ids', () => {
+    const result = buildDependencyProjection([
+      { id: 'WK-0001', status: 'todo', depends_on: ['WK-0002'], blocks: [] },
+      { id: 'WK-0002', status: 'todo', depends_on: ['WK-0001'], blocks: [] },
+    ]);
+
+    expect(result.nodes.every(n => n.state === 'blocked')).toBe(true);
+    expect([...result.blocked].sort()).toEqual(['WK-0001', 'WK-0002']);
+
+    const cycleDiags = result.diagnostics.filter(d => d.code === 'cycle');
+    expect(cycleDiags.length).toBe(1);
+    expect([...cycleDiags[0].ids].sort()).toEqual(['WK-0001', 'WK-0002']);
+  });
+
+  it('a dependency on a nonexistent id is blocked with reason missing_target', () => {
+    const result = buildDependencyProjection([
+      { id: 'WK-0001', status: 'todo', depends_on: ['WK-9999'], blocks: [] },
+    ]);
+
+    const a = result.nodes[0];
+    expect(a.state).toBe('blocked');
+    expect(a.blocked_by).toEqual([{ id: 'WK-9999', reason: 'missing_target' }]);
+    expect(result.diagnostics).toEqual([]);
+  });
+
+  it('a dependency on a cancelled (terminal) predecessor is blocked with reason terminal_predecessor', () => {
+    const result = buildDependencyProjection([
+      { id: 'WK-0001', status: 'todo', depends_on: ['WK-0002'], blocks: [] },
+      { id: 'WK-0002', status: 'cancelled', depends_on: [], blocks: [] },
+    ]);
+
+    const a = result.nodes.find(n => n.id === 'WK-0001')!;
+    expect(a.state).toBe('blocked');
+    expect(a.blocked_by).toEqual([{ id: 'WK-0002', reason: 'terminal_predecessor' }]);
+  });
+
+  it('wiki lint surfaces a DEPENDENCY_CYCLE diagnostic for a real 2-record depends_on cycle', async () => {
+    const tmp = await createBootstrappedRepo();
+    try {
+      writeRecord(tmp.dir, 'wiki/issues/WK-0001.md', {
+        id: 'WK-0001',
+        title: 'First',
+        type: 'task',
+        status: 'todo',
+        priority: 'medium',
+        owner: 'test',
+        created: '2025-01-01',
+        updated: '2025-01-01',
+        depends_on: ['WK-0002'],
+      });
+      writeRecord(tmp.dir, 'wiki/issues/WK-0002.md', {
+        id: 'WK-0002',
+        title: 'Second',
+        type: 'task',
+        status: 'todo',
+        priority: 'medium',
+        owner: 'test',
+        created: '2025-01-01',
+        updated: '2025-01-01',
+        depends_on: ['WK-0001'],
+      });
+
+      const result = await lint({ dir: tmp.dir });
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        const cycleDiags = result.data.diagnostics.filter(d => d.code === 'DEPENDENCY_CYCLE');
+        expect(cycleDiags.length).toBe(1);
+        expect(cycleDiags[0].severity).toBe('error');
+      }
+    } finally {
+      tmp.cleanup();
     }
   });
 });
