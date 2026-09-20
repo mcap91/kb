@@ -60,6 +60,8 @@ export type DispatchErrorCode =
   | 'BAD_DATA_MOUNT'
   // --- v2 required enforcement (PLN-0004 S5) ---
   | 'NO_ISOLATION_ROUTE'
+  // --- v2 initiative-resolution gate (IN-0006 WK-0116) ---
+  | 'UNRESOLVED_INITIATIVE'
   // --- v2 structured review response header (PLN-0004 S6a, ruling 3) ---
   | 'REVIEW_PARSE_FAILED'
   // --- v2 native spawn pipeline (PLN-0004 D6 — mid_project_review_rulings.md ruling 7) ---
@@ -98,6 +100,7 @@ export const V2_REFUSAL_CODES = [
   'CONTEXT_BUDGET_EXCEEDED',
   'BAD_DATA_MOUNT',
   'NO_ISOLATION_ROUTE',
+  'UNRESOLVED_INITIATIVE',
 ] as const satisfies readonly DispatchErrorCode[];
 
 /**

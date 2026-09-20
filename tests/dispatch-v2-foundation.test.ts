@@ -123,6 +123,8 @@ function makeHandoff(overrides: Partial<Handoff> = {}): Handoff {
     acceptance: ['AC-1: example'],
     validation: ['node --test test/'],
     status: 'draft',
+    // WK-0116: resolves via the wiki/issues + wiki/initiatives fixtures written in beforeEach.
+    work_item: 'WK-9001',
     ...overrides,
   };
 }
@@ -229,6 +231,20 @@ describe('admission.ts — S0 admission checks', () => {
     execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: repoRoot });
     execFileSync('git', ['config', 'user.name', 'Test User'], { cwd: repoRoot });
     await writeFile(join(repoRoot, 'README.md'), 'test repo\n', 'utf8');
+    // WK-0116: makeHandoff()'s default work_item must resolve to a real initiative
+    // for the full-admission-success test below to reach baseSha resolution.
+    await mkdir(join(repoRoot, 'wiki', 'issues'), { recursive: true });
+    await writeFile(
+      join(repoRoot, 'wiki', 'issues', 'WK-9001.md'),
+      '---\nid: "WK-9001"\ntitle: "Fixture WK"\nstatus: todo\ninitiative: IN-9001\n---\n\n# WK-9001: Fixture\n',
+      'utf8',
+    );
+    await mkdir(join(repoRoot, 'wiki', 'initiatives'), { recursive: true });
+    await writeFile(
+      join(repoRoot, 'wiki', 'initiatives', 'IN-9001.md'),
+      '---\nid: "IN-9001"\ntitle: "Fixture initiative"\nstatus: todo\n---\n\n# IN-9001: Fixture\n',
+      'utf8',
+    );
     execFileSync('git', ['add', '-A'], { cwd: repoRoot });
     execFileSync('git', ['commit', '-m', 'initial commit'], { cwd: repoRoot });
   });
