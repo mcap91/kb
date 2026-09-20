@@ -343,6 +343,13 @@ export interface CreateHandoffOpts {
   constraints?: string[];
   expected_output?: string;
   context?: string;
+  acceptance: string[];
+  validation: string[];
+  web?: boolean;
+  credentials?: string[];
+  data_mounts?: string[];
+  base_ref?: string;
+  vars?: string[];
   verbose?: boolean;
 }
 

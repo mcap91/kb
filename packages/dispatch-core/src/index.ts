@@ -63,8 +63,6 @@ export type {
 // Zod schemas
 export {
   handoffModeSchema,
-  handoffStatusSchema,
-  handoffFrontmatterSchema,
   agentInstructionTransportSchema,
   agentResponseTransportSchema,
   agentReadOnlyConfigSchema,
@@ -97,12 +95,6 @@ export {
   moveToken,
 } from './token.js';
 
-// Review
-export { review } from './review.js';
-
-// Launch
-export { launch } from './launch.js';
-
 // Run state (shared v1/v2 seam). NOTE: `TerminalRunStatus` is intentionally NOT re-exported here
 // under its own name — `types-background.ts` already exports a structurally identical
 // `TerminalRunStatus` (same literal union) via the "Background launch types" section above, and
@@ -133,9 +125,8 @@ export {
   resolveAgentConfig,
 } from './registry.js';
 
-// Handoff creation and loading
+// Handoff creation
 export { createHandoff } from './create-handoff.js';
-export { loadHandoff, DEFAULT_LIMITS } from './handoff.js';
 
 // Status
 export { status } from './status.js';
@@ -146,24 +137,13 @@ export { resolveRun, readRunArtifacts } from './lookup.js';
 // Wait
 export { waitForRun } from './wait.js';
 
-// Response
-export { getResponse } from './response.js';
-
-// Background launch
-export { launchBackground, reviewAndLaunchBackground } from './launch-background.js';
-
 // Wrapper (convenience functions)
 export {
   createHandoffRecord,
   initializeDispatchConfig,
   checkDispatchEnvironment,
-  reviewHandoff,
-  launchReview,
   cleanupState,
   readDispatchStatus,
-  reviewAndLaunch,
-  launchReviewBackground,
-  reviewAndLaunchInBackground,
 } from './wrapper.js';
 
 // ---------------------------------------------------------------------------
