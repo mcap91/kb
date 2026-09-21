@@ -259,7 +259,11 @@ export async function checkAdmission(handoff: Handoff, repoRoot: string): Promis
 
   let statusStdout: string;
   try {
-    const { stdout } = await execFile('git', ['status', '--porcelain'], { cwd: repoRoot });
+    const statusArgs = ['status', '--porcelain', '--'];
+    for (const entry of handoff.write_scope) {
+      statusArgs.push(entry);
+    }
+    const { stdout } = await execFile('git', statusArgs, { cwd: repoRoot });
     statusStdout = stdout;
   } catch (err) {
     return fail('ADMISSION_FAILED', `Failed to run "git status --porcelain" in ${repoRoot}.`, err);

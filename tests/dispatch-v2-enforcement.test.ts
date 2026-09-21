@@ -39,7 +39,7 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -307,12 +307,13 @@ directly against a real temp git repo and a real WSL2 clone.
     }
 
     describe('B4R suite (WK-0074) -- item 1: clean-gate refusal (checkAdmission, real git)', () => {
-      it('refuses DIRTY_REPO when the mother repo has uncommitted changes', async () => {
+      it('refuses DIRTY_REPO when an uncommitted change exists inside write_scope', async () => {
         const repoRoot = await setupB4rRepo();
         try {
-          await writeFile(join(repoRoot, 'README.md'), 'modified without committing\n', 'utf8');
+          await mkdir(join(repoRoot, 'src'), { recursive: true });
+          await writeFile(join(repoRoot, 'src', 'dirty.mjs'), 'export const dirty = true;\n', 'utf8');
 
-          const parsed = parseHandoffContent(b4rHandoffContent('HO-B4R-DIRTY'), 'HO-B4R-DIRTY.md');
+          const parsed = parseHandoffContent(b4rHandoffContent('HO-B4R-DIRTY-IN'), 'HO-B4R-DIRTY-IN.md');
           expect(parsed.ok).toBe(true);
           if (!parsed.ok) return;
 
@@ -321,8 +322,29 @@ directly against a real temp git repo and a real WSL2 clone.
           if (admission.ok) return;
           expect(admission.error).toBe('DIRTY_REPO');
           expect(admission.detail).toMatchObject({
-            dirtyPaths: expect.arrayContaining([expect.stringContaining('README.md')]),
+            dirtyPaths: expect.arrayContaining([expect.stringContaining('src/dirty.mjs')]),
           });
+        } finally {
+          await rm(repoRoot, { recursive: true, force: true });
+        }
+      }, 30_000);
+
+      it('does not refuse with DIRTY_REPO when the only uncommitted change is outside write_scope', async () => {
+        const repoRoot = await setupB4rRepo();
+        try {
+          await writeFile(join(repoRoot, 'README.md'), 'modified without committing\n', 'utf8');
+
+          const parsed = parseHandoffContent(b4rHandoffContent('HO-B4R-DIRTY-OUT'), 'HO-B4R-DIRTY-OUT.md');
+          expect(parsed.ok).toBe(true);
+          if (!parsed.ok) return;
+
+          const admission = await checkAdmission(parsed.data, repoRoot);
+          // The dirty-repo check itself must pass (README.md is outside
+          // write_scope ["src/", "test/"]); any later admission failure is
+          // unrelated to this check and not what this test verifies.
+          if (!admission.ok) {
+            expect(admission.error).not.toBe('DIRTY_REPO');
+          }
         } finally {
           await rm(repoRoot, { recursive: true, force: true });
         }
