@@ -88,6 +88,7 @@ import {
 } from './tunnel.js';
 import { probeBwrap, APPARMOR_REMEDIATION_TEXT, MISSING_BWRAP_TEXT } from './tier.js';
 import { extractRecoveryBlock, type RecoveryBlockEvidence } from './recovery-block.js';
+import { runClaudePermissionProbe } from './claude-probe.js';
 
 /**
  * Claude vendor domain set (DEC-0011 ruling 2, WK-0104). Seed from Anthropic's
@@ -314,18 +315,41 @@ export function familyWriteScope(family: BackendFamily, writeScope: string[], cl
  * write_scope (D2 ruling 2 item 3).
  */
 export function buildClaudeSettingsJson(writeScope: string[], clonePath: string, mode: string): string {
-  const { writableDirs, writableFiles } = deriveExactFileMounts(writeScope, clonePath);
-  const editEntries = [
-    ...writableDirs.map((dir) => `Edit(${dir}/**)`),
-    ...writableFiles.map((file) => `Edit(${file})`),
-  ];
+  // WK-0131: mode=implement requires a non-empty write_scope (admission.ts's
+  // MISSING_WRITE_SCOPE gate already guarantees this pre-spawn — this is
+  // defense-in-depth for direct callers). Non-implement modes are the
+  // opposite: admission.ts's envelope_exceeds_mode gate REQUIRES write_scope
+  // be empty outside mode=implement, so an empty array here is the only
+  // valid input for those modes and must not be rejected.
+  if (mode === 'implement' && writeScope.length === 0) {
+    throw new Error('buildClaudeSettingsJson: write_scope must not be empty for mode "implement".');
+  }
+  for (const entry of writeScope) {
+    if (entry.startsWith('/')) {
+      throw new Error(`buildClaudeSettingsJson: write_scope entries must be relative, got absolute path "${entry}".`);
+    }
+    if (entry.includes('..')) {
+      throw new Error(`buildClaudeSettingsJson: write_scope entries must not contain "..": "${entry}".`);
+    }
+  }
+
+  const editEntries: string[] = [];
+  for (const rel of writeScope) {
+    const trimmed = rel.replace(/^\/+/, '').replace(/\/+$/, '');
+    const absPath = join(clonePath, trimmed);
+    if (classifyEntry(absPath, trimmed) === 'file') {
+      editEntries.push(`Edit(${trimmed})`);
+    } else {
+      editEntries.push(`Edit(${trimmed}/**)`);
+    }
+  }
   const deny = ['WebFetch', 'WebSearch', 'Task', 'Agent', 'Workflow', 'Skill', 'Monitor'];
   if (mode !== 'implement') {
     deny.push('Edit', 'Write', 'NotebookEdit');
   }
   const settings = {
     permissions: {
-      allow: [`Read(//${clonePath}/**)`, 'Bash', ...editEntries],
+      allow: [`Read(//${clonePath.replace(/^\/+/, '')}/**)`, 'Bash', ...editEntries],
       deny,
       disableBypassPermissionsMode: 'disable',
     },
@@ -871,6 +895,15 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       // promptPath at container runtime).
       const claudeSettingsPath = '/tmp/.claude-settings/settings.json';
       const claudeSettingsContent = buildClaudeSettingsJson(handoff.write_scope, clonePath, handoff.mode);
+
+      // WK-0131: permission probe — verifies Write works under Edit-only
+      // allow on this Claude CLI version before spawning the real worker.
+      if (handoff.mode === 'implement') {
+        logVerbose(verbose, 'running claude permission probe');
+        const probeResult = await runClaudePermissionProbe(claudeSettingsContent, handoff.write_scope);
+        if (!probeResult.ok) return probeResult;
+      }
+
       buildClaudeInvocation(assembled.data.text, model, clonePath, claudeSettingsPath, opts.effort);
       // WK-0122: config-driven effort splice, inserted BEFORE the `--`
       // terminator (same positional constraint as the adapter above — the

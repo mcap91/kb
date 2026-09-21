@@ -67,6 +67,7 @@ import { parsePreflightOutput } from '../packages/dispatch-core/src/preflight.js
 import * as preflightModule from '../packages/dispatch-core/src/preflight.js';
 import * as tierModule from '../packages/dispatch-core/src/tier.js';
 import * as spawnIsolatedModule from '../packages/dispatch-core/src/spawn-isolated.js';
+import * as claudeProbeModule from '../packages/dispatch-core/src/claude-probe.js';
 import { runDispatch } from '../packages/dispatch-core/src/pipeline.js';
 
 function readFixtureFile(name: string): string {
@@ -903,6 +904,7 @@ describe('dispatch v2 e2e (fake-tier) — WK-0122 effort passthrough (mocked spa
       },
     });
     const { getInnerScript } = mockSpawnIsolated(readFixtureFile('claude-p-output.txt'));
+    vi.spyOn(claudeProbeModule, 'runClaudePermissionProbe').mockResolvedValue({ ok: true, data: undefined });
     try {
       const result = await runDispatch({
         dir: repoRoot,
@@ -992,6 +994,7 @@ describe('dispatch v2 e2e (fake-tier) — WK-0122 effort passthrough (mocked spa
       },
     });
     const { getInnerScript } = mockSpawnIsolated(readFixtureFile('claude-p-output.txt'));
+    vi.spyOn(claudeProbeModule, 'runClaudePermissionProbe').mockResolvedValue({ ok: true, data: undefined });
     try {
       const result = await runDispatch({
         dir: repoRoot,
@@ -1180,6 +1183,7 @@ describe('dispatch v2 e2e (fake-tier) — WK-0125 implement-mode constrained dec
   it('implement + claude: --json-schema "$SCHEMA" is spliced into the exec line (schema read via $(cat <injected-path>), same convention as $PROMPT), and the REAL contract schema content is injected into the jail', async () => {
     const repoRoot = await setupS3Repo({ backends: CLAUDE_BACKENDS, models: CLAUDE_MODELS, mode: 'implement' });
     const { getInnerScript, getInjectedFiles } = mockSpawnIsolatedCapturePlan(readFixtureFile('claude-p-output.txt'));
+    vi.spyOn(claudeProbeModule, 'runClaudePermissionProbe').mockResolvedValue({ ok: true, data: undefined });
     try {
       const result = await runDispatch({
         dir: repoRoot,
