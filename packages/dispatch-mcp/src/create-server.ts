@@ -26,8 +26,8 @@ export function toErrorEnvelope(err: unknown) {
 // read tools from operator-setup / execution tools. Kept name-keyed here so the
 // declarations in tools.ts stay lean; update these sets when adding a tool.
 const READ_ONLY = new Set(['status']);
-const OPERATOR_ONLY = new Set(['init-config', 'init-dispatch', 'dispatch']);
-const DESTRUCTIVE = new Set(['cleanup', 'dispatch']);
+const OPERATOR_ONLY = new Set(['init-config', 'init-dispatch', 'dispatch', 'derive-review', 'merge-delivery']);
+const DESTRUCTIVE = new Set(['cleanup', 'dispatch', 'merge-delivery']);
 
 // WK-0046-style MCP instructions (PLN-0004 S1 Wave 3, s1-rulings ruling 8): built
 // at startup from in-process constants only — pure/static, no probes, no I/O. Boot
@@ -54,6 +54,8 @@ const INSTRUCTIONS = [
   '| create-handoff | Scaffold an HO |',
   '| init-config | Operator setup |',
   '| cleanup | Stale state removal |',
+  '| derive-review | Create a code_review HO from a delivered implement HO |',
+  '| merge-delivery | Merge delivery branch after review pass; gates on review evidence |',
   '',
   '## Refusal codes',
   '',
@@ -78,9 +80,9 @@ const INSTRUCTIONS = [
   '1. Author HO(s) for the work item (use `create-handoff` or hand-author). Feature-sized — one coherent, independently reviewable unit with ACs and validation command. Not function-sized. **Visibility:** workers see ONLY system toolchain + the clone + declared mounts. Any out-of-repo directory the worker needs to READ (conda/mamba/uv envs, datasets, reference data) goes in `data_mounts` (bound read-only); any directory it needs to WRITE output to goes in `export_mounts` (bound writable). Envs should also be named in `vars`. A missing mount surfaces as `dependency_missing` — widen data_mounts/export_mounts and re-dispatch (existing fix-up routing).',
   '2. Dispatch: `dispatch` with handoff path, model, backend. Background by default — returns immediately with a runId and a `watch` command.',
   '3. Watch: run the returned `watch` command as a background Bash command (`run_in_background: true`). It blocks until the run reaches terminal status, then exits — Claude Code notifies the orchestrator when it completes. Read the command\'s output for the run result (JSON). Use `status` instead for an ad-hoc point-in-time check.',
-  '4. Read result: `wiki/handoffs/HO-XXXX.response.md`. Check verdict and recovery signal.',
-  '5. Review: dispatch a `code_review` HO with `base_ref: dispatch/HO-XXXX` (the implement branch). Reviewer clones at base_ref and sees the implement commit.',
-  '6. On review pass: merge `dispatch/HO-XXXX` branch into the target branch and delete it. The orchestrator does this, not the jailed reviewer.',
+  '4. Read result: `wiki/handoffs/HO-XXXX.response.md` (auto-committed by the pipeline — DEC-0038). Check verdict and recovery signal.',
+  '5. Review (two-step): `derive-review` creates a `code_review` HO from the delivered implement (derives write_scope, acceptance, base_ref=`dispatch/HO-XXXX`). Then `dispatch` it separately — same dispatch/watch/read cycle as step 2-4. The review response is auto-committed by the pipeline.',
+  '6. On review pass: `merge-delivery` merges `dispatch/HO-XXXX` into the target branch and deletes it. Gates on review evidence — the review response must contain a `kb-dispatch-recovery.v1` block with `no_findings` or `passed_no_blocking_or_medium_findings`. Refuses on conflict (surface to operator). No remote push.',
   '7. **Update wiki records:** after each dispatch run completes (implement, review, or fix-up), update the linked wiki record (WK/IN status, notes) via kb-wiki tools. This is obligatory — the wiki must reflect current state after every step. This is the continuity mechanism: any fresh session reads the wiki and knows the state.',
   '',
   '**Fix-up routing** (on non-delivered implement outcomes): read the `kind` code from the `kb-dispatch-recovery.v1` block in the response doc.',

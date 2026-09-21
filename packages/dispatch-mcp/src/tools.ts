@@ -3,9 +3,11 @@ import {
   checkEnvironment,
   cleanup,
   createHandoff,
+  deriveReview,
   initConfig,
   initDispatch,
   launchDispatchBackground,
+  mergeDelivery,
   status,
 } from '@kb/dispatch-core';
 
@@ -107,6 +109,15 @@ export const tools: ToolDef[] = [
     }),
   },
   {
+    name: 'derive-review',
+    description: 'Create a code_review HO from a delivered implement HO. Does NOT dispatch it — use dispatch separately.',
+    inputSchema: z.object({
+      dir: z.string().describe('Target repo directory'),
+      handoff_id: z.string().describe('The implement HO id (e.g. HO-0034)'),
+    }),
+    handler: async (input) => deriveReview({ dir: input.dir as string, handoff_id: input.handoff_id as string }),
+  },
+  {
     name: 'init-dispatch',
     description: 'Scaffold blank wiki/.dispatch/ config tables (models.json, backends.json, profiles.json) + kb-managed README. Re-run refreshes the managed section only, never user JSON. v1 init-config is untouched.',
     inputSchema: z.object({
@@ -114,5 +125,14 @@ export const tools: ToolDef[] = [
       force: z.boolean().optional().describe('Force overwrite of managed README section even if it exists'),
     }),
     handler: async (input) => initDispatch({ dir: input.dir as string, force: input.force as boolean | undefined }),
+  },
+  {
+    name: 'merge-delivery',
+    description: 'Merge a dispatch delivery branch into the target branch after review pass. Gates on review evidence. No remote push.',
+    inputSchema: z.object({
+      dir: z.string().describe('Target repo directory'),
+      handoff_id: z.string().describe('The implement HO id whose delivery branch to merge (e.g. HO-0034)'),
+    }),
+    handler: async (input) => mergeDelivery({ dir: input.dir as string, handoff_id: input.handoff_id as string }),
   },
 ];

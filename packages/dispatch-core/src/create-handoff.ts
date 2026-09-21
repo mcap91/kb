@@ -55,7 +55,7 @@ async function loadHandoffTemplate(targetDir: string): Promise<DispatchResult<st
   }
 }
 
-function renderHandoff(id: string, opts: CreateHandoffOpts): string {
+export function renderHandoff(id: string, opts: CreateHandoffOpts): string {
   const now = new Date().toISOString();
   const lines = [
     '---',

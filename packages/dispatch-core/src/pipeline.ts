@@ -70,6 +70,7 @@ import {
   type DeliveryOutcome,
 } from './delivery.js';
 import { writeResponseDoc, buildProvenanceWriteBack } from './capture.js';
+import { commitArtifacts } from './commit-artifacts.js';
 import { runPreflight } from './preflight.js';
 import { getRunDir } from './paths.js';
 import { loadProfilesConfig, type BackendFamily, type EffortMapping } from './repo-config.js';
@@ -1411,9 +1412,8 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
 
     // 20c. Provenance write-back (T7-full closure item 3, S1): merge
     // buildProvenanceWriteBack's fields into the HO's own frontmatter.
-    // Write-back dirt rule (s1-rulings.md): dispatch writes the pair +
-    // frontmatter but NEVER commits to the mother repo — this is file I/O
-    // only. Best-effort, same as the canonical copy above.
+    // Best-effort, same as the canonical copy above. The pipeline auto-commits
+    // both artifact paths immediately after this step (DEC-0038, step 20d).
     // TODO(capture.ts): buildProvenanceWriteBack hardcodes fields.agent =
     // 'pi' unconditionally in its own body (not a parameter) — now that
     // codex/claude runs can reach here, HO provenance frontmatter will read
@@ -1444,6 +1444,17 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
     } catch (err) {
       logVerbose(verbose, `warning: could not write provenance to ${hoPath}: ${err}`);
     }
+
+    // 20d. Auto-commit artifacts (DEC-0038): pipeline commits the response doc
+    // + provenance write-back immediately after writing them. Supersedes the
+    // s1-rulings "NEVER commits" rule.
+    await commitArtifacts({
+      dir,
+      handoffId: handoff.id,
+      outcome: delivery.status,
+      model: canonicalModel,
+      verbose,
+    });
 
     // 22. Return result
     return ok({

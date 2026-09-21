@@ -164,6 +164,8 @@ describe('MCP smoke tests', () => {
     expect(names).toContain('cleanup');
     expect(names).toContain('dispatch');
     expect(names).toContain('init-dispatch');
-    expect(names).toHaveLength(7);
+    expect(names).toContain('derive-review');
+    expect(names).toContain('merge-delivery');
+    expect(names).toHaveLength(9);
   });
 });
