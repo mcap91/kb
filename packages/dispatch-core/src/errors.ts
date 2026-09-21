@@ -66,7 +66,9 @@ export type DispatchErrorCode =
   | 'REVIEW_PARSE_FAILED'
   // --- v2 native spawn pipeline (PLN-0004 D6 — mid_project_review_rulings.md ruling 7) ---
   | 'BWRAP_SPAWN_FAILED'
-  | 'EXEC_FAILED';
+  | 'EXEC_FAILED'
+  // --- v2 claude permission probe (WK-0131) ---
+  | 'CLAUDE_PERMISSION_PROBE_FAILED';
 
 /**
  * Discriminated union result type for dispatch-core operations.
@@ -101,6 +103,7 @@ export const V2_REFUSAL_CODES = [
   'BAD_DATA_MOUNT',
   'NO_ISOLATION_ROUTE',
   'WORK_ITEM_NOT_FOUND',
+  'CLAUDE_PERMISSION_PROBE_FAILED',
 ] as const satisfies readonly DispatchErrorCode[];
 
 /**

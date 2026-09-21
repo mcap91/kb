@@ -136,7 +136,9 @@ const IMPLEMENT_FRAMING =
   "Use the environment named in the task's `vars` field. Do not create, modify, or install " +
   'new environments (conda, mamba, venv, virtualenv). If the task requires an environment ' +
   'that is not provided, stop and end your final message stating exactly what you needed and ' +
-  'why you stopped.';
+  'why you stopped.\n\n' +
+  'Do not run `git add`/`git commit` — `.git` is read-only; dispatch captures and commits ' +
+  'your changes after you finish.';
 
 const WORKER_RECOVERY_EXAMPLE = recoveryBlockExample({
   schema_version: 'kb-dispatch-recovery.v1',
