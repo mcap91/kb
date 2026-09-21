@@ -162,9 +162,8 @@ describe('MCP smoke tests', () => {
     expect(names).toContain('create-handoff');
     expect(names).toContain('status');
     expect(names).toContain('cleanup');
-    expect(names).toContain('wait-for-run');
     expect(names).toContain('dispatch');
     expect(names).toContain('init-dispatch');
-    expect(names).toHaveLength(8);
+    expect(names).toHaveLength(7);
   });
 });

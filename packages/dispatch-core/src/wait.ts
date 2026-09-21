@@ -5,6 +5,7 @@ import type { WaitForRunResult, WaitForRunOpts, RunStatus } from './types-backgr
 import type { DispatchResult } from './errors.js';
 import { ok } from './errors.js';
 import { resolveRun, readRunArtifacts } from './lookup.js';
+import { isRecordedProcessAlive } from './run-state.js';
 
 const DEFAULT_TIMEOUT_SECONDS = 1800;
 const DEFAULT_POLL_INTERVAL_MS = 1000;
@@ -17,7 +18,29 @@ const TERMINAL_STATUSES = new Set(['completed', 'failed', 'timed_out', 'cancelle
  * run-level facts — the response doc's own verdict vocabulary dropped them
  * too, see capture.ts's `ResponseOutcome`).
  */
-const TERMINAL_STATUSES_V2 = new Set(['completed', 'failed', 'refused', 'timed_out', 'cancelled']);
+const TERMINAL_STATUSES_V2 = new Set(['completed', 'delivered', 'failed', 'refused', 'timed_out', 'cancelled']);
+
+/**
+ * Dead-run detection (mirrors status.ts's `ACTIVE_HEARTBEAT_GRACE_MS` /
+ * `STALE_HEARTBEAT_THRESHOLD_SECS`, both 300s): a worker killed hard (e.g.
+ * `kill -9`) never writes a terminal status, so without this check the poll
+ * loop below would sleep out the full timeout watching a heartbeat that will
+ * never move again. A run counts as dead once its heartbeat is stale AND its
+ * recorded pid/pgid is no longer alive.
+ */
+const DEAD_RUN_HEARTBEAT_GRACE_MS = 5 * 60 * 1000;
+
+function isRunDead(heartbeatAt: string | null, pid: number | null, pgid: number | null): boolean {
+  if (pid === null) return false;
+  const heartbeatMs = Date.parse(heartbeatAt ?? '');
+  const heartbeatFresh = Number.isFinite(heartbeatMs) && (Date.now() - heartbeatMs) <= DEAD_RUN_HEARTBEAT_GRACE_MS;
+  if (heartbeatFresh) return false;
+  return !isRecordedProcessAlive(pid, pgid ?? pid);
+}
+
+function deadRunMessage(runId: string, pid: number | null): string {
+  return `waitForRun: run ${runId} heartbeat stale (>${DEAD_RUN_HEARTBEAT_GRACE_MS / 1000}s) and pid ${pid ?? 'unknown'} not alive — returning status "failed" instead of waiting out the timeout.`;
+}
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
@@ -125,6 +148,10 @@ export async function waitForRun(opts: WaitForRunOpts): Promise<DispatchResult<W
     if (v2Result && TERMINAL_STATUSES_V2.has(v2Result.status)) {
       return ok(v2Result);
     }
+    if (v2Result && isRunDead(v2Result.heartbeatAt, v2Result.pid, v2Result.pgid)) {
+      console.error(deadRunMessage(v2Result.runId, v2Result.pid));
+      return ok({ ...v2Result, status: 'failed' });
+    }
 
     try {
       const raw = await readFile(metaPath, 'utf-8');
@@ -154,6 +181,40 @@ export async function waitForRun(opts: WaitForRunOpts): Promise<DispatchResult<W
           pid: stateInfo.pid,
           pgid: stateInfo.pgid,
         });
+      }
+
+      if (typeof meta.status === 'string') {
+        // Non-terminal v1 status (launching/running): same dead-run check as
+        // the v2 branch above, reading liveness off state.json (meta.json
+        // only carries status/completed_at, not heartbeat/pid).
+        const artifacts = await readRunArtifacts(runDir, { includeMeta: true });
+        if (artifacts.ok) {
+          const stateInfo = extractFromState(artifacts.data.state);
+          if (isRunDead(stateInfo.heartbeatAt, stateInfo.pid, stateInfo.pgid)) {
+            console.error(deadRunMessage(artifacts.data.runId, stateInfo.pid));
+            return ok({
+              reviewId: artifacts.data.reviewId,
+              runId: artifacts.data.runId,
+              handoffId: artifacts.data.handoffId,
+              agent: artifacts.data.agent,
+              mode: artifacts.data.mode,
+              status: 'failed',
+              runDir: artifacts.data.runDir,
+              responsePath: artifacts.data.responsePath,
+              metaPath: artifacts.data.metaPath,
+              statePath: artifacts.data.statePath,
+              launchPath: artifacts.data.launchPath,
+              controllerPath: artifacts.data.controllerPath,
+              stdoutPath: artifacts.data.stdoutPath,
+              stderrPath: artifacts.data.stderrPath,
+              startedAt: stateInfo.startedAt,
+              heartbeatAt: stateInfo.heartbeatAt,
+              completedAt: null,
+              pid: stateInfo.pid,
+              pgid: stateInfo.pgid,
+            });
+          }
+        }
       }
     } catch {
       // meta.json doesn't exist yet, keep polling
