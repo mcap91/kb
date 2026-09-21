@@ -126,7 +126,14 @@ export {
 } from './registry.js';
 
 // Handoff creation
-export { createHandoff } from './create-handoff.js';
+export { createHandoff, renderHandoff } from './create-handoff.js';
+
+// Review derivation (WK-0132 Slice 2)
+export type { DeriveReviewOpts, DeriveReviewResult } from './derive-review.js';
+export { deriveReview } from './derive-review.js';
+
+// Post-run artifact commit (DEC-0038)
+export { commitArtifacts } from './commit-artifacts.js';
 
 // Status
 export { status } from './status.js';
@@ -334,3 +341,11 @@ export type {
   FindingSeverity as RecoveryFindingSeverity,
 } from './recovery-block.js';
 export { extractRecoveryBlock, validateRecoveryPayload, KB_DISPATCH_RECOVERY_VERSION } from './recovery-block.js';
+
+// ---------------------------------------------------------------------------
+// Merge delivery (WK-0132 Slice 3) — merges a dispatch delivery branch into
+// the target branch after review evidence confirms a pass. Local only.
+// ---------------------------------------------------------------------------
+
+export type { MergeDeliveryOpts, MergeDeliveryResult } from './merge-delivery.js';
+export { mergeDelivery } from './merge-delivery.js';

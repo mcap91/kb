@@ -553,3 +553,44 @@ The `fake-agent` entry points to the `kb` repo's `tests/fixtures/fake-agent.ts` 
 - Automated testing in `tests/dispatch.test.ts`
 - Dogfooding the full review-launch cycle
 - Validating the dispatch pipeline without a real agent
+
+## Post-Run Lifecycle Tools (WK-0132)
+
+Three mechanical lifecycle capabilities close the manual gaps in the dispatch loop:
+
+### Pipeline Auto-Commit (DEC-0038)
+
+After the pipeline writes `HO-XXXX.response.md` and provenance write-back to `HO-XXXX.md`, it auto-commits exactly those two paths using isolated-index git plumbing. Identity: `kb-dispatch <dispatch@kb.local>`. Message: `chore: dispatch HO-XXXX <outcome> (<model>)`. Best-effort — commit failure warns, never fails the run. Eliminates the `DIRTY_REPO` refusal on chained dispatches.
+
+### `derive-review` Tool
+
+Creates a `code_review` HO from a delivered `implement` HO. Derivation: `mode=code_review`, `base_ref=dispatch/<implement_id>`, `write_scope`/`acceptance`/`validation`/`web`/`credentials`/`data_mounts`/`export_mounts`/`vars` copied from implement, `read_first` = implement's + response doc path, `title` = `Code review: <implement_title>`. Does NOT auto-dispatch — the orchestrator dispatches separately (two-step review chain).
+
+Refusals: implement not found, mode != implement, not delivered (response doc missing).
+
+### `merge-delivery` Tool
+
+Merges `dispatch/<handoff_id>` into the current branch and deletes the delivery branch. Local only — no remote push.
+
+Preconditions (all must pass, fail-closed):
+1. Review evidence: a `code_review` HO with matching `base_ref` has a response doc whose `kb-dispatch-recovery.v1` block reports `no_findings` or `passed_no_blocking_or_medium_findings`
+2. Working tree clean
+3. Delivery branch exists
+4. Merge succeeds (FF or clean) — aborts and refuses on conflict
+
+### Orchestration Recipe (Updated)
+
+The full dispatch loop with lifecycle tools:
+
+```
+orchestrator authors HO         → create-handoff
+orchestrator dispatches         → dispatch + watch
+pipeline executes + delivers    → automatic
+pipeline auto-commits artifacts → DEC-0038 (automatic)
+orchestrator reads result       → HO-XXXX.response.md
+orchestrator derives review     → derive-review
+orchestrator dispatches review  → dispatch + watch (same cycle)
+pipeline auto-commits review    → DEC-0038 (automatic)
+orchestrator reads review       → review response.md
+orchestrator merges on pass     → merge-delivery
+```
