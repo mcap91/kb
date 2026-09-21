@@ -35,8 +35,10 @@
  *   7.  clone bind                    ro-bind first if write_scope is
  *                                      sparse, else writable (legacy shape)
  *   8.  write_scope binds             selective rw layered over step 7
- *   9.  wiki read axis (T25/D19)      dual-shape probe result decides mask
- *                                      vs. explicit bind vs. no-op
+ *   9.  wiki read axis (T25/D19)      dual-shape probe result decides bind
+ *                                      source (clone's own wiki vs. mother
+ *                                      bind) — visible to every mode
+ *                                      (DEC-0039: mode-based masking retired)
  *   10. data mounts                   per-HO ro/rw binds (existence/
  *                                      absoluteness already §7.14-validated
  *                                      by the admission gate)
@@ -63,11 +65,11 @@ export interface JailOpts {
   /** Relative paths under clonePath that the worker may write to (from HO write_scope).
    *  Each path gets a writable bind; everything else under clonePath stays read-only. */
   writeScope?: string[];
-  /** Wiki shape — determines whether to mask or bind wiki. */
+  /** Wiki shape — determines the wiki bind source (clone's own wiki/ when tracked, mother repo's wiki/ when nested-private). */
   wikiShape?: WikiShape;
-  /** HO mode — determines wiki visibility (implement/code_review: masked; redteam/research: visible). */
+  /** HO mode — retained for API compatibility; no longer gates wiki visibility (DEC-0039: wiki is visible to every mode). */
   mode?: string;
-  /** Absolute path to the mother repo's wiki/ (for nested-private shape, redteam/research bind). */
+  /** Absolute path to the mother repo's wiki/ (for nested-private shape's mother wiki ro-bind, unconditional across modes — DEC-0039). */
   motherWikiPath?: string;
   /** Data mount declarations (data_mounts + export_mounts, already merged with a resolved access mode). */
   dataMounts?: ReadonlyArray<{ path: string; access: 'ro' | 'rw' }>;
@@ -119,11 +121,6 @@ export interface JailArgs {
 export function classifyWikiShape(lsFilesOutput: string): WikiShape {
   return lsFilesOutput.trim().length > 0 ? 'tracked' : 'nested-private';
 }
-
-/** Modes whose workers must never see wiki content — masked when wiki/ is tracked. */
-const WIKI_MASKED_MODES: ReadonlySet<string> = new Set(['implement', 'code_review']);
-/** Modes allowed to read wiki content — get an explicit bind when wiki/ is nested-private. */
-const WIKI_VISIBLE_MODES: ReadonlySet<string> = new Set(['redteam', 'research']);
 
 /**
  * Curated system-root dirs bound read-only into every jail (chassis pattern:
@@ -237,18 +234,13 @@ function buildJailPlanSteps(opts: JailOpts): JailPlanSteps {
     bind('bind', opts.clonePath, opts.clonePath);
   }
 
-  // 9: dual-shape wiki read axis (T25/D19).
+  // 9: dual-shape wiki read axis (T25/D19). DEC-0039: visible to every mode —
+  // no mode-based masking. Tracked shape: the clone's own wiki/ is already
+  // part of the clone bind above, so nothing further to do here. Nested-private
+  // shape: bind the mother repo's wiki/ in unconditionally when given.
   const wikiPath = joinUnderClone(opts.clonePath, 'wiki');
-  if (opts.wikiShape === 'tracked') {
-    if (opts.mode !== undefined && WIKI_MASKED_MODES.has(opts.mode)) {
-      synthetic('tmpfs', wikiPath);
-    }
-    // redteam/research (or an unrecognized mode): leave the clone's own wiki/ visible.
-  } else if (opts.wikiShape === 'nested-private') {
-    if (opts.mode !== undefined && WIKI_VISIBLE_MODES.has(opts.mode) && opts.motherWikiPath) {
-      bind('ro-bind', opts.motherWikiPath, wikiPath);
-    }
-    // implement/code_review (or no motherWikiPath given): clone has no wiki/ at all — nothing to bind.
+  if (opts.wikiShape === 'nested-private' && opts.motherWikiPath) {
+    bind('ro-bind', opts.motherWikiPath, wikiPath);
   }
 
   // 10: declared data mounts (ro/rw per HO; existence/absoluteness already

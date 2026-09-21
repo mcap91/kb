@@ -700,6 +700,27 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
     ? classifyWikiShape(wikiProbeResult.data.stdout)
     : 'nested-private'; // fail-safe: assume no wiki in clone
 
+  // 8c. Wiki source commit (WK-0135 provenance): tracked shape's wiki/ lives
+  // in the mother repo itself, so the pinned clone commit IS the wiki
+  // commit — no separate probe needed. Nested-private shape's wiki/ lives in
+  // a separate repo (`<mother>/wiki`), so probe its own HEAD. Best-effort —
+  // a failed probe degrades to undefined, never fails the run.
+  let wikiCommit: string | undefined;
+  if (wikiShape === 'tracked') {
+    wikiCommit = admission.data.baseSha;
+  } else {
+    const wikiHeadResult = await execBash({
+      scriptContent: 'git rev-parse HEAD',
+      cwd: join(dir, 'wiki'),
+      timeoutMs: 30_000,
+    });
+    if (wikiHeadResult.ok) {
+      wikiCommit = wikiHeadResult.data.stdout.trim();
+    } else {
+      logVerbose(verbose, `warning: could not probe nested-private wiki HEAD at ${join(dir, 'wiki')}: ${wikiHeadResult.message}`);
+    }
+  }
+
   // 9. Clone (ephemeral full clone @ pinned base_sha, same-host ext4)
   logVerbose(verbose, `cloning mother repo at base_sha ${admission.data.baseSha}`);
   const cloneResult = await createClone({
@@ -1383,6 +1404,7 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       piVersion,
       backendFingerprint: fingerprint ?? undefined,
       effort: opts.effort,
+      wikiCommit,
     });
     if (!captureResult.ok) return captureResult;
 
@@ -1426,6 +1448,7 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       backend: model.backend,
       piVersion,
       backendFingerprint: fingerprint ?? undefined,
+      wikiCommit,
     });
     const hoPath = join(dir, opts.handoff);
     try {

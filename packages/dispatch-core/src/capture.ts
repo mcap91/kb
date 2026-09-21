@@ -79,6 +79,15 @@ export interface CaptureOpts {
    * `delivery_method: prose_fallback`) instead of hard-failing the run.
    */
   recoveryEvidence?: RecoveryBlockEvidence;
+  /**
+   * The wiki source's commit at run time (WK-0135): the mother repo's own
+   * HEAD when wiki/ is tracked (the clone commit IS the wiki commit), or the
+   * separate nested-private wiki repo's HEAD otherwise. Best-effort —
+   * undefined when the probe failed (pipeline.ts degrades gracefully rather
+   * than failing the run). Rendered as `wiki_commit` in both the response
+   * doc frontmatter and the HO provenance write-back.
+   */
+  wikiCommit?: string;
 }
 
 export interface CaptureResult {
@@ -385,6 +394,7 @@ export async function writeResponseDoc(opts: CaptureOpts): Promise<DispatchResul
   if (opts.backend) frontmatterLines.push(`backend: ${opts.backend}`);
   if (opts.piVersion) frontmatterLines.push(`pi_version: ${opts.piVersion}`);
   if (opts.backendFingerprint) frontmatterLines.push(`backend_fingerprint: ${formatBackendFingerprint(opts.backendFingerprint)}`);
+  if (opts.wikiCommit) frontmatterLines.push(`wiki_commit: ${opts.wikiCommit}`);
   frontmatterLines.push('---', '');
   const frontmatter = frontmatterLines.join('\n');
 
@@ -460,6 +470,7 @@ export function buildProvenanceWriteBack(opts: CaptureOpts): ProvenanceWriteBack
   if (opts.backend) fields.backend = opts.backend;
   if (opts.piVersion) fields.pi_version = opts.piVersion;
   if (opts.backendFingerprint) fields.backend_fingerprint = formatBackendFingerprint(opts.backendFingerprint);
+  if (opts.wikiCommit) fields.wiki_commit = opts.wikiCommit;
   if (opts.compaction && opts.compaction.total > 0) {
     fields.compaction_total = String(opts.compaction.total);
     fields.compaction_succeeded = String(opts.compaction.succeeded);

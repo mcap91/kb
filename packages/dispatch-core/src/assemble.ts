@@ -1,7 +1,7 @@
 /**
  * Mechanical prompt assembly (spec §8 "Prompt assembly is mechanical"; T7 S0-lite,
  * T30 S6a mode framings). Wrapper templated from HO fields — mode framing + envelope +
- * task body + AC list + read_first contents. No model call here, ever. Framings are
+ * task body + AC list + read_first pointers. No model call here, ever. Framings are
  * subagent profiles that set posture, never guardrails (s6-rulings.md ruling 2) — all
  * guardrails are deterministic elsewhere (delivery gate, bwrap, etc). Every framing
  * instructs the worker that if it cannot finish, its final chat message should state
@@ -244,10 +244,11 @@ function getModeParts(handoff: Handoff): ModeParts {
 /**
  * Assemble the full worker prompt for a handoff. Reads the HO's own markdown file
  * from `wiki/handoffs/{id}.md` under repoRoot for the Context body (the parsed
- * `Handoff` frontmatter carries no body text of its own), and best-effort-inlines
- * each `read_first` file's content. A `read_first` entry that cannot be read is
- * annotated in place, not treated as a failure — only a missing/unreadable HO
- * markdown file itself (the source of Context) fails the assembly.
+ * `Handoff` frontmatter carries no body text of its own). `read_first` entries are
+ * emitted as path pointers only (DEC-0039) — the worker reads them at runtime;
+ * this function never reads their content and never fails over them. Only a
+ * missing/unreadable HO markdown file itself (the source of Context) fails the
+ * assembly.
  */
 export async function assemblePrompt(handoff: Handoff, repoRoot: string): Promise<DispatchResult<AssembledPrompt>> {
   const hoPath = join(repoRoot, 'wiki', 'handoffs', `${handoff.id}.md`);
@@ -258,18 +259,6 @@ export async function assemblePrompt(handoff: Handoff, repoRoot: string): Promis
     context = extractBody(raw).trim();
   } catch (err) {
     return fail(`Failed to read handoff markdown for context: ${hoPath}`, err);
-  }
-
-  const readFirstBlocks: string[] = [];
-  for (const relPath of handoff.read_first) {
-    const absPath = join(repoRoot, relPath);
-    try {
-      const fileContent = await readFile(absPath, 'utf8');
-      readFirstBlocks.push(`<file path="${relPath}">\n${fileContent}\n</file>`);
-    } catch (err) {
-      const detail = err instanceof Error ? err.message : String(err);
-      readFirstBlocks.push(`<file path="${relPath}">\n[unreadable: ${detail}]\n</file>`);
-    }
   }
 
   const modeParts = getModeParts(handoff);
@@ -305,10 +294,7 @@ export async function assemblePrompt(handoff: Handoff, repoRoot: string): Promis
     sections.push(`### Validation\nRun these commands to verify your work:\n${bulletList(handoff.validation)}`);
   }
 
-  let readFirstSection = `### Read First\nRead these files before starting:\n${bulletList(handoff.read_first)}`;
-  if (readFirstBlocks.length > 0) {
-    readFirstSection += `\n\n${readFirstBlocks.join('\n\n')}`;
-  }
+  const readFirstSection = `### Read First\nRead these files before starting:\n${bulletList(handoff.read_first)}`;
   sections.push(readFirstSection);
 
   sections.push(modeParts.responseFormat);
