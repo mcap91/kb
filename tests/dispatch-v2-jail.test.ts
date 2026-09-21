@@ -88,7 +88,7 @@ describe('buildJailArgs — write_scope sparse binds', () => {
 // ---------------------------------------------------------------------------
 
 describe('buildJailArgs — wiki read axis (T25/D19)', () => {
-  it('tracked + implement: masks wiki with --tmpfs', () => {
+  it('tracked + implement: no wiki mask — wiki stays visible as part of the clone (DEC-0039)', () => {
     const result = buildJailArgs({ clonePath, wikiShape: 'tracked', mode: 'implement' });
     expect(result.argv).toEqual([
       'bwrap',
@@ -98,16 +98,15 @@ describe('buildJailArgs — wiki read axis (T25/D19)', () => {
       '--tmpfs', '/tmp',
       '--die-with-parent',
       '--bind', clonePath, clonePath,
-      '--tmpfs', `${clonePath}/wiki`,
       '--chdir', clonePath,
       '--',
     ]);
+    expect(result.argv).not.toEqual(expect.arrayContaining(['--tmpfs', `${clonePath}/wiki`]));
   });
 
-  it('tracked + code_review: also masks wiki with --tmpfs', () => {
+  it('tracked + code_review: no wiki mask — wiki stays visible as part of the clone (DEC-0039)', () => {
     const result = buildJailArgs({ clonePath, wikiShape: 'tracked', mode: 'code_review' });
-    expect(result.argv).toContain('--tmpfs');
-    expect(result.argv).toEqual(expect.arrayContaining(['--tmpfs', `${clonePath}/wiki`]));
+    expect(result.argv).not.toEqual(expect.arrayContaining(['--tmpfs', `${clonePath}/wiki`]));
   });
 
   it('tracked + redteam: no wiki mask — wiki stays visible as part of the clone', () => {
@@ -125,8 +124,14 @@ describe('buildJailArgs — wiki read axis (T25/D19)', () => {
     ]);
   });
 
-  it('nested-private + implement: nothing added — clone has no wiki/ at all', () => {
-    const result = buildJailArgs({ clonePath, wikiShape: 'nested-private', mode: 'implement' });
+  it('nested-private + implement with motherWikiPath: ro-binds the mother wiki into the clone (DEC-0039)', () => {
+    const motherWikiPath = '/home/user/kb-dev-rig/wiki';
+    const result = buildJailArgs({
+      clonePath,
+      wikiShape: 'nested-private',
+      mode: 'implement',
+      motherWikiPath,
+    });
     expect(result.argv).toEqual([
       'bwrap',
       ...expectedSystemRootArgs(),
@@ -135,6 +140,7 @@ describe('buildJailArgs — wiki read axis (T25/D19)', () => {
       '--tmpfs', '/tmp',
       '--die-with-parent',
       '--bind', clonePath, clonePath,
+      '--ro-bind', motherWikiPath, `${clonePath}/wiki`,
       '--chdir', clonePath,
       '--',
     ]);
@@ -341,7 +347,6 @@ describe('buildJailArgs — full combined recipe', () => {
       '--ro-bind', clonePath, clonePath,
       '--bind', `${clonePath}/src`, `${clonePath}/src`,
       '--bind', `${clonePath}/docs/notes.md`, `${clonePath}/docs/notes.md`,
-      '--tmpfs', `${clonePath}/wiki`,
       '--ro-bind', '/data/reference', '/data/reference',
       '--bind', '/tmp/scratch-area', '/tmp/scratch-area',
       '--bind', tunnelSocketPath, tunnelSocketPath,
@@ -599,7 +604,7 @@ describe('buildBwrapPlan — data mounts', () => {
 // ---------------------------------------------------------------------------
 
 describe('buildBwrapPlan — wiki read axis (T25/D19)', () => {
-  it('tracked + implement: masks wiki with --tmpfs', () => {
+  it('tracked + implement: no wiki mask — wiki stays visible as part of the clone (DEC-0039)', () => {
     const plan = buildBwrapPlan({ clonePath, wikiShape: 'tracked', mode: 'implement', command: ['pi'] });
     expect(plan.bwrapArgs).toEqual([
       ...expectedSystemRootArgs(),
@@ -608,11 +613,11 @@ describe('buildBwrapPlan — wiki read axis (T25/D19)', () => {
       '--tmpfs', '/tmp',
       '--die-with-parent',
       '--bind', clonePath, clonePath,
-      '--tmpfs', `${clonePath}/wiki`,
       '--chdir', clonePath,
       '--',
       'pi',
     ]);
+    expect(plan.bwrapArgs).not.toContain(`${clonePath}/wiki`);
   });
 
   it('tracked + redteam: no wiki mask — wiki stays visible as part of the clone', () => {

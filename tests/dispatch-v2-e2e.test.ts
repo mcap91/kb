@@ -186,7 +186,10 @@ describe('dispatch v2 e2e (fake-tier) — full pipeline chain', () => {
       expect(assembled.ok).toBe(true);
       if (!assembled.ok) return;
       expect(assembled.data.text).toContain('## Task: Add a greet utility with node:test coverage');
-      expect(assembled.data.text).toContain('kb-e2e-fixture');
+      // DEC-0039: read_first is a pointer only — the worker reads README.md's
+      // content at runtime, so its content is never inlined into the prompt.
+      expect(assembled.data.text).toContain('- README.md');
+      expect(assembled.data.text).not.toContain('kb-e2e-fixture');
 
       // 8. Write prompt to the (fake) run dir — a plain host path (D6: no more WSL2 path conversion)
       const promptPath = join(runDir, 'prompt.txt');

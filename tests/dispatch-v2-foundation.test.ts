@@ -345,7 +345,7 @@ describe('assemble.ts — mechanical prompt assembly', () => {
     await rm(repoRoot, { recursive: true, force: true });
   });
 
-  it('assembles a prompt containing the title, ACs, validation, read_first content, and framing', async () => {
+  it('assembles a prompt containing the title, ACs, validation, read_first pointer, and framing — no inlined file content (DEC-0039)', async () => {
     const parsed = parseHandoffContent(HO_0002_CONTENT, 'HO-0002.md');
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
@@ -363,13 +363,14 @@ describe('assemble.ts — mechanical prompt assembly', () => {
     expect(text).toContain('- test/');
     expect(text).toContain("- AC-1: slugify('Hello, World!') returns 'hello-world'");
     expect(text).toContain('- node --test test/');
-    expect(text).toContain('<file path="README.md">');
-    expect(text).toContain('test_kb is a minimal knowledge-base repo.');
+    expect(text).toContain('- README.md');
+    expect(text).not.toContain('<file path=');
+    expect(text).not.toContain('test_kb is a minimal knowledge-base repo.');
     expect(text).toContain('If you cannot finish, end your final message stating exactly what you needed and why you stopped.');
     expect(result.data.tokenEstimate).toBeGreaterThan(0);
   });
 
-  it('annotates an unreadable read_first entry instead of failing the whole assembly', async () => {
+  it('emits a read_first pointer for a nonexistent file rather than reading its content (DEC-0039)', async () => {
     const parsed = parseHandoffContent(
       HO_0002_CONTENT.replace('read_first: ["README.md"]', 'read_first: ["MISSING.md"]'),
       'HO-0002.md',
@@ -380,8 +381,19 @@ describe('assemble.ts — mechanical prompt assembly', () => {
     const result = await assemblePrompt(parsed.data, repoRoot);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.data.text).toContain('<file path="MISSING.md">');
-    expect(result.data.text).toContain('[unreadable:');
+    expect(result.data.text).toContain('- MISSING.md');
+    expect(result.data.text).not.toContain('<file path=');
+  });
+
+  it('never emits the <file path= content-block marker in any assembled prompt (structural guarantee, DEC-0039)', async () => {
+    const parsed = parseHandoffContent(HO_0002_CONTENT, 'HO-0002.md');
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+
+    const result = await assemblePrompt(parsed.data, repoRoot);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.text).not.toContain('<file path=');
   });
 
   it('fails with ASSEMBLE_FAILED when the HO markdown itself cannot be read', async () => {

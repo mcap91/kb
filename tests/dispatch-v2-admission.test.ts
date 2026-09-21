@@ -224,10 +224,17 @@ Minimal context body for the S4 tokenEstimate proportionality test.
     expect(shortResult.data.tokenEstimate).toBeGreaterThan(0);
     expect(shortResult.data.tokenEstimate).toBe(Math.ceil(shortResult.data.text.length / 4));
 
-    // Grow the read_first file substantially and reassemble: the estimate
-    // must grow in proportion to the assembled text length, not stay fixed.
-    await writeFile(join(repoRoot, 'README.md'), `${'x'.repeat(4000)}\n`, 'utf8');
-    const longResult = await assemblePrompt(parsed.data, repoRoot);
+    // Grow the read_first POINTER LIST substantially and reassemble: the
+    // estimate must grow in proportion to the assembled text length. DEC-0039
+    // retired content inlining, so the read_first FILE's own size no longer
+    // drives the prompt — only the pointer bullet list does.
+    const manyPointers = Array.from({ length: 200 }, (_, i) => `docs/file-${i}.md`);
+    const longContent = HO_CONTENT.replace('read_first: ["README.md"]', `read_first: ${JSON.stringify(manyPointers)}`);
+    const longParsed = parseHandoffContent(longContent, 'HO-0002.md');
+    expect(longParsed.ok).toBe(true);
+    if (!longParsed.ok) return;
+
+    const longResult = await assemblePrompt(longParsed.data, repoRoot);
     expect(longResult.ok).toBe(true);
     if (!longResult.ok) return;
     expect(longResult.data.tokenEstimate).toBeGreaterThan(shortResult.data.tokenEstimate);

@@ -194,15 +194,16 @@ async function removeScratchDir(runDir: string, wslPath: string): Promise<void> 
 //
 // Item 16 (the wiki-shape x mode matrix) is MOSTLY covered by
 // dispatch-v2-jail.test.ts's "buildJailArgs — wiki read axis (T25/D19)"
-// describe block, which already proves: tracked+implement (masked),
-// tracked+code_review (masked), tracked+redteam (visible), nested-private+
-// implement (no-op), nested-private+research+motherWikiPath (bound), and
-// nested-private+redteam WITHOUT motherWikiPath (no-op). The 4 distinct
-// behavior classes (tracked-masked / tracked-visible / nested-private-masked
-// / nested-private-visible) are each proven by at least one mode, but three
-// specific mode+shape combinations are never exercised: tracked+research,
-// nested-private+code_review, and nested-private+redteam WITH a
-// motherWikiPath. This block closes exactly those three gaps.
+// describe block, which already proves (DEC-0039: wiki visibility is no
+// longer mode-gated — only wikiShape + motherWikiPath decide the bind):
+// tracked+implement (visible), tracked+code_review (visible), tracked+
+// redteam (visible), nested-private+implement+motherWikiPath (bound),
+// nested-private+research+motherWikiPath (bound), and nested-private+redteam
+// WITHOUT motherWikiPath (no-op). The 2 distinct behavior classes
+// (tracked-always-visible / nested-private-bound-iff-motherWikiPath) are
+// each proven by at least one mode, but two specific mode+shape combinations
+// are never exercised: tracked+research, and nested-private+code_review WITH
+// a motherWikiPath. This block closes exactly those two gaps.
 // ---------------------------------------------------------------------------
 
 describe('buildJailArgs — wiki-shape x mode matrix gap-fill (T25/D19; complements dispatch-v2-jail.test.ts)', () => {
@@ -226,8 +227,9 @@ describe('buildJailArgs — wiki-shape x mode matrix gap-fill (T25/D19; compleme
     expect(result.argv.filter((tok) => tok === '--tmpfs').length).toBe(1);
   });
 
-  it('nested-private + code_review: nothing added (a masked mode, same behavior class as the already-tested nested-private+implement)', () => {
-    const result = buildJailArgs({ clonePath, wikiShape: 'nested-private', mode: 'code_review' });
+  it('nested-private + code_review WITH motherWikiPath: ro-binds the mother wiki (a mode that used to be masked, now gets the same bind shape as the already-tested nested-private+research; DEC-0039)', () => {
+    const motherWikiPath = '/home/user/kb-dev-rig/wiki';
+    const result = buildJailArgs({ clonePath, wikiShape: 'nested-private', mode: 'code_review', motherWikiPath });
     expect(result.argv).toEqual([
       'bwrap',
       ...expectedSystemRootArgs(),
@@ -236,6 +238,7 @@ describe('buildJailArgs — wiki-shape x mode matrix gap-fill (T25/D19; compleme
       '--tmpfs', '/tmp',
       '--die-with-parent',
       '--bind', clonePath, clonePath,
+      '--ro-bind', motherWikiPath, `${clonePath}/wiki`,
       '--chdir', clonePath,
       '--',
     ]);
