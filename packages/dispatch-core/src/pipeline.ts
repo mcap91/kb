@@ -1027,7 +1027,7 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       'ip link set lo up 2>/dev/null || true',
       `node ${shQuote(relayScriptPath)} ${shQuote(String(TUNNEL_RELAY_PORT))} ${shQuote(tunnelSocketPath)} < /dev/null > /dev/null 2>&1 &`,
       'sleep 0.2',
-      ...(hasLockfile ? ['npm rebuild'] : []),
+      ...(hasLockfile ? ['npm rebuild 1>&2'] : []),
       ...execLines,
     ].join('\n');
 
