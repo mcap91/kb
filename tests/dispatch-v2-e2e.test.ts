@@ -302,7 +302,12 @@ describe('dispatch v2 e2e (fake-tier) — full pipeline chain', () => {
   });
 
   it('admission refuses a dirty repo before any downstream step would run', async () => {
-    await writeFile(join(repoRoot, 'README.md'), 'modified without committing\n', 'utf8');
+    await mkdir(join(repoRoot, 'src'), { recursive: true });
+    const dirtyFile = join(repoRoot, 'src', 'dummy.txt');
+    await writeFile(dirtyFile, 'committed\n', 'utf8');
+    execFileSync('git', ['add', 'src/dummy.txt'], { cwd: repoRoot });
+    execFileSync('git', ['commit', '-m', 'add src/dummy.txt'], { cwd: repoRoot });
+    await writeFile(dirtyFile, 'modified without committing\n', 'utf8');
 
     const parsed = await parseHandoff(join(repoRoot, 'wiki', 'handoffs', 'HO-TEST.md'));
     expect(parsed.ok).toBe(true);
@@ -312,7 +317,7 @@ describe('dispatch v2 e2e (fake-tier) — full pipeline chain', () => {
     expect(admission.ok).toBe(false);
     if (admission.ok) return;
     expect(admission.error).toBe('DIRTY_REPO');
-    expect(admission.detail).toMatchObject({ dirtyPaths: expect.arrayContaining([expect.stringContaining('README.md')]) });
+    expect(admission.detail).toMatchObject({ dirtyPaths: expect.arrayContaining([expect.stringContaining('src/dummy.txt')]) });
   });
 
   it('write-scope check catches an out-of-scope file from a simulated enumerate, and the refusal produces a well-formed response doc', async () => {
