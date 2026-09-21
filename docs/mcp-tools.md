@@ -1,10 +1,5 @@
 # kb MCP Tools Reference
 
-> ⚠️ **Superseded direction (2026-09-04):** DEC-0007 ratified dispatch v2 (spec:
-> `docs/superpowers/specs/2026-09-04-universal-dispatch-v2-design.md`; build plan: PLN-0004). This
-> section describes the current-but-being-replaced system and stays accurate until the v2 phase that
-> replaces it lands.
-
 The one-page contract for kb's two **local stdio** MCP servers, so the wiki-search-first
 retrieval flow can confirm the tool set without calling `tools/list`. Both servers run as
 single-user stdio subprocesses (`node --import tsx … server.ts`, registered in `.mcp.json`)
@@ -39,23 +34,19 @@ using the SDK's high-level `McpServer` + `registerTool` API.
 | `value-report` | Compute deterministic git+graph metrics for a VAL | `dir` | `since`, `untilRef` | read-only |
 | `value-usage` | Own the Claude+Codex JSONL read, price via a vendored LiteLLM table (by model+provider) for a date window | `dir`, `since`, `until` | — | read-only |
 
-## kb-dispatch (10 tools)
+## kb-dispatch (9 tools)
 
 | Tool | Purpose | Required | Optional | Notes |
 |------|---------|----------|----------|-------|
 | `init-config` | Initialize operator dispatch config + default registry | — | `force` | operator |
 | `check-environment` | Probe host sandbox capabilities; persist the record | — | — | |
-| `create-handoff` | Create a repo-local HO handoff document | `dir`, `title`, `subject`, `allowed_agents`, `mode` | `status`, `depends_on`, `area`, `initiative`, `work_item`, `write_scope`, `read_first`, `objective`, `constraints`, `expected_output`, `context` | |
-| `review` | Review a handoff and create a reviewed bundle | `dir`, `handoff`, `agent`, `reviewedAndAcceptRisks` | — | operator |
-| `launch` | Launch a reviewed handoff (background by default) | `dir`, `reviewId` | `background` | operator, destructive |
-| `review-and-launch` | Review then launch (background by default) | `dir`, `handoff`, `agent`, `reviewedAndAcceptRisks` | `background` | operator, destructive |
+| `create-handoff` | Create a repo-local HO handoff document | `dir`, `title`, `subject`, `allowed_agents`, `mode`, `acceptance`, `validation` | `status`, `depends_on`, `area`, `initiative`, `work_item`, `write_scope`, `read_first`, `objective`, `constraints`, `expected_output`, `context`, `web`, `credentials`, `data_mounts`, `export_mounts`, `base_ref`, `vars`, `verbose` | |
 | `status` | Show dispatch token and run status | `dir` | — | read-only |
-| `cleanup` | Clean up stale reviews, runs, and tokens | — | `dir`, `maxAgeDays`, `verbose` | destructive |
-| `wait-for-run` | Wait for a run to reach terminal status | `dir`, one of (`reviewId` \| `runId`) | `timeoutSeconds`, `pollIntervalMs` | read-only |
-| `get-response` | Retrieve response content/metadata for a run | `dir`, one of (`reviewId` \| `runId`) | `includeMeta`, `includeLogs` | read-only |
-
-For `wait-for-run` / `get-response`, at least one of `reviewId` or `runId` is required (WK-0046 T3);
-the constraint is enforced at call time and stated in the tool description.
+| `cleanup` | Clean up stale dispatch reviews, runs, and tokens | — | `dir`, `maxAgeDays`, `verbose` | destructive |
+| `dispatch` | Run the v2 dispatch pipeline (gate → clone → jail → worker → delivery → capture); returns a `watch` command | `dir`, `handoff`, `model`, `backend` | `effort`, `preflight`, `verbose` | operator, destructive |
+| `derive-review` | Create a code_review HO from a delivered implement HO | `dir`, `handoff_id` | — | operator |
+| `init-dispatch` | Scaffold wiki/.dispatch/ config tables (models, backends, profiles) + managed README | `dir` | `force` | operator |
+| `merge-delivery` | Merge a delivery branch into the target after review pass; gates on review evidence | `dir`, `handoff_id` | — | operator, destructive |
 
 ## Not applicable (by design)
 
