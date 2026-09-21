@@ -89,7 +89,6 @@ import {
 } from './tunnel.js';
 import { probeBwrap, APPARMOR_REMEDIATION_TEXT, MISSING_BWRAP_TEXT } from './tier.js';
 import { extractRecoveryBlock, type RecoveryBlockEvidence } from './recovery-block.js';
-import { runClaudePermissionProbe } from './claude-probe.js';
 
 /**
  * Claude vendor domain set (DEC-0011 ruling 2, WK-0104). Seed from Anthropic's
@@ -896,14 +895,6 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       // promptPath at container runtime).
       const claudeSettingsPath = '/tmp/.claude-settings/settings.json';
       const claudeSettingsContent = buildClaudeSettingsJson(handoff.write_scope, clonePath, handoff.mode);
-
-      // WK-0131: permission probe — verifies Write works under Edit-only
-      // allow on this Claude CLI version before spawning the real worker.
-      if (handoff.mode === 'implement') {
-        logVerbose(verbose, 'running claude permission probe');
-        const probeResult = await runClaudePermissionProbe(claudeSettingsContent, handoff.write_scope);
-        if (!probeResult.ok) return probeResult;
-      }
 
       buildClaudeInvocation(assembled.data.text, model, clonePath, claudeSettingsPath, opts.effort);
       // WK-0122: config-driven effort splice, inserted BEFORE the `--`
