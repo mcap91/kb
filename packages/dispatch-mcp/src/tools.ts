@@ -7,7 +7,6 @@ import {
   initDispatch,
   launchDispatchBackground,
   status,
-  waitForRun,
 } from '@kb/dispatch-core';
 
 export interface ToolDef {
@@ -21,19 +20,6 @@ const dirSchema = z.object({
   dir: z.string().describe('Target repo directory'),
   verbose: z.boolean().optional(),
 });
-
-const runIdentifierSchema = z.object({
-  dir: z.string().describe('Target repo directory'),
-  reviewId: z.string().optional(),
-  runId: z.string().optional(),
-});
-
-function requireRunIdentifier<T extends { reviewId?: string; runId?: string }>(schema: z.ZodType<T>): z.ZodType<T> {
-  return schema.refine(
-    (input) => Boolean(input.reviewId || input.runId),
-    { message: 'At least one of reviewId or runId is required' },
-  );
-}
 
 export const tools: ToolDef[] = [
   {
@@ -99,24 +85,8 @@ export const tools: ToolDef[] = [
     handler: async (input) => cleanup(input as unknown as Parameters<typeof cleanup>[0]),
   },
   {
-    name: 'wait-for-run',
-    description: 'Wait for a dispatch run to reach terminal status, returning current state on timeout. Requires at least one of reviewId or runId. MCP callers default to a 20s timeout and are capped at 120s (poll at turn boundaries instead of requesting a long wait) — use the CLI `wait-for-run` verb for long unattended blocking waits.',
-    inputSchema: requireRunIdentifier(runIdentifierSchema.extend({
-      timeoutSeconds: z.number().optional().describe('Timeout in seconds. Default 20, clamped to 120 max for MCP callers.'),
-      pollIntervalMs: z.number().optional(),
-    })),
-    handler: async (input) => {
-      const requestedTimeoutSeconds = typeof input.timeoutSeconds === 'number' ? input.timeoutSeconds : 20;
-      const timeoutSeconds = Math.min(requestedTimeoutSeconds, 120);
-      return waitForRun({
-        ...(input as unknown as Parameters<typeof waitForRun>[0]),
-        timeoutSeconds,
-      });
-    },
-  },
-  {
     name: 'dispatch',
-    description: 'Run the v2 dispatch pipeline: gate → clone → jail → worker → delivery → capture. Always runs in background; returns runId immediately. Use status/wait-for-run to track progress.',
+    description: 'Run the v2 dispatch pipeline: gate → clone → jail → worker → delivery → capture. Always runs in background; returns runId immediately plus a `watch` command — run it as a background Bash command (run_in_background: true) to be notified when the run reaches terminal status. Use status for a point-in-time check.',
     inputSchema: z.object({
       dir: z.string().describe('Target repo directory'),
       handoff: z.string().describe('Repo-relative path to the HO file, e.g. wiki/handoffs/HO-0004.md'),

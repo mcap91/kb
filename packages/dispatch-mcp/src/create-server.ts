@@ -25,7 +25,7 @@ export function toErrorEnvelope(err: unknown) {
 // WK-0046 T15: advertise side-effects and audience so an agent can distinguish routine
 // read tools from operator-setup / execution tools. Kept name-keyed here so the
 // declarations in tools.ts stay lean; update these sets when adding a tool.
-const READ_ONLY = new Set(['status', 'wait-for-run']);
+const READ_ONLY = new Set(['status']);
 const OPERATOR_ONLY = new Set(['init-config', 'init-dispatch', 'dispatch']);
 const DESTRUCTIVE = new Set(['cleanup', 'dispatch']);
 
@@ -39,18 +39,17 @@ const INSTRUCTIONS = [
   '',
   'To dispatch work to an agent:',
   '1. Author a handoff: `wiki/handoffs/HO-XXXX.md` (use `create-handoff` or hand-author)',
-  '2. Run `dispatch` with the handoff path, model alias, and backend name',
-  '3. Poll `status` or `wait-for-run` at turn boundaries to track progress',
+  '2. Run `dispatch` with the handoff path, model alias, and backend name — it returns a `watch` command',
+  '3. Run the `watch` command as a background Bash command (`run_in_background: true`) to be notified on terminal status',
   '4. Read `wiki/handoffs/HO-XXXX.response.md` for the result',
   '',
   '## Tools',
   '',
   '| Tool | Purpose |',
   '|------|---------|',
-  '| dispatch | Gate + launch (background, atomic) |',
+  '| dispatch | Gate + launch (background, atomic); returns a `watch` command |',
   '| init-dispatch | Scaffold wiki/.dispatch/ config tables |',
   '| status | Repo-wide run state + v2 runs[] |',
-  '| wait-for-run | Poll a run to terminal |',
   '| check-environment | Host tier probes |',
   '| create-handoff | Scaffold an HO |',
   '| init-config | Operator setup |',
@@ -77,8 +76,8 @@ const INSTRUCTIONS = [
   '**Loop spine:**',
   '',
   '1. Author HO(s) for the work item (use `create-handoff` or hand-author). Feature-sized — one coherent, independently reviewable unit with ACs and validation command. Not function-sized. **Visibility:** workers see ONLY system toolchain + the clone + declared mounts. Any out-of-repo directory the worker needs to READ (conda/mamba/uv envs, datasets, reference data) goes in `data_mounts` (bound read-only); any directory it needs to WRITE output to goes in `export_mounts` (bound writable). Envs should also be named in `vars`. A missing mount surfaces as `dependency_missing` — widen data_mounts/export_mounts and re-dispatch (existing fix-up routing).',
-  '2. Dispatch: `dispatch` with handoff path, model, backend. Background by default — returns immediately with a runId.',
-  '3. Poll: `status` or `wait-for-run` at turn boundaries to track progress. Do not block the interactive session with long waits.',
+  '2. Dispatch: `dispatch` with handoff path, model, backend. Background by default — returns immediately with a runId and a `watch` command.',
+  '3. Watch: run the returned `watch` command as a background Bash command (`run_in_background: true`). It blocks until the run reaches terminal status, then exits — Claude Code notifies the orchestrator when it completes. Read the command\'s output for the run result (JSON). Use `status` instead for an ad-hoc point-in-time check.',
   '4. Read result: `wiki/handoffs/HO-XXXX.response.md`. Check verdict and recovery signal.',
   '5. Review: dispatch a `code_review` HO with `base_ref: dispatch/HO-XXXX` (the implement branch). Reviewer clones at base_ref and sees the implement commit.',
   '6. On review pass: merge `dispatch/HO-XXXX` branch into the target branch and delete it. The orchestrator does this, not the jailed reviewer.',

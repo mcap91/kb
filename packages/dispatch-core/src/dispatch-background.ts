@@ -34,6 +34,9 @@ const ACTIVE_RUN_FRESH_HEARTBEAT_SECS = 300;
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const controllerEntryPath = join(__dirname, 'dispatch-controller-entry.ts');
+// packages/dispatch-core/src/ -> packages/dispatch-core/ -> packages/ -> kb root.
+const kbRoot = join(__dirname, '..', '..', '..');
+const dispatchCliEntryPath = join(kbRoot, 'packages', 'dispatch-cli', 'src', 'index.ts');
 
 export interface DispatchBackgroundOpts {
   dir: string;
@@ -60,6 +63,8 @@ export interface DispatchBackgroundResult {
   logPath: string;
   responsePath: string;
   pid: number;
+  /** CLI command to block until this run reaches terminal status, JSON output. */
+  watch: string;
 }
 
 function hasTsxLoader(execArgv: string[]): boolean {
@@ -271,6 +276,8 @@ export async function launchDispatchBackground(
   const gateResult = await pollDispatchStartGate(statePath, controllerPid, timeoutMs);
   if (!gateResult.ok) return gateResult;
 
+  const watch = `npx tsx "${dispatchCliEntryPath}" wait-for-run --dir "${repoRoot}" --run-id ${runId} --json`;
+
   return ok({
     runId,
     handoffId,
@@ -281,5 +288,6 @@ export async function launchDispatchBackground(
     logPath: join(runDir, 'pi-output.log'),
     responsePath: join(repoRoot, 'wiki', 'handoffs', `${handoffId}.response.md`),
     pid: gateResult.data.pid,
+    watch,
   });
 }

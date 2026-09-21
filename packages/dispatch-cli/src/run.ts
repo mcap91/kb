@@ -343,6 +343,20 @@ async function cmdDispatch(args: string[]): Promise<number> {
   return 0;
 }
 
+/** Terminal statuses that count as a successful run for wait-for-run's exit code. */
+const SUCCESS_RUN_STATUSES = new Set(['delivered', 'completed']);
+
+/**
+ * wait-for-run's exit code reflects the run's terminal status, not merely
+ * whether the wait itself completed without error: `delivered`/`completed`
+ * exit 0; `failed`/`refused`/`timed_out`/`cancelled` (or any other
+ * non-success status) exit 1 — so a caller chaining on `$?` sees the run's
+ * outcome, not just "the wait didn't error."
+ */
+function exitCodeForRunStatus(status: string): number {
+  return SUCCESS_RUN_STATUSES.has(status) ? 0 : 1;
+}
+
 async function cmdWaitForRun(args: string[]): Promise<number> {
   const dir = getFlagValue(args, '--dir');
   const runId = getFlagValue(args, '--run-id');
@@ -373,19 +387,21 @@ async function cmdWaitForRun(args: string[]): Promise<number> {
     return 1;
   }
 
+  const data: WaitForRunResult = result.data;
+  const exitCode = exitCodeForRunStatus(data.status);
+
   if (json) {
-    console.log(JSON.stringify(result.data, null, 2));
-    return 0;
+    console.log(JSON.stringify(data, null, 2));
+    return exitCode;
   }
 
-  const data: WaitForRunResult = result.data;
   console.log(`Run ${data.runId} status: ${data.status}`);
   console.log(`  Handoff:   ${data.handoffId}`);
   console.log(`  Run dir:   ${data.runDir}`);
   console.log(`  Started:   ${data.startedAt ?? 'n/a'}`);
   console.log(`  Heartbeat: ${data.heartbeatAt ?? 'n/a'}`);
   console.log(`  Completed: ${data.completedAt ?? 'n/a'}`);
-  return 0;
+  return exitCode;
 }
 
 export async function run(args: string[]): Promise<number> {
