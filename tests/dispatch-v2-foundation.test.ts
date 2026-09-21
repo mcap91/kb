@@ -266,13 +266,18 @@ describe('admission.ts — S0 admission checks', () => {
   });
 
   it('refuses a dirty repo with DIRTY_REPO, listing the offending paths', async () => {
-    await writeFile(join(repoRoot, 'README.md'), 'modified without committing\n', 'utf8');
+    await mkdir(join(repoRoot, 'src'), { recursive: true });
+    const dirtyFile = join(repoRoot, 'src', 'dummy.txt');
+    await writeFile(dirtyFile, 'committed\n', 'utf8');
+    execFileSync('git', ['add', 'src/dummy.txt'], { cwd: repoRoot });
+    execFileSync('git', ['commit', '-m', 'add src/dummy.txt'], { cwd: repoRoot });
+    await writeFile(dirtyFile, 'modified without committing\n', 'utf8');
 
     const result = await checkAdmission(makeHandoff(), repoRoot);
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error).toBe('DIRTY_REPO');
-    expect(result.detail).toMatchObject({ dirtyPaths: expect.arrayContaining([expect.stringContaining('README.md')]) });
+    expect(result.detail).toMatchObject({ dirtyPaths: expect.arrayContaining([expect.stringContaining('src/dummy.txt')]) });
   });
 
   it('refuses an implement handoff with an empty write_scope', async () => {
