@@ -1,10 +1,9 @@
 import { readFile, readdir } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 
-import type { ActiveLaunchInfo, RunInfo, StatusResult, TokenInfo, DispatchToken } from './types.js';
+import type { ActiveLaunchInfo, RunInfo, StatusResult } from './types.js';
 import type { DispatchResult } from './errors.js';
 import { ok, fail } from './errors.js';
-import { getTokenDir, type TokenState } from './paths.js';
 import { readRunArtifacts } from './lookup.js';
 import { isAlive, isRecordedProcessAlive } from './run-state.js';
 
@@ -156,35 +155,6 @@ async function listActiveRunTokens(repoRoot: string): Promise<ActiveLaunchInfo[]
   return activeRuns;
 }
 
-async function listTokensInState(state: TokenState): Promise<TokenInfo[]> {
-  const dir = getTokenDir(state);
-  let entries: string[];
-  try {
-    entries = await readdir(dir);
-  } catch {
-    return [];
-  }
-
-  const tokens: TokenInfo[] = [];
-  for (const entry of entries) {
-    if (!entry.endsWith('.json')) continue;
-    try {
-      const raw = await readFile(join(dir, entry), 'utf-8');
-      const token = JSON.parse(raw) as DispatchToken;
-      tokens.push({
-        reviewId: token.payload.reviewId,
-        handoffId: token.payload.handoffId,
-        agent: token.payload.agent,
-        mode: token.payload.mode,
-        expiry: token.payload.expiry,
-      });
-    } catch {
-      // skip malformed token files
-    }
-  }
-
-  return tokens;
-}
 
 // ---------------------------------------------------------------------------
 // v2 status runs[] (PLN-0004 S1 Wave 3, s1-rulings ruling 6). ADDITIVE ONLY —
@@ -363,21 +333,10 @@ async function buildRuns(repoRoot: string): Promise<RunInfo[]> {
 export async function status(dir: string): Promise<DispatchResult<StatusResult>> {
   const repoRoot = resolve(dir);
   try {
-    const [pending, activeRuns, launchingTokens, consumed, rejected, terminalRunReviewIds] = await Promise.all([
-      listTokensInState('pending'),
+    const [activeRuns, terminalRunReviewIds] = await Promise.all([
       listActiveRunTokens(repoRoot),
-      listTokensInState('launching'),
-      listTokensInState('consumed'),
-      listTokensInState('rejected'),
       listTerminalRunReviewIds(repoRoot),
     ]);
-
-    const now = Date.now();
-    const staleLaunching = launchingTokens.filter((token) => {
-      const expiryMs = Date.parse(token.expiry);
-      const isExpired = Number.isFinite(expiryMs) && expiryMs <= now;
-      return isExpired || terminalRunReviewIds.has(token.reviewId);
-    });
 
     let runCount = 0;
     try {
@@ -402,11 +361,11 @@ export async function status(dir: string): Promise<DispatchResult<StatusResult>>
 
     return ok({
       repoRoot,
-      pending,
+      pending: [],
       launching: activeRuns,
-      staleLaunching,
-      consumed,
-      rejected,
+      staleLaunching: [],
+      consumed: [],
+      rejected: [],
       runCount,
       reviewCount,
       runs,
