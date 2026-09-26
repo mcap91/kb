@@ -768,6 +768,11 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       }
     }
 
+    // 9c. Wiki mount-target skeleton for nested-private shape (WK-0149).
+    if (wikiShape === 'nested-private') {
+      await mkdir(join(clonePath, 'wiki'), { recursive: true });
+    }
+
     // 10. Build the family-specific worker invocation (T33 family-aware
     // pipeline). Each branch below produces two family-agnostic outputs
     // consumed downstream: `execLines` (the bash line(s) appended to the
