@@ -212,6 +212,7 @@ export async function spawnIsolated(
         { index: i },
       );
     }
+    pipe.on('error', () => { /* swallow — child died mid-inject; exit path handles it */ });
     pipe.end(injected.content, 'utf8');
   }
 
@@ -223,6 +224,8 @@ export async function spawnIsolated(
   stdoutLogStream?.on('error', (err) => {
     process.stderr.write(`[spawn-isolated] warning: failed to write ${opts.stdoutLogPath}: ${err.message}\n`);
   });
+  child.stdout?.on('error', () => { /* swallow — exit/close path handles cleanup */ });
+  child.stderr?.on('error', () => { /* swallow — exit/close path handles cleanup */ });
   child.stdout?.on('data', (chunk: Buffer) => {
     stdoutCapture.push(chunk);
     stdoutLogStream?.write(chunk);
