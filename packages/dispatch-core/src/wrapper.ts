@@ -4,12 +4,10 @@ import type {
   CleanupReport,
   CreateHandoffOpts,
   CreateHandoffResult,
-  InitConfigResult,
   StatusResult,
 } from './types.js';
 import type { DispatchResult } from './errors.js';
 import { createHandoff } from './create-handoff.js';
-import { initConfig } from './registry.js';
 import { cleanup } from './cleanup.js';
 import { status } from './status.js';
 import { checkEnvironment } from './environment.js';
@@ -31,13 +29,6 @@ export async function createHandoffRecord(
   opts: CreateHandoffOpts,
 ): Promise<DispatchResult<CreateHandoffResult>> {
   return createHandoff(opts);
-}
-
-/**
- * Initialize operator-owned dispatch config and default registry.
- */
-export async function initializeDispatchConfig(force = false): Promise<DispatchResult<InitConfigResult>> {
-  return initConfig(force);
 }
 
 export async function checkDispatchEnvironment(): Promise<DispatchResult<CheckEnvironmentResult>> {

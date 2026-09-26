@@ -13,31 +13,17 @@ export type {
   ReviewedWriteScopeAccessSource,
   ReviewedWriteScopeEntry,
   ReviewedWriteScope,
-  EnvironmentCapabilityStatus,
-  EnvironmentCapability,
   EnvironmentWritability,
   ContainerDetection,
-  HostCapabilitiesRecord,
   RouteViability,
   RouteVerdict,
-  GateDecision,
   CheckEnvironmentResult,
-  AgentInstructionTransport,
-  AgentResponseTransport,
-  AgentReadOnlyConfig,
-  AgentLauncherConfig,
-  ModelPassthrough,
-  AgentRegistry,
-  InitConfigResult,
   TokenPayload,
   DispatchToken,
   CreateHandoffOpts,
   CreateHandoffResult,
   ReviewOpts,
   ReviewResult,
-  LaunchEvent,
-  LaunchOpts,
-  RunResult,
   CleanupOpts,
   CleanupReport,
   StatusResult,
@@ -63,12 +49,6 @@ export type {
 // Zod schemas
 export {
   handoffModeSchema,
-  agentInstructionTransportSchema,
-  agentResponseTransportSchema,
-  agentReadOnlyConfigSchema,
-  modelPassthroughSchema,
-  agentLauncherConfigSchema,
-  agentRegistrySchema,
   tokenPayloadSchema,
 } from './schemas.js';
 
@@ -84,17 +64,6 @@ export {
   ensureConfigDirs,
 } from './paths.js';
 
-// Token management
-export {
-  generateKey,
-  loadKey,
-  createToken,
-  verifyToken,
-  writeTokenFile,
-  readTokenFile,
-  moveToken,
-} from './token.js';
-
 // Run state (shared v1/v2 seam). NOTE: `TerminalRunStatus` is intentionally NOT re-exported here
 // under its own name — `types-background.ts` already exports a structurally identical
 // `TerminalRunStatus` (same literal union) via the "Background launch types" section above, and
@@ -106,7 +75,6 @@ export { writeAtomic, writeJsonAtomic, writeStateMetadata, isAlive, isRecordedPr
 // Environment
 export {
   checkEnvironment,
-  gateLaunchEnvironment,
   deriveRouteVerdicts,
   detectContainer,
   probeWritability,
@@ -115,15 +83,6 @@ export {
 
 // Cleanup
 export { cleanup } from './cleanup.js';
-
-// Registry and setup
-export {
-  createDefaultRegistry,
-  getRegistryPath,
-  initConfig,
-  loadRegistry,
-  resolveAgentConfig,
-} from './registry.js';
 
 // Handoff creation
 export { createHandoff, renderHandoff } from './create-handoff.js';
@@ -147,7 +106,6 @@ export { waitForRun } from './wait.js';
 // Wrapper (convenience functions)
 export {
   createHandoffRecord,
-  initializeDispatchConfig,
   checkDispatchEnvironment,
   cleanupState,
   readDispatchStatus,

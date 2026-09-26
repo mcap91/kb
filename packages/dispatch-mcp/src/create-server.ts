@@ -26,7 +26,7 @@ export function toErrorEnvelope(err: unknown) {
 // read tools from operator-setup / execution tools. Kept name-keyed here so the
 // declarations in tools.ts stay lean; update these sets when adding a tool.
 const READ_ONLY = new Set(['status']);
-const OPERATOR_ONLY = new Set(['init-config', 'init-dispatch', 'dispatch', 'derive-review', 'merge-delivery']);
+const OPERATOR_ONLY = new Set(['init-dispatch', 'dispatch', 'derive-review', 'merge-delivery']);
 const DESTRUCTIVE = new Set(['cleanup', 'dispatch', 'merge-delivery']);
 
 // WK-0046-style MCP instructions (PLN-0004 S1 Wave 3, s1-rulings ruling 8): built
@@ -52,7 +52,6 @@ const INSTRUCTIONS = [
   '| status | Repo-wide run state + v2 runs[] |',
   '| check-environment | Host tier probes |',
   '| create-handoff | Scaffold an HO |',
-  '| init-config | Operator setup |',
   '| cleanup | Stale state removal |',
   '| derive-review | Create a code_review HO from a delivered implement HO |',
   '| merge-delivery | Merge delivery branch after review pass; gates on review evidence |',

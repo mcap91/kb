@@ -13,31 +13,13 @@ import {
 } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
-import { pathToFileURL } from 'node:url';
 import { randomUUID } from 'node:crypto';
-import type { EnvironmentCapabilityStatus, Handoff, HostCapabilitiesRecord } from '@kb/dispatch-core';
+import type { BwrapProbeResult, Handoff } from '@kb/dispatch-core';
 
 const TESTS_DIR = resolve(process.cwd(), 'tests');
-const DISPATCH_CLI = resolve(process.cwd(), 'packages', 'dispatch-cli', 'src', 'index.ts');
 
 async function makeTempDir(prefix = 'kb-dispatch-test-'): Promise<string> {
   return mkdtemp(join(tmpdir(), prefix));
-}
-
-function getTsxPath(): string {
-  const repoRoot = resolve(TESTS_DIR, '..');
-  if (process.platform === 'win32') {
-    return join(repoRoot, 'node_modules', '.bin', 'tsx.cmd');
-  }
-  return join(repoRoot, 'node_modules', '.bin', 'tsx');
-}
-
-function fakeAgentBaseArgv(fixturePath: string): string[] {
-  // Mirror the production fake-agent launcher: run the fixture via node's in-process
-  // tsx loader, not the tsx binary (whose IPC pipe is blocked in container sandboxes).
-  const repoRoot = resolve(TESTS_DIR, '..');
-  const loaderUrl = pathToFileURL(join(repoRoot, 'node_modules', 'tsx', 'dist', 'loader.mjs')).href;
-  return [process.execPath, '--import', loaderUrl, fixturePath];
 }
 
 function quotePosixArg(value: string): string {
@@ -95,44 +77,6 @@ async function writeStdoutAgentLauncher(binDir: string, commandName: string): Pr
   );
 
   const commandPath = join(binDir, process.platform === 'win32' ? `${commandName}.CMD` : commandName);
-  const commandBody = process.platform === 'win32'
-    ? `@echo off\r\n"${process.execPath}" "${agentScriptPath}" %*\r\n`
-    : `#!/bin/sh\nexec ${quotePosixArg(process.execPath)} ${quotePosixArg(agentScriptPath)} "$@"\n`;
-  await writeFile(commandPath, commandBody, 'utf-8');
-  if (process.platform !== 'win32') {
-    await chmod(commandPath, 0o755);
-  }
-
-  return commandPath;
-}
-
-async function writeFakeBwrapLauncher(binDir: string): Promise<string> {
-  await mkdir(binDir, { recursive: true });
-  const agentScriptPath = join(binDir, 'fake-bwrap.cjs');
-  await writeFile(
-    agentScriptPath,
-    [
-      "const { spawn } = require('node:child_process');",
-      "const args = process.argv.slice(2);",
-      "let i = 0;",
-      "while (i < args.length) {",
-      "  const arg = args[i];",
-      "  if (arg === '--die-with-parent' || arg === '--unshare-all') { i += 1; continue; }",
-      "  if (arg === '--ro-bind' || arg === '--bind') { i += 3; continue; }",
-      "  if (arg === '--proc' || arg === '--dev') { i += 2; continue; }",
-      "  break;",
-      "}",
-      "const command = args[i];",
-      "if (!command) { process.exit(2); }",
-      "const child = spawn(command, args.slice(i + 1), { stdio: 'inherit', shell: false, env: process.env });",
-      "child.on('error', (err) => { console.error(String(err)); process.exit(1); });",
-      "child.on('close', (code) => process.exit(code ?? 1));",
-      '',
-    ].join('\n'),
-    'utf-8',
-  );
-
-  const commandPath = join(binDir, process.platform === 'win32' ? 'bwrap.CMD' : 'bwrap');
   const commandBody = process.platform === 'win32'
     ? `@echo off\r\n"${process.execPath}" "${agentScriptPath}" %*\r\n`
     : `#!/bin/sh\nexec ${quotePosixArg(process.execPath)} ${quotePosixArg(agentScriptPath)} "$@"\n`;
@@ -224,76 +168,6 @@ async function setupBootstrappedRepo(repoRoot: string): Promise<void> {
   await writeFile(join(repoRoot, 'docs', 'dispatch.md'), '# Dispatch doc\n');
 }
 
-type TestRegistry = {
-  version: 1;
-  agents: Record<string, unknown>;
-};
-
-async function writeRegistry(configDir: string, fakeAgentPath: string, registry?: TestRegistry): Promise<void> {
-  const defaultRegistry: TestRegistry = {
-    version: 1,
-    agents: {
-      claude: {
-        base_argv: ['claude'],
-        noninteractive_argv: [
-          '--print',
-          '--output-format',
-          'text',
-          '--no-session-persistence',
-          '--settings',
-          '{"disableAllHooks":true}',
-        ],
-        instruction_transport: { kind: 'stdin' },
-        response_transport: { kind: 'stdout_capture' },
-        timeout_seconds: 1800,
-        read_only: {
-          supported: true,
-          argv_suffix: ['--permission-mode', 'default', '--disallowedTools', 'Edit Write NotebookEdit Bash'],
-          response_writable: true,
-        },
-        env: {
-          CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1',
-          CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: '1',
-          CLAUDE_CODE_DISABLE_CRON: '1',
-          CLAUDE_CODE_SKIP_PROMPT_HISTORY: '1',
-        },
-      },
-      codex: {
-        base_argv: ['codex', 'exec'],
-        noninteractive_argv: [],
-        instruction_transport: { kind: 'stdin' },
-        response_transport: { kind: 'file' },
-        response_arg: ['-o', '{response_path}'],
-        timeout_seconds: 1800,
-        read_only: {
-          supported: true,
-          argv_suffix: ['--sandbox', 'read-only'],
-          response_writable: true,
-        },
-      },
-      'fake-agent': {
-        base_argv: fakeAgentBaseArgv(fakeAgentPath),
-        noninteractive_argv: [],
-        instruction_transport: { kind: 'argv_content' },
-        wrapper_arg: ['{wrapper_content}'],
-        response_transport: { kind: 'file' },
-        response_arg: [],
-        timeout_seconds: 30,
-        read_only: {
-          supported: true,
-          argv_suffix: [],
-          response_writable: true,
-        },
-      },
-    },
-  };
-
-  await writeFile(
-    join(configDir, 'launchers.v1.json'),
-    JSON.stringify(registry ?? defaultRegistry, null, 2),
-  );
-}
-
 describe('dispatch', () => {
   let tempDir: string;
   let repoRoot: string;
@@ -304,7 +178,6 @@ describe('dispatch', () => {
   let originalPathExt: string | undefined;
   let originalXdgConfigHome: string | undefined;
 
-  const fakeAgentPath = resolve(TESTS_DIR, 'fixtures', 'fake-agent.ts');
   const delayedStdoutAgentPath = resolve(TESTS_DIR, 'fixtures', 'delayed-stdout-agent.mjs');
 
   beforeEach(async () => {
@@ -364,7 +237,9 @@ describe('dispatch', () => {
     }
   });
 
-  async function setupConfig(): Promise<string> {
+  // Isolate HOME/APPDATA so getConfigDir()-derived probes (writability, cleanup's
+  // token-dir scans) never touch the real operator home directory.
+  async function setupIsolatedHome(): Promise<string> {
     let actualConfigDir: string;
     if (process.platform === 'win32') {
       const appdata = join(tempDir, 'config');
@@ -379,25 +254,7 @@ describe('dispatch', () => {
     }
 
     await mkdir(actualConfigDir, { recursive: true });
-    await mkdir(join(actualConfigDir, 'pending'), { recursive: true });
-    await mkdir(join(actualConfigDir, 'launching'), { recursive: true });
-    await mkdir(join(actualConfigDir, 'consumed'), { recursive: true });
-    await mkdir(join(actualConfigDir, 'rejected'), { recursive: true });
-
     return actualConfigDir;
-  }
-
-  async function setupConfigWithKey(): Promise<string> {
-    const dir = await setupConfig();
-    const { generateKey } = await import('@kb/dispatch-core');
-    await generateKey();
-    return dir;
-  }
-
-  async function setupFullConfig(registry?: TestRegistry): Promise<string> {
-    const dir = await setupConfigWithKey();
-    await writeRegistry(dir, fakeAgentPath, registry);
-    return dir;
   }
 
   describe('createHandoff', () => {
@@ -702,79 +559,8 @@ describe('dispatch', () => {
   });
 
   describe('environment checks', () => {
-    it('writes an operator-owned host capability record', async () => {
-      const binDir = join(tempDir, 'capability-bin');
-      if (process.platform === 'linux') {
-        await writeFakeBwrapLauncher(binDir);
-      } else {
-        await mkdir(binDir, { recursive: true });
-      }
-
-      const pathValue = process.platform === 'linux'
-        ? binDir
-        : process.env['PATH'] ?? originalPath ?? '';
-      await setupFullConfig({
-        version: 1,
-        agents: {
-          claude: {
-            base_argv: ['claude'],
-            noninteractive_argv: ['--print', '--output-format', 'text', '--no-session-persistence'],
-            instruction_transport: { kind: 'stdin' },
-            response_transport: { kind: 'stdout_capture' },
-            timeout_seconds: 30,
-            read_only: {
-              supported: true,
-              argv_suffix: ['--permission-mode', 'default', '--disallowedTools', 'Edit Write NotebookEdit Bash'],
-              response_writable: true,
-            },
-            env: {
-              PATH: pathValue,
-              PATHEXT: '.CMD;.EXE',
-            },
-          },
-          codex: {
-            base_argv: ['codex', 'exec'],
-            noninteractive_argv: [],
-            instruction_transport: { kind: 'stdin' },
-            response_transport: { kind: 'file' },
-            response_arg: ['-o', '{response_path}'],
-            timeout_seconds: 30,
-            read_only: {
-              supported: true,
-              argv_suffix: ['--sandbox', 'read-only'],
-              response_writable: true,
-            },
-            env: {
-              PATH: pathValue,
-              PATHEXT: '.CMD;.EXE',
-            },
-          },
-        },
-      });
-
-      const { checkEnvironment, getHostCapabilitiesPath } = await import('@kb/dispatch-core');
-      const result = await checkEnvironment();
-
-      expect(result.ok).toBe(true);
-      if (!result.ok) return;
-
-      expect(result.data.recordPath).toBe(getHostCapabilitiesPath());
-      expect(await pathExists(result.data.recordPath)).toBe(true);
-      expect(result.data.record.schema_version).toBe(1);
-      expect(result.data.record.registry_hash).toBeTruthy();
-      if (process.platform === 'linux') {
-        expect(result.data.record.capabilities.claude_linux_sandbox.status).toBe('supported');
-        expect(result.data.record.capabilities.claude_linux_add_dir.status).toBe('supported');
-        expect(result.data.record.capabilities.codex_linux_sandbox.status).toBe('supported');
-      } else {
-        expect(result.data.record.capabilities.claude_linux_sandbox.status).toBe('not_applicable');
-        expect(result.data.record.capabilities.claude_linux_add_dir.status).toBe('not_applicable');
-        expect(result.data.record.capabilities.codex_linux_sandbox.status).toBe('not_applicable');
-      }
-    });
-
-    it('returns route verdicts and records container + writability facts', async () => {
-      await setupFullConfig();
+    it('composes bwrap + container + writability facts into a stateless report (no registry, no persisted record)', async () => {
+      await setupIsolatedHome();
 
       const { checkEnvironment } = await import('@kb/dispatch-core');
       const result = await checkEnvironment();
@@ -782,67 +568,60 @@ describe('dispatch', () => {
       expect(result.ok).toBe(true);
       if (!result.ok) return;
 
-      // Facts are persisted on the record...
-      expect(result.data.record.container).toBeDefined();
-      expect(result.data.record.writability).toBeDefined();
-      expect(result.data.record.writability!.config_dir.writable).toBe(true);
+      expect(result.data.platform).toBe(process.platform);
+      expect(result.data.arch).toBe(process.arch);
+      expect(typeof result.data.checkedAt).toBe('string');
 
-      // ...and verdicts are derived (not persisted) for every core route.
-      const routes = result.data.verdicts.map((v) => v.route);
-      expect(routes).toEqual(expect.arrayContaining([
-        'plain-adapters',
-        'claude-headless',
-        'write_scope-enforcement',
-        'codex',
-        'redteam',
-      ]));
-      const plain = result.data.verdicts.find((v) => v.route === 'plain-adapters');
-      expect(plain?.viability).toBe('available');
+      // bwrap facts (tier.ts probeBwrap() — the exact fact pipeline.ts gates on).
+      expect(typeof result.data.bwrap.available).toBe('boolean');
+      expect(typeof result.data.bwrap.unshareUserWorks).toBe('boolean');
+      expect(typeof result.data.bwrap.kernelVersion).toBe('string');
+
+      // Container + writability facts, informational only.
+      expect(result.data.container).toBeDefined();
+      expect(result.data.writability.home).toBeDefined();
+      expect(result.data.writability.config_dir).toBeDefined();
+
+      // v2 gates every family/mode on the single bwrap fact — one route, derived
+      // (not persisted), consistent with the probe.
+      expect(result.data.verdicts).toHaveLength(1);
+      expect(result.data.verdicts[0]!.route).toBe('dispatch');
+      expect(result.data.verdicts[0]!.viability).toBe(result.data.bwrap.available ? 'available' : 'blocked');
     });
   });
 
-  const synthCapabilityRecord = (options: {
-    platform?: NodeJS.Platform;
-    claudeBasic?: EnvironmentCapabilityStatus;
-    claudeAddDir?: EnvironmentCapabilityStatus;
-    codex?: EnvironmentCapabilityStatus;
-    homeWritable?: boolean;
-    configWritable?: boolean;
-    kubernetes?: boolean;
-  } = {}): HostCapabilitiesRecord => {
-    const checkedAt = '2026-07-10T00:00:00.000Z';
-    const cap = (status: EnvironmentCapabilityStatus) => ({
-      status,
-      checked_at: checkedAt,
-      detail: `${status} (synthetic)`,
+  describe('route viability verdicts', () => {
+    const bwrapFacts = (overrides: Partial<BwrapProbeResult> = {}): BwrapProbeResult => ({
+      available: true,
+      bwrapVersion: '0.8.0',
+      unshareUserWorks: true,
+      kernelVersion: '6.6.0',
+      usernsSysctl: '0',
+      ...overrides,
     });
-    return {
-      schema_version: 1,
-      checked_at: checkedAt,
-      platform: options.platform ?? 'linux',
-      arch: 'x64',
-      registry_hash: 'sha256:test',
-      capabilities: {
-        claude_linux_sandbox: cap(options.claudeBasic ?? 'supported'),
-        claude_linux_add_dir: cap(options.claudeAddDir ?? 'supported'),
-        codex_linux_sandbox: cap(options.codex ?? 'supported'),
-      },
-      container: {
-        detected: options.kubernetes ?? false,
-        kubernetes_service_host: options.kubernetes ?? false,
-        dockerenv: false,
-        cgroup_hint: null,
-      },
-      writability: {
-        home: { path: '/home/user', writable: options.homeWritable ?? true, detail: 'synthetic' },
-        config_dir: {
-          path: '/work/.kbconfig/kb-dispatch',
-          writable: options.configWritable ?? true,
-          detail: 'synthetic',
-        },
-      },
-    };
-  };
+
+    it('reports the dispatch route available when bwrap works end-to-end', async () => {
+      const { deriveRouteVerdicts } = await import('@kb/dispatch-core');
+      const verdicts = deriveRouteVerdicts(bwrapFacts());
+      expect(verdicts).toEqual([
+        { route: 'dispatch', viability: 'available', detail: expect.any(String) },
+      ]);
+    });
+
+    it('blocks the dispatch route with install remediation when bwrap is not installed', async () => {
+      const { deriveRouteVerdicts } = await import('@kb/dispatch-core');
+      const verdicts = deriveRouteVerdicts(bwrapFacts({ available: false, bwrapVersion: null, unshareUserWorks: false }));
+      expect(verdicts[0]!.viability).toBe('blocked');
+      expect(verdicts[0]!.detail).toMatch(/bwrap is not installed/i);
+    });
+
+    it('blocks the dispatch route with AppArmor remediation when bwrap is present but --unshare-user fails', async () => {
+      const { deriveRouteVerdicts } = await import('@kb/dispatch-core');
+      const verdicts = deriveRouteVerdicts(bwrapFacts({ available: false, unshareUserWorks: false }));
+      expect(verdicts[0]!.viability).toBe('blocked');
+      expect(verdicts[0]!.detail).toMatch(/apparmor|userns/i);
+    });
+  });
 
   describe('config dir resolution (XDG)', () => {
     it('honors a set, non-empty XDG_CONFIG_HOME on POSIX', async () => {
@@ -881,151 +660,6 @@ describe('dispatch', () => {
     });
   });
 
-  describe('launch environment gate', () => {
-    it('redteam blocks claude on a linux host that cannot start the kernel sandbox', async () => {
-      const { gateLaunchEnvironment } = await import('@kb/dispatch-core');
-      const result = gateLaunchEnvironment(
-        synthCapabilityRecord({ claudeBasic: 'unsupported' }),
-        'claude',
-        'redteam',
-        false,
-      );
-      expect(result.ok).toBe(false);
-      if (!result.ok) expect(result.error).toBe('ENVIRONMENT_UNSUPPORTED');
-    });
-
-    it('redteam blocks codex on a linux host that cannot start the kernel sandbox', async () => {
-      const { gateLaunchEnvironment } = await import('@kb/dispatch-core');
-      const result = gateLaunchEnvironment(
-        synthCapabilityRecord({ codex: 'unsupported' }),
-        'codex',
-        'redteam',
-        false,
-      );
-      expect(result.ok).toBe(false);
-    });
-
-    it('redteam still passes when the kernel sandbox is supported', async () => {
-      const { gateLaunchEnvironment } = await import('@kb/dispatch-core');
-      const result = gateLaunchEnvironment(synthCapabilityRecord({}), 'claude', 'redteam', false);
-      expect(result.ok).toBe(true);
-      if (result.ok) expect(result.data.warnings).toEqual([]);
-    });
-
-    it('non-redteam never blocks codex even when the bwrap probe is unsupported', async () => {
-      const { gateLaunchEnvironment } = await import('@kb/dispatch-core');
-      const result = gateLaunchEnvironment(
-        synthCapabilityRecord({ codex: 'unsupported' }),
-        'codex',
-        'implement',
-        false,
-      );
-      expect(result.ok).toBe(true);
-    });
-
-    it('non-redteam never blocks claude when the basic bwrap probe is unsupported', async () => {
-      const { gateLaunchEnvironment } = await import('@kb/dispatch-core');
-      const result = gateLaunchEnvironment(
-        synthCapabilityRecord({ claudeBasic: 'unsupported', claudeAddDir: 'unsupported' }),
-        'claude',
-        'implement',
-        false,
-      );
-      expect(result.ok).toBe(true);
-      if (result.ok) expect(result.data.warnings).toEqual([]);
-    });
-
-    it('non-redteam claude with write_scope on a bwrap-less host proceeds with an app-level warning', async () => {
-      const { gateLaunchEnvironment } = await import('@kb/dispatch-core');
-      const result = gateLaunchEnvironment(
-        synthCapabilityRecord({ claudeAddDir: 'unsupported' }),
-        'claude',
-        'implement',
-        true,
-      );
-      expect(result.ok).toBe(true);
-      if (result.ok) {
-        expect(result.data.warnings.length).toBe(1);
-        expect(result.data.warnings[0]).toMatch(/app-level/i);
-      }
-    });
-
-    it('non-redteam claude with write_scope on a kernel-capable host emits no warning', async () => {
-      const { gateLaunchEnvironment } = await import('@kb/dispatch-core');
-      const result = gateLaunchEnvironment(
-        synthCapabilityRecord({ claudeAddDir: 'supported' }),
-        'claude',
-        'implement',
-        true,
-      );
-      expect(result.ok).toBe(true);
-      if (result.ok) expect(result.data.warnings).toEqual([]);
-    });
-
-    it('does not hard-stop on a non-linux host record', async () => {
-      const { gateLaunchEnvironment } = await import('@kb/dispatch-core');
-      const result = gateLaunchEnvironment(
-        synthCapabilityRecord({
-          platform: 'win32',
-          claudeBasic: 'not_applicable',
-          claudeAddDir: 'not_applicable',
-          codex: 'not_applicable',
-        }),
-        'claude',
-        'redteam',
-        true,
-      );
-      expect(result.ok).toBe(true);
-    });
-  });
-
-  describe('route viability verdicts', () => {
-    const verdictFor = (
-      verdicts: Array<{ route: string; viability: string; detail: string }>,
-      route: string,
-    ): { route: string; viability: string; detail: string } => {
-      const found = verdicts.find((v) => v.route === route);
-      if (!found) throw new Error(`missing verdict for ${route}`);
-      return found;
-    };
-
-    it('reports the core routes available on a kernel-capable host', async () => {
-      const { deriveRouteVerdicts } = await import('@kb/dispatch-core');
-      const verdicts = deriveRouteVerdicts(synthCapabilityRecord({}));
-      expect(verdictFor(verdicts, 'plain-adapters').viability).toBe('available');
-      expect(verdictFor(verdicts, 'claude-headless').viability).toBe('available');
-      expect(verdictFor(verdicts, 'write_scope-enforcement').detail).toMatch(/kernel/i);
-      expect(verdictFor(verdicts, 'redteam').viability).toBe('available');
-    });
-
-    it('degrades write_scope enforcement and blocks redteam on a pod-like host', async () => {
-      const { deriveRouteVerdicts } = await import('@kb/dispatch-core');
-      const verdicts = deriveRouteVerdicts(synthCapabilityRecord({
-        claudeBasic: 'unsupported',
-        claudeAddDir: 'unsupported',
-        codex: 'unsupported',
-        kubernetes: true,
-      }));
-      expect(verdictFor(verdicts, 'plain-adapters').viability).toBe('available');
-      expect(verdictFor(verdicts, 'claude-headless').viability).toBe('available');
-      const ws = verdictFor(verdicts, 'write_scope-enforcement');
-      expect(ws.viability).toBe('degraded');
-      expect(ws.detail).toMatch(/app-level/i);
-      expect(verdictFor(verdicts, 'redteam').viability).toBe('blocked');
-      expect(verdictFor(verdicts, 'codex').viability).toBe('unknown');
-    });
-
-    it('blocks every launch route when the config store is not writable', async () => {
-      const { deriveRouteVerdicts } = await import('@kb/dispatch-core');
-      const verdicts = deriveRouteVerdicts(synthCapabilityRecord({ configWritable: false }));
-      expect(verdictFor(verdicts, 'plain-adapters').viability).toBe('blocked');
-      expect(verdictFor(verdicts, 'claude-headless').viability).toBe('blocked');
-      expect(verdictFor(verdicts, 'codex').viability).toBe('blocked');
-      expect(verdictFor(verdicts, 'redteam').viability).toBe('blocked');
-      expect(verdictFor(verdicts, 'plain-adapters').detail).toMatch(/XDG_CONFIG_HOME/);
-    });
-  });
-
   describe('container detection', () => {
     it('flags a Kubernetes host via KUBERNETES_SERVICE_HOST', async () => {
       const { detectContainer } = await import('@kb/dispatch-core');
@@ -1057,7 +691,7 @@ describe('dispatch', () => {
 
   describe('cleanup', () => {
     it('removes orphan review directories from .agent-runs', async () => {
-      await setupFullConfig();
+      await setupIsolatedHome();
       await setupBootstrappedRepo(repoRoot);
       const { cleanup } = await import('@kb/dispatch-core');
 
@@ -1075,179 +709,6 @@ describe('dispatch', () => {
       if (result.ok) {
         expect(result.data.orphanReviews).toContain(orphanId);
       }
-    });
-  });
-
-  describe('registry loading', () => {
-    it('returns migration guidance for legacy launcher registry files', async () => {
-      const configDir = await setupConfigWithKey();
-      await writeFile(
-        join(configDir, 'launchers.v1.json'),
-        `${JSON.stringify({
-          version: 1,
-          agents: {
-            codex: {
-              command: 'codex',
-              args: ['exec'],
-            },
-          },
-        }, null, 2)}\n`,
-      );
-
-      const { loadRegistry } = await import('@kb/dispatch-core');
-      const result = await loadRegistry();
-
-      expect(result.ok).toBe(false);
-      if (result.ok) return;
-
-      expect(result.error).toBe('PARSE_ERROR');
-      expect(result.message).toContain('launchers.v1.json');
-      expect(result.message).toContain('init-config --force');
-    });
-
-    it('normalizes legacy Claude argv_content profiles to stdin transport', async () => {
-      const { resolveAgentConfig } = await import('@kb/dispatch-core');
-
-      const result = resolveAgentConfig({
-        version: 1,
-        agents: {
-          claude: {
-            base_argv: ['claude'],
-            noninteractive_argv: ['--print', '--output-format', 'text', '--no-session-persistence'],
-            instruction_transport: { kind: 'argv_content' },
-            wrapper_arg: ['{wrapper_content}'],
-            response_transport: { kind: 'stdout_capture' },
-            timeout_seconds: 1800,
-            read_only: {
-              supported: true,
-              argv_suffix: ['--permission-mode', 'default'],
-              response_writable: true,
-            },
-          },
-        },
-      }, 'claude', 'code_review');
-
-      expect(result.ok).toBe(true);
-      if (!result.ok) return;
-      expect(result.data.instruction_transport).toEqual({ kind: 'stdin' });
-      expect(result.data.wrapper_arg).toBeUndefined();
-      expect(result.data.noninteractive_argv).toContain('--settings');
-      expect(result.data.env).toMatchObject({
-        CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1',
-        CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: '1',
-        CLAUDE_CODE_DISABLE_CRON: '1',
-        CLAUDE_CODE_SKIP_PROMPT_HISTORY: '1',
-      });
-    });
-
-    it('normalizes legacy Codex argv_content profiles to stdin transport', async () => {
-      const { resolveAgentConfig } = await import('@kb/dispatch-core');
-
-      const result = resolveAgentConfig({
-        version: 1,
-        agents: {
-          codex: {
-            base_argv: ['codex', 'exec'],
-            noninteractive_argv: [],
-            instruction_transport: { kind: 'argv_content' },
-            wrapper_arg: ['{wrapper_content}'],
-            response_transport: { kind: 'file' },
-            response_arg: ['-o', '{response_path}'],
-            timeout_seconds: 1800,
-            read_only: {
-              supported: true,
-              argv_suffix: ['--sandbox', 'read-only'],
-              response_writable: true,
-            },
-          },
-        },
-      }, 'codex', 'code_review');
-
-      expect(result.ok).toBe(true);
-      if (!result.ok) return;
-      expect(result.data.instruction_transport).toEqual({ kind: 'stdin' });
-      expect(result.data.wrapper_arg).toBeUndefined();
-      expect(result.data.response_arg).toEqual(['-o', '{response_path}']);
-    });
-  });
-
-  describe('dispatch-cli', () => {
-    it('init-config writes adapter-aware default agent profiles', async () => {
-      let configDir: string;
-      if (process.platform === 'win32') {
-        const appdata = join(tempDir, 'config');
-        process.env['APPDATA'] = appdata;
-        configDir = join(appdata, 'kb-dispatch');
-      } else {
-        const home = join(tempDir, 'posix-home');
-        process.env['HOME'] = home;
-        configDir = join(home, '.config', 'kb-dispatch');
-      }
-
-      execSync(`"${getTsxPath()}" "${DISPATCH_CLI}" init-config`, {
-        cwd: resolve(TESTS_DIR, '..'),
-        env: process.env,
-        encoding: 'utf-8',
-        windowsHide: true,
-      });
-
-      const registryRaw = await readFile(join(configDir, 'launchers.v1.json'), 'utf-8');
-      const registry = JSON.parse(registryRaw) as {
-        agents: {
-          claude: {
-            base_argv: string[];
-            noninteractive_argv: string[];
-            instruction_transport: { kind: string };
-            wrapper_arg?: string[];
-            env?: Record<string, string>;
-          };
-          codex: {
-            base_argv: string[];
-            noninteractive_argv: string[];
-            instruction_transport: { kind: string };
-            wrapper_arg?: string[];
-            response_transport: { kind: string };
-            response_arg: string[];
-          };
-          'fake-agent': {
-            base_argv: string[];
-          };
-        };
-      };
-
-      expect(registry.agents.claude.base_argv).toEqual(['claude']);
-      expect(registry.agents.claude.noninteractive_argv).toEqual([
-        '--print',
-        '--output-format',
-        'text',
-        '--no-session-persistence',
-        '--settings',
-        '{"disableAllHooks":true}',
-      ]);
-      expect(registry.agents.claude.instruction_transport.kind).toBe('stdin');
-      expect(registry.agents.claude.wrapper_arg).toBeUndefined();
-      expect(registry.agents.claude.env).toEqual({
-        CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1',
-        CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: '1',
-        CLAUDE_CODE_DISABLE_CRON: '1',
-        CLAUDE_CODE_SKIP_PROMPT_HISTORY: '1',
-      });
-      expect(registry.agents.codex.base_argv).toEqual(['codex', 'exec']);
-      expect(registry.agents.codex.noninteractive_argv).toEqual([]);
-      expect(registry.agents.codex.instruction_transport.kind).toBe('stdin');
-      expect(registry.agents.codex.wrapper_arg).toBeUndefined();
-      expect(registry.agents.codex.response_transport.kind).toBe('file');
-      expect(registry.agents.codex.response_arg).toEqual(['-o', '{response_path}']);
-      expect(Object.hasOwn(registry.agents, 'codex-danger-full-access')).toBe(false);
-      const fakeArgv = registry.agents['fake-agent'].base_argv;
-      // The fake-agent launcher must NOT use the tsx binary: its IPC pipe (listen() on a
-      // /tmp socket) is blocked in container sandboxes such as Saturn pods. It runs the
-      // fixture via node's in-process tsx loader instead. See WK-0034 Saturn validation.
-      expect(fakeArgv[0]).not.toMatch(/tsx(\.cmd)?$/i);
-      expect(fakeArgv).toContain('--import');
-      const loaderSpec = fakeArgv[fakeArgv.indexOf('--import') + 1]!;
-      expect(loaderSpec).toContain('tsx/dist/loader.mjs');
-      expect(fakeArgv[fakeArgv.length - 1]).toMatch(/fake-agent\.ts$/);
     });
   });
 

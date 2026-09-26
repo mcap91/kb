@@ -5,7 +5,6 @@ import {
   checkEnvironment,
   cleanup,
   createHandoff,
-  initConfig,
   launchDispatchBackground,
   status,
   waitForRun,
@@ -44,8 +43,7 @@ Usage:
   npm run dispatch -- <command> [options]
 
 Commands:
-  init-config                Initialize operator dispatch configuration
-  check-environment          Probe and record host sandbox capabilities
+  check-environment          Probe host bwrap/container/writability facts
   create-handoff             Create a repo-local HO handoff
   cleanup                    Clean up stale dispatch state
   status                     Show current dispatch state
@@ -58,9 +56,6 @@ Global Options:
   --verbose                  Enable verbose output
 
 Command Options:
-  init-config
-    --force                  Overwrite the existing launcher registry
-
   check-environment
     (no required flags)
 
@@ -112,22 +107,6 @@ Command Options:
     --json                   Print machine-readable output
 `.trim();
 
-async function cmdInitConfig(args: string[]): Promise<number> {
-  const force = getFlag(args, '--force');
-  const result = await initConfig(force);
-  if (!result.ok) {
-    console.error(`Init failed: [${result.error}] ${result.message}`);
-    return 1;
-  }
-
-  console.log(`Config directory: ${result.data.configDir}`);
-  console.log(`HMAC key: ${result.data.keyPath}`);
-  console.log(`Registry: ${result.data.registryPath}`);
-  console.log(`Key created: ${result.data.keyCreated ? 'yes' : 'no'}`);
-  console.log(`Registry created: ${result.data.registryCreated ? 'yes' : 'no'}`);
-  return 0;
-}
-
 async function cmdCheckEnvironment(): Promise<number> {
   const result = await checkEnvironment();
   if (!result.ok) {
@@ -136,24 +115,17 @@ async function cmdCheckEnvironment(): Promise<number> {
   }
 
   const data: CheckEnvironmentResult = result.data;
-  const rec = data.record;
-  console.log(`Config directory: ${data.configDir}`);
-  console.log(`Record: ${data.recordPath}`);
-  console.log(`Checked: ${rec.checked_at}`);
-  console.log(`Platform: ${rec.platform}/${rec.arch}`);
-  console.log(`Claude Linux sandbox: ${rec.capabilities.claude_linux_sandbox.status}`);
-  console.log(`Claude Linux add-dir: ${rec.capabilities.claude_linux_add_dir.status}`);
-  console.log(`Codex Linux sandbox: ${rec.capabilities.codex_linux_sandbox.status}`);
+  console.log(`Checked: ${data.checkedAt}`);
+  console.log(`Platform: ${data.platform}/${data.arch}`);
+  console.log(`bwrap available: ${data.bwrap.available} (version=${data.bwrap.bwrapVersion ?? 'not found'}, unshare-user=${data.bwrap.unshareUserWorks})`);
+  console.log(`Kernel: ${data.bwrap.kernelVersion} (apparmor userns sysctl=${data.bwrap.usernsSysctl ?? 'n/a'})`);
 
-  if (rec.container) {
-    const c = rec.container;
-    const cgroup = c.cgroup_hint ? `, cgroup=${c.cgroup_hint}` : '';
-    console.log(`Container detected: ${c.detected} (k8s=${c.kubernetes_service_host}, dockerenv=${c.dockerenv}${cgroup})`);
-  }
-  if (rec.writability) {
-    console.log(`HOME writable: ${rec.writability.home.writable} (${rec.writability.home.path ?? 'unset'})`);
-    console.log(`Config dir writable: ${rec.writability.config_dir.writable} (${rec.writability.config_dir.path ?? 'unresolved'})`);
-  }
+  const c = data.container;
+  const cgroup = c.cgroup_hint ? `, cgroup=${c.cgroup_hint}` : '';
+  console.log(`Container detected: ${c.detected} (k8s=${c.kubernetes_service_host}, dockerenv=${c.dockerenv}${cgroup})`);
+
+  console.log(`HOME writable: ${data.writability.home.writable} (${data.writability.home.path ?? 'unset'})`);
+  console.log(`Config dir writable: ${data.writability.config_dir.writable} (${data.writability.config_dir.path ?? 'unresolved'})`);
 
   console.log('');
   console.log('Route viability (what dispatch can do on this host):');
@@ -420,8 +392,6 @@ export async function run(args: string[]): Promise<number> {
   }
 
   switch (command) {
-    case 'init-config':
-      return cmdInitConfig(args);
     case 'check-environment':
       return cmdCheckEnvironment();
     case 'create-handoff':
