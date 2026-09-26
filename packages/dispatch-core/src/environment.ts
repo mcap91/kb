@@ -86,6 +86,8 @@ export async function runProcess(
       }, timeoutMs);
     }
 
+    child.stdout?.on('error', () => { /* swallow — exit/close path handles cleanup */ });
+    child.stderr?.on('error', () => { /* swallow — exit/close path handles cleanup */ });
     child.stdout?.on('data', (chunk) => {
       stdout += chunk.toString();
     });

@@ -261,6 +261,8 @@ function spawnAndWait(
     const child = spawn(command, args, { cwd: opts.cwd, stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '';
     let stderr = '';
+    child.stdout?.on('error', () => { /* swallow — exit/close path handles cleanup */ });
+    child.stderr?.on('error', () => { /* swallow — exit/close path handles cleanup */ });
     child.stdout?.on('data', (chunk: Buffer) => { stdout += chunk.toString('utf8'); });
     child.stderr?.on('data', (chunk: Buffer) => { stderr += chunk.toString('utf8'); });
     child.once('close', (code) => resolvePromise({ code, stdout, stderr }));
