@@ -9,58 +9,6 @@ import { z } from 'zod';
 export const handoffModeSchema = z.enum(['redteam', 'code_review', 'implement']);
 
 // ---------------------------------------------------------------------------
-// Agent registry Zod schema
-// ---------------------------------------------------------------------------
-
-export const agentInstructionTransportSchema = z.object({
-  kind: z.enum(['argv_path', 'argv_content', 'stdin']),
-});
-
-export const agentResponseTransportSchema = z.object({
-  kind: z.enum(['file', 'stdout_capture']),
-});
-
-export const agentReadOnlyConfigSchema = z.object({
-  supported: z.boolean(),
-  argv_suffix: z.array(z.string()).optional(),
-  response_writable: z.boolean().optional(),
-});
-
-export const modelPassthroughSchema = z.discriminatedUnion('kind', [
-  z.object({
-    kind: z.literal('argv'),
-    model_flag: z.string(),
-    effort_flag: z.string().optional(),
-    effort_args: z.array(z.string()).optional(),
-    effort_template: z.string().optional(),
-  }),
-  z.object({
-    kind: z.literal('env'),
-    model_var: z.string(),
-    effort_var: z.string().optional(),
-  }),
-]);
-
-export const agentLauncherConfigSchema = z.object({
-  base_argv: z.array(z.string()).min(1),
-  noninteractive_argv: z.array(z.string()),
-  instruction_transport: agentInstructionTransportSchema,
-  wrapper_arg: z.array(z.string()).optional(),
-  response_transport: agentResponseTransportSchema,
-  response_arg: z.array(z.string()).optional(),
-  timeout_seconds: z.number().int().positive().optional(),
-  read_only: agentReadOnlyConfigSchema.optional(),
-  description: z.string().optional(),
-  env: z.record(z.string(), z.string()).optional(),
-  model_passthrough: modelPassthroughSchema.optional(),
-});
-
-export const agentRegistrySchema = z.object({
-  version: z.literal(1),
-  agents: z.record(z.string(), agentLauncherConfigSchema),
-});
-
-// ---------------------------------------------------------------------------
 // Token payload Zod schema
 // ---------------------------------------------------------------------------
 

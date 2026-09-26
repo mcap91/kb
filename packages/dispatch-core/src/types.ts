@@ -1,3 +1,5 @@
+import type { BwrapProbeResult } from './tier.js';
+
 // ---------------------------------------------------------------------------
 // Handoff frontmatter — dispatch-owned, NOT manifest-driven
 // ---------------------------------------------------------------------------
@@ -49,22 +51,6 @@ export interface ReviewedWriteScope {
   access_directories: string[];
 }
 
-export type EnvironmentCapabilityStatus = 'supported' | 'unsupported' | 'unknown' | 'not_applicable';
-
-export interface EnvironmentCapability {
-  status: EnvironmentCapabilityStatus;
-  checked_at: string;
-  detail: string;
-}
-
-/** Writability fact for a single filesystem location. */
-export interface EnvironmentWritability {
-  /** The resolved path probed, or null if it could not be resolved. */
-  path: string | null;
-  writable: boolean;
-  detail: string;
-}
-
 /**
  * Container-detection facts. Informational only — MVP gating never keys off
  * these (operator attestation is parked, WK-0034).
@@ -80,24 +66,12 @@ export interface ContainerDetection {
   cgroup_hint: string | null;
 }
 
-export interface HostCapabilitiesRecord {
-  schema_version: 1;
-  checked_at: string;
-  platform: NodeJS.Platform;
-  arch: string;
-  registry_hash: string;
-  capabilities: {
-    claude_linux_sandbox: EnvironmentCapability;
-    claude_linux_add_dir: EnvironmentCapability;
-    codex_linux_sandbox: EnvironmentCapability;
-  };
-  /** Container-detection facts (additive; absent on records written before WK-0034). */
-  container?: ContainerDetection;
-  /** HOME and resolved-config-dir writability facts (additive). */
-  writability?: {
-    home: EnvironmentWritability;
-    config_dir: EnvironmentWritability;
-  };
+/** Writability fact for a single filesystem location. */
+export interface EnvironmentWritability {
+  /** The resolved path probed, or null if it could not be resolved. */
+  path: string | null;
+  writable: boolean;
+  detail: string;
 }
 
 /** Viability of a dispatch route on the current host. */
@@ -110,81 +84,23 @@ export interface RouteVerdict {
   detail: string;
 }
 
-/** Non-blocking advisories produced by the launch environment gate. */
-export interface GateDecision {
-  warnings: string[];
-}
-
+/**
+ * Result of a `check-environment` probe (WK-0134: thin stateless rewrite —
+ * no registry, no persisted host-capabilities.json). `bwrap` mirrors the
+ * exact fact `pipeline.ts` gates every dispatch on (`tier.ts` `probeBwrap()`).
+ */
 export interface CheckEnvironmentResult {
-  configDir: string;
-  recordPath: string;
-  record: HostCapabilitiesRecord;
+  checkedAt: string;
+  platform: NodeJS.Platform;
+  arch: string;
+  bwrap: BwrapProbeResult;
+  container: ContainerDetection;
+  writability: {
+    home: EnvironmentWritability;
+    config_dir: EnvironmentWritability;
+  };
   /** Per-route viability verdicts (derived, not persisted). */
   verdicts: RouteVerdict[];
-}
-
-// ---------------------------------------------------------------------------
-// Agent registry
-// ---------------------------------------------------------------------------
-
-export interface AgentInstructionTransport {
-  kind: 'argv_path' | 'argv_content' | 'stdin';
-}
-
-export interface AgentResponseTransport {
-  kind: 'file' | 'stdout_capture';
-}
-
-export interface AgentReadOnlyConfig {
-  supported: boolean;
-  argv_suffix?: string[];
-  response_writable?: boolean;
-}
-
-export type ModelPassthrough =
-  | {
-    kind: 'argv';
-    model_flag: string;
-    effort_flag?: string;
-    effort_args?: string[];
-    effort_template?: string;
-  }
-  | {
-    kind: 'env';
-    model_var: string;
-    effort_var?: string;
-  };
-
-/** Configuration for a single agent launcher. */
-export interface AgentLauncherConfig {
-  base_argv: string[];
-  noninteractive_argv: string[];
-  instruction_transport: AgentInstructionTransport;
-  wrapper_arg?: string[];
-  response_transport: AgentResponseTransport;
-  response_arg?: string[];
-  timeout_seconds?: number;
-  read_only?: AgentReadOnlyConfig;
-  description?: string;
-  env?: Record<string, string>;
-  model_passthrough?: ModelPassthrough;
-}
-
-/**
- * Agent registry: maps agent names to their launcher configurations.
- * Stored in operator config at launchers.v1.json.
- */
-export interface AgentRegistry {
-  version: 1;
-  agents: Record<string, AgentLauncherConfig>;
-}
-
-export interface InitConfigResult {
-  configDir: string;
-  keyPath: string;
-  registryPath: string;
-  keyCreated: boolean;
-  registryCreated: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -234,92 +150,6 @@ export interface ReviewResult {
   bundlePath: string;
   tokenPath: string;
   expiry: string;
-}
-
-// ---------------------------------------------------------------------------
-// Launch types
-// ---------------------------------------------------------------------------
-
-export type LaunchEvent =
-  | {
-    type: 'run_created';
-    reviewId: string;
-    runId: string;
-    handoffId: string;
-    runDir: string;
-    responsePath: string;
-    stdoutPath: string | null;
-    stderrPath: string;
-    startedAt: string;
-  }
-  | {
-    type: 'spawned';
-    reviewId: string;
-    runId: string;
-    handoffId: string;
-    pid: number;
-    pgid: number;
-    cwd: string;
-    startedAt: string;
-  }
-  | {
-    type: 'token_consumed';
-    reviewId: string;
-    runId: string;
-    handoffId: string;
-    tokenState: 'consumed';
-    responsePath: string;
-    stderrPath: string;
-  }
-  | {
-    type: 'heartbeat';
-    reviewId: string;
-    runId: string;
-    handoffId: string;
-    pid: number;
-    pgid: number;
-    heartbeatAt: string;
-    responseBytes: number;
-    stdoutBytes: number | null;
-    stderrBytes: number;
-  }
-  | {
-    type: 'finalized';
-    reviewId: string;
-    runId: string;
-    handoffId: string;
-    status: 'completed' | 'failed' | 'timed_out' | 'cancelled' | 'rejected';
-    exitCode: number;
-    responsePath: string;
-    metaPath: string;
-    responseBytes: number;
-    stdoutBytes: number | null;
-    stderrBytes: number;
-    completedAt: string;
-  };
-
-/** Options for the launch operation. */
-export interface LaunchOpts {
-  reviewId: string;
-  dir: string;
-  verbose?: boolean;
-  onEvent?: (event: LaunchEvent) => void;
-  model?: string;
-  effort?: string;
-}
-
-/** Result of a successful agent run. */
-export interface RunResult {
-  runId: string;
-  reviewId: string;
-  handoffId: string;
-  agent: string;
-  mode: HandoffMode;
-  runDir: string;
-  exitCode: number;
-  response?: string;
-  startedAt: string;
-  completedAt: string;
 }
 
 // ---------------------------------------------------------------------------

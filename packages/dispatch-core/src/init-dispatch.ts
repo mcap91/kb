@@ -1,14 +1,11 @@
 /**
  * `init-dispatch` — scaffold `wiki/.dispatch/` (PLN-0004 S3 ruling 11 + D2/D4
- * freeze correction). A NEW tool beside v1's `init-config`, not a replacement:
- * creates the repo-local `wiki/.dispatch/` dir, blank `models.json`/
- * `backends.json`/`profiles.json` tables (never overwritten once present —
- * only absent files are written), and a kb-managed `README.md` section
- * (re-run refreshes the managed block only, leaving any user content outside
- * the markers untouched). Does NOT stamp AGENTS.md or `.mcp.json` — those are
- * already wiki-core bootstrap/sync-contract jobs that cover kb-dispatch
- * (ruling 11). v1 `init-config` (token.key/launchers.v1.json) is untouched
- * until S7.
+ * freeze correction; write-once README per WK-0133 D2 / WK-0134). Creates the
+ * repo-local `wiki/.dispatch/` dir, blank `models.json`/`backends.json`/
+ * `profiles.json` tables, and a `README.md` — every file, including the
+ * README, is written only if absent and never touched again on a re-run.
+ * Does NOT stamp AGENTS.md or `.mcp.json` — those are already wiki-core
+ * bootstrap/sync-contract jobs that cover kb-dispatch (ruling 11).
  */
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -29,12 +26,9 @@ const BLANK_MODELS = '{}';
 const BLANK_BACKENDS = '{}';
 const BLANK_PROFILES = JSON.stringify({ schema_version: 1 }, null, 2);
 
-// kb-managed README content (ruling 11: re-run refreshes managed section only)
-const MANAGED_START = '<!-- kb-managed:start -->';
-const MANAGED_END = '<!-- kb-managed:end -->';
-
-const MANAGED_README = `${MANAGED_START}
-# wiki/.dispatch/ — Dispatch Configuration
+// README content — write-once (WK-0133 D2 / WK-0134): written only if absent,
+// never edited again on a re-run.
+const README_CONTENT = `# wiki/.dispatch/ — Dispatch Configuration
 
 This directory holds the repo-local dispatch configuration tables. Edit the JSON files
 to configure models and backends for your repository.
@@ -74,7 +68,7 @@ OpenAI, a proxy, a local Ollama/vLLM server).
     "family": "pi",
     "base_url": "https://openrouter.ai/api/v1",
     "api_key_env": "OPENROUTER_API_KEY",
-    "secrets_file": "/home/user/.config/kb-dispatch/secrets.env"
+    "secrets_file": "/home/user/.secrets/dispatch.env"
   },
   "ollama": {
     "family": "pi",
@@ -112,9 +106,7 @@ SaaS backends work under \`web:false\` — each family has a built-in vendor dom
 allowlist. Setting \`web: true\` on a handoff is NOT needed to make codex or claude
 function; use it only when the worker itself needs to fetch external resources
 (research mode, dataset downloads, etc.).
-
-Run \`init-dispatch\` again to refresh this section without touching your JSON files.
-${MANAGED_END}`;
+`;
 
 export async function initDispatch(opts: InitDispatchOpts): Promise<DispatchResult<InitDispatchResult>> {
   const configDir = join(opts.dir, 'wiki', '.dispatch');
@@ -143,24 +135,13 @@ export async function initDispatch(opts: InitDispatchOpts): Promise<DispatchResu
     }
   }
 
-  // Write/update README.md (managed section only)
+  // Write README.md (write-once — same skip rule as the JSON tables above)
   const readmePath = join(configDir, 'README.md');
   try {
-    const existing = await readFile(readmePath, 'utf8');
-    if (existing.includes(MANAGED_START)) {
-      // Refresh managed section
-      const before = existing.substring(0, existing.indexOf(MANAGED_START));
-      const after = existing.substring(existing.indexOf(MANAGED_END) + MANAGED_END.length);
-      await writeFile(readmePath, `${before}${MANAGED_README}${after}`, 'utf8');
-      updated.push('README.md');
-    } else if (opts.force) {
-      await writeFile(readmePath, `${MANAGED_README}\n`, 'utf8');
-      updated.push('README.md');
-    }
-    // else: exists but no managed markers and not forced — skip
+    await readFile(readmePath, 'utf8');
+    // File exists — skip, never edited again
   } catch {
-    // File doesn't exist — create with managed content
-    await writeFile(readmePath, `${MANAGED_README}\n`, 'utf8');
+    await writeFile(readmePath, README_CONTENT, 'utf8');
     created.push('README.md');
   }
 

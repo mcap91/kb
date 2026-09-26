@@ -4,7 +4,6 @@ import {
   cleanup,
   createHandoff,
   deriveReview,
-  initConfig,
   initDispatch,
   launchDispatchBackground,
   mergeDelivery,
@@ -25,16 +24,8 @@ const dirSchema = z.object({
 
 export const tools: ToolDef[] = [
   {
-    name: 'init-config',
-    description: 'Initialize operator dispatch config and default launcher registry',
-    inputSchema: z.object({
-      force: z.boolean().optional(),
-    }),
-    handler: async (input) => initConfig(Boolean(input.force)),
-  },
-  {
     name: 'check-environment',
-    description: 'Probe host sandbox capabilities and persist the operator-owned capability record',
+    description: 'Probe host bwrap/container/writability facts (stateless — no persisted record)',
     inputSchema: z.object({}),
     handler: async () => checkEnvironment(),
   },
@@ -119,7 +110,7 @@ export const tools: ToolDef[] = [
   },
   {
     name: 'init-dispatch',
-    description: 'Scaffold blank wiki/.dispatch/ config tables (models.json, backends.json, profiles.json) + kb-managed README. Re-run refreshes the managed section only, never user JSON. v1 init-config is untouched.',
+    description: 'Scaffold blank wiki/.dispatch/ config tables (models.json, backends.json, profiles.json) + README. Every file, including README.md, is written only if absent — re-run never overwrites existing content.',
     inputSchema: z.object({
       dir: z.string().describe('Target repo directory'),
       force: z.boolean().optional().describe('Force overwrite of managed README section even if it exists'),
