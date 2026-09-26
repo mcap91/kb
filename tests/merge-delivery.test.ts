@@ -183,6 +183,58 @@ function makeReviewResponse(outcome: string, subject: string, includeFinding: bo
   ].join('\n');
 }
 
+/**
+ * A response doc whose `## Worker Report` section is real prose narration with
+ * NO `kb-dispatch-recovery.v1` fenced block at all — DEC-0037's prose-fallback
+ * shape for code_review/redteam (WK-0143 F2): the reviewer wrote a genuine
+ * review and stopped, exactly the "2/3 miss rate" pattern diagnosed in WK-0143.
+ */
+function makeProseOnlyReviewResponse(subject: string): string {
+  return [
+    '---',
+    `handoff_id: ${subject}`,
+    'outcome: delivered',
+    '---',
+    '',
+    '# Response: Code review',
+    '',
+    '## Outcome',
+    'Delivered.',
+    '',
+    '## Worker Report (evidence, not verdict)',
+    '',
+    'Reviewed the diff against the acceptance criteria. The change is correct, tests pass, ' +
+      'and no blocking issues were found. This review has no structured recovery block.',
+    '',
+  ].join('\n');
+}
+
+/**
+ * A response doc whose `## Worker Report` section is present but empty — no
+ * prose, no recovery block. Distinguishes "no evidence a review ran at all"
+ * (still fails) from "prose-only review" (advisory pass, above).
+ */
+function makeEmptyReviewResponse(subject: string): string {
+  return [
+    '---',
+    `handoff_id: ${subject}`,
+    'outcome: delivered',
+    '---',
+    '',
+    '# Response: Code review',
+    '',
+    '## Outcome',
+    'Delivered.',
+    '',
+    '## Worker Report (evidence, not verdict)',
+    '',
+    '## Recovery Signal',
+    '',
+    '(none)',
+    '',
+  ].join('\n');
+}
+
 let repoDir: string;
 
 beforeEach(async () => {
@@ -314,5 +366,86 @@ describe('mergeDelivery (WK-0132 Slice 3)', () => {
 
     // Refusal must not have touched the branch.
     expect(await branchExists(repoDir, 'dispatch/HO-0008')).toBe(true);
+  });
+
+  it('merges a prose-only review (no recovery block) with an advisory verdict (DEC-0037, WK-0143)', async () => {
+    await writeAndCommit(
+      repoDir,
+      {
+        'wiki/handoffs/HO-0010.md': makeImplementHO('HO-0010', 'Implement prose-reviewed thing', 'WK-0006'),
+        'wiki/handoffs/HO-0011.md': makeReviewHO(
+          'HO-0011',
+          'Code review: Implement prose-reviewed thing',
+          'dispatch/HO-0010',
+          'WK-0006',
+        ),
+        'wiki/handoffs/HO-0011.response.md': makeProseOnlyReviewResponse('HO-0010'),
+      },
+      'add implement + review HOs (prose-only review)',
+    );
+    await createDeliveryBranch(repoDir, 'HO-0010');
+
+    const result = await mergeDelivery({ dir: repoDir, handoff_id: 'HO-0010' });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(`expected ok, got: ${result.error}: ${result.message}`);
+    expect(result.data.mergedBranch).toBe('dispatch/HO-0010');
+    expect(result.data.reviewId).toBe('HO-0011');
+    expect(result.data.verdict).toBe('advisory');
+
+    // The merge still landed and cleaned up despite the missing block.
+    await execFile('git', ['cat-file', '-e', 'HEAD:delivered-file.ts'], { cwd: repoDir });
+    expect(await branchExists(repoDir, 'dispatch/HO-0010')).toBe(false);
+  });
+
+  it('refuses to merge when the review response has no recovery block AND no real review content', async () => {
+    await writeAndCommit(
+      repoDir,
+      {
+        'wiki/handoffs/HO-0012.md': makeImplementHO('HO-0012', 'Implement empty-reviewed thing', 'WK-0007'),
+        'wiki/handoffs/HO-0013.md': makeReviewHO(
+          'HO-0013',
+          'Code review: Implement empty-reviewed thing',
+          'dispatch/HO-0012',
+          'WK-0007',
+        ),
+        'wiki/handoffs/HO-0013.response.md': makeEmptyReviewResponse('HO-0012'),
+      },
+      'add implement + review HOs (empty review response)',
+    );
+    await createDeliveryBranch(repoDir, 'HO-0012');
+
+    const result = await mergeDelivery({ dir: repoDir, handoff_id: 'HO-0012' });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('expected refusal, got ok');
+    expect(result.error).toBe('ADMISSION_FAILED');
+
+    // Refusal must not have touched the branch.
+    expect(await branchExists(repoDir, 'dispatch/HO-0012')).toBe(true);
+  });
+
+  it('structured passing review reports verdict: structured', async () => {
+    await writeAndCommit(
+      repoDir,
+      {
+        'wiki/handoffs/HO-0014.md': makeImplementHO('HO-0014', 'Implement structured-reviewed thing', 'WK-0008'),
+        'wiki/handoffs/HO-0015.md': makeReviewHO(
+          'HO-0015',
+          'Code review: Implement structured-reviewed thing',
+          'dispatch/HO-0014',
+          'WK-0008',
+        ),
+        'wiki/handoffs/HO-0015.response.md': makeReviewResponse('no_findings', 'HO-0014', false),
+      },
+      'add implement + review HOs (structured verdict check)',
+    );
+    await createDeliveryBranch(repoDir, 'HO-0014');
+
+    const result = await mergeDelivery({ dir: repoDir, handoff_id: 'HO-0014' });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(`expected ok, got: ${result.error}: ${result.message}`);
+    expect(result.data.verdict).toBe('structured');
   });
 });
