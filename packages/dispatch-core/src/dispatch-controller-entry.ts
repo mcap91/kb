@@ -57,6 +57,8 @@ export interface V2RunState {
   delivery_status: string | null;
   branch: string | null;
   error: string | null;
+  /** WK-0136: captured stderr tail (spawn-isolated.ts's `SpawnResult.stderr`) from a worker-exit failure. Optional — absent on `running` state and on older run bundles predating this field. */
+  error_detail?: string | null;
 }
 
 export interface ControllerArgv {
@@ -147,6 +149,25 @@ export interface TerminalFields {
   delivery_status: string | null;
   branch: string | null;
   error: string | null;
+  /** WK-0136: captured stderr tail, extracted from a `fail()` detail payload shaped like `SpawnResult`. Omitted (rather than null) when no such detail was captured, so existing exact-shape assertions of the pre-WK-0136 fields stay unaffected. */
+  error_detail?: string | null;
+}
+
+/**
+ * Extract the captured stderr tail from a `fail()` call's `detail` payload
+ * (WK-0136). `detail` is `unknown` — most `DispatchErrorCode`s never attach
+ * one, and the ones that do (admission/model/clone/etc.) carry shapes with no
+ * `stderr` field. pipeline.ts's own `SpawnResult` (spawn-isolated.ts) is the
+ * shape that does: passed as `detail` on the worker-exit `fail('PIPELINE_FAILED',
+ * ...)` calls. Duck-typed rather than cast, since `detail`'s static type
+ * carries no shape information. Returns null for a missing/non-matching
+ * detail or an empty stderr string, so callers can treat null as "nothing to
+ * report" uniformly.
+ */
+function extractStderrTail(detail: unknown): string | null {
+  if (typeof detail !== 'object' || detail === null || !('stderr' in detail)) return null;
+  const { stderr } = detail as { stderr: unknown };
+  return typeof stderr === 'string' && stderr.length > 0 ? stderr : null;
 }
 
 /**
@@ -193,13 +214,16 @@ export function deriveTerminalFields(
   }
 
   if (!result.ok) {
-    return {
+    const terminal: TerminalFields = {
       status: 'failed',
       outcome: null,
       delivery_status: null,
       branch: null,
       error: `${result.error}: ${result.message}`,
     };
+    const stderrTail = extractStderrTail(result.detail);
+    if (stderrTail !== null) terminal.error_detail = stderrTail;
+    return terminal;
   }
 
   const { delivery } = result.data;
@@ -317,6 +341,7 @@ async function main(): Promise<void> {
       delivery_status: terminal.delivery_status,
       branch: terminal.branch,
       error: terminal.error,
+      error_detail: terminal.error_detail,
     });
     // Await the chain so the terminal write completes before exit — an
     // in-flight heartbeat write that started before shuttingDown=true will

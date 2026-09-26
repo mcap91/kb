@@ -80,8 +80,10 @@ async function tryBuildV2Result(runDir: string, repoRoot: string): Promise<WaitF
     reviewId: '',
     runId: typeof state.run_id === 'string' ? state.run_id : basename(runDir),
     handoffId,
-    // v2 has no agent-registry concept — every S1 run goes through the Pi harness.
-    agent: 'pi',
+    // v2's state.json persists the model alias but not the resolved family
+    // (pi/codex/claude) — WK-0136 surfaces the model string here instead of
+    // the previous hardcoded 'pi'.
+    agent: typeof state.model === 'string' ? state.model : 'unknown',
     // state.json doesn't mirror the HO's mode; 'implement' matches lookup.ts's
     // existing identity-unknown default.
     mode: 'implement',
@@ -96,7 +98,7 @@ async function tryBuildV2Result(runDir: string, repoRoot: string): Promise<WaitF
     statePath: join(runDir, 'state.json'),
     launchPath: join(runDir, 'state.json'),
     controllerPath: null,
-    // v2's combined worker output lives at pi-output.log, surfaced via
+    // v2's combined worker output lives at worker-output.log, surfaced via
     // status()'s logTail (ruling 6), not through these v1-shaped log fields.
     stdoutPath: null,
     stderrPath: null,

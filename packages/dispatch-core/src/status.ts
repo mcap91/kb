@@ -238,11 +238,11 @@ async function tryReadJsonRecord(path: string): Promise<Record<string, unknown> 
   }
 }
 
-/** Last `lines` lines of `pi-output.log`, or null if it does not exist (v1 runs never write one). */
+/** Last `lines` lines of `worker-output.log`, or null if it does not exist (v1 runs never write one). */
 async function readLogTail(runDir: string, lines: number): Promise<string[] | null> {
   let raw: string;
   try {
-    raw = await readFile(join(runDir, 'pi-output.log'), 'utf-8');
+    raw = await readFile(join(runDir, 'worker-output.log'), 'utf-8');
   } catch {
     return null;
   }
@@ -310,7 +310,7 @@ async function buildRunInfo(
   const stale = heartbeatAgeSecs !== null && heartbeatAgeSecs > STALE_HEARTBEAT_THRESHOLD_SECS && !processAlive;
 
   // Log tail: active v2 runs only (ruling 6) — terminal runs have a response
-  // doc to read instead, and v1 runs never grew a pi-output.log.
+  // doc to read instead, and v1 runs never grew a worker-output.log.
   const logTail = isV2 && !terminal ? await readLogTail(runDir, LOG_TAIL_LINES) : null;
 
   return {

@@ -849,7 +849,7 @@ describe('dispatch v2 e2e (fake-tier) — isolation route (mocked bwrap probe)',
 // against a real temp git repo, so these tests exercise the actual step-10
 // config-driven effort splice into pipeline.ts's hand-built exec line and
 // the step-20 effort_requested threading into capture.ts — not a simulation
-// of that wiring. The mocked worker "output" written to pi-output.log is the
+// of that wiring. The mocked worker "output" written to worker-output.log is the
 // real DEC-0009 golden fixture content (tests/fixtures/claude-p-output.txt /
 // codex-exec-output-stream-json.jsonl) — no hand-invented shape (DEC-0009).
 // The clone tree is never actually mutated (the mock never touches the

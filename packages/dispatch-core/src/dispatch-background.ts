@@ -285,7 +285,7 @@ export async function launchDispatchBackground(
     status: 'running',
     runDir,
     statePath,
-    logPath: join(runDir, 'pi-output.log'),
+    logPath: join(runDir, 'worker-output.log'),
     responsePath: join(repoRoot, 'wiki', 'handoffs', `${handoffId}.response.md`),
     pid: gateResult.data.pid,
     watch,

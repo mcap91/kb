@@ -142,7 +142,7 @@ describe('status() runs[] (s1-rulings ruling 6)', () => {
     await writeV2State(runDir, { run_id: 'RUN-v2a', handoff_id: 'HO-0500' });
 
     const logLines = Array.from({ length: 15 }, (_, i) => `line-${i}`);
-    await writeFile(join(runDir, 'pi-output.log'), `${logLines.join('\n')}\n`, 'utf-8');
+    await writeFile(join(runDir, 'worker-output.log'), `${logLines.join('\n')}\n`, 'utf-8');
 
     const result = await status(repoRoot);
     expect(result.ok).toBe(true);
@@ -177,7 +177,7 @@ describe('status() runs[] (s1-rulings ruling 6)', () => {
 
     const run = result.data.runs.find((r) => r.runId === 'RUN-v2stale');
     expect(run?.stale).toBe(true);
-    expect(run?.logTail).toBeNull(); // no pi-output.log written for this fixture
+    expect(run?.logTail).toBeNull(); // no worker-output.log written for this fixture
   });
 
   it('enumerates both v1 (metadata/state.json) and v2 (root state.json) run dirs together', async () => {

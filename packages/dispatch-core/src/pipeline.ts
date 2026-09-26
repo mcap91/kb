@@ -1114,7 +1114,7 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
     let spawnData: SpawnResult;
     try {
       logVerbose(verbose, `invoking ${canonicalModel} via bwrap+pi`);
-      const spawnResult = await spawnIsolated(plan, { timeoutMs: WORKER_TIMEOUT_MS, stdoutLogPath: join(runDir, 'pi-output.log') });
+      const spawnResult = await spawnIsolated(plan, { timeoutMs: WORKER_TIMEOUT_MS, stdoutLogPath: join(runDir, 'worker-output.log') });
       if (!spawnResult.ok) return spawnResult;
       spawnData = spawnResult.data;
     } finally {
@@ -1128,6 +1128,16 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
     // Linux's `.signal` is authoritative, no classifySignalExit guessing).
     const succeeded = spawnData.exitCode === 0 && spawnData.signal === null;
     if (!succeeded && !spawnData.timedOut) {
+      // WK-0136: persist the captured stderr tail to the run bundle on a
+      // non-zero worker exit — best-effort; a write failure here must not
+      // mask the real pipeline failure being returned below.
+      if (spawnData.exitCode !== null && spawnData.exitCode !== 0 && spawnData.stderr.length > 0) {
+        try {
+          await writeFile(join(runDir, 'stderr-tail.log'), spawnData.stderr, 'utf8');
+        } catch (err) {
+          logVerbose(verbose, `warning: could not write stderr-tail.log: ${err}`);
+        }
+      }
       return fail(
         'PIPELINE_FAILED',
         `Worker exited with code ${spawnData.exitCode} (signal=${spawnData.signal}).`,
@@ -1139,15 +1149,15 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
     // only if Pi wrote agent_end before the kill — the pi#4303 post-completion
     // flavor; the codex/claude adapters report no equivalent "already
     // finished" signal, so a timeout there is always a hard failure. The
-    // stdout capture file is still named pi-output.log for every family
+    // stdout capture file is still named worker-output.log for every family
     // (spawnIsolated's stdoutLogPath, wired at step 13/14 above) — only the
     // parser consulted below differs.
-    const piOutputLogPath = join(runDir, 'pi-output.log');
+    const piOutputLogPath = join(runDir, 'worker-output.log');
     let piOutputContent: string;
     try {
       piOutputContent = await readFile(piOutputLogPath, 'utf8');
     } catch (err) {
-      return fail('PIPELINE_FAILED', `Failed to read pi-output.log: ${piOutputLogPath}`, err);
+      return fail('PIPELINE_FAILED', `Failed to read worker-output.log: ${piOutputLogPath}`, err);
     }
 
     let workerOutcome: string;
@@ -1383,8 +1393,9 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
     // ({outcome: string; usage: {totalTokens, costUsd}} and PiCompaction)
     // are already family-agnostic, so the normalized codex/claude values
     // computed at step 15 fit them unchanged — no capture.ts edit needed for
-    // this. (The `piResult`/`agent: 'pi'` NAMES are Pi-only leftovers — see
-    // the TODO at the provenance write-back call below.)
+    // this. (`piResult` is a Pi-only-named leftover field on CaptureOpts; the
+    // `agent: 'pi'` hardcode this comment used to point at was fixed by
+    // WK-0136 — see buildProvenanceWriteBack's `family` parameter below.)
     const captureResult = await writeResponseDoc({
       runDir,
       handoff: { id: handoff.id, title: handoff.title, mode: handoff.mode },
@@ -1427,17 +1438,14 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
     // buildProvenanceWriteBack's fields into the HO's own frontmatter.
     // Best-effort, same as the canonical copy above. The pipeline auto-commits
     // both artifact paths immediately after this step (DEC-0038, step 20d).
-    // TODO(capture.ts): buildProvenanceWriteBack hardcodes fields.agent =
-    // 'pi' unconditionally in its own body (not a parameter) — now that
-    // codex/claude runs can reach here, HO provenance frontmatter will read
-    // "agent: pi" even for a codex/claude run. capture.ts needs an `agent`
-    // (or `family`) input threaded from model.family; out of scope here
-    // since capture.ts is not to be modified as part of this change.
+    // WK-0136: `agent` in the write-back now reflects the resolved
+    // `model.family` (pi/codex/claude) instead of a hardcoded 'pi'.
     const provenance = buildProvenanceWriteBack({
       runDir,
       handoff: { id: handoff.id, title: handoff.title, mode: handoff.mode },
       delivery,
       model: canonicalModel,
+      family: model.family,
       isolationBackend,
       credentialsGranted: credResult.data.granted,
       compaction,

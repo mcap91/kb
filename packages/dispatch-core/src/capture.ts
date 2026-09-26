@@ -21,6 +21,7 @@ import type { DeliveryOutcome } from './delivery.js';
 import type { BackendFingerprint } from './model-registry.js';
 import type { RecoveryBlockEvidence, RecoveryBlockPayload } from './recovery-block.js';
 import type { PiCompaction } from './adapters/pi.js';
+import type { BackendFamily } from './repo-config.js';
 
 export interface CaptureOpts {
   /** Windows path to the run dir */
@@ -35,6 +36,14 @@ export interface CaptureOpts {
   compaction?: PiCompaction;
   /** Model used */
   model?: string;
+  /**
+   * Resolved backend family (pi/codex/claude), threaded from `model.family`
+   * at the pipeline.ts call site (WK-0136). Used for the provenance
+   * write-back's `agent` field, which previously hardcoded `'pi'`
+   * regardless of which family actually ran; falls back to `model` when
+   * absent.
+   */
+  family?: BackendFamily;
   /** Isolation backend */
   isolationBackend?: string;
   /**
@@ -451,11 +460,14 @@ export async function writeResponseDoc(opts: CaptureOpts): Promise<DispatchResul
  * (e.g. no credentials were requested).
  */
 export function buildProvenanceWriteBack(opts: CaptureOpts): ProvenanceWriteBack {
-  const { runDir, handoff, delivery, model, isolationBackend } = opts;
+  const { runDir, handoff, delivery, model, family, isolationBackend } = opts;
 
   const fields: Record<string, string | boolean | string[]> = {
     run_id: basename(runDir),
-    agent: 'pi',
+    // WK-0136: reflect the actual resolved family when the caller has it
+    // (pipeline.ts threads `model.family`); fall back to the model string
+    // rather than the old hardcoded 'pi' when family is unavailable.
+    agent: family ?? model ?? '',
     model: model ?? '',
     enforced: true,
     isolation_backend: isolationBackend ?? '',
