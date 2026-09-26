@@ -527,11 +527,34 @@ describe('assemble.ts — mode-specific framings (S6a)', () => {
     expect(result.data.text).toContain('stop and state in your final message that you need a bwrap sandbox environment');
   });
 
+  it('redteam framing broadens the focus surface beyond security (WK-0145)', async () => {
+    const result = await assembleForMode('redteam');
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    // Full adversarial surface, not just "security holes" (WK-0145 R1).
+    expect(result.data.text).toContain('spec gaps');
+    expect(result.data.text).toContain('over-engineering');
+    expect(result.data.text).toContain('connectedness');
+  });
+
   it('research framing casts the worker as a research investigator', async () => {
     const result = await assembleForMode('research');
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.data.text).toContain('research investigator');
+  });
+
+  it('research mode includes the optional recovery block instruction (WK-0145 R2)', async () => {
+    const result = await assembleForMode('research');
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.data.text).toContain('kb-dispatch-recovery.v1');
+    expect(result.data.text).toContain('"reported_role": "researcher"');
+    // WK-0143's optional-metadata framing: prose is primary, block is opportunistic.
+    expect(result.data.text).toContain('Your prose review above is the primary deliverable');
+    expect(result.data.text).not.toContain('This block IS your deliverable');
   });
 
   it('injects fix-up context when the handoff declares it', async () => {

@@ -51,10 +51,12 @@ function bulletList(entries: string[]): string {
  * Transport: exactly one fenced block, info-string `kb-dispatch-recovery.v1`, as the LAST
  * content in the worker's output (ruling 1 item 2). The consequence of a missing/malformed
  * block is role-dependent and stated in each responseFormat constant below, not here: for
- * `implement` it costs only diagnostic evidence (ruling 1 item 8); for `code_review`/`redteam`
- * the prose review IS the deliverable and the block is optional structured metadata — its
- * absence does not fail the run (DEC-0037 reverses V4 note 3). `research` gets no block at
- * all (ruling 1 item 1) — never wire this into RESEARCH_FRAMING/SIMPLE_RESPONSE_FORMAT.
+ * `implement` it costs only diagnostic evidence (ruling 1 item 8); for `code_review`/`redteam`/
+ * `research` the prose is the deliverable and the block is optional structured metadata — its
+ * absence does not fail the run (DEC-0037 reverses V4 note 3; WK-0145 widens this optional-
+ * metadata treatment to research). Note: pipeline.ts still mode-gates recovery-block
+ * extraction to skip `research` entirely — this prompt invites the block, but nothing
+ * downstream parses it yet (WK-0145 is a prompt-only change).
  */
 const RECOVERY_BLOCK_INTRO =
   'As the LAST content in your output, emit exactly one fenced JSON block whose info-string ' +
@@ -66,10 +68,11 @@ function recoveryBlockExample(example: Record<string, unknown>): string {
 }
 
 /**
- * Shared instruction body for `code_review` and `redteam` — identical payload shape (ruling 1
- * item 4: "redteam | Same as reviewer"), differing only in `reported_role`.
+ * Shared instruction body for `code_review`, `redteam`, and `research` — identical payload
+ * shape (ruling 1 item 4: "redteam | Same as reviewer"; WK-0145 extends the same optional-
+ * metadata treatment to research), differing only in `reported_role`.
  */
-function reviewerRecoveryFormat(role: 'reviewer' | 'redteam'): string {
+function reviewerRecoveryFormat(role: 'reviewer' | 'redteam' | 'researcher'): string {
   const example = recoveryBlockExample({
     schema_version: 'kb-dispatch-recovery.v1',
     reported_role: role,
@@ -172,8 +175,11 @@ const IMPLEMENT_RESPONSE_FORMAT =
   WORKER_RECOVERY_EXAMPLE;
 
 const REDTEAM_FRAMING =
-  'Focus on: security holes, unhandled edge cases, spec violations, missing validation, ' +
-  'assumptions that could fail.\n\n' +
+  'Focus on the full adversarial surface: security holes, unhandled edge cases, spec gaps, ' +
+  'missing decisions, unstated assumptions, shapes defined by guessing instead of capture ' +
+  '(evidence discipline violations), structural complexity, over-engineering, connectedness ' +
+  'gaps (missing links, orphaned dependencies), assumption rot — things that will break when ' +
+  'context changes, and spec violations or missing validation.\n\n' +
   'Your deliverable is adversarial findings. Do not modify any files.\n\n' +
   'If bubblewrap (bwrap) sandbox is not available or known-unsupported on this host, refuse ' +
   'to proceed — stop and state in your final message that you need a bwrap sandbox environment.';
@@ -185,6 +191,8 @@ const RESEARCH_FRAMING =
   'granted.\n\n' +
   'Your deliverable is findings and sources. Do not modify any files.\n\n' +
   'If you cannot finish, end your final message stating exactly what you needed and why you stopped.';
+
+const RESEARCH_RESPONSE_FORMAT = reviewerRecoveryFormat('researcher');
 
 const SIMPLE_RESPONSE_FORMAT =
   'If you cannot finish, end your final message stating exactly what you needed and why you stopped.';
@@ -241,7 +249,7 @@ function getModeParts(handoff: Handoff): ModeParts {
         includeWriteScope: false,
         includeAcceptance: false,
         includeValidation: false,
-        responseFormat: SIMPLE_RESPONSE_FORMAT,
+        responseFormat: RESEARCH_RESPONSE_FORMAT,
       };
   }
 }
