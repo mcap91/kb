@@ -456,6 +456,7 @@ describe('capture.ts — buildProvenanceWriteBack', () => {
       handoff: { id: 'HO-0002', title: 'Add a slugify utility', mode: 'implement' },
       delivery,
       model: 'deepseek/deepseek-v4-flash-0731',
+      family: 'pi',
       isolationBackend: 'bwrap-wsl2',
     });
 

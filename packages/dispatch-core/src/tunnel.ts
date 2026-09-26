@@ -385,7 +385,7 @@ server.listen(PORT, '127.0.0.1', () => {
  *
  * Path convention: the forwarder/relay script files and the destination log
  * are all written under `runDirWsl` (the same run directory pipeline.ts
- * already uses for `prompt.txt` / `pi-output.log`, e.g. via
+ * already uses for `prompt.txt` / `worker-output.log`, e.g. via
  * `windowsToWslPath(runDir)`); `config.socketPath` is expected to already be
  * a full path under the same run dir (e.g. `` `${runDirWsl}/tunnel.sock` ``
  * via `TUNNEL_SOCKET_NAME`) — this function uses it as given rather than

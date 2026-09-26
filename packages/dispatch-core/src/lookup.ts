@@ -134,9 +134,11 @@ export async function resolveRun(opts: {
         ? {
           reviewId: null,
           handoffId: (typeof v2StateJson!.handoff_id === 'string' ? v2StateJson!.handoff_id : handoffId),
-          // v2 has no agent-registry concept (every S1 run goes through the Pi
-          // harness) and doesn't mirror the HO's mode into state.json.
-          agent: 'pi',
+          // v2's state.json persists the model alias but not the resolved
+          // family (pi/codex/claude) — WK-0136 surfaces the model string here
+          // instead of the previous hardcoded 'pi'. state.json also doesn't
+          // mirror the HO's mode, hence the 'implement' default below.
+          agent: (typeof v2StateJson!.model === 'string' ? v2StateJson!.model : 'unknown'),
           mode: 'implement',
         }
         : extractRunIdentity(launchMeta, metaJson, reviewJson);
