@@ -52,8 +52,9 @@ function bulletList(entries: string[]): string {
  * content in the worker's output (ruling 1 item 2). The consequence of a missing/malformed
  * block is role-dependent and stated in each responseFormat constant below, not here: for
  * `implement` it costs only diagnostic evidence (ruling 1 item 8); for `code_review`/`redteam`
- * the block IS the mode deliverable and its absence fails the run (V4 note 3). `research` gets
- * no block at all (ruling 1 item 1) — never wire this into RESEARCH_FRAMING/SIMPLE_RESPONSE_FORMAT.
+ * the prose review IS the deliverable and the block is optional structured metadata — its
+ * absence does not fail the run (DEC-0037 reverses V4 note 3). `research` gets no block at
+ * all (ruling 1 item 1) — never wire this into RESEARCH_FRAMING/SIMPLE_RESPONSE_FORMAT.
  */
 const RECOVERY_BLOCK_INTRO =
   'As the LAST content in your output, emit exactly one fenced JSON block whose info-string ' +
@@ -92,8 +93,10 @@ function reviewerRecoveryFormat(role: 'reviewer' | 'redteam'): string {
   return (
     '## Recovery Signal\n\n' +
     `${RECOVERY_BLOCK_INTRO}\n\n` +
-    'This block IS your deliverable — it is not diagnostic evidence on the side. If it is ' +
-    'missing, or present but cannot be parsed, the run is marked `failed`.\n\n' +
+    'Your prose review above is the primary deliverable — it is what gets read and acted on. ' +
+    'If you can, emit this block as the last content in your output: it gives the orchestrator ' +
+    'structured data for automation, an opportunistic shortcut, not a requirement. A missing ' +
+    'block, or one that cannot be parsed, does not fail the run.\n\n' +
     `\`reported_role\` is \`"${role}"\`. \`reported_subject\` is the handoff id you were ` +
     'dispatched as. `reported_outcome` is one of `no_findings` | ' +
     '`passed_no_blocking_or_medium_findings` | `changes_requested`. `no_findings` requires ' +
@@ -209,6 +212,8 @@ function getModeParts(handoff: Handoff): ModeParts {
           'Flag iterative fix-up patterns (multiple small patches to the same region, ' +
           'trial-and-error artifacts, debug residue) as a quality finding — do not auto-reject; ' +
           'the orchestrator decides disposition.\n\n' +
+          'For typecheck validation in the sandbox, use `tsc --build --noEmit` — the sandbox is ' +
+          'read-only and `tsc --build` needs write access for declaration files.\n\n' +
           'Your deliverable is a structured review outcome, not code changes. Do not modify any files.\n\n' +
           'If you cannot finish, end your final message stating exactly what you needed and why you stopped.',
         includeWriteScope: false,

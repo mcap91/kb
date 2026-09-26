@@ -488,7 +488,17 @@ describe('assemble.ts — mode-specific framings (S6a)', () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.data.text).toContain('kb-dispatch-recovery.v1');
-    expect(result.data.text).toContain('This block IS your deliverable');
+    // DEC-0037: prose review is the deliverable; the recovery block is optional metadata.
+    expect(result.data.text).toContain('Your prose review above is the primary deliverable');
+    expect(result.data.text).not.toContain('This block IS your deliverable');
+    expect(result.data.text).not.toContain('the run is marked `failed`');
+  });
+
+  it('code_review framing includes the tsc --build --noEmit sandbox guidance', async () => {
+    const result = await assembleForMode('code_review');
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.text).toContain('tsc --build --noEmit');
   });
 
   it('code_review framing includes fix-up flagging', async () => {

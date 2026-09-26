@@ -8,11 +8,16 @@
  * Preconditions, checked in order, fail closed throughout:
  *   1. Review evidence: a `code_review` HO in `wiki/handoffs/` whose
  *      `base_ref` is `dispatch/<handoff_id>` has a response doc
- *      (`<review_id>.response.md`) whose `kb-dispatch-recovery.v1` block
- *      reports `no_findings` or `passed_no_blocking_or_medium_findings`.
- *      `changes_requested`, a missing response doc, a missing review HO, or
- *      an absent/invalid recovery block (DEC-0037 prose fallback included)
- *      all refuse — there is no operator override in this slice.
+ *      (`<review_id>.response.md`). A `kb-dispatch-recovery.v1` block
+ *      reporting `no_findings` or `passed_no_blocking_or_medium_findings`
+ *      merges with `verdict: 'structured'`; `changes_requested` refuses
+ *      (ADMISSION_FAILED) — there is no operator override in this slice.
+ *      DEC-0037: code_review/redteam is prose-first, so an absent or
+ *      unparsable block is not itself a gate — when the response doc has
+ *      real review content, the merge proceeds with `verdict: 'advisory'`
+ *      (the orchestrator/operator reads the prose). Only a missing review
+ *      HO, a missing response doc, or an empty response (no evidence a
+ *      review ran at all) refuses.
  *   2. The working tree is clean (`git status --porcelain` empty).
  *   3. Branch `dispatch/<handoff_id>` exists as a local branch.
  *   4. The merge succeeds (fast-forward or a real merge) with no conflict —
@@ -47,6 +52,13 @@ export interface MergeDeliveryResult {
   mergeSha: string;
   reviewId: string;
   reviewOutcome: string;
+  /**
+   * 'structured' when a valid `kb-dispatch-recovery.v1` block drove the outcome; 'advisory'
+   * when the merge proceeded on prose-only review evidence — DEC-0037: the block is optional
+   * structured metadata for code_review/redteam, never a gate. Optional for backward
+   * compatibility with callers written before this field existed.
+   */
+  verdict?: 'structured' | 'advisory';
 }
 
 /** `FindingsOutcome` values that gate a merge open (recovery-block.ts's `FINDINGS_OUTCOMES` minus `changes_requested`). */
@@ -55,13 +67,16 @@ const PASSING_OUTCOMES: readonly string[] = ['no_findings', 'passed_no_blocking_
 /**
  * Scan `wiki/handoffs/` for a `code_review` HO whose `base_ref` equals
  * `branchName`, then extract and validate its response doc's recovery block.
- * Fails closed on every gap: no matching review HO, no response doc, no
- * valid recovery block, or a non-passing outcome.
+ * Fails closed on: no matching review HO, no response doc, an empty
+ * response, or a structured block reporting a non-passing outcome. A
+ * missing/unparsable block backed by real review content returns
+ * `verdict: 'advisory'` instead of failing (DEC-0037 — the block is
+ * optional metadata, never a gate, for code_review/redteam).
  */
 async function checkReviewEvidence(
   dir: string,
   branchName: string,
-): Promise<DispatchResult<{ reviewId: string; outcome: string }>> {
+): Promise<DispatchResult<{ reviewId: string; outcome: string; verdict: 'structured' | 'advisory' }>> {
   const handoffsDir = join(dir, 'wiki', 'handoffs');
 
   let files: string[];
@@ -105,9 +120,17 @@ async function checkReviewEvidence(
   const workerReportMatch = reviewResponseContent.match(
     /## Worker Report[^\n]*\n([\s\S]*?)(?=\n## |\n---\s*$|$)/
   );
-  const evidence = extractRecoveryBlock(workerReportMatch?.[1] ?? reviewResponseContent);
+  const reviewText = workerReportMatch?.[1] ?? reviewResponseContent;
+  const evidence = extractRecoveryBlock(reviewText);
   if (!evidence.valid || !evidence.result) {
-    return fail('ADMISSION_FAILED', `Review ${reviewId} has no valid recovery block — fail closed`);
+    // DEC-0037: code_review/redteam is prose-first — the recovery block is optional
+    // structured metadata, never a gate. A missing/unparsable block still merges as long
+    // as the response doc has real review content; only a genuinely empty response (no
+    // evidence a review ran at all) fails closed.
+    if (reviewText.trim().length > 0) {
+      return ok({ reviewId, outcome: 'advisory', verdict: 'advisory' as const });
+    }
+    return fail('ADMISSION_FAILED', `Review ${reviewId} response is empty — no evidence of a completed review`);
   }
 
   const outcome = evidence.result.reported_outcome;
@@ -115,7 +138,7 @@ async function checkReviewEvidence(
     return fail('ADMISSION_FAILED', `Review ${reviewId} outcome is "${outcome}" — merge blocked`);
   }
 
-  return ok({ reviewId, outcome });
+  return ok({ reviewId, outcome, verdict: 'structured' as const });
 }
 
 /**
@@ -131,7 +154,7 @@ export async function mergeDelivery(opts: MergeDeliveryOpts): Promise<DispatchRe
   // 1. Review evidence must exist and report a passing outcome.
   const reviewCheck = await checkReviewEvidence(dir, branchName);
   if (!reviewCheck.ok) return reviewCheck;
-  const { reviewId, outcome } = reviewCheck.data;
+  const { reviewId, outcome, verdict } = reviewCheck.data;
 
   // 2. Working tree must be clean.
   let statusOut: string;
@@ -175,5 +198,5 @@ export async function mergeDelivery(opts: MergeDeliveryOpts): Promise<DispatchRe
   // construction fully merged; swallow defensively rather than throw.
   await execFile('git', ['branch', '-d', branchName], { cwd: dir }).catch(() => {});
 
-  return ok({ mergedBranch: branchName, mergeSha, reviewId, reviewOutcome: outcome });
+  return ok({ mergedBranch: branchName, mergeSha, reviewId, reviewOutcome: outcome, verdict });
 }
