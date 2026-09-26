@@ -295,25 +295,7 @@ export async function probeBwrap(): Promise<BwrapProbeResult> {
   };
 }
 
-/**
- * D6 ruling 7 component 11 (check-environment): the v2 environment-info
- * primitive — reports bwrap probe facts directly (available, version,
- * kernel, userns sysctl, unshare-user result), never a tier name (ruling 8:
- * "provenance records facts, not tier names"). Supersedes
- * `buildTierEnvironmentInfo` above for v2 callers; that function stays
- * defined (not deleted) since Phase 3 tests may still exercise the old
- * tier-resolution primitives directly.
- *
- * NOT YET WIRED into the live `check-environment` MCP/CLI tool — that tool
- * calls environment.ts's v1 `checkEnvironment()` today (registry-keyed
- * per-agent bwrap probes for the v1 launcher), which DEC-0008 keeps
- * untouched until the S7 cutover retires v1 wholesale; splicing v2 facts into
- * that shared surface is a v1/v2-coexistence design question bigger than
- * this mechanical primitive.
- * TODO(D6-phase3): wire this into dispatch-mcp/dispatch-cli's
- * check-environment surface (additive to, not replacing, the v1 report
- * before S7).
- */
+/** Bwrap probe facts for the check-environment surface (wired via environment.ts). */
 export async function buildBwrapEnvironmentInfo(): Promise<BwrapProbeResult> {
   return probeBwrap();
 }

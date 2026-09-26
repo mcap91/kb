@@ -109,14 +109,14 @@ describe('dispatch MCP tool', () => {
 // ---------------------------------------------------------------------------
 
 describe('init-dispatch MCP tool', () => {
-  it('is registered with a {dir, force?} input schema', () => {
+  it('is registered with a {dir} input schema', () => {
     const initDispatchTool = tools.find((t) => t.name === 'init-dispatch');
     expect(initDispatchTool).toBeTruthy();
     expect(initDispatchTool?.description).toBeTruthy();
     expect(typeof initDispatchTool?.handler).toBe('function');
 
     const shape = (initDispatchTool?.inputSchema as unknown as { shape: Record<string, unknown> }).shape;
-    expect(Object.keys(shape).sort()).toEqual(['dir', 'force'].sort());
+    expect(Object.keys(shape).sort()).toEqual(['dir'].sort());
   });
 
   it('scaffolds wiki/.dispatch/ (blank tables + README) when invoked through the tool handler', async () => {

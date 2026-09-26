@@ -53,15 +53,11 @@ export {
 } from './schemas.js';
 
 // Platform-aware paths
-export type { TokenState } from './paths.js';
 export {
   resolveConfigDir,
   getConfigDir,
-  getTokenDir,
-  getHostCapabilitiesPath,
   getReviewDir,
   getRunDir,
-  ensureConfigDirs,
 } from './paths.js';
 
 // Run state (shared v1/v2 seam). NOTE: `TerminalRunStatus` is intentionally NOT re-exported here

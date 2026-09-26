@@ -1,12 +1,4 @@
 import { join } from 'node:path';
-import { mkdir } from 'node:fs/promises';
-
-// ---------------------------------------------------------------------------
-// Token state directories
-// ---------------------------------------------------------------------------
-
-/** Token lifecycle states, each backed by a subdirectory under config. */
-export type TokenState = 'pending' | 'launching' | 'consumed' | 'rejected';
 
 // ---------------------------------------------------------------------------
 // Operator config directory
@@ -62,31 +54,6 @@ export function getConfigDir(): string {
 }
 
 // ---------------------------------------------------------------------------
-// Token state subdirectory
-// ---------------------------------------------------------------------------
-
-/**
- * Resolve a token state subdirectory under the operator config directory.
- *
- * - `pending/`   — freshly reviewed, awaiting launch
- * - `launching/` — launch in progress
- * - `consumed/`  — successfully launched
- * - `rejected/`  — rejected or expired
- */
-export function getTokenDir(state: TokenState): string {
-  return join(getConfigDir(), state);
-}
-
-/**
- * Resolve the operator-owned host capabilities record path.
- *
- * Path: `<configDir>/host-capabilities.v1.json`
- */
-export function getHostCapabilitiesPath(): string {
-  return join(getConfigDir(), 'host-capabilities.v1.json');
-}
-
-// ---------------------------------------------------------------------------
 // Repo runtime directories
 // ---------------------------------------------------------------------------
 
@@ -112,32 +79,3 @@ export function getRunDir(
   return join(repoRoot, '.agent-runs', 'runs', handoffId, runId);
 }
 
-// ---------------------------------------------------------------------------
-// Ensure config directory structure
-// ---------------------------------------------------------------------------
-
-const TOKEN_STATES: TokenState[] = [
-  'pending',
-  'launching',
-  'consumed',
-  'rejected',
-];
-
-/**
- * Create the operator config directory structure if absent.
- *
- * Creates:
- * - `<configDir>/`
- * - `<configDir>/pending/`
- * - `<configDir>/launching/`
- * - `<configDir>/consumed/`
- * - `<configDir>/rejected/`
- */
-export async function ensureConfigDirs(): Promise<string> {
-  const configDir = getConfigDir();
-  await mkdir(configDir, { recursive: true });
-  for (const state of TOKEN_STATES) {
-    await mkdir(join(configDir, state), { recursive: true });
-  }
-  return configDir;
-}

@@ -113,9 +113,8 @@ export const tools: ToolDef[] = [
     description: 'Scaffold blank wiki/.dispatch/ config tables (models.json, backends.json, profiles.json) + README. Every file, including README.md, is written only if absent — re-run never overwrites existing content.',
     inputSchema: z.object({
       dir: z.string().describe('Target repo directory'),
-      force: z.boolean().optional().describe('Force overwrite of managed README section even if it exists'),
     }),
-    handler: async (input) => initDispatch({ dir: input.dir as string, force: input.force as boolean | undefined }),
+    handler: async (input) => initDispatch({ dir: input.dir as string }),
   },
   {
     name: 'merge-delivery',
