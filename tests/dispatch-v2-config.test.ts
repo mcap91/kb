@@ -58,6 +58,9 @@ describe('errors.ts — V2_REFUSAL_CODES', () => {
       'WORK_ITEM_NOT_FOUND',
       'CLAUDE_PERMISSION_PROBE_FAILED',
       'BASE_DRIFT',
+      'NO_MODEL_DEFAULT',
+      'AMBIGUOUS_MODEL_DEFAULT',
+      'AMBIGUOUS_BACKEND',
     ];
     expect([...V2_REFUSAL_CODES].sort()).toEqual([...expected].sort());
   });

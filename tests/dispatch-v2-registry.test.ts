@@ -17,6 +17,7 @@ import { join } from 'node:path';
 import {
   resolveModelFromConfig,
   resolveModelByMode,
+  resolveModelInferBackend,
   checkHarnessVersion,
   buildFingerprintFragment,
   parseFingerprintOutput,
@@ -270,6 +271,79 @@ describe('model-registry.ts — resolveModelByMode', () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.data.slug).toBe('deepseek');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resolveModelInferBackend (WK-0070 partial specification)
+// ---------------------------------------------------------------------------
+
+describe('model-registry.ts — resolveModelInferBackend', () => {
+  let dir: string;
+
+  beforeEach(async () => {
+    dir = await createTempDir('kb-model-infer-backend-');
+  });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('resolves to the single backend when model has exactly one available_on entry', async () => {
+    await writeDispatchConfig(dir, 'models.json', JSON.stringify({
+      deepseek: { available_on: ['openrouter'], model_id: 'deepseek/deepseek-v4-flash-0731' },
+    }));
+    await writeDispatchConfig(dir, 'backends.json', JSON.stringify({
+      openrouter: { family: 'pi', base_url: 'https://openrouter.ai/api/v1', api_key_env: 'OPENROUTER_API_KEY', secrets_file: null },
+    }));
+
+    const result = await resolveModelInferBackend(dir, 'deepseek');
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.slug).toBe('deepseek');
+    expect(result.data.backend).toBe('openrouter');
+  });
+
+  it('fails with AMBIGUOUS_BACKEND when model has multiple available_on entries', async () => {
+    await writeDispatchConfig(dir, 'models.json', JSON.stringify({
+      deepseek: { available_on: ['openrouter', 'vllm-ec2'], model_id: 'deepseek/deepseek-v4-flash-0731' },
+    }));
+    await writeDispatchConfig(dir, 'backends.json', JSON.stringify({
+      openrouter: { family: 'pi', base_url: 'https://openrouter.ai/api/v1', api_key_env: 'OPENROUTER_API_KEY', secrets_file: null },
+      'vllm-ec2': { family: 'pi', base_url: 'http://ec2-host:8000/v1', api_key_env: null, secrets_file: null },
+    }));
+
+    const result = await resolveModelInferBackend(dir, 'deepseek');
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toBe('AMBIGUOUS_BACKEND');
+    expect((result.detail as { backends: string[] }).backends).toEqual(['openrouter', 'vllm-ec2']);
+  });
+
+  it('fails with MODEL_NOT_FOUND when model slug is not in models.json', async () => {
+    await writeDispatchConfig(dir, 'models.json', JSON.stringify({
+      deepseek: { available_on: ['openrouter'], model_id: 'deepseek/deepseek-v4-flash-0731' },
+    }));
+    await writeDispatchConfig(dir, 'backends.json', JSON.stringify({
+      openrouter: { family: 'pi', base_url: 'https://openrouter.ai/api/v1', api_key_env: 'OPENROUTER_API_KEY', secrets_file: null },
+    }));
+
+    const result = await resolveModelInferBackend(dir, 'nonexistent');
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toBe('MODEL_NOT_FOUND');
+  });
+
+  it('fails with AMBIGUOUS_BACKEND (not success) when model has zero available_on entries', async () => {
+    await writeDispatchConfig(dir, 'models.json', JSON.stringify({
+      deepseek: { available_on: [], model_id: 'deepseek/deepseek-v4-flash-0731' },
+    }));
+    await writeDispatchConfig(dir, 'backends.json', JSON.stringify({}));
+
+    const result = await resolveModelInferBackend(dir, 'deepseek');
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toBe('AMBIGUOUS_BACKEND');
   });
 });
 
