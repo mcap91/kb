@@ -871,41 +871,43 @@ describe('dispatch v2 e2e (fake-tier) — isolation route (mocked bwrap probe)',
 // delivery outcome).
 // ---------------------------------------------------------------------------
 
+/**
+ * Mock spawnIsolated: capture the bwrap plan's command (`plan.command[2]` is
+ * the innerScript bash string pipeline.ts builds at step 10-12c, which
+ * embeds the worker invocation line under test), write a real golden
+ * fixture to the requested stdoutLogPath as the "worker output", and
+ * resolve as a clean, un-truncated, non-timed-out exit — exactly the shape
+ * spawnIsolated itself returns for a worker that ran to completion. Module
+ * scope (not nested in one describe block) so both the WK-0122 effort-
+ * passthrough tests and the WK-0156 relay-cleanup tests below can share it.
+ */
+function mockSpawnIsolated(fixtureContent: string): { getInnerScript: () => string | undefined } {
+  let capturedInnerScript: string | undefined;
+  vi.spyOn(spawnIsolatedModule, 'spawnIsolated').mockImplementation(async (plan, opts) => {
+    capturedInnerScript = plan.command[2];
+    if (opts?.stdoutLogPath) {
+      await writeFile(opts.stdoutLogPath, fixtureContent, 'utf8');
+    }
+    return {
+      ok: true,
+      data: {
+        stdout: '',
+        stderr: '',
+        exitCode: 0,
+        signal: null,
+        truncated: false,
+        timedOut: false,
+        streamDrainTimedOut: false,
+      },
+    };
+  });
+  return { getInnerScript: () => capturedInnerScript };
+}
+
 describe('dispatch v2 e2e (fake-tier) — WK-0122 effort passthrough (mocked spawnIsolated)', () => {
   afterEach(() => {
     vi.restoreAllMocks();
   });
-
-  /**
-   * Mock spawnIsolated: capture the bwrap plan's command (`plan.command[2]`
-   * is the innerScript bash string pipeline.ts builds at step 10-12c, which
-   * embeds the exec line under test), write a real golden fixture to the
-   * requested stdoutLogPath as the "worker output", and resolve as a clean,
-   * un-truncated, non-timed-out exit — exactly the shape spawnIsolated
-   * itself returns for a worker that ran to completion.
-   */
-  function mockSpawnIsolated(fixtureContent: string): { getInnerScript: () => string | undefined } {
-    let capturedInnerScript: string | undefined;
-    vi.spyOn(spawnIsolatedModule, 'spawnIsolated').mockImplementation(async (plan, opts) => {
-      capturedInnerScript = plan.command[2];
-      if (opts?.stdoutLogPath) {
-        await writeFile(opts.stdoutLogPath, fixtureContent, 'utf8');
-      }
-      return {
-        ok: true,
-        data: {
-          stdout: '',
-          stderr: '',
-          exitCode: 0,
-          signal: null,
-          truncated: false,
-          timedOut: false,
-          streamDrainTimedOut: false,
-        },
-      };
-    });
-    return { getInnerScript: () => capturedInnerScript };
-  }
 
   it('claude backend with effort_mapping: effort spliced into the exec line + effort_requested in the response doc', async () => {
     const repoRoot = await setupS3Repo({
@@ -1031,6 +1033,163 @@ describe('dispatch v2 e2e (fake-tier) — WK-0122 effort passthrough (mocked spa
 
       const responseContent = await readFile(result.data.responsePath, 'utf8');
       expect(responseContent).toContain('effort_requested: \n');
+    } finally {
+      await rm(repoRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// WK-0156 — relay.js orphan fix. Root cause: the innerScript used to `exec`
+// the worker command, which replaces the wrapper shell process outright —
+// the backgrounded relay's PID (and any trap that could kill it) died along
+// with that shell, so once the worker exited, relay.js kept running as an
+// unreachable host orphan (10+ observed across completed/failed runs). The
+// fix backgrounds the worker too and `wait`s on it explicitly, with an
+// EXIT/TERM/INT trap that kills both the worker and the relay.
+//
+// These tests reuse the WK-0122 block's mockSpawnIsolated/getInnerScript
+// seam and can only assert the STRUCTURAL shape of the generated innerScript
+// (spawnIsolated itself is mocked here, so no real shell/signal semantics
+// run). The actual interruptibility claim — that `cmd & wait "$!"` +
+// `trap ... TERM` reliably kills both processes on a real SIGTERM, with no
+// orphans and a sane exit code — was verified separately against a live
+// `bash -c` script driven by a real Node `child_process.spawn()` (mirroring
+// spawn-isolated.ts's own detached spawn + SIGTERM-on-timeout shape) before
+// this fix landed; that live probe is not repeatable in this fake-tier
+// suite (no bwrap host here) so it is not re-encoded as an automated test.
+// ---------------------------------------------------------------------------
+
+describe('dispatch v2 e2e (fake-tier) — WK-0156 relay cleanup (mocked spawnIsolated)', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  /** Shared structural assertions: relay tracked + trapped, stale-PID-safe, worker backgrounded not exec'd. */
+  function expectRelayCleanupWiring(script: string): void {
+    expect(script).toContain('RELAY_PID=$!');
+    expect(script).toContain('WORKER_PID=""');
+    expect(script).toContain('trap cleanup EXIT TERM INT');
+    // Stale-PID tolerance (acceptance criterion 2): kill on an already-dead
+    // PID is swallowed (`2>/dev/null || true`), never allowed to fail the
+    // script under `set -e`.
+    expect(script).toContain('if [ -n "$WORKER_PID" ]; then kill "$WORKER_PID" 2>/dev/null || true; fi');
+    expect(script).toContain('kill "$RELAY_PID" 2>/dev/null || true');
+    // The worker is backgrounded and explicitly waited on...
+    expect(script).toContain('WORKER_PID=$!');
+    expect(script).toContain('wait "$WORKER_PID"');
+    // ...never `exec`'d — `exec` would replace this shell and orphan the relay.
+    expect(script.split('\n').some((line) => line.startsWith('exec '))).toBe(false);
+  }
+
+  it('claude family (multi-line execLines): worker line is backgrounded + trap-cleaned, not exec\'d', async () => {
+    const repoRoot = await setupS3Repo({
+      backends: {
+        'claude-saas': { family: 'claude', base_url: null, api_key_env: null, secrets_file: null },
+      },
+      models: {
+        'claude-sonnet-5': { available_on: ['claude-saas'], model_id: 'claude-sonnet-5' },
+      },
+    });
+    const { getInnerScript } = mockSpawnIsolated(readFixtureFile('claude-p-output.txt'));
+    try {
+      const result = await runDispatch({
+        dir: repoRoot,
+        handoff: 'wiki/handoffs/HO-S3TEST.md',
+        model: 'claude-sonnet-5',
+        backend: 'claude-saas',
+        preflight: false,
+      });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      const innerScript = getInnerScript();
+      expect(innerScript).toBeDefined();
+      const script = innerScript!;
+      expectRelayCleanupWiring(script);
+
+      // PROMPT=$(cat ...) still precedes the backgrounded worker invocation
+      // (ordering preserved — only the final line's leading `exec ` is
+      // stripped, the rest of execLines is untouched).
+      const promptIdx = script.indexOf('PROMPT=$(cat');
+      const workerIdx = script.indexOf('claude -p --output-format json');
+      const workerPidIdx = script.indexOf('WORKER_PID=$!');
+      expect(promptIdx).toBeGreaterThan(-1);
+      expect(workerIdx).toBeGreaterThan(promptIdx);
+      expect(workerPidIdx).toBeGreaterThan(workerIdx);
+    } finally {
+      await rm(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('codex family (multi-line execLines, different flag shape): worker line is backgrounded + trap-cleaned, not exec\'d', async () => {
+    const repoRoot = await setupS3Repo({
+      backends: {
+        'codex-saas': { family: 'codex', base_url: null, api_key_env: null, secrets_file: null },
+      },
+      models: {
+        'gpt-5.5': { available_on: ['codex-saas'], model_id: 'gpt-5.5' },
+      },
+    });
+    const { getInnerScript } = mockSpawnIsolated(readFixtureFile('codex-exec-output-stream-json.jsonl'));
+    try {
+      const result = await runDispatch({
+        dir: repoRoot,
+        handoff: 'wiki/handoffs/HO-S3TEST.md',
+        model: 'gpt-5.5',
+        backend: 'codex-saas',
+        preflight: false,
+      });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      const innerScript = getInnerScript();
+      expect(innerScript).toBeDefined();
+      const script = innerScript!;
+      expectRelayCleanupWiring(script);
+
+      const promptIdx = script.indexOf('PROMPT=$(cat');
+      const workerIdx = script.indexOf('codex exec "$PROMPT"');
+      const workerPidIdx = script.indexOf('WORKER_PID=$!');
+      expect(promptIdx).toBeGreaterThan(-1);
+      expect(workerIdx).toBeGreaterThan(promptIdx);
+      expect(workerPidIdx).toBeGreaterThan(workerIdx);
+    } finally {
+      await rm(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('pi family (single-line execLines — no PROMPT=$(cat...) prefix line): worker line is backgrounded + trap-cleaned, not exec\'d', async () => {
+    // setupS3Repo()'s own default backend/model (deepseek/openrouter) already
+    // resolves to family "pi" — this is the ONE-ELEMENT execLines shape
+    // (pipeline.ts step 10's pi branch), covering the `execLines.slice(0,-1)`
+    // edge case (an empty array, not just "drop the last of several").
+    const repoRoot = await setupS3Repo();
+    const { getInnerScript } = mockSpawnIsolated(readFixtureFile('pi-output-vllm-qwen25.jsonl'));
+    try {
+      const result = await runDispatch({
+        dir: repoRoot,
+        handoff: 'wiki/handoffs/HO-S3TEST.md',
+        model: 'deepseek',
+        backend: 'openrouter',
+        preflight: false,
+      });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      const innerScript = getInnerScript();
+      expect(innerScript).toBeDefined();
+      const script = innerScript!;
+      expectRelayCleanupWiring(script);
+
+      // No PROMPT=$(cat ...) prefix line for Pi — the worker invocation is
+      // the only execLines entry, so it must land directly after the fixed
+      // preamble (trap/sleep/[npm rebuild]) with nothing stray in between.
+      expect(script).not.toContain('PROMPT=$(cat');
+      const sleepIdx = script.indexOf('\nsleep 0.2\n');
+      const workerPidIdx = script.indexOf('WORKER_PID=$!');
+      expect(sleepIdx).toBeGreaterThan(-1);
+      expect(workerPidIdx).toBeGreaterThan(sleepIdx);
     } finally {
       await rm(repoRoot, { recursive: true, force: true });
     }
