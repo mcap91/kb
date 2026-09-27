@@ -34,9 +34,9 @@ export interface PiModelsJson {
         contextWindow: number;
         maxTokens: number;
         cost: { input: number; output: number; cacheRead: number; cacheWrite: number };
+        samplingParams?: Record<string, unknown>;
       }>;
       compat?: { supportsDeveloperRole?: boolean; supportsReasoningEffort?: boolean };
-      samplingParams?: Record<string, unknown>;
     }
   >;
 }
@@ -151,10 +151,10 @@ export function buildModelsJson(model: ModelEntry, requestParams?: Record<string
             contextWindow: model.contextWindow,
             maxTokens: model.maxTokens,
             cost: { ...model.cost },
+            ...(requestParams ? { samplingParams: requestParams } : {}),
           },
         ],
         ...(model.compat ? { compat: { ...model.compat } } : {}),
-        ...(requestParams ? { samplingParams: requestParams } : {}),
       },
     },
   };
