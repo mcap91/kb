@@ -5,6 +5,7 @@ mode: implement
 work_item:
 write_scope: []
 base_ref:
+base_sha:
 web: false
 credentials: []
 data_mounts: []

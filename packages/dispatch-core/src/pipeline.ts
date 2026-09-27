@@ -52,7 +52,6 @@ import {
   buildBwrapPlan,
   buildSecretMaskArgs,
   classifyEntry,
-  classifyWikiShape,
   deriveDirectoryScopedMounts,
   deriveExactFileMounts,
   type BwrapPlan,
@@ -61,6 +60,7 @@ import {
 import { spawnIsolated, type SpawnResult } from './spawn-isolated.js';
 import { buildWorkerEnv } from './env-policy.js';
 import { createClone, removeClone, sweepOrphanClones } from './clone.js';
+import { probeWikiSource } from './wiki-source.js';
 import {
   buildEnumerateScript,
   parseEnumerateOutput,
@@ -543,7 +543,7 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
 
   // 2. Admission — full §7 gate (PLN-0004 S4): bad_record, envelope_exceeds_mode,
   // missing/stale_write_scope, missing_read_first, dirty_repo, bad_base_ref,
-  // bad_data_mount; resolves base_sha.
+  // bad_data_mount, base_drift; resolves base_sha.
   logVerbose(verbose, `running admission checks for ${handoff.id}`);
   const admission = await checkAdmission(handoff, dir);
   if (!admission.ok) return admission;
@@ -687,40 +687,19 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
     return fail('PIPELINE_FAILED', `Failed to write prompt file: ${promptPath}`, err);
   }
 
-  // 8b. Wiki shape probe (T25/D19 dual-shape read axis) — before the clone is
-  // created, probe whether wiki/ is git-tracked in the MOTHER repo (a fresh
-  // clone at the same lineage carries the identical tracked-file set, so this
-  // need not wait for the clone to exist). Best-effort: a failed probe
-  // degrades to the fail-safe 'nested-private' default (no wiki bind at all)
-  // rather than refusing the whole dispatch over a soft probe.
-  const wikiProbeResult = await execBash({
-    scriptContent: 'git ls-files wiki/ 2>/dev/null',
-    cwd: dir,
-    timeoutMs: 30_000,
-  });
-  const wikiShape: WikiShape = wikiProbeResult.ok
-    ? classifyWikiShape(wikiProbeResult.data.stdout)
-    : 'nested-private'; // fail-safe: assume no wiki in clone
-
-  // 8c. Wiki source commit (WK-0135 provenance): tracked shape's wiki/ lives
-  // in the mother repo itself, so the pinned clone commit IS the wiki
-  // commit — no separate probe needed. Nested-private shape's wiki/ lives in
-  // a separate repo (`<mother>/wiki`), so probe its own HEAD. Best-effort —
-  // a failed probe degrades to undefined, never fails the run.
+  // 8b/8c. Wiki shape + wiki source commit (T25/D19; WK-0135) via the shared
+  // probeWikiSource helper (WK-0152). Best-effort, as before: a failed probe
+  // degrades to the fail-safe 'nested-private' shape (no wiki bind) and an
+  // undefined wiki_commit rather than refusing the dispatch.
+  const wikiSource = await probeWikiSource(dir);
+  const wikiShape: WikiShape = wikiSource.ok ? wikiSource.data.shape : 'nested-private';
   let wikiCommit: string | undefined;
   if (wikiShape === 'tracked') {
     wikiCommit = admission.data.baseSha;
+  } else if (wikiSource.ok && wikiSource.data.head !== null) {
+    wikiCommit = wikiSource.data.head;
   } else {
-    const wikiHeadResult = await execBash({
-      scriptContent: 'git rev-parse HEAD',
-      cwd: join(dir, 'wiki'),
-      timeoutMs: 30_000,
-    });
-    if (wikiHeadResult.ok) {
-      wikiCommit = wikiHeadResult.data.stdout.trim();
-    } else {
-      logVerbose(verbose, `warning: could not probe nested-private wiki HEAD at ${join(dir, 'wiki')}: ${wikiHeadResult.message}`);
-    }
+    logVerbose(verbose, `warning: could not probe wiki source in ${dir}: ${wikiSource.ok ? 'no wiki HEAD' : wikiSource.message}`);
   }
 
   // 9. Clone (ephemeral full clone @ pinned base_sha, same-host ext4)

@@ -13,6 +13,8 @@
  * (context_budget_exceeded) live in pipeline.ts instead of here: they need facts
  * (resolved model, resolved credentials, the assembled prompt) this module never
  * has. Checks below run in spec order, failing closed on the first violation.
+ * WK-0152 adds `base_drift` (`checkBaseDrift`), run last after baseSha
+ * resolution, outside the upstream §7 numbering.
  */
 import { execFile as execFileCb } from 'node:child_process';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
@@ -22,6 +24,7 @@ import { promisify } from 'node:util';
 import type { DispatchResult } from './errors.js';
 import { fail, ok } from './errors.js';
 import type { Handoff, HandoffMode } from './ho.js';
+import { probeWikiSource } from './wiki-source.js';
 
 const execFile = promisify(execFileCb);
 
@@ -226,13 +229,145 @@ export async function checkWorkItemExists(
   return ok(null);
 }
 
+const FULL_SHA = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
+const MAX_LISTED_COMMITS = 20;
+
+function isWikiPath(entry: string): boolean {
+  return entry === 'wiki' || entry.startsWith('wiki/');
+}
+
+/** Paths whose drift makes an HO stale: what it edits, what it reads, and its ticket. */
+function declaredPaths(handoff: Handoff): string[] {
+  const paths = [...handoff.write_scope, ...handoff.read_first];
+  if (handoff.work_item) paths.push(`wiki/issues/${handoff.work_item}.md`);
+  return [...new Set(paths)];
+}
+
+interface StampCheck {
+  field: 'base_sha' | 'base_wiki_sha';
+  stamp: string | undefined;
+  cwd: string;
+  /** Revision the worker will see; undefined = the working tree (the nested wiki is bound live, DEC-0039). */
+  target: string | undefined;
+  currentHead: string;
+  headCommand: string;
+  paths: string[];
+}
+
+async function checkStamp(handoff: Handoff, check: StampCheck): Promise<DispatchResult<null>> {
+  const fix = `set ${check.field} to the current HEAD (${check.headCommand}; currently ${check.currentHead}) and re-dispatch.`;
+  const stamp = check.stamp;
+
+  let valid = stamp !== undefined && FULL_SHA.test(stamp);
+  if (valid) {
+    try {
+      await execFile('git', ['cat-file', '-e', `${stamp}^{commit}`], { cwd: check.cwd });
+    } catch {
+      valid = false;
+    }
+  }
+  if (!valid || stamp === undefined) {
+    return fail(
+      'BASE_DRIFT',
+      `Handoff ${handoff.id} has no valid ${check.field}. Re-read the task against today's code, then ${fix}`,
+      { field: check.field, stamp: stamp ?? null, current: check.currentHead },
+    );
+  }
+
+  // An empty pathspec would diff the whole repo — nothing declared here, nothing to drift.
+  if (check.paths.length === 0) return ok(null);
+
+  const range = check.target === undefined ? [stamp] : [stamp, check.target];
+  let changed: string[];
+  let commits: string[];
+  try {
+    const diff = await execFile('git', ['diff', '--name-only', ...range, '--', ...check.paths], { cwd: check.cwd });
+    changed = diff.stdout.split('\n').filter((line) => line.length > 0);
+    if (check.target === undefined) {
+      // Working-tree comparison (the live-bound nested wiki, DEC-0039): `git diff`
+      // cannot report a file git has never tracked, but the worker sees it (decision 9).
+      // Fold in ONLY untracked (`??`) entries: tracked changes are already covered by
+      // the stamp diff above, and `git status` compares to HEAD, not the stamp —
+      // folding tracked lines would refuse a working tree that matches the stamp.
+      const status = await execFile('git', ['status', '--porcelain', '--', ...check.paths], { cwd: check.cwd });
+      for (const line of status.stdout.split('\n')) {
+        if (!line.startsWith('?? ')) continue;
+        const path = line.slice(3).trim();
+        if (path.length > 0 && !changed.includes(path)) changed.push(path);
+      }
+    }
+    if (changed.length === 0) return ok(null);
+    const log = await execFile(
+      'git',
+      ['log', '--oneline', `-n${MAX_LISTED_COMMITS}`, `${stamp}..${check.target ?? 'HEAD'}`, '--', ...check.paths],
+      { cwd: check.cwd },
+    );
+    commits = log.stdout.split('\n').filter((line) => line.length > 0);
+  } catch (err) {
+    return fail('ADMISSION_FAILED', `Failed to compute drift since ${check.field} ${stamp} in ${check.cwd}.`, err);
+  }
+
+  const workItem = handoff.work_item ? ` and ${handoff.work_item}` : '';
+  return fail(
+    'BASE_DRIFT',
+    [
+      `Handoff ${handoff.id}: ${changed.length} declared file(s) changed since ${check.field} ${stamp}.`,
+      `Changed: ${changed.join(', ')}`,
+      commits.length > 0 ? `Commits:\n${commits.map((c) => `  ${c}`).join('\n')}` : 'Commits: none listed (uncommitted changes or rewritten history)',
+      `Re-read these changes against ${handoff.id}${workItem}. Fix whatever is stale and commit, then ${fix}`,
+    ].join('\n'),
+    { field: check.field, stamp, current: check.currentHead, changed, commits },
+  );
+}
+
+/**
+ * WK-0152 `base_drift`: a fresh-HEAD HO (base_ref null — spec §8's "never a
+ * stale base" path) must carry the commit it was checked against, and is
+ * refused if any declared path changed since. Chained HOs (base_ref set) are
+ * exempt: they run on an immutable dispatch/ branch (delivery.ts's CAS push
+ * never moves an existing branch), and the orchestrator updates their WK
+ * mid-chain by design.
+ */
+async function checkBaseDrift(handoff: Handoff, repoRoot: string, baseSha: string): Promise<DispatchResult<null>> {
+  if (handoff.base_ref !== null) return ok(null);
+
+  const wiki = await probeWikiSource(repoRoot);
+  if (!wiki.ok) return fail('ADMISSION_FAILED', wiki.message, wiki.detail);
+
+  const paths = declaredPaths(handoff);
+  const nested = wiki.data.shape === 'nested-private';
+
+  const codeCheck = await checkStamp(handoff, {
+    field: 'base_sha',
+    stamp: handoff.base_sha,
+    cwd: repoRoot,
+    target: baseSha,
+    currentHead: baseSha,
+    headCommand: 'git rev-parse HEAD',
+    paths: nested ? paths.filter((p) => !isWikiPath(p)) : paths,
+  });
+  if (!codeCheck.ok || !nested) return codeCheck;
+
+  return checkStamp(handoff, {
+    field: 'base_wiki_sha',
+    stamp: handoff.base_wiki_sha,
+    cwd: join(repoRoot, 'wiki'),
+    target: undefined,
+    currentHead: wiki.data.head ?? '',
+    headCommand: 'git -C wiki rev-parse HEAD',
+    paths: paths.filter(isWikiPath).map((p) => (p === 'wiki' || p === 'wiki/' ? '.' : p.slice('wiki/'.length))),
+  });
+}
+
 /**
  * Run the full §7 admission gate against an already-parsed handoff, in spec
  * order, failing on the first violation. See the module doc above for the
  * check-to-code map, including what's deliberately handled elsewhere.
  *
  * On success, resolves `baseSha` = current HEAD (spec §8 step 1 — first
- * implement HO of a chain uses fresh HEAD, never a stale base).
+ * implement HO of a chain uses fresh HEAD, never a stale base), then refuses
+ * `BASE_DRIFT` if a fresh-HEAD HO's declared paths changed since its
+ * `base_sha` / `base_wiki_sha` (WK-0152).
  */
 export async function checkAdmission(handoff: Handoff, repoRoot: string): Promise<DispatchResult<AdmissionResult>> {
   // §7.1 bad_record — defensive re-check; ho.ts already validated this on parse,
@@ -305,6 +440,9 @@ export async function checkAdmission(handoff: Handoff, repoRoot: string): Promis
       err,
     );
   }
+
+  const baseDriftCheck = await checkBaseDrift(handoff, repoRoot, baseSha);
+  if (!baseDriftCheck.ok) return baseDriftCheck;
 
   return ok({ handoff, repoRoot, baseSha });
 }

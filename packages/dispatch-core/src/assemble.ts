@@ -215,8 +215,9 @@ function getModeParts(handoff: Handoff): ModeParts {
       return {
         introLine: 'You are a code reviewer checking this change against its acceptance criteria.',
         framing:
-          `Review the diff on the \`dispatch/${handoff.id}\` branch (visible via \`base_ref\`) ` +
-          'against the acceptance criteria below.\n\n' +
+          `Review the change delivered on \`${handoff.base_ref}\`. Your checkout is that branch's tip, and ` +
+          'each delivery is a single commit on its base, so the change under review is exactly `git diff HEAD~1 HEAD`. ' +
+          'Check it against the acceptance criteria below.\n\n' +
           'Flag iterative fix-up patterns (multiple small patches to the same region, ' +
           'trial-and-error artifacts, debug residue) as a quality finding — do not auto-reject; ' +
           'the orchestrator decides disposition.\n\n' +

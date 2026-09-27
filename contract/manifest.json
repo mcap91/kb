@@ -436,6 +436,8 @@
       "optionalFrontMatter": [
         "write_scope",
         "base_ref",
+        "base_sha",
+        "base_wiki_sha",
         "web",
         "credentials",
         "data_mounts",

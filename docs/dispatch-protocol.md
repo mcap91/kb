@@ -554,6 +554,39 @@ The `fake-agent` entry points to the `kb` repo's `tests/fixtures/fake-agent.ts` 
 - Dogfooding the full review-launch cycle
 - Validating the dispatch pipeline without a real agent
 
+### Base drift gate (WK-0152)
+
+A fresh-HEAD HO (`base_ref` null — the normal "cut from current HEAD" path) must carry the commit it was checked against. Admission compares that stamp to what the worker will actually see, restricted to the **declared paths** — `write_scope` ∪ `read_first` ∪ the HO's own WK file (`wiki/issues/<work_item>.md`). Any difference refuses with `BASE_DRIFT`.
+
+| Wiki shape | Code-repo check | Wiki check |
+|---|---|---|
+| tracked (normal repos) | `git diff --name-only <base_sha> <current HEAD> -- <declared paths>` in the repo root | none — wiki paths already live in the code repo |
+| nested-private (`wiki/` is its own git repo) | same command, declared paths **minus** `wiki/…` | `git diff --name-only <base_wiki_sha> -- <wiki paths>` against the **working tree** in `<repo>/wiki` (the jail binds the live wiki dir, DEC-0039), with `git status --porcelain` folded in so never-committed files count too |
+
+**Stamp validity.** A stamp must be a full hex SHA (40 or 64 chars) that names a commit in the right repo. Anything else — missing, `main`, an abbreviated SHA, or an unknown commit — is refused as "no valid `base_sha`" (or `base_wiki_sha`).
+
+**Refusal messages.** No valid stamp:
+
+```
+Handoff HO-0015 has no valid base_sha. Re-read the task against today's code, then set base_sha to the current HEAD (git rev-parse HEAD; currently <sha>) and re-dispatch.
+```
+
+Declared files changed:
+
+```
+Handoff HO-0014: 3 declared file(s) changed since base_sha <stamp>.
+Changed: packages/dispatch-core/src/pipeline.ts, packages/dispatch-core/src/delivery.ts, wiki/issues/WK-0134.md
+Commits:
+  6271586 fix(dispatch): WK-0148 — add missing error handlers on child-process stdio pipes (DEC-0040)
+Re-read these changes against HO-0014 and WK-0134. Fix whatever is stale and commit, then set base_sha to the current HEAD (git rev-parse HEAD; currently <sha>) and re-dispatch.
+```
+
+For the wiki stamp, substitute `base_wiki_sha` / `git -C wiki rev-parse HEAD`. When files differ but no commits are listed (uncommitted or rewritten-history edits), the `Commits:` line reads `none listed (uncommitted changes or rewritten history)`.
+
+**The fix.** Re-read the listed changes against the HO and its WK, fix and commit anything stale, then set the stamp to the current HEAD printed in the message and re-dispatch.
+
+**Chained-HO exemption.** An HO with `base_ref` set runs on an immutable `dispatch/` branch and is exempt from this gate — the orchestrator is expected to update its WK mid-chain by design.
+
 ## Post-Run Lifecycle Tools (WK-0132)
 
 Three mechanical lifecycle capabilities close the manual gaps in the dispatch loop:

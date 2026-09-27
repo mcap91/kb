@@ -34,6 +34,8 @@ export interface Handoff {
   mode: HandoffMode;
   write_scope: string[];
   base_ref: string | null;
+  base_sha?: string; // WK-0152: commit this fresh-HEAD HO was checked against; admission's base-drift gate diffs declared paths from here
+  base_wiki_sha?: string; // WK-0152: nested-private wiki repo's commit this HO was checked against
   reviewed_run?: string; // Run id this review targets (WK-0153 discharge evidence)
   web: boolean;
   credentials: string[];
@@ -210,6 +212,13 @@ export function parseHandoffContent(content: string, filename: string): Dispatch
     return fail('Handoff base_ref must be a string or null.');
   }
 
+  for (const field of ['base_sha', 'base_wiki_sha'] as const) {
+    const value = raw[field];
+    if (value !== undefined && value !== null && typeof value !== 'string') {
+      return fail(`Handoff ${field} must be a string or null.`);
+    }
+  }
+
   if (raw.credentials !== undefined && (!Array.isArray(raw.credentials) || !raw.credentials.every((entry) => typeof entry === 'string'))) {
     return fail('Handoff credentials must be an array of strings.');
   }
@@ -259,6 +268,8 @@ export function parseHandoffContent(content: string, filename: string): Dispatch
 
   if (typeof raw.fixup_context === 'string') handoff.fixup_context = raw.fixup_context;
   if (typeof raw.work_item === 'string') handoff.work_item = raw.work_item;
+  if (typeof raw.base_sha === 'string' && raw.base_sha !== '') handoff.base_sha = raw.base_sha;
+  if (typeof raw.base_wiki_sha === 'string' && raw.base_wiki_sha !== '') handoff.base_wiki_sha = raw.base_wiki_sha;
   if (typeof raw.run_id === 'string') handoff.run_id = raw.run_id;
   if (typeof raw.agent === 'string') handoff.agent = raw.agent;
   if (typeof raw.model === 'string') handoff.model = raw.model;
