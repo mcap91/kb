@@ -8,7 +8,7 @@
  * orchestrator does that separately via the existing `dispatch` tool
  * (two-step review chain, ratified in WK-0132).
  */
-import { readFile, writeFile } from 'node:fs/promises';
+import { readFile, readdir, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 
 import { allocate } from '@kb/wiki-core';
@@ -29,6 +29,7 @@ export interface DeriveReviewResult {
   reviewPath: string;
   reviewRelativePath: string;
   implementId: string;
+  reviewedRunId: string | undefined;
 }
 
 export async function deriveReview(opts: DeriveReviewOpts): Promise<DispatchResult<DeriveReviewResult>> {
@@ -59,6 +60,35 @@ export async function deriveReview(opts: DeriveReviewOpts): Promise<DispatchResu
     return fail('BAD_RECORD', `Implement HO ${implement.id} is not delivered (response doc missing)`);
   }
 
+  // Find the HO's latest terminal run for reviewed_run stamp (WK-0153)
+  const V2_TERMINAL = new Set(['delivered', 'completed', 'failed', 'refused', 'timed_out', 'cancelled']);
+  let reviewedRunId: string | undefined;
+
+  const runsDir = join(targetDir, '.agent-runs', 'runs', implement.id);
+  try {
+    const runIds = await readdir(runsDir);
+    let latestCompletedAt = '';
+
+    for (const runId of runIds) {
+      try {
+        const stateRaw = await readFile(join(runsDir, runId, 'state.json'), 'utf-8');
+        const state = JSON.parse(stateRaw) as Record<string, unknown>;
+        if (state.schema_version !== 2) continue;
+        const status = typeof state.status === 'string' ? state.status : '';
+        if (!V2_TERMINAL.has(status)) continue;
+        const completedAt = typeof state.completed_at === 'string' ? state.completed_at : '';
+        if (completedAt > latestCompletedAt) {
+          latestCompletedAt = completedAt;
+          reviewedRunId = runId;
+        }
+      } catch {
+        // Skip unreadable run state
+      }
+    }
+  } catch {
+    // No runs dir — reviewed_run will be undefined
+  }
+
   const allocResult = await allocate({ dir: targetDir, prefix: 'HO' });
   if (!allocResult.ok) return fail('ALLOCATION_FAILED', allocResult.message);
   const reviewId = allocResult.data.id;
@@ -80,6 +110,7 @@ export async function deriveReview(opts: DeriveReviewOpts): Promise<DispatchResu
     export_mounts: implement.export_mounts,
     base_ref: `dispatch/${implement.id}`,
     vars: implement.vars,
+    reviewed_run: reviewedRunId,
   };
 
   const content = renderHandoff(reviewId, createOpts);
@@ -97,5 +128,6 @@ export async function deriveReview(opts: DeriveReviewOpts): Promise<DispatchResu
     reviewPath,
     reviewRelativePath,
     implementId: implement.id,
+    reviewedRunId,
   });
 }

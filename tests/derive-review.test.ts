@@ -8,7 +8,7 @@
  * tests/create-handoff-validation.test.ts's setup pattern).
  */
 import { describe, expect, it, beforeEach, afterEach } from 'vitest';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -60,6 +60,32 @@ async function writeResponseDoc(tempDir: string, handoffId: string): Promise<voi
     `---\nhandoff_id: ${handoffId}\noutcome: delivered\n---\n\n# Response\n`,
     'utf-8',
   );
+}
+
+function writeJson(path: string, value: unknown): Promise<void> {
+  return writeFile(path, `${JSON.stringify(value, null, 2)}\n`, 'utf-8');
+}
+
+// Mirrors dispatch-surface.test.ts's writeV2State fixture (same v2 state.json shape).
+async function writeRunState(runDir: string, overrides: Record<string, unknown> = {}): Promise<void> {
+  await mkdir(runDir, { recursive: true });
+  await writeJson(join(runDir, 'state.json'), {
+    schema_version: 2,
+    run_id: 'RUN-placeholder',
+    handoff_id: 'HO-placeholder',
+    model: 'deepseek',
+    status: 'running',
+    pid: process.pid,
+    pgid: process.pid,
+    started_at: new Date(Date.now() - 60_000).toISOString(),
+    heartbeat_at: new Date().toISOString(),
+    completed_at: null,
+    outcome: null,
+    delivery_status: null,
+    branch: null,
+    error: null,
+    ...overrides,
+  });
 }
 
 describe('deriveReview — WK-0132 Slice 2', () => {
@@ -156,6 +182,58 @@ describe('deriveReview — WK-0132 Slice 2', () => {
 
       const content = await readFile(result.data.reviewPath, 'utf-8');
       expect(content).toContain(`id: "${result.data.reviewId}"`);
+    });
+  });
+
+  describe('reviewed_run stamp (WK-0153)', () => {
+    it("stamps reviewed_run with the HO's latest terminal run id", async () => {
+      const implement = await deliverImplementHo(tempDir);
+      await writeResponseDoc(tempDir, implement.handoffId);
+
+      const runsDir = join(tempDir, '.agent-runs', 'runs', implement.handoffId);
+      await writeRunState(join(runsDir, 'RUN-older'), {
+        run_id: 'RUN-older',
+        handoff_id: implement.handoffId,
+        status: 'failed',
+        completed_at: '2026-09-20T10:00:00.000Z',
+      });
+      await writeRunState(join(runsDir, 'RUN-newer'), {
+        run_id: 'RUN-newer',
+        handoff_id: implement.handoffId,
+        status: 'delivered',
+        completed_at: '2026-09-25T10:00:00.000Z',
+      });
+
+      const result = await deriveReview({ dir: tempDir, handoff_id: implement.handoffId });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      expect(result.data.reviewedRunId).toBe('RUN-newer');
+
+      const parsed = await parseHandoff(result.data.reviewPath);
+      expect(parsed.ok).toBe(true);
+      if (!parsed.ok) return;
+      expect(parsed.data.reviewed_run).toBe('RUN-newer');
+    });
+
+    it('leaves reviewed_run undefined and absent from frontmatter when no run dirs exist', async () => {
+      const implement = await deliverImplementHo(tempDir);
+      await writeResponseDoc(tempDir, implement.handoffId);
+      // No .agent-runs/runs/<id> directory created for this HO.
+
+      const result = await deriveReview({ dir: tempDir, handoff_id: implement.handoffId });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      expect(result.data.reviewedRunId).toBeUndefined();
+
+      const content = await readFile(result.data.reviewPath, 'utf-8');
+      expect(content).not.toContain('reviewed_run');
+
+      const parsed = await parseHandoff(result.data.reviewPath);
+      expect(parsed.ok).toBe(true);
+      if (!parsed.ok) return;
+      expect(parsed.data.reviewed_run).toBeUndefined();
     });
   });
 });

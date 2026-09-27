@@ -83,6 +83,7 @@ export function renderHandoff(id: string, opts: CreateHandoffOpts): string {
     ...listField('data_mounts', opts.data_mounts ?? []),
     ...listField('export_mounts', opts.export_mounts ?? []),
     ...listField('vars', opts.vars ?? []),
+    ...(opts.reviewed_run ? [`reviewed_run: ${quote(opts.reviewed_run)}`] : []),
     '---',
     '',
     `# ${id}: ${opts.title}`,

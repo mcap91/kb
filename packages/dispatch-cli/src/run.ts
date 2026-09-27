@@ -8,6 +8,7 @@ import {
   launchDispatchBackground,
   status,
   waitForRun,
+  listUnhandledRuns,
 } from '@kb/dispatch-core';
 
 import type {
@@ -104,7 +105,14 @@ Command Options:
     --review-id <id>         Review ID (alternative, v1 runs)
     --timeout-seconds <n>    Timeout in seconds (default: 1800, no cap)
     --poll-interval-ms <n>   Poll interval in ms (default: 1000)
-    --json                   Print machine-readable output
+    --json                   No-op (output is always JSON)
+
+    Exit codes:
+      0  delivered or completed
+      1  terminal failure (failed/refused/cancelled/timed_out)
+      2  bad arguments
+      3  watcher timeout (run still non-terminal)
+      4  state unreadable or wait error
 `.trim();
 
 async function cmdCheckEnvironment(): Promise<number> {
@@ -238,6 +246,13 @@ async function cmdStatus(args: string[]): Promise<number> {
       const delivery = run.deliveryStatus ? ` delivery=${run.deliveryStatus}` : '';
       const branch = run.branch ? ` branch=${run.branch}` : '';
       console.log(`  ${run.runId} [${run.status}] ${run.handoffId} model=${run.model ?? '-'} runtime=${runtime} hb_age=${hbAge}${stale}${delivery}${branch}`);
+      if (run.turnCount !== null && run.turnCount > 0) {
+        const activity = run.lastActivityAt ? ` last_activity=${run.lastActivityAt}` : '';
+        console.log(`    turns=${run.turnCount}${activity}`);
+      }
+      if (run.filesTouched && run.filesTouched.length > 0) {
+        console.log(`    files_touched: ${run.filesTouched.join(', ')}`);
+      }
       if (run.logTail && run.logTail.length > 0) {
         for (const line of run.logTail) {
           console.log(`    | ${line}`);
@@ -329,17 +344,20 @@ function exitCodeForRunStatus(status: string): number {
   return SUCCESS_RUN_STATUSES.has(status) ? 0 : 1;
 }
 
+/** Mirrors wait.ts's TERMINAL_STATUSES_V2, which isn't exported — checked CLI-side (WK-0153). */
+const TERMINAL_RUN_STATUSES = new Set(['delivered', 'completed', 'failed', 'refused', 'cancelled', 'timed_out']);
+
 async function cmdWaitForRun(args: string[]): Promise<number> {
   const dir = getFlagValue(args, '--dir');
   const runId = getFlagValue(args, '--run-id');
   const reviewId = getFlagValue(args, '--review-id');
   const timeoutSecondsRaw = getFlagValue(args, '--timeout-seconds');
   const pollIntervalMsRaw = getFlagValue(args, '--poll-interval-ms');
-  const json = getFlag(args, '--json');
+  const json = getFlag(args, '--json'); // no-op alias for one release — output is always JSON (D4 ruling)
 
   if (!dir || (!runId && !reviewId)) {
-    console.error('Error: --dir and one of --run-id or --review-id are required');
-    return 1;
+    console.log(JSON.stringify({ ok: false, error: 'BAD_ARGS' }));
+    return 2;
   }
 
   const result = await waitForRun({
@@ -351,29 +369,19 @@ async function cmdWaitForRun(args: string[]): Promise<number> {
   });
 
   if (!result.ok) {
-    if (json) {
-      console.log(JSON.stringify({ ok: false, error: result.error, message: result.message }, null, 2));
-    } else {
-      console.error(`Wait failed: [${result.error}] ${result.message}`);
-    }
-    return 1;
+    console.log(JSON.stringify({ ok: false, error: 'STATE_UNREADABLE' }));
+    return 4;
   }
 
   const data: WaitForRunResult = result.data;
-  const exitCode = exitCodeForRunStatus(data.status);
 
-  if (json) {
-    console.log(JSON.stringify(data, null, 2));
-    return exitCode;
+  if (!TERMINAL_RUN_STATUSES.has(data.status)) {
+    console.log(JSON.stringify({ ok: false, error: 'WATCH_TIMEOUT', status: data.status }));
+    return 3;
   }
 
-  console.log(`Run ${data.runId} status: ${data.status}`);
-  console.log(`  Handoff:   ${data.handoffId}`);
-  console.log(`  Run dir:   ${data.runDir}`);
-  console.log(`  Started:   ${data.startedAt ?? 'n/a'}`);
-  console.log(`  Heartbeat: ${data.heartbeatAt ?? 'n/a'}`);
-  console.log(`  Completed: ${data.completedAt ?? 'n/a'}`);
-  return exitCode;
+  console.log(JSON.stringify(data, null, 2));
+  return exitCodeForRunStatus(data.status);
 }
 
 export async function run(args: string[]): Promise<number> {
@@ -391,22 +399,48 @@ export async function run(args: string[]): Promise<number> {
     return 0;
   }
 
+  let exitCode: number;
   switch (command) {
     case 'check-environment':
-      return cmdCheckEnvironment();
+      exitCode = await cmdCheckEnvironment();
+      break;
     case 'create-handoff':
-      return cmdCreateHandoff(args);
+      exitCode = await cmdCreateHandoff(args);
+      break;
     case 'cleanup':
-      return cmdCleanup(args);
+      exitCode = await cmdCleanup(args);
+      break;
     case 'status':
-      return cmdStatus(args);
+      exitCode = await cmdStatus(args);
+      break;
     case 'dispatch':
-      return cmdDispatch(args);
+      exitCode = await cmdDispatch(args);
+      break;
     case 'wait-for-run':
-      return cmdWaitForRun(args);
+      exitCode = await cmdWaitForRun(args);
+      break;
     default:
       console.error(`Unknown command: ${command}`);
       console.error('Run with --help to see available commands.');
       return 1;
   }
+
+  // WK-0153: post-command unhandled-runs banner to stderr
+  const dir = getFlagValue(args, '--dir');
+  if (dir) {
+    try {
+      const unhandledResult = await listUnhandledRuns(resolve(dir));
+      if (unhandledResult.ok) {
+        for (const run of unhandledResult.data) {
+          console.error(`⚑ UNHANDLED: ${run.handoff_id} ${run.status} ${run.completed_at} → ${run.branch}`);
+        }
+      } else {
+        console.error(`⚑ unhandled-runs check failed: ${unhandledResult.error}`);
+      }
+    } catch {
+      console.error('⚑ unhandled-runs check failed: unexpected error');
+    }
+  }
+
+  return exitCode;
 }

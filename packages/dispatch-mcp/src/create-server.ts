@@ -1,5 +1,8 @@
+import { resolve } from 'node:path';
+
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { V2_REFUSAL_CODES } from '@kb/dispatch-core';
+import { V2_REFUSAL_CODES, listUnhandledRuns } from '@kb/dispatch-core';
+import type { UnhandledRun } from '@kb/dispatch-core';
 import { tools } from './tools.js';
 
 /**
@@ -9,13 +12,17 @@ import { tools } from './tools.js';
  * failures, so MCP callers parse expected and unexpected errors the same way instead
  * of receiving a raw `Error: <internal>` string that leaks implementation detail.
  */
-export function toErrorEnvelope(err: unknown) {
+export function toErrorEnvelope(err: unknown, unhandledRuns?: UnhandledRun[]) {
   const message = err instanceof Error ? err.message : String(err);
+  const envelope: Record<string, unknown> = { ok: false, error: 'INTERNAL_ERROR', message };
+  if (unhandledRuns && unhandledRuns.length > 0) {
+    envelope.unhandled_runs = unhandledRuns;
+  }
   return {
     content: [
       {
         type: 'text' as const,
-        text: JSON.stringify({ ok: false, error: 'INTERNAL_ERROR', message }, null, 2),
+        text: JSON.stringify(envelope, null, 2),
       },
     ],
     isError: true as const,
@@ -78,7 +85,7 @@ const INSTRUCTIONS = [
   '',
   '1. Author HO(s) for the work item (use `create-handoff` or hand-author). Feature-sized — one coherent, independently reviewable unit with ACs and validation command. Not function-sized. **Visibility:** workers see ONLY system toolchain + the clone + declared mounts. Any out-of-repo directory the worker needs to READ (conda/mamba/uv envs, datasets, reference data) goes in `data_mounts` (bound read-only); any directory it needs to WRITE output to goes in `export_mounts` (bound writable). Envs should also be named in `vars`. A missing mount surfaces as `dependency_missing` — widen data_mounts/export_mounts and re-dispatch (existing fix-up routing).',
   '2. Dispatch: `dispatch` with handoff path, model, backend. Background by default — returns immediately with a runId and a `watch` command.',
-  '3. Watch: run the returned `watch` command as a background Bash command (`run_in_background: true`). It blocks until the run reaches terminal status, then exits — Claude Code notifies the orchestrator when it completes. Read the command\'s output for the run result (JSON). Use `status` instead for an ad-hoc point-in-time check.',
+  '3. Watch: run the returned `watch` command as a background Bash command (`run_in_background: true`). It blocks until the run reaches terminal status, then exits. Use `status` for an ad-hoc point-in-time check. Any response may carry `unhandled_runs`; surface each entry to the operator.',
   '4. Read result: `wiki/handoffs/HO-XXXX.response.md` (auto-committed by the pipeline — DEC-0038). Check verdict and recovery signal.',
   '5. Review (two-step): `derive-review` creates a `code_review` HO from the delivered implement (derives write_scope, acceptance, base_ref=`dispatch/HO-XXXX`). Then `dispatch` it separately — same dispatch/watch/read cycle as step 2-4. The review response is auto-committed by the pipeline.',
   '6. On review pass: `merge-delivery` merges `dispatch/HO-XXXX` into the target branch and deletes it. Gates on review evidence — the review response must contain a `kb-dispatch-recovery.v1` block with `no_findings` or `passed_no_blocking_or_medium_findings`. Refuses on conflict (surface to operator). No remote push.',
@@ -125,11 +132,28 @@ export function createServer(): McpServer {
       async (args) => {
         try {
           const result = await tool.handler(args as Record<string, unknown>);
+          const resultObj = typeof result === 'object' && result !== null ? result : { data: result };
+
+          // WK-0153: attach unhandled_runs as a structured sibling field
+          const dir = (args as Record<string, unknown>).dir;
+          if (typeof dir === 'string') {
+            const unhandledResult = await listUnhandledRuns(resolve(dir));
+            if (unhandledResult.ok && unhandledResult.data.length > 0) {
+              (resultObj as Record<string, unknown>).unhandled_runs = unhandledResult.data;
+            }
+          }
+
           return {
-            content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
+            content: [{ type: 'text' as const, text: JSON.stringify(resultObj, null, 2) }],
           };
         } catch (err) {
-          return toErrorEnvelope(err);
+          const dir = (args as Record<string, unknown>).dir;
+          let unhandledRuns: UnhandledRun[] | undefined;
+          if (typeof dir === 'string') {
+            const ur = await listUnhandledRuns(resolve(dir));
+            if (ur.ok) unhandledRuns = ur.data;
+          }
+          return toErrorEnvelope(err, unhandledRuns);
         }
       },
     );

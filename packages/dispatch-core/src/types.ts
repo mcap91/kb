@@ -181,6 +181,7 @@ export interface CreateHandoffOpts {
   export_mounts?: string[];
   base_ref?: string;
   vars?: string[];
+  reviewed_run?: string;  // Run id this review targets (WK-0153 discharge evidence)
   verbose?: boolean;
 }
 
@@ -281,5 +282,8 @@ export interface RunInfo {
   deliveryStatus: string | null;
   branch: string | null;
   logTail: string[] | null;
+  turnCount: number | null;
+  lastActivityAt: string | null;
+  filesTouched: string[] | null;
   schemaVersion: number;
 }

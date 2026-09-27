@@ -276,7 +276,7 @@ export async function launchDispatchBackground(
   const gateResult = await pollDispatchStartGate(statePath, controllerPid, timeoutMs);
   if (!gateResult.ok) return gateResult;
 
-  const watch = `npx tsx "${dispatchCliEntryPath}" wait-for-run --dir "${repoRoot}" --run-id ${runId} --json`;
+  const watch = `npx tsx "${dispatchCliEntryPath}" wait-for-run --dir "${repoRoot}" --run-id ${runId} --timeout-seconds 7200`;
 
   return ok({
     runId,
