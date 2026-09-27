@@ -84,8 +84,8 @@ export const tools: ToolDef[] = [
     inputSchema: z.object({
       dir: z.string().describe('Target repo directory'),
       handoff: z.string().describe('Repo-relative path to the HO file, e.g. wiki/handoffs/HO-0004.md'),
-      model: z.string().describe('Model alias from the registry, e.g. deepseek, qwen3:8b'),
-      backend: z.string().describe('Backend name from the registry, e.g. openrouter, ollama'),
+      model: z.string().optional().describe('Model alias from the registry, e.g. deepseek. Optional — resolved by HO mode from models.json use_for defaults when omitted'),
+      backend: z.string().optional().describe('Backend name from the registry, e.g. openrouter. Optional — resolved by HO mode from models.json use_for defaults when omitted'),
       effort: z.string().optional().describe('Effort/reasoning level (refused with EFFORT_UNSUPPORTED when the model cannot carry it)'),
       preflight: z.boolean().optional().describe('Run bwrap preflight check (default: true)'),
       verbose: z.boolean().optional(),
@@ -93,8 +93,8 @@ export const tools: ToolDef[] = [
     handler: async (input) => launchDispatchBackground({
       dir: input.dir as string,
       handoff: input.handoff as string,
-      model: input.model as string,
-      backend: input.backend as string,
+      model: input.model as string | undefined,
+      backend: input.backend as string | undefined,
       effort: input.effort as string | undefined,
       preflight: input.preflight as boolean | undefined,
       verbose: input.verbose as boolean | undefined,

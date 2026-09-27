@@ -54,6 +54,8 @@ export interface ModelTableEntry {
   notes?: string;
   inference?: Record<string, unknown>;
   tool_call_parser?: string;
+  /** HO modes (implement/code_review/redteam/research) this model is a default for (WK-0070). Absent = no default mode. */
+  use_for?: string[];
 }
 
 export interface ProfileEntry {
@@ -199,7 +201,7 @@ function validateBackendEntry(name: string, raw: unknown): DispatchResult<Backen
   return ok(entry);
 }
 
-const MODEL_TABLE_ENTRY_KNOWN_KEYS = new Set(['available_on', 'model_id', 'notes', 'inference', 'tool_call_parser']);
+const MODEL_TABLE_ENTRY_KNOWN_KEYS = new Set(['available_on', 'model_id', 'notes', 'inference', 'tool_call_parser', 'use_for']);
 
 function validateModelTableEntry(slug: string, raw: unknown): DispatchResult<ModelTableEntry> {
   if (!isPlainObject(raw)) {
@@ -222,6 +224,11 @@ function validateModelTableEntry(slug: string, raw: unknown): DispatchResult<Mod
       return fail('BAD_RECORD', `Model "${slug}" in models.json: "tool_call_parser" must be a non-empty string when present.`);
     }
   }
+  if (raw.use_for !== undefined) {
+    if (!Array.isArray(raw.use_for) || !raw.use_for.every((entry) => typeof entry === 'string')) {
+      return fail('BAD_RECORD', `Model "${slug}" in models.json: "use_for" must be an array of strings when present.`);
+    }
+  }
 
   const entry: ModelTableEntry = {
     available_on: raw.available_on as string[],
@@ -230,6 +237,7 @@ function validateModelTableEntry(slug: string, raw: unknown): DispatchResult<Mod
   if (typeof raw.notes === 'string') entry.notes = raw.notes;
   if (isPlainObject(raw.inference)) entry.inference = raw.inference as Record<string, unknown>;
   if (typeof raw.tool_call_parser === 'string') entry.tool_call_parser = raw.tool_call_parser;
+  if (Array.isArray(raw.use_for)) entry.use_for = raw.use_for as string[];
   return ok(entry);
 }
 

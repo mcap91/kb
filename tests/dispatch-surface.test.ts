@@ -77,7 +77,7 @@ describe('dispatch MCP tool', () => {
     );
   });
 
-  it('accepts the required fields and rejects a call missing them', () => {
+  it('accepts the required fields; rejects a call missing them; model/backend are optional (WK-0070 mode-based resolution)', () => {
     const dispatchTool = tools.find((t) => t.name === 'dispatch')!;
 
     const valid = dispatchTool.inputSchema.safeParse({
@@ -88,19 +88,28 @@ describe('dispatch MCP tool', () => {
     });
     expect(valid.success).toBe(true);
 
-    const missingModel = dispatchTool.inputSchema.safeParse({
+    // WK-0070: model/backend are optional at the schema level — omitting both
+    // is a valid call that resolves by HO mode downstream in
+    // launchDispatchBackground, not a schema violation.
+    const omittedModelAndBackend = dispatchTool.inputSchema.safeParse({
       dir: repoRoot,
       handoff: 'wiki/handoffs/HO-0004.md',
+    });
+    expect(omittedModelAndBackend.success).toBe(true);
+
+    const missingHandoff = dispatchTool.inputSchema.safeParse({
+      dir: repoRoot,
+      model: 'deepseek',
       backend: 'openrouter',
     });
-    expect(missingModel.success).toBe(false);
+    expect(missingHandoff.success).toBe(false);
 
-    const missingBackend = dispatchTool.inputSchema.safeParse({
-      dir: repoRoot,
+    const missingDir = dispatchTool.inputSchema.safeParse({
       handoff: 'wiki/handoffs/HO-0004.md',
       model: 'deepseek',
+      backend: 'openrouter',
     });
-    expect(missingBackend.success).toBe(false);
+    expect(missingDir.success).toBe(false);
   });
 });
 

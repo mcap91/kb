@@ -16,6 +16,7 @@ import { join } from 'node:path';
 
 import {
   resolveModelFromConfig,
+  resolveModelByMode,
   checkHarnessVersion,
   buildFingerprintFragment,
   parseFingerprintOutput,
@@ -160,6 +161,115 @@ describe('model-registry.ts — resolveModelFromConfig', () => {
     if (result.ok) return;
     expect(result.error).toBe('MODEL_NOT_FOUND');
     expect(result.detail).toMatchObject({ available: [] });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resolveModelByMode (WK-0070)
+// ---------------------------------------------------------------------------
+
+describe('model-registry.ts — resolveModelByMode', () => {
+  let dir: string;
+
+  beforeEach(async () => {
+    dir = await createTempDir('kb-model-registry-mode-');
+  });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('resolves the single model+backend candidate matching use_for', async () => {
+    await writeDispatchConfig(dir, 'models.json', JSON.stringify({
+      deepseek: { available_on: ['openrouter'], model_id: 'deepseek/deepseek-v4-flash-0731', use_for: ['implement'] },
+      'gpt-5.6': { available_on: ['codex-saas'], model_id: 'gpt-5.6-terra', use_for: ['code_review'] },
+    }));
+    await writeDispatchConfig(dir, 'backends.json', JSON.stringify({
+      openrouter: { family: 'pi', base_url: 'https://openrouter.ai/api/v1', api_key_env: 'OPENROUTER_API_KEY', secrets_file: null },
+      'codex-saas': { family: 'codex', base_url: null, api_key_env: null, secrets_file: null },
+    }));
+
+    const result = await resolveModelByMode(dir, 'implement');
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.slug).toBe('deepseek');
+    expect(result.data.backend).toBe('openrouter');
+  });
+
+  it('fails with NO_MODEL_DEFAULT when no model has a matching use_for', async () => {
+    await writeDispatchConfig(dir, 'models.json', JSON.stringify({
+      'gpt-5.6': { available_on: ['codex-saas'], model_id: 'gpt-5.6-terra', use_for: ['code_review'] },
+    }));
+    await writeDispatchConfig(dir, 'backends.json', JSON.stringify({
+      'codex-saas': { family: 'codex', base_url: null, api_key_env: null, secrets_file: null },
+    }));
+
+    const result = await resolveModelByMode(dir, 'implement');
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toBe('NO_MODEL_DEFAULT');
+    expect(result.message).toContain('implement');
+  });
+
+  it('fails with AMBIGUOUS_MODEL_DEFAULT when two models both match use_for', async () => {
+    await writeDispatchConfig(dir, 'models.json', JSON.stringify({
+      deepseek: { available_on: ['openrouter'], model_id: 'deepseek/deepseek-v4-flash-0731', use_for: ['implement'] },
+      qwen: { available_on: ['ollama'], model_id: 'qwen3:8b', use_for: ['implement'] },
+    }));
+    await writeDispatchConfig(dir, 'backends.json', JSON.stringify({
+      openrouter: { family: 'pi', base_url: 'https://openrouter.ai/api/v1', api_key_env: 'OPENROUTER_API_KEY', secrets_file: null },
+      ollama: { family: 'pi', base_url: 'http://localhost:11434/v1', api_key_env: null, secrets_file: null },
+    }));
+
+    const result = await resolveModelByMode(dir, 'implement');
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toBe('AMBIGUOUS_MODEL_DEFAULT');
+  });
+
+  it('fails with NO_MODEL_DEFAULT when the matching model’s backend is not in backends.json', async () => {
+    await writeDispatchConfig(dir, 'models.json', JSON.stringify({
+      deepseek: { available_on: ['openrouter'], model_id: 'deepseek/deepseek-v4-flash-0731', use_for: ['implement'] },
+    }));
+    await writeDispatchConfig(dir, 'backends.json', JSON.stringify({
+      ollama: { family: 'pi', base_url: 'http://localhost:11434/v1', api_key_env: null, secrets_file: null },
+    }));
+
+    const result = await resolveModelByMode(dir, 'implement');
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toBe('NO_MODEL_DEFAULT');
+  });
+
+  it('fails with AMBIGUOUS_MODEL_DEFAULT when one model lists multiple valid backends', async () => {
+    await writeDispatchConfig(dir, 'models.json', JSON.stringify({
+      deepseek: { available_on: ['openrouter', 'ollama'], model_id: 'deepseek/deepseek-v4-flash-0731', use_for: ['implement'] },
+    }));
+    await writeDispatchConfig(dir, 'backends.json', JSON.stringify({
+      openrouter: { family: 'pi', base_url: 'https://openrouter.ai/api/v1', api_key_env: 'OPENROUTER_API_KEY', secrets_file: null },
+      ollama: { family: 'pi', base_url: 'http://localhost:11434/v1', api_key_env: null, secrets_file: null },
+    }));
+
+    const result = await resolveModelByMode(dir, 'implement');
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toBe('AMBIGUOUS_MODEL_DEFAULT');
+  });
+
+  it('ignores a model with no use_for field (not a candidate, no error)', async () => {
+    await writeDispatchConfig(dir, 'models.json', JSON.stringify({
+      'claude-sonnet-5': { available_on: ['claude-saas'], model_id: 'claude-sonnet-5' },
+      deepseek: { available_on: ['openrouter'], model_id: 'deepseek/deepseek-v4-flash-0731', use_for: ['implement'] },
+    }));
+    await writeDispatchConfig(dir, 'backends.json', JSON.stringify({
+      'claude-saas': { family: 'claude', base_url: null, api_key_env: null, secrets_file: null },
+      openrouter: { family: 'pi', base_url: 'https://openrouter.ai/api/v1', api_key_env: 'OPENROUTER_API_KEY', secrets_file: null },
+    }));
+
+    const result = await resolveModelByMode(dir, 'implement');
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.slug).toBe('deepseek');
   });
 });
 
