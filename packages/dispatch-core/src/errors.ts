@@ -56,6 +56,7 @@ export type DispatchErrorCode =
   | 'STALE_WRITE_SCOPE'
   | 'MISSING_READ_FIRST'
   | 'BAD_BASE_REF'
+  | 'BASE_DRIFT'
   | 'CONTEXT_BUDGET_EXCEEDED'
   | 'BAD_DATA_MOUNT'
   // --- v2 required enforcement (PLN-0004 S5) ---
@@ -104,6 +105,7 @@ export const V2_REFUSAL_CODES = [
   'NO_ISOLATION_ROUTE',
   'WORK_ITEM_NOT_FOUND',
   'CLAUDE_PERMISSION_PROBE_FAILED',
+  'BASE_DRIFT',
 ] as const satisfies readonly DispatchErrorCode[];
 
 /**

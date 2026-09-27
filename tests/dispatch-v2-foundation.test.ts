@@ -257,7 +257,7 @@ describe('admission.ts — S0 admission checks', () => {
   it('admits a clean repo and resolves baseSha to current HEAD', async () => {
     const expectedSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repoRoot }).toString().trim();
 
-    const result = await checkAdmission(makeHandoff(), repoRoot);
+    const result = await checkAdmission(makeHandoff({ base_sha: expectedSha }), repoRoot);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.data.repoRoot).toBe(repoRoot);

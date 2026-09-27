@@ -166,6 +166,13 @@ async function setupBootstrappedRepo(repoRoot: string): Promise<void> {
   await writeFile(join(repoRoot, 'README.md'), '# Test repo\n');
   await mkdir(join(repoRoot, 'docs'), { recursive: true });
   await writeFile(join(repoRoot, 'docs', 'dispatch.md'), '# Dispatch doc\n');
+
+  // WK-0152: createHandoff stamps base_sha from HEAD, so the repo must be a git repo with a commit.
+  execSync('git init', { cwd: repoRoot, stdio: 'ignore' });
+  execSync('git config user.email "test@test.com"', { cwd: repoRoot, stdio: 'ignore' });
+  execSync('git config user.name "Test"', { cwd: repoRoot, stdio: 'ignore' });
+  execSync('git add -A', { cwd: repoRoot, stdio: 'ignore' });
+  execSync('git commit -m "init"', { cwd: repoRoot, stdio: 'ignore' });
 }
 
 describe('dispatch', () => {
@@ -394,6 +401,10 @@ describe('dispatch', () => {
       execSync(`git commit -m "${message}"`, { cwd: dir, stdio: 'ignore' });
     }
 
+    function headSha(dir: string): string {
+      return execSync('git rev-parse HEAD', { cwd: dir }).toString().trim();
+    }
+
     function makeGateHandoff(overrides: Partial<Handoff> = {}): Handoff {
       return {
         id: 'HO-0002',
@@ -468,7 +479,7 @@ describe('dispatch', () => {
       gitCommitAll(repoRoot, 'init');
 
       const { checkAdmission } = await import('@kb/dispatch-core');
-      const result = await checkAdmission(makeGateHandoff({ work_item: 'WK-0201' }), repoRoot);
+      const result = await checkAdmission(makeGateHandoff({ work_item: 'WK-0201', base_sha: headSha(repoRoot) }), repoRoot);
 
       expect(result.ok).toBe(true);
     });
@@ -478,7 +489,7 @@ describe('dispatch', () => {
       gitCommitAll(repoRoot, 'init');
 
       const { checkAdmission } = await import('@kb/dispatch-core');
-      const result = await checkAdmission(makeGateHandoff({ work_item: 'WK-0202' }), repoRoot);
+      const result = await checkAdmission(makeGateHandoff({ work_item: 'WK-0202', base_sha: headSha(repoRoot) }), repoRoot);
 
       expect(result.ok).toBe(true);
     });
@@ -488,7 +499,7 @@ describe('dispatch', () => {
       gitCommitAll(repoRoot, 'init');
 
       const { checkAdmission } = await import('@kb/dispatch-core');
-      const result = await checkAdmission(makeGateHandoff({ work_item: 'WK-0203' }), repoRoot);
+      const result = await checkAdmission(makeGateHandoff({ work_item: 'WK-0203', base_sha: headSha(repoRoot) }), repoRoot);
 
       expect(result.ok).toBe(true);
     });
@@ -499,17 +510,19 @@ describe('dispatch', () => {
       gitCommitAll(repoRoot, 'init');
 
       const { checkAdmission } = await import('@kb/dispatch-core');
-      const result = await checkAdmission(makeGateHandoff({ work_item: 'WK-0204' }), repoRoot);
+      const result = await checkAdmission(makeGateHandoff({ work_item: 'WK-0204', base_sha: headSha(repoRoot) }), repoRoot);
 
       expect(result.ok).toBe(true);
     });
 
     it('admits a research handoff with no work_item (gate is implement-only)', async () => {
       await writeFile(join(repoRoot, 'README.md'), '# test\n');
+      // WK-0152: a committed wiki/ file gives the normal (tracked) wiki shape the drift gate probes.
+      await writeWorkItem(repoRoot, 'WK-0205');
       gitCommitAll(repoRoot, 'init');
 
       const { checkAdmission } = await import('@kb/dispatch-core');
-      const result = await checkAdmission(makeGateHandoff({ mode: 'research', write_scope: [] }), repoRoot);
+      const result = await checkAdmission(makeGateHandoff({ mode: 'research', write_scope: [], base_sha: headSha(repoRoot) }), repoRoot);
 
       expect(result.ok).toBe(true);
     });

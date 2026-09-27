@@ -57,6 +57,7 @@ describe('errors.ts — V2_REFUSAL_CODES', () => {
       'NO_ISOLATION_ROUTE',
       'WORK_ITEM_NOT_FOUND',
       'CLAUDE_PERMISSION_PROBE_FAILED',
+      'BASE_DRIFT',
     ];
     expect([...V2_REFUSAL_CODES].sort()).toEqual([...expected].sort());
   });

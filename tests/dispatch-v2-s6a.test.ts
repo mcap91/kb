@@ -634,7 +634,7 @@ describe('admission.ts — base_ref-aware baseSha resolution (S6a)', () => {
   it('resolves baseSha to HEAD when base_ref is null', async () => {
     const expectedSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repoRoot }).toString().trim();
 
-    const result = await checkAdmission(makeHandoff({ base_ref: null }), repoRoot);
+    const result = await checkAdmission(makeHandoff({ base_ref: null, base_sha: expectedSha }), repoRoot);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.data.baseSha).toBe(expectedSha);

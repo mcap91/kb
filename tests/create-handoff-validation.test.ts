@@ -10,6 +10,7 @@
  * temp dirs, beforeEach/afterEach).
  */
 import { describe, expect, it, beforeEach, afterEach } from 'vitest';
+import { execFileSync } from 'node:child_process';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -36,6 +37,11 @@ async function setupBootstrappedRepo(repoRoot: string): Promise<void> {
   const result = await bootstrap({ dir: repoRoot, repo: 'test/repo' });
   if (!result.ok) {
     throw new Error(result.message);
+  }
+
+  // WK-0152: createHandoff stamps base_sha from HEAD, so the repo must be a git repo with a commit.
+  for (const args of [['init'], ['config', 'user.email', 'test@example.com'], ['config', 'user.name', 'Test User'], ['add', '-A'], ['commit', '-m', 'init']]) {
+    execFileSync('git', args, { cwd: repoRoot });
   }
 }
 

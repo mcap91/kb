@@ -111,6 +111,16 @@ async function createTempDir(prefix: string): Promise<string> {
   return mkdtemp(join(tmpdir(), prefix));
 }
 
+/** WK-0152: stamp a committed fixture HO with base_sha = HEAD, then commit (wiki/handoffs/ is not a declared path, so this is not drift). */
+async function stampHandoff(repoRoot: string, relPath: string): Promise<void> {
+  const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repoRoot }).toString().trim();
+  const path = join(repoRoot, relPath);
+  const content = await readFile(path, 'utf8');
+  await writeFile(path, content.replace('base_ref: null\n', `base_ref: null\nbase_sha: "${head}"\n`), 'utf8');
+  execFileSync('git', ['add', '-A'], { cwd: repoRoot });
+  execFileSync('git', ['commit', '-m', 'stamp'], { cwd: repoRoot });
+}
+
 /** Set up a fresh temp git repo with HO-TEST.md + README.md committed on main. */
 async function setupRepo(): Promise<string> {
   const repoRoot = await createTempDir('kb-e2e-repo-');
@@ -140,6 +150,7 @@ async function setupRepo(): Promise<string> {
 
   execFileSync('git', ['add', '-A'], { cwd: repoRoot });
   execFileSync('git', ['commit', '-m', 'initial commit'], { cwd: repoRoot });
+  await stampHandoff(repoRoot, 'wiki/handoffs/HO-TEST.md');
   return repoRoot;
 }
 
@@ -692,6 +703,7 @@ clone/jail/worker step runs, so this body is never read by a worker.
 
   execFileSync('git', ['add', '-A'], { cwd: repoRoot });
   execFileSync('git', ['commit', '-m', 'initial commit'], { cwd: repoRoot });
+  await stampHandoff(repoRoot, 'wiki/handoffs/HO-S3TEST.md');
   return repoRoot;
 }
 

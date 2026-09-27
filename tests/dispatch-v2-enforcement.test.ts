@@ -284,6 +284,7 @@ web: false
 credentials: []
 data_mounts: []
 read_first: []
+work_item: WK-9005
 acceptance:
   - "AC-1: placeholder -- this HO is never actually dispatched to a worker"
 validation: ["true"]
@@ -304,6 +305,9 @@ directly against a real temp git repo and a real WSL2 clone.
       execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: repoRoot });
       execFileSync('git', ['config', 'user.name', 'Test User'], { cwd: repoRoot });
       await writeFile(join(repoRoot, 'README.md'), 'kb-b4r-fixture: a minimal fixture repo for live delivery-pipeline tests.\n', 'utf8');
+      // WK-0152: a committed wiki/ file gives the normal (tracked) wiki shape the drift gate probes; the WK backs work_item.
+      await mkdir(join(repoRoot, 'wiki', 'issues'), { recursive: true });
+      await writeFile(join(repoRoot, 'wiki', 'issues', 'WK-9005.md'), '---\nid: "WK-9005"\ntitle: "Fixture WK"\nstatus: todo\n---\n\n# WK-9005: Fixture\n', 'utf8');
       execFileSync('git', ['add', '-A'], { cwd: repoRoot });
       execFileSync('git', ['commit', '-m', 'initial commit'], { cwd: repoRoot });
       return repoRoot;
@@ -320,7 +324,7 @@ directly against a real temp git repo and a real WSL2 clone.
           expect(parsed.ok).toBe(true);
           if (!parsed.ok) return;
 
-          const admission = await checkAdmission(parsed.data, repoRoot);
+          const admission = await checkAdmission({ ...parsed.data, base_sha: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repoRoot }).toString().trim() }, repoRoot);
           expect(admission.ok).toBe(false);
           if (admission.ok) return;
           expect(admission.error).toBe('DIRTY_REPO');
@@ -341,7 +345,7 @@ directly against a real temp git repo and a real WSL2 clone.
           expect(parsed.ok).toBe(true);
           if (!parsed.ok) return;
 
-          const admission = await checkAdmission(parsed.data, repoRoot);
+          const admission = await checkAdmission({ ...parsed.data, base_sha: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repoRoot }).toString().trim() }, repoRoot);
           // The dirty-repo check itself must pass (README.md is outside
           // write_scope ["src/", "test/"]); any later admission failure is
           // unrelated to this check and not what this test verifies.
@@ -377,7 +381,7 @@ directly against a real temp git repo and a real WSL2 clone.
 
         const parsed = parseHandoffContent(b4rHandoffContent(handoffId), `${handoffId}.md`);
         if (!parsed.ok) throw new Error(`fixture HO failed to parse: ${parsed.message}`);
-        const admission = await checkAdmission(parsed.data, repoRoot);
+        const admission = await checkAdmission({ ...parsed.data, base_sha: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repoRoot }).toString().trim() }, repoRoot);
         if (!admission.ok) throw new Error(`fixture admission failed: ${admission.error} -- ${admission.message}`);
         baseSha = admission.data.baseSha;
 
