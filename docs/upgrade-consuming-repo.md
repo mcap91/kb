@@ -6,23 +6,23 @@ This is not the first-time bootstrap path. For existing repos, `sync-contract` i
 command: it syncs templates, ensures required wiki directories exist, and merges missing allocator
 entries into `wiki/.id-state.json` without resetting existing IDs.
 
-On Windows PowerShell, prefer `npm.cmd` if execution policy blocks `npm.ps1`.
-
 ## Short Version
 
 Run from the `kb` checkout:
 
-```powershell
+```bash
 git pull
-npm.cmd install
-npm.cmd run typecheck
-npm.cmd test
-npm.cmd run wiki -- sync-contract --dir C:\path\to\consuming-repo
-npm.cmd run wiki -- lint --dir C:\path\to\consuming-repo
-npm.cmd run wiki -- generate --dir C:\path\to\consuming-repo
+npm install
+npm run typecheck
+npm test
+npm run wiki -- install-roles
+npm run wiki -- sync-contract --dir /path/to/consuming-repo
+npm run wiki -- lint --dir /path/to/consuming-repo
+npm run wiki -- generate --dir /path/to/consuming-repo
 ```
 
-After that, the consuming repo can use newly added wiki surfaces such as `PLN-*`.
+After that, the consuming repo can use newly added wiki surfaces such as `PLN-*`. If the repo also uses
+dispatch, see "Dispatch Config Tables" below.
 
 ## What `sync-contract` Upgrades
 
@@ -42,20 +42,20 @@ Note: `wiki/conventions.md` stays consumer-owned (not rewritten by sync), but th
 It does not update:
 
 - project-specific docs
-- operator dispatch registry files
+- repo-local dispatch config tables (`wiki/.dispatch/models.json`, `backends.json`, `profiles.json` — see "Dispatch Config Tables" below)
 
 ## Bootstrap Versus Upgrade
 
 Use `bootstrap` for first-time adoption:
 
-```powershell
-npm.cmd run wiki -- bootstrap --dir C:\path\to\new-repo --repo org/name
+```bash
+npm run wiki -- bootstrap --dir /path/to/new-repo --repo org/name
 ```
 
 For an existing consuming repo, use `sync-contract` instead:
 
-```powershell
-npm.cmd run wiki -- sync-contract --dir C:\path\to\consuming-repo
+```bash
+npm run wiki -- sync-contract --dir /path/to/consuming-repo
 ```
 
 `bootstrap` is idempotent and no longer resets existing `.id-state.json`, but `sync-contract` is the
@@ -65,17 +65,17 @@ intended upgrade command because it updates templates and records `lastSyncedAt`
 
 After `sync-contract`, a consuming repo can create and import a plan:
 
-```powershell
-npm.cmd run wiki -- create --dir C:\path\to\consuming-repo --prefix PLN --title "My implementation plan"
+```bash
+npm run wiki -- create --dir /path/to/consuming-repo --prefix PLN --title "My implementation plan"
 
-npm.cmd run wiki -- import-plan --dir C:\path\to\consuming-repo --plan PLN-0001 `
-  --design docs\design.md `
-  --execution docs\implementation-plan.md `
-  --source-tool manual `
+npm run wiki -- import-plan --dir /path/to/consuming-repo --plan PLN-0001 \
+  --design docs/design.md \
+  --execution docs/implementation-plan.md \
+  --source-tool manual \
   --overwrite
 
-npm.cmd run wiki -- validate-plan --dir C:\path\to\consuming-repo --plan PLN-0001
-npm.cmd run wiki -- generate --dir C:\path\to\consuming-repo
+npm run wiki -- validate-plan --dir /path/to/consuming-repo --plan PLN-0001
+npm run wiki -- generate --dir /path/to/consuming-repo
 ```
 
 Expected results:
@@ -86,25 +86,43 @@ Expected results:
 - `wiki/plans/PLN-0001/execution/tracker.md`
 - preserved raw source artifacts under `wiki/plans/PLN-0001/source/raw/`
 
-## Dispatch Registry Upgrades
+## Dispatch Config Tables (`init-dispatch`)
 
-Some dispatch upgrades require rewriting the operator-owned launcher registry:
+v2 dispatch config is repo-local under `wiki/.dispatch/` (`models.json`, `backends.json`,
+`profiles.json`, plus a write-once `README.md`) — there is no user-global dispatch registry.
 
-```powershell
-npm.cmd run dispatch -- init-config --force
+Scaffold a consuming repo's tables by calling the `init-dispatch` MCP tool (`kb-dispatch` server) with
+`dir` set to the consuming repo path. Every file, including the README, is written only if absent — a
+re-run never overwrites existing content. `init-dispatch` is not currently wired into `dispatch-cli` as
+a subcommand; the MCP tool is the only working entrypoint.
+
+**Removed: `init-config`.** The old user-global dispatch config layer (`init-config`,
+`~/.config/kb-dispatch/token.key`, `~/.config/kb-dispatch/launchers.v1.json`) is retired (WK-0133
+ruling 1, executed in WK-0134). `~/.config/kb-dispatch/` is no longer a kb concept. Credential secrets
+are operator-owned files at any path; a repo's `wiki/.dispatch/profiles.json` names them — kb verifies
+they exist, never writes them.
+
+## Role Preambles (`install-roles`)
+
+`contract/roles/*.md` are the canonical orchestrator/planner role preambles. Stamp them into the
+user-global command directories both Claude Code and Codex read from:
+
+```bash
+npm run wiki -- install-roles
 ```
 
-Only do this when the release notes or work item calls for a registry shape change. Rewriting the
-registry can invalidate previously reviewed launch tokens because the registry hash changes.
+Run this from the `kb` checkout (the default `--dir` is cwd, read from `<dir>/contract/roles/`). It
+copies each file to `~/.claude/commands/<file>` and `~/.codex/prompts/<file>` as a whole-file,
+idempotent overwrite — safe to re-run after every `git pull`.
 
 ## MCP Client Setup
 
 If the consuming repo uses native MCP clients, verify the client registration still points to the
 chosen `kb` checkout:
 
-```powershell
-claude.cmd mcp list
-codex.cmd mcp list
+```bash
+claude mcp list
+codex mcp list
 ```
 
 For strict stdio clients, use direct `node --import ... server.ts` registrations instead of
@@ -120,3 +138,5 @@ For strict stdio clients, use direct `node --import ... server.ts` registrations
   normal mode without resetting existing allocations.
 - Use `--mcp-client codex` to get `codex mcp add` commands instead of writing `.mcp.json`.
 - Use `--no-agent-instructions` to skip the managed block entirely.
+- `init-dispatch`, `derive-review`, `merge-delivery`, and `stop-run` are MCP-only today —
+  `dispatch-cli` does not expose them as subcommands. Use the corresponding `kb-dispatch` MCP tool.
