@@ -1024,18 +1024,53 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
     // 12c. In-jail command wrapper: bring lo up (a fresh netns starts with it
     // down), start the relay, run `npm rebuild` under containment when a
     // lockfile is present (F12 fix, WK-0089: no `|| true` — `set -e` makes a
-    // rebuild failure fail the whole command), then `exec` the worker so its
-    // own exit code/signal becomes bwrap's. The exec line(s) themselves are
-    // `execLines`, built per-family at step 10 above.
+    // rebuild failure fail the whole command), then run the worker as a
+    // TRACKED FOREGROUND CHILD, not `exec`'d (WK-0156 fix). `exec` used to
+    // replace this shell with the worker, destroying the backgrounded
+    // relay's PID/trap along with it — the relay then outlived the worker as
+    // a host orphan (10+ observed across completed/failed runs). Backgrounding
+    // the worker and `wait`ing on it explicitly lets an EXIT/TERM/INT trap
+    // interrupt it promptly and kill both the worker and the relay — verified
+    // empirically (2026-09-27, live bash + Node child_process spawn probes): a
+    // plain synchronous foreground command is NOT reliably interruptible
+    // mid-run by a trap while bash is blocked in its own implicit wait, but
+    // `cmd & wait "$!"` is. `set -e` still makes the worker's own exit status
+    // the script's own (the `wait` is the last command on both the success
+    // and failure paths), so step 15's exit-code check below is unaffected;
+    // the timeout path (spawn-isolated.ts's SIGTERM) now lands on the TERM
+    // trap instead of the worker directly, which explicitly kills the worker
+    // before the wrapper exits — confirmed via a live spawn() probe that the
+    // parent still observes a clean terminal exit (code=143, signal=null)
+    // with no surviving relay/worker processes. A worker that dies from an
+    // unrelated raw signal (e.g. a crash) now surfaces as the equivalent
+    // 128+N exit code rather than `spawnData.signal` — `succeeded`/`timedOut`
+    // classification below is unaffected either way, only the diagnostic
+    // stderr-tail.log write condition (step 15) gets marginally more
+    // permissive (a strict improvement: more debugging info retained, never
+    // less). execLines (built per-family at step 10 above) still ends with a
+    // literal `exec <cmd>` line; the leading `exec ` is stripped here rather
+    // than touching all three per-family branches.
     const lockfilePath = join(clonePath, 'package-lock.json');
     const hasLockfile = existsSync(lockfilePath);
+    const lastExecLine = execLines[execLines.length - 1] ?? '';
+    const workerLine = lastExecLine.startsWith('exec ') ? lastExecLine.slice('exec '.length) : lastExecLine;
     const innerScript = [
       'set -euo pipefail',
       'ip link set lo up 2>/dev/null || true',
       `node ${shQuote(relayScriptPath)} ${shQuote(String(TUNNEL_RELAY_PORT))} ${shQuote(tunnelSocketPath)} < /dev/null > /dev/null 2>&1 &`,
+      'RELAY_PID=$!',
+      'WORKER_PID=""',
+      'cleanup() {',
+      '  if [ -n "$WORKER_PID" ]; then kill "$WORKER_PID" 2>/dev/null || true; fi',
+      '  kill "$RELAY_PID" 2>/dev/null || true',
+      '}',
+      'trap cleanup EXIT TERM INT',
       'sleep 0.2',
       ...(hasLockfile ? ['npm rebuild 1>&2'] : []),
-      ...execLines,
+      ...execLines.slice(0, -1),
+      `${workerLine} &`,
+      'WORKER_PID=$!',
+      'wait "$WORKER_PID"',
     ].join('\n');
 
     // 12d. Build the frozen bwrap plan (D6 ruling 7 components 1-4/15).
@@ -1112,6 +1147,13 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
     // Exit/signal interpretation (D6 ruling 7 component 8; chassis
     // deriveTerminalStatus: `code === 0 && !signal` -> succeeded — native
     // Linux's `.signal` is authoritative, no classifySignalExit guessing).
+    // WK-0156: `spawnData` now reflects the wrapper script's own exit (it no
+    // longer `exec`s into the worker — see step 12c above), so a worker that
+    // dies from a raw signal on its own (unrelated to the timeout path,
+    // which is still exercised via `spawnData.timedOut` below, independent
+    // of code/signal) surfaces as a 128+N exit code rather than a populated
+    // `signal` field. `succeeded` and the timeout branch are unaffected
+    // either way; only the diagnostic message text below shifts.
     const succeeded = spawnData.exitCode === 0 && spawnData.signal === null;
     if (!succeeded && !spawnData.timedOut) {
       // WK-0136: persist the captured stderr tail to the run bundle on a
