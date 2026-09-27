@@ -34,6 +34,7 @@ export interface Handoff {
   mode: HandoffMode;
   write_scope: string[];
   base_ref: string | null;
+  reviewed_run?: string; // Run id this review targets (WK-0153 discharge evidence)
   web: boolean;
   credentials: string[];
   data_mounts: string[];
@@ -268,6 +269,7 @@ export function parseHandoffContent(content: string, filename: string): Dispatch
   }
   if (typeof raw.branch === 'string') handoff.branch = raw.branch;
   if (typeof raw.response === 'string') handoff.response = raw.response;
+  if (typeof raw.reviewed_run === 'string') handoff.reviewed_run = raw.reviewed_run;
 
   return ok(handoff);
 }

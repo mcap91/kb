@@ -54,6 +54,43 @@ async function isOlderThan(path: string, maxAgeMs: number): Promise<boolean> {
   }
 }
 
+// WK-0153: ordering key for sibling-run cleanup. v2 runs carry `completed_at`
+// directly on the run-root `state.json` (schema_version 2); v1 runs carry it
+// on `metadata/meta.json` instead (status.ts's dual-layout comment; wait.ts
+// reads the same file). Falls back to the run dir's own mtime — the same
+// signal `isOlderThan` above already relies on — when neither file yields a
+// parseable timestamp (e.g. a still-running run with no completed_at yet).
+async function getRunTimestampMs(runDir: string): Promise<number> {
+  try {
+    const raw = await readFile(join(runDir, 'state.json'), 'utf-8');
+    const state = JSON.parse(raw) as Record<string, unknown>;
+    if (state.schema_version === 2 && typeof state.completed_at === 'string') {
+      const ms = Date.parse(state.completed_at);
+      if (Number.isFinite(ms)) return ms;
+    }
+  } catch {
+    // fall through to v1
+  }
+
+  try {
+    const raw = await readFile(join(runDir, 'metadata', 'meta.json'), 'utf-8');
+    const meta = JSON.parse(raw) as Record<string, unknown>;
+    if (typeof meta.completed_at === 'string') {
+      const ms = Date.parse(meta.completed_at);
+      if (Number.isFinite(ms)) return ms;
+    }
+  } catch {
+    // fall through to mtime
+  }
+
+  try {
+    const s = await stat(runDir);
+    return s.mtimeMs;
+  } catch {
+    return 0;
+  }
+}
+
 export async function cleanup(opts: CleanupOpts = {}): Promise<DispatchResult<CleanupReport>> {
   const maxAgeDays = opts.maxAgeDays ?? DEFAULT_MAX_AGE_DAYS;
   const maxAgeMs = maxAgeDays * 24 * 60 * 60 * 1000;
@@ -107,6 +144,44 @@ export async function cleanup(opts: CleanupOpts = {}): Promise<DispatchResult<Cl
           await rm(runDir, { recursive: true, force: true });
           report.orphanRuns.push(`${handoffId}/${runId}`);
           report.totalRemoved++;
+        }
+      }
+    }
+
+    // WK-0153: a removed run supersedes all OLDER runs of the same HO — sweep
+    // them too, so an older terminal run can't resurface as "latest" once a
+    // newer one is cleaned up.
+    if (opts.dir) {
+      const dir = opts.dir;
+      const affectedHandoffIds = new Set<string>();
+      for (const entry of report.orphanRuns) {
+        const handoffId = entry.split('/')[0];
+        if (handoffId) affectedHandoffIds.add(handoffId);
+      }
+
+      if (affectedHandoffIds.size > 0) {
+        const remainingRuns = await listRunDirs(dir);
+
+        for (const handoffId of affectedHandoffIds) {
+          const siblings = remainingRuns.filter((r) => r.handoffId === handoffId);
+          if (siblings.length <= 1) continue;
+
+          const withTimestamp = await Promise.all(
+            siblings.map(async (s) => ({
+              runId: s.runId,
+              timestampMs: await getRunTimestampMs(join(dir, '.agent-runs', 'runs', handoffId, s.runId)),
+            })),
+          );
+
+          // Newest first; keep index 0, remove the rest (the older siblings).
+          withTimestamp.sort((a, b) => b.timestampMs - a.timestampMs);
+
+          for (const stale of withTimestamp.slice(1)) {
+            const staleRunDir = join(dir, '.agent-runs', 'runs', handoffId, stale.runId);
+            await rm(staleRunDir, { recursive: true, force: true });
+            report.orphanRuns.push(`${handoffId}/${stale.runId}`);
+            report.totalRemoved++;
+          }
         }
       }
     }

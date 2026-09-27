@@ -80,6 +80,14 @@ export {
 // Cleanup
 export { cleanup } from './cleanup.js';
 
+// Unhandled runs query (WK-0153)
+export type { UnhandledRun } from './unhandled-runs.js';
+export { listUnhandledRuns } from './unhandled-runs.js';
+
+// Worker event parsing (WK-0153)
+export type { WorkerEventProjection } from './worker-events.js';
+export { parseWorkerEvents } from './worker-events.js';
+
 // Handoff creation
 export { createHandoff, renderHandoff } from './create-handoff.js';
 

@@ -6,6 +6,7 @@ import type { DispatchResult } from './errors.js';
 import { ok, fail } from './errors.js';
 import { readRunArtifacts } from './lookup.js';
 import { isAlive, isRecordedProcessAlive } from './run-state.js';
+import { parseWorkerEvents } from './worker-events.js';
 
 const ACTIVE_HEARTBEAT_GRACE_MS = 5 * 60 * 1000;
 
@@ -283,6 +284,20 @@ async function buildRunInfo(
   // doc to read instead, and v1 runs never grew a worker-output.log.
   const logTail = isV2 && !terminal ? await readLogTail(runDir, LOG_TAIL_LINES) : null;
 
+  // WK-0153: worker event projection for active v2 runs
+  let turnCount: number | null = null;
+  let lastActivityAt: string | null = null;
+  let filesTouched: string[] | null = null;
+
+  if (isV2 && !terminal) {
+    const projection = await parseWorkerEvents(join(runDir, 'worker-output.log'));
+    if (projection.turnCount > 0 || projection.itemCount > 0) {
+      turnCount = projection.turnCount;
+      lastActivityAt = projection.lastActivityAt;
+      filesTouched = projection.filesTouched.length > 0 ? projection.filesTouched : null;
+    }
+  }
+
   return {
     runId,
     handoffId,
@@ -296,6 +311,9 @@ async function buildRunInfo(
     deliveryStatus: isV2 && typeof state.delivery_status === 'string' ? state.delivery_status : null,
     branch: isV2 && typeof state.branch === 'string' ? state.branch : null,
     logTail,
+    turnCount,
+    lastActivityAt,
+    filesTouched,
     schemaVersion: isV2 ? 2 : 1,
   };
 }
