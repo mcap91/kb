@@ -95,12 +95,11 @@ describe('admission.ts — S4 full admission gate (new refusal codes)', () => {
       expect(result.message).toContain('outside the repo root');
     });
 
-    it('refuses a write_scope entry whose path and parent directory both do not exist', async () => {
+    it('does not refuse a write_scope entry whose parent directory does not exist (WK-0163: pipeline step 9b creates it)', async () => {
       const result = await checkAdmission(makeHandoff({ write_scope: ['deeply/nested/path'] }), tempDir);
-      expect(result.ok).toBe(false);
-      if (result.ok) return;
-      expect(result.error).toBe('STALE_WRITE_SCOPE');
-      expect(result.message).toContain('neither does its parent directory');
+      if (!result.ok) {
+        expect(result.error).not.toBe('STALE_WRITE_SCOPE');
+      }
     });
   });
 

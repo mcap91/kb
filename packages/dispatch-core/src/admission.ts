@@ -82,11 +82,10 @@ function checkEnvelope(handoff: Handoff): DispatchResult<null> {
 }
 
 /**
- * §7.3 `stale_write_scope`. Every entry must resolve inside the repo, and
- * either the path itself or its immediate parent directory must already
- * exist — a brand-new top-level directory (e.g. `src/` in an empty repo) is
- * fine because its parent is the repo root, but a multi-level path under a
- * nonexistent ancestor is refused.
+ * §7.3 `stale_write_scope`. Every entry must be repo-relative and resolve
+ * inside the repo root. Pipeline step 9b (precreateWriteScopeSkeleton)
+ * creates the full directory hierarchy with mkdir -p; no parent-existence
+ * check needed here (WK-0163).
  */
 async function checkStaleWriteScope(handoff: Handoff, repoRootResolved: string): Promise<DispatchResult<null>> {
   for (const entry of handoff.write_scope) {
@@ -106,15 +105,6 @@ async function checkStaleWriteScope(handoff: Handoff, repoRootResolved: string):
         { entry },
       );
     }
-
-    if (await pathExists(resolved)) continue;
-    if (await pathExists(dirname(resolved))) continue;
-
-    return fail(
-      'STALE_WRITE_SCOPE',
-      `Handoff ${handoff.id} write_scope entry "${entry}" does not exist, and neither does its parent directory.`,
-      { entry },
-    );
   }
 
   return ok(null);
