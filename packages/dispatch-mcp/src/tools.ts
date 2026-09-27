@@ -8,6 +8,7 @@ import {
   launchDispatchBackground,
   mergeDelivery,
   status,
+  stopRun,
 } from '@kb/dispatch-core';
 
 export interface ToolDef {
@@ -124,5 +125,14 @@ export const tools: ToolDef[] = [
       handoff_id: z.string().describe('The implement HO id whose delivery branch to merge (e.g. HO-0034)'),
     }),
     handler: async (input) => mergeDelivery({ dir: input.dir as string, handoff_id: input.handoff_id as string }),
+  },
+  {
+    name: 'stop-run',
+    description: 'Kill a running dispatch by run-id and mark its state cancelled. Already-terminal runs return ok with a note, not an error.',
+    inputSchema: z.object({
+      dir: z.string().describe('Target repo directory'),
+      run_id: z.string().describe('The run id to stop, e.g. RUN-<uuid>'),
+    }),
+    handler: async (input) => stopRun(input.dir as string, input.run_id as string),
   },
 ];

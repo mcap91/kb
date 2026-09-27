@@ -311,3 +311,11 @@ export { extractRecoveryBlock, validateRecoveryPayload, KB_DISPATCH_RECOVERY_VER
 
 export type { MergeDeliveryOpts, MergeDeliveryResult } from './merge-delivery.js';
 export { mergeDelivery } from './merge-delivery.js';
+
+// ---------------------------------------------------------------------------
+// Stop run (WK-0144) — kills a running dispatch by run-id and marks its state
+// cancelled. Local only; MCP-only entry point (no CLI command).
+// ---------------------------------------------------------------------------
+
+export type { StopRunOpts, StopRunResult } from './stop-run.js';
+export { stopRun } from './stop-run.js';
