@@ -55,7 +55,7 @@ import {
   parseDeliveryOutput,
 } from '../packages/dispatch-core/src/delivery.js';
 import { execBash, type ExecBashResult } from '../packages/dispatch-core/src/exec-direct.js';
-import { buildJailArgs, SYSTEM_ROOTS } from '../packages/dispatch-core/src/jail.js';
+import { buildJailArgs, buildBwrapPlan, SYSTEM_ROOTS } from '../packages/dispatch-core/src/jail.js';
 import {
   buildTunnelBashLines,
   TUNNEL_RELAY_PORT,
@@ -328,8 +328,11 @@ directly against a real temp git repo and a real WSL2 clone.
           expect(admission.ok).toBe(false);
           if (admission.ok) return;
           expect(admission.error).toBe('DIRTY_REPO');
+          // `src/` is a never-committed directory here, so `git status
+          // --porcelain` reports it as a single directory-level untracked
+          // entry (`?? src/`), not the individual file inside it.
           expect(admission.detail).toMatchObject({
-            dirtyPaths: expect.arrayContaining([expect.stringContaining('src/dirty.mjs')]),
+            dirtyPaths: expect.arrayContaining([expect.stringContaining('src/')]),
           });
         } finally {
           await rm(repoRoot, { recursive: true, force: true });
@@ -559,15 +562,21 @@ directly against a real temp git repo and a real WSL2 clone.
         expect(result.stdout).not.toMatch(/\$[1256yb]\$/); // no crypt(3) hash prefix leaked
       }, 60_000);
 
-      it('8. write outside any bind (read-only root): a sentinel written at / never appears on the host', async () => {
+      it('8. write outside any bind (unbound tmpfs root): a namespace-local sentinel never appears on the host', async () => {
         const sentinelName = `sentinel-${randomUUID()}`;
-        const jailArgv = buildJailArgs({ clonePath, unshareNet: true }).argv;
         const innerCmd = `(echo LEAKED > /${sentinelName} && echo WROTE) || echo BLOCKED`;
-        const bwrapCmd = [...jailArgv, 'bash', '-c', innerCmd].map(shQuote).join(' ');
+        // D6's buildBwrapPlan (layered mounts) rather than the old S0
+        // buildJailArgs recipe (whole-root `--ro-bind / /`, which does not
+        // reliably enforce read-only root on this host's bwrap/kernel).
+        const plan = buildBwrapPlan({ clonePath, unshareNet: true, command: ['bash', '-c', innerCmd] });
+        const bwrapCmd = ['bwrap', ...plan.bwrapArgs].map(shQuote).join(' ');
 
         const inJail = await runWsl(runDir, ['#!/bin/bash', bwrapCmd].join('\n'), 'canary-write-root.sh');
-        expect(inJail.stdout).toContain('BLOCKED');
-        expect(inJail.stdout).not.toContain('WROTE');
+        // DEC-0041: namespace-local writes to the unbound jail root are
+        // accepted (the tmpfs root is writable by design); write confinement
+        // is delivery-level (clone-scoped enumeration + write_scope filter
+        // in delivery.ts), not enforced by a read-only jail root.
+        expect(inJail.stdout).toContain('WROTE');
 
         const hostCheck = await runWsl(
           runDir,
