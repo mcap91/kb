@@ -22,7 +22,7 @@ import type { DispatchResult } from './errors.js';
 import { ok, fail } from './errors.js';
 import { parseHandoff } from './ho.js';
 import { checkAdmission } from './admission.js';
-import { resolveModelFromConfig } from './model-registry.js';
+import { resolveModelFromConfig, resolveModelByMode } from './model-registry.js';
 import { getRunDir } from './paths.js';
 import { isAlive } from './run-state.js';
 
@@ -42,10 +42,10 @@ export interface DispatchBackgroundOpts {
   dir: string;
   /** Repo-relative path to the HO file (e.g. `wiki/handoffs/HO-0004.md`). */
   handoff: string;
-  /** Model alias from the registry (e.g. 'deepseek', 'qwen3:8b'). */
-  model: string;
-  /** Backend name from the registry (e.g. 'openrouter', 'ollama'). Required at S3. */
-  backend: string;
+  /** Model alias from the registry (e.g. 'deepseek', 'qwen3:8b'). Optional — resolved by HO mode (WK-0070) when both model and backend are omitted. */
+  model?: string;
+  /** Backend name from the registry (e.g. 'openrouter', 'ollama'). Optional — resolved by HO mode (WK-0070) when both model and backend are omitted. */
+  backend?: string;
   effort?: string;
   /** Run preflight before dispatch? (default: true) */
   preflight?: boolean;
@@ -229,8 +229,26 @@ export async function launchDispatchBackground(
   const admission = await checkAdmission(parsed.data, repoRoot);
   if (!admission.ok) return admission;
 
-  const modelResult = await resolveModelFromConfig(repoRoot, opts.model, opts.backend);
-  if (!modelResult.ok) return modelResult;
+  // Resolve model: explicit wins; both omitted → resolve by HO mode; partial → error
+  let resolvedSlug: string;
+  let resolvedBackend: string;
+  if (opts.model && opts.backend) {
+    // Explicit — current path
+    const modelResult = await resolveModelFromConfig(repoRoot, opts.model, opts.backend);
+    if (!modelResult.ok) return modelResult;
+    resolvedSlug = opts.model;
+    resolvedBackend = opts.backend;
+  } else if (!opts.model && !opts.backend) {
+    // Mode-based resolution
+    const modeResult = await resolveModelByMode(repoRoot, parsed.data.mode);
+    if (!modeResult.ok) return modeResult;
+    resolvedSlug = modeResult.data.slug;
+    resolvedBackend = modeResult.data.backend;
+  } else {
+    return fail('BAD_RECORD', 'Specify both --model and --backend, or omit both for mode-based resolution.', {
+      model: opts.model, backend: opts.backend,
+    });
+  }
 
   const activeCheck = await checkActiveRunExists(repoRoot, handoffId);
   if (!activeCheck.ok) return activeCheck;
@@ -252,8 +270,8 @@ export async function launchDispatchBackground(
       controllerEntryPath,
       '--dir', repoRoot,
       '--handoff', opts.handoff,
-      '--model', opts.model,
-      '--backend', opts.backend,
+      '--model', resolvedSlug,
+      '--backend', resolvedBackend,
       '--run-id', runId,
       ...effortArgs,
       ...preflightArgs,
@@ -281,7 +299,7 @@ export async function launchDispatchBackground(
   return ok({
     runId,
     handoffId,
-    model: opts.model,
+    model: resolvedSlug,
     status: 'running',
     runDir,
     statePath,

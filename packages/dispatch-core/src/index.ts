@@ -234,6 +234,7 @@ export type { ResolvedModel, VersionGateResult, BackendFingerprint } from './mod
 export { PI_HARNESS_INFO } from './model-registry.js';
 export {
   resolveModelFromConfig,
+  resolveModelByMode,
   checkHarnessVersion,
   buildFingerprintFragment,
   parseFingerprintOutput,

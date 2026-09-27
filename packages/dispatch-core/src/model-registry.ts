@@ -212,6 +212,55 @@ export async function resolveModelFromConfig(
   });
 }
 
+/**
+ * Resolve a model + backend by HO mode (WK-0070) — the config-driven default
+ * path taken when `--model`/`--backend` are both omitted from a dispatch
+ * call. Collects every (slug, backend) candidate where the model's `use_for`
+ * (models.json) includes `mode` and the backend is both listed in that
+ * model's `available_on` and present in backends.json. Exactly one candidate
+ * delegates to `resolveModelFromConfig` for the full resolution (base_url
+ * checks, context window, etc.); zero or multiple candidates refuse loudly
+ * rather than guessing.
+ */
+export async function resolveModelByMode(
+  dir: string,
+  mode: string,
+): Promise<DispatchResult<ResolvedModel>> {
+  const modelsResult = await loadModelsTable(dir);
+  if (!modelsResult.ok) return modelsResult;
+
+  const backendsResult = await loadBackendsTable(dir);
+  if (!backendsResult.ok) return backendsResult;
+
+  const candidates: { slug: string; backend: string }[] = [];
+  for (const [slug, entry] of Object.entries(modelsResult.data)) {
+    if (!entry.use_for?.includes(mode)) continue;
+    for (const backend of entry.available_on) {
+      if (backendsResult.data[backend]) {
+        candidates.push({ slug, backend });
+      }
+    }
+  }
+
+  if (candidates.length === 0) {
+    return fail('NO_MODEL_DEFAULT', `No model in models.json has use_for matching mode '${mode}'. Provide --model and --backend explicitly, or add use_for to a models.json entry.`, {
+      mode,
+      availableModels: Object.keys(modelsResult.data),
+    });
+  }
+
+  if (candidates.length > 1) {
+    return fail(
+      'AMBIGUOUS_MODEL_DEFAULT',
+      `Multiple models/backends match use_for '${mode}': ${candidates.map((c) => `${c.slug}/${c.backend}`).join(', ')}. Provide --model and --backend explicitly.`,
+      { mode, candidates },
+    );
+  }
+
+  const candidate = candidates[0];
+  return resolveModelFromConfig(dir, candidate.slug, candidate.backend);
+}
+
 // ---------------------------------------------------------------------------
 // Harness version gate (S3 ruling 7)
 // ---------------------------------------------------------------------------

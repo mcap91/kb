@@ -69,7 +69,10 @@ export type DispatchErrorCode =
   | 'BWRAP_SPAWN_FAILED'
   | 'EXEC_FAILED'
   // --- v2 claude permission probe (WK-0131) ---
-  | 'CLAUDE_PERMISSION_PROBE_FAILED';
+  | 'CLAUDE_PERMISSION_PROBE_FAILED'
+  // --- v2 config-driven model defaults (WK-0070) ---
+  | 'NO_MODEL_DEFAULT'
+  | 'AMBIGUOUS_MODEL_DEFAULT';
 
 /**
  * Discriminated union result type for dispatch-core operations.

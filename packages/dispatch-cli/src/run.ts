@@ -91,8 +91,8 @@ Command Options:
   dispatch                   Run the v2 dispatch pipeline (always backgrounds)
     --dir <path>             Repository root directory (required)
     --handoff <rel-path>     Relative path to handoff file (required)
-    --model <alias>          Model alias from registry (required)
-    --backend <name>         Backend name from registry, e.g. openrouter, ollama (required)
+    --model <alias>          Model alias from registry (optional — resolved by HO mode when omitted)
+    --backend <name>         Backend name from registry, e.g. openrouter, ollama (optional — resolved by HO mode when omitted)
     --effort <level>         Effort/reasoning level (refused if unsupported)
     --no-preflight           Skip bwrap preflight check
     --wait                   Block until the run reaches terminal status
@@ -267,16 +267,16 @@ async function cmdStatus(args: string[]): Promise<number> {
 async function cmdDispatch(args: string[]): Promise<number> {
   const dir = getFlagValue(args, '--dir');
   const handoff = getFlagValue(args, '--handoff');
-  const model = getFlagValue(args, '--model');
-  const backend = getFlagValue(args, '--backend');
+  const model = getFlagValue(args, '--model') || undefined;
+  const backend = getFlagValue(args, '--backend') || undefined;
   const effort = getFlagValue(args, '--effort');
   const noPreflight = getFlag(args, '--no-preflight');
   const verbose = getFlag(args, '--verbose');
   const json = getFlag(args, '--json');
   const wait = getFlag(args, '--wait');
 
-  if (!dir || !handoff || !model || !backend) {
-    console.error('Error: --dir, --handoff, --model, and --backend are required');
+  if (!dir || !handoff) {
+    console.error('Error: --dir and --handoff are required');
     return 1;
   }
 
