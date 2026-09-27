@@ -47,7 +47,7 @@ a background Bash call (`run_in_background: true`) to be notified when the run r
 | `create-handoff` | Create a repo-local HO handoff document | `dir`, `title`, `subject`, `allowed_agents`, `mode`, `acceptance`, `validation` | `status`, `depends_on`, `area`, `initiative`, `work_item`, `write_scope`, `read_first`, `objective`, `constraints`, `expected_output`, `context`, `web`, `credentials`, `data_mounts`, `export_mounts`, `base_ref`, `vars`, `verbose` | |
 | `status` | Show repo-wide dispatch run status (active + recent terminal runs) | `dir` | — | read-only |
 | `cleanup` | Clean up stale dispatch reviews, runs, and tokens | — | `dir`, `maxAgeDays`, `verbose` | destructive |
-| `dispatch` | Run the v2 dispatch pipeline (admission → clone → jail → worker → delivery → capture). Always backgrounds; returns a `watch` command | `dir`, `handoff`, `model`, `backend` | `effort`, `preflight`, `verbose` | operator, destructive |
+| `dispatch` | Run the v2 dispatch pipeline (admission → clone → jail → worker → delivery → capture). Always backgrounds; returns a `watch` command | `dir`, `handoff` | `model`, `backend`, `effort`, `preflight`, `verbose` | operator, destructive; `model`/`backend` optional — resolved by HO mode from `models.json` `use_for` defaults when omitted (WK-0070) |
 | `derive-review` | Create a `code_review` HO from a delivered `implement` HO. Does not dispatch it — dispatch separately | `dir`, `handoff_id` | — | operator |
 | `init-dispatch` | Scaffold `wiki/.dispatch/` config tables (`models.json`, `backends.json`, `profiles.json`) + write-once README | `dir` | — | operator |
 | `merge-delivery` | Merge a delivery branch into the target after review pass; gates on review evidence | `dir`, `handoff_id` | — | operator, destructive |
