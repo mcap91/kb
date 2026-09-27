@@ -261,6 +261,37 @@ export async function resolveModelByMode(
   return resolveModelFromConfig(dir, candidate.slug, candidate.backend);
 }
 
+/**
+ * Resolve a model when only --model is given (no --backend). Infers the
+ * backend from available_on: exactly one entry → use it; multiple → refuse
+ * with AMBIGUOUS_BACKEND (WK-0070 partial specification).
+ */
+export async function resolveModelInferBackend(
+  dir: string,
+  slug: string,
+): Promise<DispatchResult<ResolvedModel>> {
+  const modelsResult = await loadModelsTable(dir);
+  if (!modelsResult.ok) return modelsResult;
+
+  const modelEntry = modelsResult.data[slug];
+  if (!modelEntry) {
+    return fail('MODEL_NOT_FOUND', `Model slug not found in models.json: ${slug}`, {
+      slug,
+      available: Object.keys(modelsResult.data),
+    });
+  }
+
+  if (modelEntry.available_on.length !== 1) {
+    return fail(
+      'AMBIGUOUS_BACKEND',
+      `Model "${slug}" is available on ${modelEntry.available_on.length} backends: ${modelEntry.available_on.join(', ')}. Specify --backend explicitly.`,
+      { slug, backends: modelEntry.available_on },
+    );
+  }
+
+  return resolveModelFromConfig(dir, slug, modelEntry.available_on[0]);
+}
+
 // ---------------------------------------------------------------------------
 // Harness version gate (S3 ruling 7)
 // ---------------------------------------------------------------------------

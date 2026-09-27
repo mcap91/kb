@@ -22,7 +22,7 @@ import type { DispatchResult } from './errors.js';
 import { ok, fail } from './errors.js';
 import { parseHandoff } from './ho.js';
 import { checkAdmission } from './admission.js';
-import { resolveModelFromConfig, resolveModelByMode } from './model-registry.js';
+import { resolveModelFromConfig, resolveModelByMode, resolveModelInferBackend } from './model-registry.js';
 import { getRunDir } from './paths.js';
 import { isAlive } from './run-state.js';
 
@@ -229,15 +229,21 @@ export async function launchDispatchBackground(
   const admission = await checkAdmission(parsed.data, repoRoot);
   if (!admission.ok) return admission;
 
-  // Resolve model: explicit wins; both omitted → resolve by HO mode; partial → error
+  // Resolve model: explicit wins; model-only → infer backend; both omitted → resolve by HO mode; backend-only → error
   let resolvedSlug: string;
   let resolvedBackend: string;
   if (opts.model && opts.backend) {
-    // Explicit — current path
+    // Explicit — both provided
     const modelResult = await resolveModelFromConfig(repoRoot, opts.model, opts.backend);
     if (!modelResult.ok) return modelResult;
     resolvedSlug = opts.model;
     resolvedBackend = opts.backend;
+  } else if (opts.model && !opts.backend) {
+    // Model-only — infer backend from available_on (WK-0070 partial spec)
+    const inferResult = await resolveModelInferBackend(repoRoot, opts.model);
+    if (!inferResult.ok) return inferResult;
+    resolvedSlug = inferResult.data.slug;
+    resolvedBackend = inferResult.data.backend;
   } else if (!opts.model && !opts.backend) {
     // Mode-based resolution
     const modeResult = await resolveModelByMode(repoRoot, parsed.data.mode);
@@ -245,8 +251,9 @@ export async function launchDispatchBackground(
     resolvedSlug = modeResult.data.slug;
     resolvedBackend = modeResult.data.backend;
   } else {
-    return fail('BAD_RECORD', 'Specify both --model and --backend, or omit both for mode-based resolution.', {
-      model: opts.model, backend: opts.backend,
+    // Backend-only — not supported
+    return fail('BAD_RECORD', 'Specify --model (backend will be inferred), or omit both for mode-based resolution.', {
+      backend: opts.backend,
     });
   }
 

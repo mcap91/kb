@@ -72,7 +72,8 @@ export type DispatchErrorCode =
   | 'CLAUDE_PERMISSION_PROBE_FAILED'
   // --- v2 config-driven model defaults (WK-0070) ---
   | 'NO_MODEL_DEFAULT'
-  | 'AMBIGUOUS_MODEL_DEFAULT';
+  | 'AMBIGUOUS_MODEL_DEFAULT'
+  | 'AMBIGUOUS_BACKEND';
 
 /**
  * Discriminated union result type for dispatch-core operations.
@@ -109,6 +110,9 @@ export const V2_REFUSAL_CODES = [
   'WORK_ITEM_NOT_FOUND',
   'CLAUDE_PERMISSION_PROBE_FAILED',
   'BASE_DRIFT',
+  'NO_MODEL_DEFAULT',
+  'AMBIGUOUS_MODEL_DEFAULT',
+  'AMBIGUOUS_BACKEND',
 ] as const satisfies readonly DispatchErrorCode[];
 
 /**
