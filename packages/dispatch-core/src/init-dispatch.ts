@@ -68,7 +68,10 @@ OpenAI, a proxy, a local Ollama/vLLM server).
     "family": "pi",
     "base_url": "https://openrouter.ai/api/v1",
     "api_key_env": "OPENROUTER_API_KEY",
-    "secrets_file": "/home/user/.secrets/dispatch.env"
+    "secrets_file": "/home/user/.secrets/dispatch.env",
+    "request_params": {
+      "provider": { "only": ["DeepInfra"], "data_collection": "deny" }
+    }
   },
   "ollama": {
     "family": "pi",
@@ -78,6 +81,46 @@ OpenAI, a proxy, a local Ollama/vLLM server).
   }
 }
 \`\`\`
+
+## request_params (optional)
+
+An opaque \`Record<string, unknown>\` object on any backend entry. Its contents are passed
+through verbatim into the API request body via Pi's \`samplingParams\` mechanism — kb
+validates that it is an object but never inspects the contents. The backend's own API
+validates the fields.
+
+Use \`request_params\` for backend-specific features (provider pinning, data policies,
+routing preferences) without writing backend-specific code in kb. To add a new backend's
+extra fields: edit the JSON, no code change needed.
+
+**OpenRouter** — provider pinning + data policy via \`request_params\`:
+\`\`\`json
+{
+  "request_params": {
+    "provider": { "only": ["DeepInfra"], "data_collection": "deny" }
+  }
+}
+\`\`\`
+
+**HuggingFace** — no \`request_params\` needed. Provider selection is in \`model_id\`
+(e.g. \`"Qwen/Qwen2.5-Coder-32B-Instruct:nscale"\` in models.json).
+
+**vLLM / Ollama** — no \`request_params\` needed. They ARE the provider.
+
+**Naming hazard:** OpenRouter's \`provider.only\` and \`provider.order\` values are
+inference provider names (DeepInfra, Fireworks, Relace), NOT model vendor names
+(DeepSeek). A misconfigured \`"only": ["DeepSeek"]\` will 404 every request because
+DeepSeek is the model vendor, not an inference provider for that model.
+
+## Provenance
+
+kb opportunistically records which inference provider served each run. The forwarder
+captures this from the API response — no configuration needed:
+- OpenRouter: body \`"provider"\` field (always present)
+- HuggingFace: \`x-inference-provider\` response header (always present)
+- Local backends: \`"unknown"\` (no routing)
+
+The captured provider name appears in the response doc's \`inference_provider\` field.
 
 ## Example profiles.json
 

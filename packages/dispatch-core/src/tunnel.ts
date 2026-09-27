@@ -118,7 +118,7 @@ export function buildTunnelScripts(config: TunnelConfig): TunnelScripts {
 // ever touches a real network interface for egress.
 //
 // Self-contained: Node.js built-ins only, no npm packages.
-// Usage: node forwarder.js <socketPath> <targetUrl> <webEnabled:true|false> <logPath> <allowedHostsJson>
+// Usage: node forwarder.js <socketPath> <targetUrl> <webEnabled:true|false> <logPath> <allowedHostsJson> [provenancePath]
 
 const http = require('node:http');
 const https = require('node:https');
@@ -131,10 +131,22 @@ const TARGET_URL = process.argv[3];
 const WEB_ENABLED_ARG = process.argv[4];
 const LOG_PATH = process.argv[5];
 const ALLOWED_HOSTS_JSON = process.argv[6];
+const PROVENANCE_PATH = process.argv[7];
 
 if (!SOCKET_PATH || !TARGET_URL || !WEB_ENABLED_ARG || !LOG_PATH) {
-  console.error('usage: node forwarder.js <socketPath> <targetUrl> <webEnabled:true|false> <logPath> <allowedHostsJson>');
+  console.error('usage: node forwarder.js <socketPath> <targetUrl> <webEnabled:true|false> <logPath> <allowedHostsJson> [provenancePath]');
   process.exit(1);
+}
+
+let provenanceWritten = false;
+function writeProvenance(provider, source) {
+  if (provenanceWritten || !PROVENANCE_PATH) return;
+  provenanceWritten = true;
+  try {
+    fs.writeFileSync(PROVENANCE_PATH, JSON.stringify({ inference_provider: provider, source: source }) + '\\n');
+  } catch (e) {
+    // best-effort — never block a request on a provenance write failure
+  }
 }
 
 const WEB_ENABLED = WEB_ENABLED_ARG === 'true';
@@ -240,9 +252,30 @@ const server = http.createServer((req, res) => {
       headers: outHeaders,
     },
     (upstreamRes) => {
+      if (!provenanceWritten && PROVENANCE_PATH) {
+        const headerProv = (upstreamRes.headers['x-inference-provider'] || '').toString();
+        upstreamRes.on('data', function onChunk(chunk) {
+          if (provenanceWritten) return;
+          upstreamRes.removeListener('data', onChunk);
+          const text = chunk.toString('utf8', 0, Math.min(chunk.length, 2048));
+          const m = text.match(/"provider"\\s*:\\s*"([^"]+)"/);
+          if (m) {
+            writeProvenance(m[1], 'body');
+          } else if (headerProv) {
+            writeProvenance(headerProv, 'header');
+          }
+        });
+        upstreamRes.on('end', () => {
+          if (!provenanceWritten) {
+            if (headerProv) {
+              writeProvenance(headerProv, 'header');
+            } else {
+              writeProvenance('unknown', 'unknown');
+            }
+          }
+        });
+      }
       res.writeHead(upstreamRes.statusCode || 502, upstreamRes.headers);
-      // Pipe, never buffer — model responses stream via SSE; a buffering
-      // proxy (e.g. collecting the body before responding) breaks Pi silently.
       upstreamRes.pipe(res);
     },
   );

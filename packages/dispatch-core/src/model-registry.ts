@@ -113,6 +113,7 @@ export interface ResolvedModel {
   effortMapping?: EffortMapping;
   /** §7.13 context-budget gate input (tokens). Defaults to DEFAULT_CONTEXT_WINDOW; floor at MIN_CONTEXT_WINDOW. */
   contextWindow: number;
+  requestParams?: Record<string, unknown>;
 }
 
 /**
@@ -209,6 +210,7 @@ export async function resolveModelFromConfig(
     availableOn: modelEntry.available_on,
     effortMapping: backendEntry.effort_mapping,
     contextWindow,
+    ...(backendEntry.request_params ? { requestParams: backendEntry.request_params } : {}),
   });
 }
 

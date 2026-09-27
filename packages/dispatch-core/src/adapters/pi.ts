@@ -36,6 +36,7 @@ export interface PiModelsJson {
         cost: { input: number; output: number; cacheRead: number; cacheWrite: number };
       }>;
       compat?: { supportsDeveloperRole?: boolean; supportsReasoningEffort?: boolean };
+      samplingParams?: Record<string, unknown>;
     }
   >;
 }
@@ -135,7 +136,7 @@ function fail<T = never>(message: string, detail?: unknown): DispatchResult<T> {
  * (the actual secret value is sourced from secrets.env at spawn time, never
  * here); models with no secret (e.g. local Ollama) get a literal placeholder.
  */
-export function buildModelsJson(model: ModelEntry): PiModelsJson {
+export function buildModelsJson(model: ModelEntry, requestParams?: Record<string, unknown>): PiModelsJson {
   const apiKey = model.apiKeyEnv ? `$${model.apiKeyEnv}` : 'placeholder';
 
   return {
@@ -153,6 +154,7 @@ export function buildModelsJson(model: ModelEntry): PiModelsJson {
           },
         ],
         ...(model.compat ? { compat: { ...model.compat } } : {}),
+        ...(requestParams ? { samplingParams: requestParams } : {}),
       },
     },
   };

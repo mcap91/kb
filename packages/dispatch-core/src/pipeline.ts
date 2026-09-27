@@ -44,7 +44,7 @@ import {
   type ModelEntry,
 } from './model-registry.js';
 import { assemblePrompt } from './assemble.js';
-import { buildInvocation, parsePiOutput } from './adapters/pi.js';
+import { buildInvocation, buildModelsJson, parsePiOutput } from './adapters/pi.js';
 import { buildInvocation as buildCodexInvocation, parseCodexOutput } from './adapters/codex.js';
 import { buildInvocation as buildClaudeInvocation, parseClaudeOutput } from './adapters/claude.js';
 import { execBash } from './exec-direct.js';
@@ -840,7 +840,10 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       };
       const invocation = buildInvocation(promptPath, piModelEntry, clonePath, workerDir);
       execLines = [`exec ${[invocation.cmd, ...invocation.args].map(shQuote).join(' ')}`];
-      bwrapInjectedFiles = [{ content: invocation.modelsJsonContent, dest: `${workerDir}/models.json` }];
+      const modelsJsonContent = model.requestParams
+        ? JSON.stringify(buildModelsJson(piModelEntry, model.requestParams))
+        : invocation.modelsJsonContent;
+      bwrapInjectedFiles = [{ content: modelsJsonContent, dest: `${workerDir}/models.json` }];
     } else if (model.family === 'codex') {
       // codexOutputPath lives under the jail's writable /tmp tmpfs — same
       // EROFS reasoning as Pi's workerDir above applies here: codex itself
@@ -1121,10 +1124,11 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
     // only process in the whole run that ever touches a real network
     // interface for egress. Runs for the worker's lifetime; killed below.
     logVerbose(verbose, 'starting tunnel forwarder');
+    const provenancePath = join(runDir, 'provenance.json');
     const forwarderLogFd = openSync(forwarderLogPath, 'a');
     const forwarderChild = spawn(
       'node',
-      [forwarderScriptPath, tunnelSocketPath, resolvedTargetUrl, handoff.web ? 'true' : 'false', tunnelDestinationsLogPath, JSON.stringify(allowedHosts)],
+      [forwarderScriptPath, tunnelSocketPath, resolvedTargetUrl, handoff.web ? 'true' : 'false', tunnelDestinationsLogPath, JSON.stringify(allowedHosts), provenancePath],
       { stdio: ['ignore', forwarderLogFd, forwarderLogFd] },
     );
     closeSync(forwarderLogFd);
@@ -1264,6 +1268,19 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       handoff.mode === 'research' ? undefined : extractRecoveryBlock(lastAssistantText);
     if (recoveryEvidence && !recoveryEvidence.valid) {
       logVerbose(verbose, `recovery block invalid: ${recoveryEvidence.diagnostics.map((d) => d.code).join(', ')}`);
+    }
+
+    // 15c. Read opportunistic provenance (forwarder writes provenance.json).
+    let inferenceProvider: string | undefined;
+    try {
+      const provenanceContent = await readFile(provenancePath, 'utf8');
+      const provenanceData = JSON.parse(provenanceContent) as Record<string, unknown>;
+      if (typeof provenanceData.inference_provider === 'string') {
+        inferenceProvider = provenanceData.inference_provider;
+        logVerbose(verbose, `inference provider: ${inferenceProvider}`);
+      }
+    } catch {
+      // best-effort — provenance.json may not exist for local backends or short runs
     }
 
     // 16. Enumerate changes / advisory delivery branch (S6a T30,
@@ -1444,6 +1461,7 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       backendFingerprint: fingerprint ?? undefined,
       effort: opts.effort,
       wikiCommit,
+      inferenceProvider,
     });
     if (!captureResult.ok) return captureResult;
 
@@ -1485,6 +1503,7 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       piVersion,
       backendFingerprint: fingerprint ?? undefined,
       wikiCommit,
+      inferenceProvider,
     });
     const hoPath = join(dir, opts.handoff);
     try {

@@ -480,4 +480,58 @@ describe('capture.ts — buildProvenanceWriteBack', () => {
     expect(fields.branch).toBe('');
     expect(fields.run_id).toBe('RUN-0002');
   });
+
+  it('includes inference_provider in write-back fields when provided', () => {
+    const { fields } = buildProvenanceWriteBack({
+      runDir: '/tmp/run/RUN-0004',
+      handoff: { id: 'HO-0005', title: 'Provider test', mode: 'implement' },
+      delivery: { status: 'no_changes' },
+      inferenceProvider: 'DeepInfra',
+    });
+
+    expect(fields.inference_provider).toBe('DeepInfra');
+  });
+
+  it('omits inference_provider from write-back fields when not provided', () => {
+    const { fields } = buildProvenanceWriteBack({
+      runDir: '/tmp/run/RUN-0005',
+      handoff: { id: 'HO-0006', title: 'No provider test', mode: 'implement' },
+      delivery: { status: 'no_changes' },
+    });
+
+    expect('inference_provider' in fields).toBe(false);
+  });
+});
+
+describe('capture.ts — writeResponseDoc inference_provider', () => {
+  let runDir: string;
+
+  it('includes inference_provider in response doc frontmatter when provided', async () => {
+    runDir = await mkdtemp(join(tmpdir(), 'kb-capture-prov-'));
+    const result = await writeResponseDoc({
+      runDir,
+      handoff: { id: 'HO-0007', title: 'Provenance test', mode: 'implement' },
+      delivery: { status: 'no_changes' },
+      inferenceProvider: 'DeepInfra',
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.responseContent).toContain('inference_provider: DeepInfra');
+    await rm(runDir, { recursive: true, force: true });
+  });
+
+  it('omits inference_provider from response doc when not provided', async () => {
+    runDir = await mkdtemp(join(tmpdir(), 'kb-capture-noprov-'));
+    const result = await writeResponseDoc({
+      runDir,
+      handoff: { id: 'HO-0008', title: 'No provenance test', mode: 'implement' },
+      delivery: { status: 'no_changes' },
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.responseContent).not.toContain('inference_provider');
+    await rm(runDir, { recursive: true, force: true });
+  });
 });
