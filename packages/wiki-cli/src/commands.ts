@@ -26,6 +26,8 @@ import {
   type RatifiedRow,
 } from '@kb/wiki-core';
 import * as fs from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import { parseFlag, parseValue } from './run.js';
 
 // ---------------------------------------------------------------------------
@@ -148,6 +150,51 @@ export async function cmdSyncContract(args: string[]): Promise<void> {
   if (result.data.instructions) {
     for (const line of result.data.instructions) {
       console.log(`  > ${line}`);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// install-roles
+// ---------------------------------------------------------------------------
+
+/**
+ * Stamp `contract/roles/*.md` (canonical role preambles) into the user-global
+ * command directories both Claude Code and Codex read from. Whole-file,
+ * idempotent overwrite — the source files are fully canonical, so there is no
+ * merge logic (WK-0108, WK-0133 ruling 5: user-global, homed in wiki-cli).
+ */
+export async function cmdInstallRoles(args: string[]): Promise<void> {
+  const dir = parseValue(args, '--dir') ?? process.cwd();
+  const rolesDir = join(dir, 'contract', 'roles');
+
+  let entries: string[];
+  try {
+    entries = await fs.promises.readdir(rolesDir);
+  } catch (err) {
+    console.error(`Error: could not read ${rolesDir}: ${(err as Error).message}`);
+    process.exitCode = 1;
+    return;
+  }
+
+  const roleFiles = entries.filter((f) => f.endsWith('.md'));
+  if (roleFiles.length === 0) {
+    console.log(`No .md files found in ${rolesDir}`);
+    return;
+  }
+
+  const destDirs = [join(homedir(), '.claude', 'commands'), join(homedir(), '.codex', 'prompts')];
+  for (const destDir of destDirs) {
+    await fs.promises.mkdir(destDir, { recursive: true });
+  }
+
+  console.log(`Installing ${roleFiles.length} role file(s) from ${rolesDir}:`);
+  for (const filename of roleFiles) {
+    const content = await fs.promises.readFile(join(rolesDir, filename), 'utf8');
+    for (const destDir of destDirs) {
+      const destPath = join(destDir, filename);
+      await fs.promises.writeFile(destPath, content, 'utf8');
+      console.log(`    + ${destPath}`);
     }
   }
 }

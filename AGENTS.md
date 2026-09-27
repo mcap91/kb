@@ -75,7 +75,7 @@ This document is the primary reference for any agent session working in the `kb`
 `kb` is a TypeScript monorepo toolkit providing three subsystems:
 
 1. **Wiki** -- Structured repo-local wiki with manifest-driven record types (WK, IN, DEC, SRC, AREA, PLN, VAL). Operations: bootstrap, sync-contract, allocate-id, create, lint, generate, build-search-index, search, import-plan, validate-plan, archive-plan. Interfaces: CLI and MCP server.
-2. **Dispatch Protocol** -- Reviewed multi-agent handoff workflow using HO-\* documents. Token-based state machine (review then launch). Platform-aware config. Deterministic fake-agent for testing.
+2. **Dispatch Protocol** -- v2 multi-agent handoff workflow using HO-\* documents. One atomic gated pipeline (admission -> clone -> jail -> worker -> delivery -> capture). Linux-only (bwrap sandboxing). Deterministic fake-agent fixture for testing.
 3. **Graph Explore** -- Deterministic code-first graph extraction at file/module level. Wiki overlay from frontmatter. Produces JSON and markdown summary.
 
 ### Sister-Repo Model
@@ -173,7 +173,7 @@ kb/
     wiki-core/       Core wiki operations (bootstrap, sync, allocate, create, lint, generate, search)
     wiki-cli/        CLI entry point for wiki commands
     wiki-mcp/        MCP server exposing wiki operations as tools
-    dispatch-core/   Core dispatch operations (review, launch, cleanup, token management)
+    dispatch-core/   Core dispatch operations (admission, pipeline, credentials, cleanup, status)
     dispatch-cli/    CLI entry point for dispatch commands
     dispatch-mcp/    MCP server exposing dispatch operations as tools
     graph-explore/   Deterministic code-first graph extraction
@@ -205,7 +205,7 @@ kb/
 | `wiki-core` | All wiki logic. No CLI, no I/O formatting. Exports typed functions. |
 | `wiki-cli` | Thin CLI wrapper. Parses args, calls wiki-core, formats output. |
 | `wiki-mcp` | MCP server. Registers wiki-core operations as MCP tools. |
-| `dispatch-core` | Review, launch, cleanup, token, paths. No CLI. |
+| `dispatch-core` | Admission, pipeline (dispatch), credentials, cleanup, paths. No CLI. |
 | `dispatch-cli` | Thin CLI wrapper for dispatch operations. |
 | `dispatch-mcp` | MCP server. Registers dispatch-core operations as MCP tools. |
 | `graph-explore` | File scanning, code import extraction, wiki overlay, graph output. |
