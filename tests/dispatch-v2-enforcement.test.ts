@@ -562,7 +562,7 @@ directly against a real temp git repo and a real WSL2 clone.
         expect(result.stdout).not.toMatch(/\$[1256yb]\$/); // no crypt(3) hash prefix leaked
       }, 60_000);
 
-      it('8. write outside any bind (read-only root): a sentinel written at / never appears on the host', async () => {
+      it('8. write outside any bind (unbound tmpfs root): a namespace-local sentinel never appears on the host', async () => {
         const sentinelName = `sentinel-${randomUUID()}`;
         const innerCmd = `(echo LEAKED > /${sentinelName} && echo WROTE) || echo BLOCKED`;
         // D6's buildBwrapPlan (layered mounts) rather than the old S0
@@ -572,8 +572,11 @@ directly against a real temp git repo and a real WSL2 clone.
         const bwrapCmd = ['bwrap', ...plan.bwrapArgs].map(shQuote).join(' ');
 
         const inJail = await runWsl(runDir, ['#!/bin/bash', bwrapCmd].join('\n'), 'canary-write-root.sh');
-        expect(inJail.stdout).toContain('BLOCKED');
-        expect(inJail.stdout).not.toContain('WROTE');
+        // DEC-0041: namespace-local writes to the unbound jail root are
+        // accepted (the tmpfs root is writable by design); write confinement
+        // is delivery-level (clone-scoped enumeration + write_scope filter
+        // in delivery.ts), not enforced by a read-only jail root.
+        expect(inJail.stdout).toContain('WROTE');
 
         const hostCheck = await runWsl(
           runDir,
