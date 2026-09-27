@@ -36,17 +36,22 @@ using the SDK's high-level `McpServer` + `registerTool` API.
 
 ## kb-dispatch (9 tools)
 
+v2 only — there is no review/launch token pipeline, no operator config directory, and no agent
+registry. `dispatch` gates and runs the full pipeline (admission → clone → jail → worker → delivery →
+capture) in one atomic call; it always backgrounds and returns a `watch` command — run that command as
+a background Bash call (`run_in_background: true`) to be notified when the run reaches terminal status.
+
 | Tool | Purpose | Required | Optional | Notes |
 |------|---------|----------|----------|-------|
-| `init-config` | Initialize operator dispatch config + default registry | — | `force` | operator |
-| `check-environment` | Probe host sandbox capabilities; persist the record | — | — | |
+| `check-environment` | Probe host bwrap/container/writability facts (stateless — no persisted record) | — | — | |
 | `create-handoff` | Create a repo-local HO handoff document | `dir`, `title`, `subject`, `allowed_agents`, `mode`, `acceptance`, `validation` | `status`, `depends_on`, `area`, `initiative`, `work_item`, `write_scope`, `read_first`, `objective`, `constraints`, `expected_output`, `context`, `web`, `credentials`, `data_mounts`, `export_mounts`, `base_ref`, `vars`, `verbose` | |
-| `status` | Show dispatch token and run status | `dir` | — | read-only |
+| `status` | Show repo-wide dispatch run status (active + recent terminal runs) | `dir` | — | read-only |
 | `cleanup` | Clean up stale dispatch reviews, runs, and tokens | — | `dir`, `maxAgeDays`, `verbose` | destructive |
-| `dispatch` | Run the v2 dispatch pipeline (gate → clone → jail → worker → delivery → capture); returns a `watch` command | `dir`, `handoff`, `model`, `backend` | `effort`, `preflight`, `verbose` | operator, destructive |
-| `derive-review` | Create a code_review HO from a delivered implement HO | `dir`, `handoff_id` | — | operator |
-| `init-dispatch` | Scaffold wiki/.dispatch/ config tables (models, backends, profiles) + managed README | `dir` | `force` | operator |
+| `dispatch` | Run the v2 dispatch pipeline (admission → clone → jail → worker → delivery → capture). Always backgrounds; returns a `watch` command | `dir`, `handoff`, `model`, `backend` | `effort`, `preflight`, `verbose` | operator, destructive |
+| `derive-review` | Create a `code_review` HO from a delivered `implement` HO. Does not dispatch it — dispatch separately | `dir`, `handoff_id` | — | operator |
+| `init-dispatch` | Scaffold `wiki/.dispatch/` config tables (`models.json`, `backends.json`, `profiles.json`) + write-once README | `dir` | — | operator |
 | `merge-delivery` | Merge a delivery branch into the target after review pass; gates on review evidence | `dir`, `handoff_id` | — | operator, destructive |
+| `stop-run` | Kill a running dispatch by run-id and mark its state cancelled. Already-terminal runs return `ok` with a note, not an error | `dir`, `run_id` | — | operator, destructive |
 
 ## Not applicable (by design)
 
