@@ -46,6 +46,7 @@ export interface BackendEntry {
   };
   /** Optional per-family effort/reasoning CLI mapping (WK-0122). Absent = effort not supported for this backend. */
   effort_mapping?: EffortMapping;
+  request_params?: Record<string, unknown>;
 }
 
 export interface ModelTableEntry {
@@ -117,7 +118,7 @@ function warnUnknownKeys(entry: Record<string, unknown>, knownKeys: ReadonlySet<
   }
 }
 
-const BACKEND_ENTRY_KNOWN_KEYS = new Set(['family', 'base_url', 'api_key_env', 'secrets_file', 'notes', 'serving', 'effort_mapping']);
+const BACKEND_ENTRY_KNOWN_KEYS = new Set(['family', 'base_url', 'api_key_env', 'secrets_file', 'notes', 'serving', 'effort_mapping', 'request_params']);
 
 const EFFORT_MAPPING_STYLES: readonly EffortMapping['style'][] = ['flag_value', 'key_equals_value'];
 
@@ -182,6 +183,10 @@ function validateBackendEntry(name: string, raw: unknown): DispatchResult<Backen
     effortMapping = { flag, style: style as EffortMapping['style'], ...(key !== undefined ? { key } : {}) };
   }
 
+  if (raw.request_params !== undefined && !isPlainObject(raw.request_params)) {
+    return fail('BAD_RECORD', `Backend "${name}" in backends.json: "request_params" must be an object.`);
+  }
+
   const entry: BackendEntry = {
     family: raw.family as BackendFamily,
     base_url: raw.base_url as string | null,
@@ -198,6 +203,7 @@ function validateBackendEntry(name: string, raw: unknown): DispatchResult<Backen
     entry.serving = serving;
   }
   if (effortMapping) entry.effort_mapping = effortMapping;
+  if (isPlainObject(raw.request_params)) entry.request_params = raw.request_params as Record<string, unknown>;
   return ok(entry);
 }
 

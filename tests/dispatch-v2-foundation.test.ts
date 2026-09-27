@@ -521,6 +521,23 @@ describe('adapters/pi.ts — facts-only Pi adapter', () => {
     });
   });
 
+  it('buildModelsJson includes samplingParams when requestParams is provided', () => {
+    const registry = getDefaultRegistry();
+    const deepseek = registry.models.deepseek!;
+    const requestParams = { provider: { only: ['DeepInfra'], data_collection: 'deny' } };
+
+    const result = buildModelsJson(deepseek, requestParams);
+    expect(result.providers.openrouter.samplingParams).toEqual(requestParams);
+  });
+
+  it('buildModelsJson omits samplingParams when requestParams is absent', () => {
+    const registry = getDefaultRegistry();
+    const deepseek = registry.models.deepseek!;
+
+    const result = buildModelsJson(deepseek);
+    expect(result.providers.openrouter).not.toHaveProperty('samplingParams');
+  });
+
   it('parsePiOutput sums usage across message_end events and defaults to completed', () => {
     const lines = [
       JSON.stringify({ type: 'agent_start' }),

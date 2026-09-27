@@ -108,6 +108,41 @@ describe('model-registry.ts — resolveModelFromConfig', () => {
     });
   });
 
+  it('threads request_params from backends.json to ResolvedModel.requestParams', async () => {
+    await writeDispatchConfig(
+      dir,
+      'models.json',
+      JSON.stringify({ deepseek: { available_on: ['openrouter'], model_id: 'deepseek/deepseek-v4-flash-0731' } }),
+    );
+    await writeDispatchConfig(
+      dir,
+      'backends.json',
+      JSON.stringify({
+        openrouter: {
+          family: 'pi',
+          base_url: 'https://openrouter.ai/api/v1',
+          api_key_env: 'OPENROUTER_API_KEY',
+          secrets_file: '/home/operator/.config/kb-dispatch/secrets.env',
+          request_params: { provider: { only: ['DeepInfra'], data_collection: 'deny' } },
+        },
+      }),
+    );
+
+    const result = await resolveModelFromConfig(dir, 'deepseek', 'openrouter');
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.requestParams).toEqual({ provider: { only: ['DeepInfra'], data_collection: 'deny' } });
+  });
+
+  it('omits requestParams when request_params is absent from backends.json', async () => {
+    await seedTables();
+
+    const result = await resolveModelFromConfig(dir, 'deepseek', 'openrouter');
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.requestParams).toBeUndefined();
+  });
+
   it('fails with MODEL_NOT_FOUND listing available slugs when the slug is missing', async () => {
     await seedTables();
 

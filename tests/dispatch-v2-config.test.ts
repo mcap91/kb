@@ -428,6 +428,66 @@ describe('repo-config.ts — wiki/.dispatch/ table loaders', () => {
       expect(result.message).toContain('effort_mapping.key');
     });
 
+    it('accepts a valid request_params object on a backend entry', async () => {
+      await writeDispatchConfig(
+        dir,
+        'backends.json',
+        JSON.stringify({
+          openrouter: {
+            family: 'pi',
+            base_url: 'https://openrouter.ai/api/v1',
+            api_key_env: 'OPENROUTER_API_KEY',
+            secrets_file: '/home/operator/.config/kb-dispatch/secrets.env',
+            request_params: { provider: { only: ['DeepInfra'], data_collection: 'deny' } },
+          },
+        }),
+      );
+
+      const result = await loadBackendsTable(dir);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.data.openrouter.request_params).toEqual({
+        provider: { only: ['DeepInfra'], data_collection: 'deny' },
+      });
+    });
+
+    it('refuses a non-object request_params', async () => {
+      await writeDispatchConfig(
+        dir,
+        'backends.json',
+        JSON.stringify({
+          openrouter: {
+            family: 'pi',
+            base_url: 'https://openrouter.ai/api/v1',
+            api_key_env: null,
+            secrets_file: null,
+            request_params: 'not-an-object',
+          },
+        }),
+      );
+
+      const result = await loadBackendsTable(dir);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error).toBe('BAD_RECORD');
+      expect(result.message).toContain('request_params');
+    });
+
+    it('omits request_params from the entry when absent in backends.json', async () => {
+      await writeDispatchConfig(
+        dir,
+        'backends.json',
+        JSON.stringify({
+          openrouter: { family: 'pi', base_url: 'https://openrouter.ai/api/v1', api_key_env: null, secrets_file: null },
+        }),
+      );
+
+      const result = await loadBackendsTable(dir);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect('request_params' in result.data.openrouter).toBe(false);
+    });
+
     it('refuses an effort_mapping missing the required flag', async () => {
       await writeDispatchConfig(
         dir,

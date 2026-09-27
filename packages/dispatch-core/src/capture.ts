@@ -97,6 +97,7 @@ export interface CaptureOpts {
    * doc frontmatter and the HO provenance write-back.
    */
   wikiCommit?: string;
+  inferenceProvider?: string;
 }
 
 export interface CaptureResult {
@@ -404,6 +405,7 @@ export async function writeResponseDoc(opts: CaptureOpts): Promise<DispatchResul
   if (opts.piVersion) frontmatterLines.push(`pi_version: ${opts.piVersion}`);
   if (opts.backendFingerprint) frontmatterLines.push(`backend_fingerprint: ${formatBackendFingerprint(opts.backendFingerprint)}`);
   if (opts.wikiCommit) frontmatterLines.push(`wiki_commit: ${opts.wikiCommit}`);
+  if (opts.inferenceProvider) frontmatterLines.push(`inference_provider: ${opts.inferenceProvider}`);
   frontmatterLines.push('---', '');
   const frontmatter = frontmatterLines.join('\n');
 
@@ -483,6 +485,7 @@ export function buildProvenanceWriteBack(opts: CaptureOpts): ProvenanceWriteBack
   if (opts.piVersion) fields.pi_version = opts.piVersion;
   if (opts.backendFingerprint) fields.backend_fingerprint = formatBackendFingerprint(opts.backendFingerprint);
   if (opts.wikiCommit) fields.wiki_commit = opts.wikiCommit;
+  if (opts.inferenceProvider) fields.inference_provider = opts.inferenceProvider;
   if (opts.compaction && opts.compaction.total > 0) {
     fields.compaction_total = String(opts.compaction.total);
     fields.compaction_succeeded = String(opts.compaction.succeeded);
