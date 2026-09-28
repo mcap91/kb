@@ -118,6 +118,56 @@ async function checkStaleWriteScope(handoff: Handoff, repoRootResolved: string):
   return ok(null);
 }
 
+/**
+ * WK-0180 `write_scope_uncapturable`: refuse a write_scope entry that `git`
+ * itself will never stage. Delivery's `git add -A` (delivery.ts) silently
+ * skips gitignored paths, so a worker write there is uncapturable by
+ * construction — a successful worker run would land as a misleading
+ * `no_delta` failure. `git check-ignore -v` exits 0 (one match) or 1 (no
+ * match) and evaluates patterns against the pathname (not filesystem state),
+ * so brand-new paths not yet on disk are checked correctly — PROVIDED the
+ * entry's own trailing `/` is passed through unchanged: that trailing slash
+ * is what tells git a not-yet-existing entry is a directory, which is what
+ * makes a directory-only gitignore pattern (e.g. `foo/`) match. Passing the
+ * entry as declared therefore also gives the operator's ruling for free: a
+ * directory-only pattern matches the directory pathname itself but not an
+ * ignored sub-path nested under an otherwise-clean directory scope (e.g.
+ * write_scope `docs/` with `docs/scratch/` gitignored checks `docs/` against
+ * `docs/scratch/`'s pattern and does not match) — delivery.ts's guard 2 names
+ * those sub-paths if the worker actually writes them. Auto-stripping ignored
+ * entries from write_scope is rejected; refuse instead.
+ */
+async function checkUncapturableWriteScope(handoff: Handoff, repoRoot: string): Promise<DispatchResult<null>> {
+  for (const entry of handoff.write_scope) {
+    let stdout: string;
+    try {
+      const result = await execFile('git', ['check-ignore', '-v', entry], { cwd: repoRoot });
+      stdout = result.stdout;
+    } catch (err) {
+      const execErr = err as { code?: number };
+      if (execErr.code === 1) continue; // not ignored — admitted
+      return fail(
+        'ADMISSION_FAILED',
+        `Failed to run "git check-ignore -v ${entry}" in ${repoRoot}.`,
+        err,
+      );
+    }
+
+    const line = stdout.split('\n').find((l) => l.trim().length > 0) ?? '';
+    // check-ignore -v output: `<source>:<linenum>:<pattern>\t<pathname>`.
+    const match = line.match(/^(.+):(\d+):([^\t]*)\t(.*)$/);
+    const source = match ? `${match[1]}:${match[2]}:${match[3]}` : line;
+
+    return fail(
+      'WRITE_SCOPE_UNCAPTURABLE',
+      `Handoff ${handoff.id} write_scope entry "${entry}" is gitignored (ignored by ${source}); delivery's "git add -A" can never capture writes there.`,
+      { entry, rule: source },
+    );
+  }
+
+  return ok(null);
+}
+
 /** §7.5 `missing_read_first` — every declared read_first path must exist. */
 async function checkMissingReadFirst(handoff: Handoff, repoRootResolved: string): Promise<DispatchResult<null>> {
   for (const entry of handoff.read_first) {
@@ -386,6 +436,9 @@ export async function checkAdmission(handoff: Handoff, repoRoot: string): Promis
 
   const staleScopeCheck = await checkStaleWriteScope(handoff, repoRootResolved);
   if (!staleScopeCheck.ok) return staleScopeCheck;
+
+  const uncapturableScopeCheck = await checkUncapturableWriteScope(handoff, repoRoot);
+  if (!uncapturableScopeCheck.ok) return uncapturableScopeCheck;
 
   const readFirstCheck = await checkMissingReadFirst(handoff, repoRootResolved);
   if (!readFirstCheck.ok) return readFirstCheck;

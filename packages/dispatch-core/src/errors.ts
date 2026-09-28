@@ -54,6 +54,8 @@ export type DispatchErrorCode =
   // --- v2 full admission gate (PLN-0004 S4) ---
   | 'ENVELOPE_EXCEEDS_MODE'
   | 'STALE_WRITE_SCOPE'
+  // --- v2 gitignored write_scope refusal (WK-0180) ---
+  | 'WRITE_SCOPE_UNCAPTURABLE'
   | 'MISSING_READ_FIRST'
   | 'BAD_BASE_REF'
   | 'BASE_DRIFT'
@@ -103,6 +105,7 @@ export const V2_REFUSAL_CODES = [
   'CREDENTIAL_NOT_CONFIGURED',
   'ENVELOPE_EXCEEDS_MODE',
   'STALE_WRITE_SCOPE',
+  'WRITE_SCOPE_UNCAPTURABLE',
   'MISSING_READ_FIRST',
   'BAD_BASE_REF',
   'CONTEXT_BUDGET_EXCEEDED',

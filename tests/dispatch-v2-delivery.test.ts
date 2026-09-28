@@ -259,6 +259,89 @@ describe('delivery.ts — parseDeliveryOutput', () => {
 });
 
 // ---------------------------------------------------------------------------
+// delivery.ts — WK-0180: named ignored writes under write_scope (guard 2)
+// ---------------------------------------------------------------------------
+
+describe('delivery.ts — buildDeliveryScript ignored-write detection (WK-0180)', () => {
+  it('generates the post-add ignored-write scan when writeScope is given', () => {
+    const { scriptContent } = buildDeliveryScript({
+      clonePath: '/tmp/run/clone',
+      motherRepoWsl: '/mnt/c/example/projects/kb',
+      handoffId: 'HO-0002',
+      baseSha: 'deadbeef',
+      writeScope: ['src/', 'test/exact.txt'],
+    });
+
+    expect(scriptContent).toContain("ls-files --others -i --exclude-standard -- 'src/' 'test/exact.txt'");
+    expect(scriptContent).toContain('NO_DELTA_IGNORED');
+    expect(scriptContent).toContain('IGNORED_SKIPPED');
+  });
+
+  it('omits the ignored-write scan when writeScope is not given (unaffected callers)', () => {
+    const { scriptContent } = buildDeliveryScript({
+      clonePath: '/tmp/run/clone',
+      motherRepoWsl: '/mnt/c/example/projects/kb',
+      handoffId: 'HO-0002',
+      baseSha: 'deadbeef',
+    });
+
+    expect(scriptContent).not.toContain('ls-files --others -i --exclude-standard --');
+  });
+});
+
+describe('delivery.ts — parseDeliveryOutput ignored-write markers (WK-0180)', () => {
+  it('returns ignoredFiles on a no_delta outcome when NO_DELTA_IGNORED is present', () => {
+    const stdout = [
+      'NO_DELTA_IGNORED',
+      '---IGNORED-START---',
+      'src/scratch/secret.txt',
+      '---IGNORED-END---',
+    ].join('\n');
+
+    const result = parseDeliveryOutput(stdout);
+    expect(result.status).toBe('no_delta');
+    if (result.status !== 'no_delta') return;
+    expect(result.ignoredFiles).toEqual(['src/scratch/secret.txt']);
+  });
+
+  it('returns ignoredFiles on a delivered outcome when IGNORED_SKIPPED is present', () => {
+    const stdout = [
+      'DELIVERED:abc123',
+      '---BRANCH-START---',
+      'dispatch/HO-0002',
+      '---BRANCH-END---',
+      '---CHANGED-FILES-START---',
+      'src/slugify.mjs',
+      '---CHANGED-FILES-END---',
+      'IGNORED_SKIPPED',
+      '---IGNORED-START---',
+      'src/dist/build.js',
+      '---IGNORED-END---',
+    ].join('\n');
+
+    const result = parseDeliveryOutput(stdout);
+    expect(result.status).toBe('delivered');
+    if (result.status !== 'delivered') return;
+    expect(result.changedFiles).toEqual(['src/slugify.mjs']);
+    expect(result.ignoredFiles).toEqual(['src/dist/build.js']);
+  });
+
+  it('leaves ignoredFiles undefined on a bare no_delta outcome with no ignored writes', () => {
+    const result = parseDeliveryOutput('NO_DELTA');
+    expect(result.status).toBe('no_delta');
+    if (result.status !== 'no_delta') return;
+    expect(result.ignoredFiles).toBeUndefined();
+  });
+
+  it('leaves ignoredFiles undefined on a delivered outcome with no ignored writes', () => {
+    const result = parseDeliveryOutput('DELIVERED:abc123');
+    expect(result.status).toBe('delivered');
+    if (result.status !== 'delivered') return;
+    expect(result.ignoredFiles).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // WK-0075 (historical): worker infra dir exclusion (.pi-agent/). Originally
 // pipeline.ts filtered `.pi-agent/` out of enumeration/delivery because the
 // S0 jail put the worker's config dir inside the writable clone. The S5 EROFS
