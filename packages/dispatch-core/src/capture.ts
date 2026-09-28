@@ -201,7 +201,7 @@ function formatTokenDetailSection(
     ['cache_write_tokens', formatTokenCount(usage.cacheWriteTokens)],
     ['reasoning_tokens', formatTokenCount(usage.reasoningTokens)],
     ['total_tokens', formatTokenCount(usage.totalTokens)],
-    ['cost_usd', `$${usage.costUsd.toFixed(4)}`],
+    ['cost_usd', `$${(billing === 'seat' ? 0 : usage.costUsd).toFixed(4)}`],
     ['est_cost_usd', estCostUsd],
   ];
   return [
@@ -599,7 +599,7 @@ export async function writeResponseDoc(opts: CaptureOpts): Promise<DispatchResul
   const branch = deriveBranch(handoff.id, delivery);
   const changedFiles = delivery.status === 'delivered' ? delivery.changedFiles : [];
   const totalTokens = piResult?.usage.totalTokens ?? 0;
-  const costUsd = piResult?.usage.costUsd ?? 0;
+  const costUsd = opts.billing === 'seat' ? 0 : (piResult?.usage.costUsd ?? 0);
   const changedFilesYaml = `[${changedFiles.map((file) => JSON.stringify(file)).join(', ')}]`;
   const credentialsGrantedYaml = `[${(opts.credentialsGranted ?? []).map((name) => JSON.stringify(name)).join(', ')}]`;
 
