@@ -55,6 +55,7 @@ import {
   classifyEntry,
   deriveDirectoryScopedMounts,
   deriveExactFileMounts,
+  SYSTEM_ROOTS,
   type BwrapPlan,
   type WikiShape,
 } from './jail.js';
@@ -410,64 +411,108 @@ export function buildAllowedHosts(
 }
 
 /**
- * Resolve the family's CLI toolchain paths living under $HOME, for the
- * visibility wall's toolchain leaf binds (DEC-0011 ruling 1, WK-0103).
- * Evidence-gated (AGENTS.md rule 23): probes the REAL binary location via
- * `which`/`readlink -f`/`npm prefix -g` at dispatch time rather than
- * hand-inventing a path. Best-effort — a probe failure (missing binary,
- * non-$HOME install) yields fewer/no paths rather than failing the dispatch;
- * jail.ts's `toolchainPaths` binds are `--ro-bind-try`, so an empty/
- * incomplete list only narrows visibility, it never breaks the jail itself.
+ * Resolve-first toolchain result (WK-0174, DEC-0009 SRC-0013): the CLI and
+ * node's ABSOLUTE REAL paths (resolved BEFORE any $HOME check — see this
+ * function's doc below for why order matters), the dirs to bind into the
+ * visibility wall, and — when a real path lands outside every mountable root
+ * — the `unmountable` fact `runDispatch` refuses on with
+ * `CLI_PATH_NOT_MOUNTABLE` rather than letting a bare-name exec die with a
+ * raw exit 127 inside the jail.
+ */
+export interface ToolchainResolution {
+  /** Absolute resolved CLI path — used for the exec line itself, never a bare name. */
+  cliRealPath: string | null;
+  /** Absolute resolved dir containing the real `node` binary (for the jail PATH / shebang). */
+  nodeRealDir: string | null;
+  /** `npm prefix -g`, trimmed; also feeds the jail PATH (`<npmPrefix>/bin`). */
+  npmPrefix: string | null;
+  /** Dirs to feed into jail.ts's `toolchainPaths` bind list — only those under $HOME (SYSTEM_ROOTS dirs are already bound by the jail baseline). */
+  bindPaths: string[];
+  /** Set when a resolved path (CLI dir, node dir, or npm prefix) lands outside $HOME and SYSTEM_ROOTS — the CLI_PATH_NOT_MOUNTABLE refusal fact. */
+  unmountable: { what: string; resolvedPath: string } | null;
+}
+
+/** True when `path` is under $HOME or one of jail.ts's curated SYSTEM_ROOTS. */
+function isMountableRoot(path: string, home: string): boolean {
+  if (home.length > 0 && path.startsWith(home)) return true;
+  return SYSTEM_ROOTS.some((root) => path.startsWith(root));
+}
+
+/** `command -v <cmd>` then `readlink -f` on the result — the real, symlink-resolved path, or null if either step fails. */
+async function resolveRealPath(cmd: string): Promise<string | null> {
+  const whichResult = await execBash({ scriptContent: `command -v ${cmd} 2>/dev/null`, timeoutMs: 5000 });
+  if (!whichResult.ok) return null;
+  const cmdPath = whichResult.data.stdout.trim();
+  if (cmdPath.length === 0) return null;
+
+  const realResult = await execBash({ scriptContent: `readlink -f ${cmdPath} 2>/dev/null`, timeoutMs: 5000 });
+  if (!realResult.ok) return null;
+  const realPath = realResult.data.stdout.trim();
+  return realPath.length > 0 ? realPath : null;
+}
+
+/**
+ * Resolve the family's CLI toolchain to absolute real paths, RESOLVE-FIRST
+ * (WK-0174, amending DEC-0011 ruling 1 / WK-0103): `command -v` + `readlink
+ * -f` run BEFORE any $HOME check, so a symlink farm outside $HOME (e.g. fnm's
+ * `/run/user/<uid>/fnm_multishells/.../bin/claude`) still resolves to its
+ * real, bindable target under `~/.local/share/fnm/...` (SRC-0013 confirms
+ * this) instead of being discarded at the `which` step the old order used.
+ * A real path that lands OUTSIDE both $HOME and jail.ts's SYSTEM_ROOTS sets
+ * `unmountable` — `runDispatch` refuses pre-launch on that fact
+ * (CLI_PATH_NOT_MOUNTABLE) rather than deriving a bind list that silently
+ * narrows visibility (the old best-effort contract): a CLI dispatch cannot
+ * reach is not a "narrower jail", it's a guaranteed exit-127.
  * @internal pipeline.ts internal — exported only for direct unit testing.
  */
-export async function resolveToolchainPaths(family: BackendFamily): Promise<string[]> {
-  const paths: string[] = [];
+export async function resolveToolchainPaths(family: BackendFamily): Promise<ToolchainResolution> {
   const home = process.env.HOME ?? '';
-  if (!home) return paths;
-
-  // Resolve the family's CLI binary
   const cliName = family === 'pi' ? 'pi' : family === 'codex' ? 'codex' : 'claude';
-  const whichResult = await execBash({ scriptContent: `which ${cliName} 2>/dev/null`, timeoutMs: 5000 });
-  if (whichResult.ok) {
-    const cliPath = whichResult.data.stdout.trim();
-    if (cliPath.startsWith(home)) {
-      // Resolve the real path (may be a symlink into node_modules)
-      const realResult = await execBash({ scriptContent: `readlink -f ${cliPath} 2>/dev/null`, timeoutMs: 5000 });
-      if (realResult.ok) {
-        const realPath = realResult.data.stdout.trim();
-        if (realPath.startsWith(home)) {
-          // Bind the npm package root (3 levels up from the binary)
-          // e.g. ~/.npm-global-wsl/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe
-          // → ~/.npm-global-wsl/ (the npm prefix)
-          const npmPrefixResult = await execBash({ scriptContent: 'npm prefix -g 2>/dev/null', timeoutMs: 5000 });
-          if (npmPrefixResult.ok) {
-            const prefix = npmPrefixResult.data.stdout.trim();
-            if (prefix.startsWith(home)) {
-              paths.push(prefix);
-            }
-          }
-        }
-      }
+
+  const cliRealPath = await resolveRealPath(cliName);
+  const nodeReal = await resolveRealPath('node');
+  const nodeRealDir = nodeReal !== null ? nodeReal.replace(/\/[^/]+$/, '') : null;
+
+  const npmPrefixResult = await execBash({ scriptContent: 'npm prefix -g 2>/dev/null', timeoutMs: 5000 });
+  const npmPrefixRaw = npmPrefixResult.ok ? npmPrefixResult.data.stdout.trim() : '';
+  const npmPrefix = npmPrefixRaw.length > 0 ? npmPrefixRaw : null;
+
+  const cliRealDir = cliRealPath !== null ? cliRealPath.replace(/\/[^/]+$/, '') : null;
+
+  let unmountable: { what: string; resolvedPath: string } | null = null;
+  const mountabilityChecks: Array<{ what: string; path: string | null }> = [
+    { what: 'cli', path: cliRealDir },
+    { what: 'node', path: nodeRealDir },
+    { what: 'npm-prefix', path: npmPrefix },
+  ];
+  for (const check of mountabilityChecks) {
+    if (check.path !== null && !isMountableRoot(check.path, home)) {
+      unmountable = { what: check.what, resolvedPath: check.path };
+      break;
     }
   }
 
-  // Also check if node itself is under $HOME (nvm setups)
-  const nodeResult = await execBash({ scriptContent: 'which node 2>/dev/null', timeoutMs: 5000 });
-  if (nodeResult.ok) {
-    const nodePath = nodeResult.data.stdout.trim();
-    if (nodePath.startsWith(home)) {
-      // readlink to get real path, bind its directory
-      const realResult = await execBash({ scriptContent: `readlink -f ${nodePath} 2>/dev/null`, timeoutMs: 5000 });
-      if (realResult.ok) {
-        const realDir = realResult.data.stdout.trim().replace(/\/[^/]+$/, '');
-        if (realDir.startsWith(home)) {
-          paths.push(realDir);
-        }
-      }
-    }
-  }
+  const bindCandidates = [npmPrefix, nodeRealDir, cliRealDir].filter((p): p is string => p !== null);
+  const bindPaths = [...new Set(bindCandidates.filter((p) => home.length > 0 && p.startsWith(home)))];
 
-  return [...new Set(paths)];
+  return { cliRealPath, nodeRealDir, npmPrefix, bindPaths, unmountable };
+}
+
+/**
+ * Build the explicit in-jail `export PATH=...` line from resolve-first
+ * toolchain paths (WK-0174): the resolved node dir + npm global bin dir,
+ * plus the curated SYSTEM_ROOTS executable dirs. Covers the
+ * `#!/usr/bin/env node` shebang and any other PATH-dependent lookup inside
+ * the worker's own inner script — the exec line itself never relies on this
+ * PATH (it invokes the CLI by absolute path), but node/npm shebangs the CLI
+ * spawns internally do.
+ */
+export function buildJailPathExport(toolchain: ToolchainResolution): string {
+  const dirs: string[] = [];
+  if (toolchain.nodeRealDir !== null) dirs.push(toolchain.nodeRealDir);
+  if (toolchain.npmPrefix !== null) dirs.push(`${toolchain.npmPrefix}/bin`);
+  dirs.push('/usr/bin', '/bin', '/usr/sbin', '/sbin');
+  return `export PATH=${shQuote(dirs.join(':'))}`;
 }
 
 /**
@@ -747,7 +792,15 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
   // resolved above), so this runs alongside the other pre-spawn resolution
   // steps and well before the clone/jail work at step 9+.
   logVerbose(verbose, 'resolving toolchain paths for the visibility wall');
-  const toolchainPaths = await resolveToolchainPaths(model.family);
+  const toolchainResult = await resolveToolchainPaths(model.family);
+  if (toolchainResult.unmountable) {
+    return fail(
+      'CLI_PATH_NOT_MOUNTABLE',
+      `Resolved ${toolchainResult.unmountable.what} path "${toolchainResult.unmountable.resolvedPath}" ` +
+        `is outside $HOME and every curated system root; refusing rather than exec with an unreachable CLI.`,
+      toolchainResult.unmountable,
+    );
+  }
   const authLeafBinds = buildAuthLeafBinds(model.family, handoff.mode);
 
   // 5. Run ID — injected by the background controller, or minted here for standalone callers.
@@ -1020,9 +1073,19 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       // no read-back needed (contrast the claude branch below).
       const codexSchemaSuffix =
         recoverySchemaContent !== undefined ? ` --output-schema ${shQuote(RECOVERY_SCHEMA_JAIL_PATH)}` : '';
+      // WK-0174: exec by the resolve-first absolute path, never bare `codex`
+      // — a bare-name exec relies on the jail's inherited PATH, which points
+      // at symlink-farm dirs (e.g. fnm multishell's /run/user/.../bin) that
+      // are never mounted into the curated jail (SRC-0013). Guarded here
+      // even though the step-4 preflight/toolchain gate above already
+      // refuses CLI_PATH_NOT_MOUNTABLE before this branch runs.
+      if (toolchainResult.cliRealPath === null) {
+        return fail('CLI_PATH_NOT_MOUNTABLE', 'Resolved codex CLI path is null; cannot exec by absolute path.');
+      }
       execLines = [
         `PROMPT=$(cat ${shQuote(promptPath)})`,
-        `exec codex exec "$PROMPT" --sandbox ${sandbox} --json -o ${shQuote(codexOutputPath)} --model ${shQuote(model.modelId)}${codexEffortSuffix}${codexSchemaSuffix}`,
+        buildJailPathExport(toolchainResult),
+        `exec ${shQuote(toolchainResult.cliRealPath)} exec "$PROMPT" --sandbox ${sandbox} --json -o ${shQuote(codexOutputPath)} --model ${shQuote(model.modelId)}${codexEffortSuffix}${codexSchemaSuffix}`,
       ];
       if (recoverySchemaContent !== undefined) {
         bwrapInjectedFiles = [{ content: recoverySchemaContent, dest: RECOVERY_SCHEMA_JAIL_PATH }];
@@ -1062,10 +1125,16 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       // for `$PROMPT`, so the inline value never has to be re-embedded into
       // the generated bash script as a literal.
       const claudeSchemaSuffix = recoverySchemaContent !== undefined ? ' --json-schema "$SCHEMA"' : '';
+      // WK-0174: exec by the resolve-first absolute path, never bare `claude`
+      // — same PATH-independence rationale as the codex branch above.
+      if (toolchainResult.cliRealPath === null) {
+        return fail('CLI_PATH_NOT_MOUNTABLE', 'Resolved claude CLI path is null; cannot exec by absolute path.');
+      }
       execLines = [
         `PROMPT=$(cat ${shQuote(promptPath)})`,
         ...(recoverySchemaContent !== undefined ? [`SCHEMA=$(cat ${shQuote(RECOVERY_SCHEMA_JAIL_PATH)})`] : []),
-        `exec claude -p --output-format json --permission-mode default --settings ${shQuote(claudeSettingsPath)}${claudeSchemaSuffix} --model ${shQuote(model.modelId)}${claudeEffortSuffix} -- "$PROMPT"`,
+        buildJailPathExport(toolchainResult),
+        `exec ${shQuote(toolchainResult.cliRealPath)} -p --output-format json --permission-mode default --settings ${shQuote(claudeSettingsPath)}${claudeSchemaSuffix} --model ${shQuote(model.modelId)}${claudeEffortSuffix} -- "$PROMPT"`,
       ];
       bwrapInjectedFiles = [{ content: claudeSettingsContent, dest: claudeSettingsPath }];
       if (recoverySchemaContent !== undefined) {
@@ -1213,7 +1282,7 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       unshareNet: true,
       tunnelSocketPath,
       relayScriptPath,
-      toolchainPaths,
+      toolchainPaths: toolchainResult.bindPaths,
       authLeafBinds,
       runDirPath: runDir,
       command: ['bash', '-c', innerScript],
