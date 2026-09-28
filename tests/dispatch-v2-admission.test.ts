@@ -95,12 +95,19 @@ describe('admission.ts — S4 full admission gate (new refusal codes)', () => {
       expect(result.message).toContain('outside the repo root');
     });
 
-    it('refuses a write_scope entry whose path and parent directory both do not exist', async () => {
+    // WK-0163: the old immediate-parent-existence gate is replaced by an
+    // ancestor-chain walk (validateWriteScopeChain) — a deep new path whose
+    // nearest existing ancestor is the repo root itself is now ADMITTED
+    // (pipeline step 9b creates the full hierarchy in the clone), so
+    // STALE_WRITE_SCOPE no longer fires here. The next gate to run
+    // (WORK_ITEM_NOT_FOUND, since this fixture's handoff declares no
+    // work_item) is what actually refuses this handoff — proving the stale
+    // check itself admitted the entry.
+    it('admits a write_scope entry whose path and parent directory both do not exist yet', async () => {
       const result = await checkAdmission(makeHandoff({ write_scope: ['deeply/nested/path'] }), tempDir);
       expect(result.ok).toBe(false);
       if (result.ok) return;
-      expect(result.error).toBe('STALE_WRITE_SCOPE');
-      expect(result.message).toContain('neither does its parent directory');
+      expect(result.error).toBe('WORK_ITEM_NOT_FOUND');
     });
   });
 
