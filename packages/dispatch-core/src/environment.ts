@@ -13,6 +13,7 @@ import type { DispatchResult } from './errors.js';
 import { ok } from './errors.js';
 import { getConfigDir } from './paths.js';
 import { APPARMOR_REMEDIATION_TEXT, MISSING_BWRAP_TEXT, probeBwrap, type BwrapProbeResult } from './tier.js';
+import { attachStreamErrorHandlers } from './stream-utils.js';
 
 async function pathExists(path: string): Promise<boolean> {
   try {
@@ -52,8 +53,7 @@ export async function runProcess(
       }, timeoutMs);
     }
 
-    child.stdout?.on('error', () => { /* swallow — exit/close path handles cleanup */ });
-    child.stderr?.on('error', () => { /* swallow — exit/close path handles cleanup */ });
+    attachStreamErrorHandlers(child.stdout, child.stderr);
     child.stdout?.on('data', (chunk) => {
       stdout += chunk.toString();
     });

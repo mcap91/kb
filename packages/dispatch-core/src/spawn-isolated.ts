@@ -22,6 +22,7 @@ import { createWriteStream } from 'node:fs';
 import type { BwrapPlan } from './jail.js';
 import type { DispatchResult } from './errors.js';
 import { fail, ok } from './errors.js';
+import { attachStreamErrorHandlers } from './stream-utils.js';
 
 // chassis: workspace-agent-launch-core.mjs:159 (DEFAULT_MAX_CAPTURE_BYTES, 1 MiB).
 const DEFAULT_MAX_CAPTURE_BYTES = 1_048_576;
@@ -212,7 +213,7 @@ export async function spawnIsolated(
         { index: i },
       );
     }
-    pipe.on('error', () => { /* swallow — child died mid-inject; exit path handles it */ });
+    attachStreamErrorHandlers(pipe);
     pipe.end(injected.content, 'utf8');
   }
 
@@ -224,8 +225,7 @@ export async function spawnIsolated(
   stdoutLogStream?.on('error', (err) => {
     process.stderr.write(`[spawn-isolated] warning: failed to write ${opts.stdoutLogPath}: ${err.message}\n`);
   });
-  child.stdout?.on('error', () => { /* swallow — exit/close path handles cleanup */ });
-  child.stderr?.on('error', () => { /* swallow — exit/close path handles cleanup */ });
+  attachStreamErrorHandlers(child.stdout, child.stderr);
   child.stdout?.on('data', (chunk: Buffer) => {
     stdoutCapture.push(chunk);
     stdoutLogStream?.write(chunk);
