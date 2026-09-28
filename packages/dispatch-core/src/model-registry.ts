@@ -312,13 +312,6 @@ export interface VersionGateResult {
 }
 
 /**
- * Gate the Pi harness version reported by preflight's `PI_VERSION` probe
- * against the in-code `PI_HARNESS_INFO` constant — kb's only compatibility
- * claim, shipped with kb code rather than a `wiki/.dispatch` file (ruling 7's
- * post-D2 amendment). Fails closed: unparseable or below `knownGood` both
- * refuse; above `testedWith` warns and proceeds.
- */
-/**
  * Refuse a pi-family dispatch when pi is not installed (preflight probe
  * returned undefined). Non-pi families (claude, codex) never need pi, so
  * they pass through as null. Returns a refuse VersionGateResult for the
@@ -339,6 +332,13 @@ export function gatePiPresence(
   return null;
 }
 
+/**
+ * Gate the Pi harness version reported by preflight's `PI_VERSION` probe
+ * against the in-code `PI_HARNESS_INFO` constant — kb's only compatibility
+ * claim, shipped with kb code rather than a `wiki/.dispatch` file (ruling 7's
+ * post-D2 amendment). Fails closed: unparseable or below `knownGood` both
+ * refuse; above `testedWith` warns and proceeds.
+ */
 export function checkHarnessVersion(versionString: string): VersionGateResult {
   if (!parse(versionString)) {
     return {
