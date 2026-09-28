@@ -43,15 +43,14 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { parseCodexOutput } from '../src/adapters/codex.js';
-import { parseClaudeOutput } from '../src/adapters/claude.js';
-import { parsePiOutput } from '../src/adapters/pi.js';
-import { writeResponseDoc, computeEstCostUsd, loadTokenRates, type WorkerUsageDetail } from '../src/capture.js';
-import { loadBackendsTable } from '../src/repo-config.js';
-import type { DeliveryOutcome } from '../src/delivery.js';
+import { parseCodexOutput } from '../packages/dispatch-core/src/adapters/codex.js';
+import { parseClaudeOutput } from '../packages/dispatch-core/src/adapters/claude.js';
+import { parsePiOutput } from '../packages/dispatch-core/src/adapters/pi.js';
+import { writeResponseDoc, computeEstCostUsd, loadTokenRates, type WorkerUsageDetail } from '../packages/dispatch-core/src/capture.js';
+import { loadBackendsTable } from '../packages/dispatch-core/src/repo-config.js';
+import type { DeliveryOutcome } from '../packages/dispatch-core/src/delivery.js';
 
-// Repo root is 3 levels up from packages/dispatch-core/tests/.
-const REPO_ROOT = join(__dirname, '..', '..', '..');
+const REPO_ROOT = join(__dirname, '..');
 const FIXTURES_DIR = join(REPO_ROOT, 'tests', 'fixtures');
 
 async function createTempDir(prefix: string): Promise<string> {
