@@ -54,9 +54,9 @@ As of this writing, the census observed in the checked-in fixtures is:
 
 | Family | Fixture | Top-level `type` values observed |
 |---|---|---|
-| pi | `pi-output-code-review.jsonl` | `session`, `agent_start`, `turn_start`, `message_end`, `toolCall`, `thinking`, `text`, `agent_settled`, `agent_end` |
+| pi | `pi-output-code-review.jsonl` | `session`, `agent_start`, `turn_start`, `message_end`, `agent_settled`, `agent_end` |
 | codex | `codex-exec-output-stream-json.jsonl` | `thread.started`, `turn.started`, `item.started`, `item.completed` (nested `item.type`: `agent_message`, `command_execution`, `file_change`), `turn.completed` |
-| claude | `claude-p-output-stream-json.jsonl` | `system` (subtype `init`), `assistant`, `text`, `message`, `result`, `rate_limit_event` |
+| claude | `claude-p-output-stream-json.jsonl` | `system` (subtype `init`), `assistant`, `result`, `rate_limit_event` |
 
 A re-capture's census is diffed against this table (or the current fixture directly, if this
 table has gone stale — the fixture is the source of truth; this table is illustrative).
