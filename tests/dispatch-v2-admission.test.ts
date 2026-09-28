@@ -111,6 +111,40 @@ describe('admission.ts — S4 full admission gate (new refusal codes)', () => {
     });
   });
 
+  describe('WRITE_SCOPE_UNCAPTURABLE (WK-0180)', () => {
+    it('refuses a write_scope entry that is gitignored, naming the path and the gitignore source rule', async () => {
+      await writeFile(join(tempDir, '.gitignore'), 'ignored_dir/\n');
+      const result = await checkAdmission(
+        makeHandoff({ write_scope: ['ignored_dir/secret.txt'] }),
+        tempDir,
+      );
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error).toBe('WRITE_SCOPE_UNCAPTURABLE');
+      expect(result.message).toContain('ignored_dir/secret.txt');
+      expect(result.message).toContain('.gitignore:1:ignored_dir/');
+    });
+
+    it('admits a directory write_scope entry that is not itself ignored, even when sub-paths under it are ignored', async () => {
+      await writeFile(join(tempDir, '.gitignore'), 'src/scratch/\n');
+      const result = await checkAdmission(makeHandoff({ write_scope: ['src/'] }), tempDir);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      // The directory entry itself is not ignored, so WRITE_SCOPE_UNCAPTURABLE
+      // does not fire; the next gate to run (WORK_ITEM_NOT_FOUND, since this
+      // fixture's handoff declares no work_item) is what actually refuses.
+      expect(result.error).toBe('WORK_ITEM_NOT_FOUND');
+    });
+
+    it('admits a write_scope entry that is not ignored at all (happy path unchanged)', async () => {
+      const result = await checkAdmission(makeHandoff(), tempDir);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error).not.toBe('WRITE_SCOPE_UNCAPTURABLE');
+      expect(result.error).toBe('WORK_ITEM_NOT_FOUND');
+    });
+  });
+
   describe('MISSING_READ_FIRST (§7.5)', () => {
     it('refuses a read_first entry pointing to a file that does not exist', async () => {
       const result = await checkAdmission(makeHandoff({ read_first: ['MISSING.md'] }), tempDir);

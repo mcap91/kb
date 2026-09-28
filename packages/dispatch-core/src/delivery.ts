@@ -50,9 +50,9 @@ export interface DeliveryOpts {
 }
 
 export type DeliveryOutcome =
-  | { status: 'delivered'; branch: string; commitSha: string; changedFiles: string[] }
+  | { status: 'delivered'; branch: string; commitSha: string; changedFiles: string[]; ignoredFiles?: string[] }
   | { status: 'no_changes' }
-  | { status: 'no_delta' }
+  | { status: 'no_delta'; ignoredFiles?: string[] }
   | { status: 'refused_out_of_scope'; offendingPaths: string[]; quarantinePath: string }
   | { status: 'secret_in_diff'; patterns: string[]; quarantinePath: string }
   | { status: 'conflict'; existingTree: string; newTree: string }
@@ -262,12 +262,22 @@ export function buildDeliveryScript(opts: {
   handoffId: string;
   baseSha: string;
   excludePrefixes?: string[];
+  /** WK-0180 guard 2: write_scope entries to scope the post-add ignored-write scan to. */
+  writeScope?: string[];
 }): DeliveryScript {
   const { clonePath, motherRepoWsl, handoffId, baseSha } = opts;
   const prefixes = opts.excludePrefixes ?? [];
   const gitAddLine = prefixes.length === 0
     ? '$GIT add -A'
     : `$GIT add -A -- ${prefixes.map(p => shQuote(':!' + p)).join(' ')}`;
+  const writeScope = opts.writeScope ?? [];
+  // WK-0180 guard 2: `git add -A` silently skips gitignored paths — list any
+  // ignored-but-present file under the declared write_scope so a worker write
+  // there is named out loud rather than silently dropped. The clone is a
+  // fresh clone of BASE_SHA, so any ignored file found here is worker-written.
+  const ignoredScanLine = writeScope.length === 0
+    ? ''
+    : `IGNORED_IN_SCOPE=$($GIT ls-files --others -i --exclude-standard -- ${writeScope.map(shQuote).join(' ')})\n`;
 
   const scriptContent = `#!/bin/bash
 set -euo pipefail
@@ -293,6 +303,8 @@ cd "$CLONE_PATH"
 $GIT read-tree "$BASE_SHA"
 ${gitAddLine}
 
+IGNORED_IN_SCOPE=""
+${ignoredScanLine}
 # WK-0169: drop untouched 0-byte write_scope skeleton files (step 9b
 # precreateWriteScopeSkeleton) from this commit. A skeleton file is created
 # via O_CREAT|O_EXCL and left empty; if the worker never writes to it, its
@@ -313,7 +325,14 @@ TREE=$($GIT write-tree)
 BASE_TREE=$($GIT rev-parse "$BASE_SHA^{tree}")
 if [ "$TREE" = "$BASE_TREE" ]; then
   rm -f "$DELIVERY_IDX"
-  echo "NO_DELTA"
+  if [ -n "$IGNORED_IN_SCOPE" ]; then
+    echo "NO_DELTA_IGNORED"
+    echo "---IGNORED-START---"
+    echo "$IGNORED_IN_SCOPE"
+    echo "---IGNORED-END---"
+  else
+    echo "NO_DELTA"
+  fi
   exit 0
 fi
 
@@ -335,6 +354,12 @@ if [ "$EXISTING_REF" = "NONE" ]; then
   echo "---CHANGED-FILES-START---"
   $GIT diff --name-only "$BASE_SHA" "$TREE"
   echo "---CHANGED-FILES-END---"
+  if [ -n "$IGNORED_IN_SCOPE" ]; then
+    echo "IGNORED_SKIPPED"
+    echo "---IGNORED-START---"
+    echo "$IGNORED_IN_SCOPE"
+    echo "---IGNORED-END---"
+  fi
 else
   EXISTING_TREE=$($GIT -C "$MOTHER_REPO" rev-parse --verify "refs/heads/dispatch/$HANDOFF_ID^{tree}" 2>/dev/null || echo "")
   EXISTING_PARENT=$($GIT -C "$MOTHER_REPO" rev-parse --verify "refs/heads/dispatch/$HANDOFF_ID^" 2>/dev/null || echo "")
@@ -375,7 +400,25 @@ export function parseDeliveryOutput(stdout: string): DeliveryOutcome {
     const changedFiles = splitNonEmptyLines(
       extractSection(normalized, '---CHANGED-FILES-START---', '---CHANGED-FILES-END---'),
     );
-    return { status: 'delivered', branch, commitSha, changedFiles };
+    const outcome: Extract<DeliveryOutcome, { status: 'delivered' }> = {
+      status: 'delivered',
+      branch,
+      commitSha,
+      changedFiles,
+    };
+    if (lines.some((line) => line === 'IGNORED_SKIPPED')) {
+      outcome.ignoredFiles = splitNonEmptyLines(
+        extractSection(normalized, '---IGNORED-START---', '---IGNORED-END---'),
+      );
+    }
+    return outcome;
+  }
+
+  if (lines.some((line) => line === 'NO_DELTA_IGNORED')) {
+    return {
+      status: 'no_delta',
+      ignoredFiles: splitNonEmptyLines(extractSection(normalized, '---IGNORED-START---', '---IGNORED-END---')),
+    };
   }
 
   if (lines.some((line) => line === 'NO_DELTA')) {
