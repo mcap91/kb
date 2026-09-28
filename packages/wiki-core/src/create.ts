@@ -219,6 +219,18 @@ export async function create(
   // 6. Write the record file
   const recordDir = path.join(targetDir, typeDef.directory);
   const recordPath = path.join(recordDir, filename);
+  const relativeRecordPath = path.relative(targetDir, recordPath).replace(/\\/g, '/');
+
+  // Hard invariant (WK-0178): never write over an existing record. Reconciliation in
+  // allocate() should keep this from firing for allocated-id prefixes, but this check is
+  // the last line of defense — the one that must hold regardless of how the id was derived
+  // (including the slug strategy, which has no allocator/state file to reconcile at all).
+  if (fs.existsSync(recordPath)) {
+    return fail(
+      'DUPLICATE_ID',
+      `Refusing to overwrite existing record at ${relativeRecordPath} — id "${id}" is already claimed on disk (id-state may be stale)`,
+    );
+  }
 
   // Ensure the directory exists
   if (!fs.existsSync(recordDir)) {
