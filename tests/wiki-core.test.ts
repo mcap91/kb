@@ -674,6 +674,65 @@ describe('allocation', () => {
     expect(state['WK'].next).toBe(2);
     expect(state['WK'].allocated).toContain(1);
   });
+
+  it('reconciles a stale .id-state.json against files already on disk (WK-0178)', async () => {
+    tmp = await createBootstrappedRepo();
+
+    // Reproduce the live incident: .id-state.json says SRC.next = 12 while SRC-0012.md
+    // already exists on disk (a hand-authored record, or a create path that skipped the
+    // state write). The allocator must heal `next` forward — never hand out 12 again.
+    fs.mkdirSync(path.join(tmp.dir, 'wiki', 'sources'), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmp.dir, 'wiki', 'sources', 'SRC-0012.md'),
+      '---\nid: "SRC-0012"\ntitle: "Hand-authored source"\n---\n\nExisting content.\n',
+      'utf-8',
+    );
+
+    const idStatePath = path.join(tmp.dir, 'wiki', '.id-state.json');
+    const staleState = readJson<IdState>(tmp.dir, 'wiki/.id-state.json');
+    staleState['SRC'] = { next: 12, allocated: Array.from({ length: 11 }, (_, i) => i + 1) };
+    fs.writeFileSync(idStatePath, JSON.stringify(staleState, null, 2) + '\n', 'utf-8');
+
+    const result = await allocate({ dir: tmp.dir, prefix: 'SRC' as WikiPrefix });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.data.id).toBe('SRC-0013');
+      expect(result.data.number).toBe(13);
+    }
+
+    const healedState = readJson<IdState>(tmp.dir, 'wiki/.id-state.json');
+    expect(healedState['SRC'].next).toBe(14);
+    expect(healedState['SRC'].allocated).toContain(13);
+
+    // The pre-existing record must be untouched by the allocator.
+    expect(fileExists(tmp.dir, 'wiki/sources/SRC-0012.md')).toBe(true);
+  });
+
+  it('reconciliation preserves idempotent peek behavior (repeat calls return the same id)', async () => {
+    tmp = await createBootstrappedRepo();
+
+    fs.mkdirSync(path.join(tmp.dir, 'wiki', 'sources'), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmp.dir, 'wiki', 'sources', 'SRC-0012.md'),
+      '---\nid: "SRC-0012"\ntitle: "Hand-authored source"\n---\n\nExisting content.\n',
+      'utf-8',
+    );
+
+    const idStatePath = path.join(tmp.dir, 'wiki', '.id-state.json');
+    const staleState = readJson<IdState>(tmp.dir, 'wiki/.id-state.json');
+    staleState['SRC'] = { next: 12, allocated: Array.from({ length: 11 }, (_, i) => i + 1) };
+    fs.writeFileSync(idStatePath, JSON.stringify(staleState, null, 2) + '\n', 'utf-8');
+
+    // A healed allocation is still a peek/reservation until claimed by create() — repeat
+    // calls must collapse onto the same healed id, not advance again on every call.
+    const r1 = await allocate({ dir: tmp.dir, prefix: 'SRC' as WikiPrefix });
+    const r2 = await allocate({ dir: tmp.dir, prefix: 'SRC' as WikiPrefix });
+    expect(r1.ok && r2.ok).toBe(true);
+    if (r1.ok && r2.ok) {
+      expect(r1.data.id).toBe('SRC-0013');
+      expect(r2.data.id).toBe('SRC-0013');
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -984,6 +1043,58 @@ describe('create', () => {
     const area = readText(tmp.dir, 'wiki/areas/date-area.md');
     expect(area).toMatch(/updated: "\d{4}-\d{2}-\d{2}"/);
     expect(area).not.toMatch(/updated: "\d{4}-\d{2}-\d{2}T/);
+  });
+
+  it('refuses to overwrite an existing record on disk (WK-0178 hard invariant)', async () => {
+    tmp = await createBootstrappedRepo();
+
+    const first = await create({ dir: tmp.dir, prefix: 'AREA', title: 'Area', slug: 'shared-area' });
+    expect(first.ok).toBe(true);
+
+    const before = readText(tmp.dir, 'wiki/areas/shared-area.md');
+
+    // Same target path again (AREA's slug strategy has no allocator/state file to
+    // reconcile — this is the guard that must hold regardless).
+    const second = await create({ dir: tmp.dir, prefix: 'AREA', title: 'Area Again', slug: 'shared-area' });
+    expect(second.ok).toBe(false);
+    if (!second.ok) {
+      expect(second.error).toBe('DUPLICATE_ID');
+      expect(second.message).toContain('shared-area');
+    }
+
+    // No silent overwrite: the existing record's content must be untouched.
+    expect(readText(tmp.dir, 'wiki/areas/shared-area.md')).toBe(before);
+  });
+
+  it('heals a stale id-state past an existing hand-authored record instead of colliding (WK-0178)', async () => {
+    tmp = await createBootstrappedRepo();
+
+    // Full reproduction of the live incident through the public create() entrypoint:
+    // .id-state.json lags a record already on disk. The two guards compose so the
+    // pre-existing record is never overwritten — allocation heals past it rather than
+    // create() needing to refuse.
+    fs.mkdirSync(path.join(tmp.dir, 'wiki', 'sources'), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmp.dir, 'wiki', 'sources', 'SRC-0012.md'),
+      '---\nid: "SRC-0012"\ntitle: "Hand-authored source"\n---\n\nExisting content.\n',
+      'utf-8',
+    );
+
+    const idStatePath = path.join(tmp.dir, 'wiki', '.id-state.json');
+    const staleState = readJson<IdState>(tmp.dir, 'wiki/.id-state.json');
+    staleState['SRC'] = { next: 12, allocated: Array.from({ length: 11 }, (_, i) => i + 1) };
+    fs.writeFileSync(idStatePath, JSON.stringify(staleState, null, 2) + '\n', 'utf-8');
+
+    const before = readText(tmp.dir, 'wiki/sources/SRC-0012.md');
+
+    const result = await create({ dir: tmp.dir, prefix: 'SRC', title: 'New source' });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.data.id).toBe('SRC-0013');
+    }
+
+    expect(readText(tmp.dir, 'wiki/sources/SRC-0012.md')).toBe(before);
+    expect(fileExists(tmp.dir, 'wiki/sources/SRC-0013.md')).toBe(true);
   });
 });
 
