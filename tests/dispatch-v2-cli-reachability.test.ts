@@ -16,18 +16,28 @@ import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
 vi.mock('../packages/dispatch-core/src/exec-direct.js', () => ({
   execBash: vi.fn(),
 }));
+vi.mock('node:child_process', () => ({
+  execFile: vi.fn(),
+  spawn: vi.fn(),
+}));
 
+import { execFile } from 'node:child_process';
 import { execBash, type ExecBashResult } from '../packages/dispatch-core/src/exec-direct.js';
 import type { DispatchResult } from '../packages/dispatch-core/src/errors.js';
 import { V2_REFUSAL_CODES } from '../packages/dispatch-core/src/errors.js';
 import {
   resolveToolchainPaths,
   buildJailPathExport,
+  isMountableRoot,
   type ToolchainResolution,
 } from '../packages/dispatch-core/src/pipeline.js';
 import { runPreflight } from '../packages/dispatch-core/src/preflight.js';
+import { probeCliReachability } from '../packages/dispatch-core/src/environment.js';
 
 const mockExecBash = vi.mocked(execBash);
+
+/** Same fallback shape as tier.ts's promisify(execFile) callback convention (see dispatch-v2-tier.test.ts). */
+type ExecFileCb = (error: (Error & { code?: unknown }) | null, result?: { stdout: string; stderr: string }) => void;
 
 function ok(stdout: string): DispatchResult<ExecBashResult> {
   return { ok: true, data: { exitCode: 0, stdout, stderr: '' } };
@@ -224,5 +234,86 @@ describe('preflight probe uses the curated SYSTEM_ROOTS jail, not --ro-bind / / 
     }
     expect(scriptContent).toContain('--proc /proc');
     expect(scriptContent).toContain('--dev /dev');
+  });
+});
+
+describe('isMountableRoot — path-boundary safety (WK-0174 review F2)', () => {
+  it('does not match a sibling directory that merely shares a string prefix with a SYSTEM_ROOTS entry', () => {
+    expect(isMountableRoot('/usrlocal/bin', '/home/user')).toBe(false);
+  });
+
+  it('still matches a real child of a SYSTEM_ROOTS entry', () => {
+    expect(isMountableRoot('/usr/local/bin', '/home/user')).toBe(true);
+  });
+
+  it('matches a SYSTEM_ROOTS entry exactly', () => {
+    expect(isMountableRoot('/usr', '/home/user')).toBe(true);
+  });
+
+  it('does not match a sibling directory that merely shares a string prefix with $HOME', () => {
+    expect(isMountableRoot('/home/user2/bin', '/home/user')).toBe(false);
+  });
+});
+
+describe('probeCliReachability — in-namespace bwrap probe (WK-0174 review F1/F3)', () => {
+  /** Wire the mocked `execFile` to answer the bwrap namespace probe for every backend. */
+  function mockNamespaceProbe(result: 'reachable' | 'unreachable' | 'bwrap-missing'): void {
+    vi.mocked(execFile).mockImplementation(((_cmd: string, _args: readonly string[], cb: ExecFileCb) => {
+      if (result === 'bwrap-missing') {
+        return cb(Object.assign(new Error('spawn bwrap ENOENT'), { code: 'ENOENT' }));
+      }
+      if (result === 'reachable') {
+        return cb(null, { stdout: '', stderr: '' });
+      }
+      return cb(Object.assign(new Error('Command failed'), { code: 1 }));
+    }) as any);
+  }
+
+  beforeEach(() => {
+    mockExecBash.mockReset();
+    mockExecBash.mockResolvedValue(ok(''));
+    vi.mocked(execFile).mockReset();
+  });
+
+  it('reports mountable:true when the bwrap namespace probe exits 0 (CLI reachable in the curated jail)', async () => {
+    mockNamespaceProbe('reachable');
+    const result = await probeCliReachability();
+    expect(result.length).toBeGreaterThan(0);
+    for (const entry of result) {
+      expect(entry.mountable).toBe(true);
+    }
+  });
+
+  it('reports mountable:false when the bwrap namespace probe exits non-zero (CLI not reachable in the curated jail)', async () => {
+    mockNamespaceProbe('unreachable');
+    const result = await probeCliReachability();
+    for (const entry of result) {
+      expect(entry.mountable).toBe(false);
+    }
+  });
+
+  it('degrades gracefully to mountable:false when bwrap itself is unavailable', async () => {
+    mockNamespaceProbe('bwrap-missing');
+    const result = await probeCliReachability();
+    for (const entry of result) {
+      expect(entry.mountable).toBe(false);
+      expect(entry.detail).toContain('bwrap is not available');
+    }
+  });
+
+  it('runs the probe inside a namespace built from jail.ts\'s curated SYSTEM_ROOTS, not a whole-root bind', async () => {
+    mockNamespaceProbe('reachable');
+    await probeCliReachability();
+
+    expect(vi.mocked(execFile).mock.calls.length).toBeGreaterThan(0);
+    const [cmd, args] = vi.mocked(execFile).mock.calls[0] as [string, string[]];
+    expect(cmd).toBe('bwrap');
+    expect(args).not.toContain('/');
+    for (const root of ['/usr', '/bin', '/sbin', '/lib', '/lib64', '/etc', '/opt', '/var']) {
+      const rootIdx = args.indexOf(root);
+      expect(args[rootIdx - 1]).toBe('--ro-bind-try');
+    }
+    expect(args).toContain('--proc');
+    expect(args).toContain('--dev');
   });
 });
