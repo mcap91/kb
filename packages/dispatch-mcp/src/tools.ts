@@ -7,6 +7,7 @@ import {
   initDispatch,
   launchDispatchBackground,
   mergeDelivery,
+  restamp,
   status,
   stopRun,
 } from '@kb/dispatch-core';
@@ -125,6 +126,15 @@ export const tools: ToolDef[] = [
       handoff_id: z.string().describe('The implement HO id whose delivery branch to merge (e.g. HO-0034)'),
     }),
     handler: async (input) => mergeDelivery({ dir: input.dir as string, handoff_id: input.handoff_id as string }),
+  },
+  {
+    name: 'restamp',
+    description: "Set an HO's base_sha (and base_wiki_sha, when already declared) to current HEAD — the mechanized remediation for a BASE_DRIFT refusal. Run only after re-reading the declared files; this does not perform the re-read.",
+    inputSchema: z.object({
+      dir: z.string().describe('Target repo directory'),
+      handoff: z.string().describe('Relative path to the handoff file (e.g. wiki/handoffs/HO-0034.md)'),
+    }),
+    handler: async (input) => restamp({ dir: input.dir as string, handoff: input.handoff as string }),
   },
   {
     name: 'stop-run',

@@ -253,7 +253,7 @@ interface StampCheck {
 }
 
 async function checkStamp(handoff: Handoff, check: StampCheck): Promise<DispatchResult<null>> {
-  const fix = `set ${check.field} to the current HEAD (${check.headCommand}; currently ${check.currentHead}) and re-dispatch.`;
+  const fix = `run \`npm run dispatch -- restamp --handoff <path> --dir <repo>\` (or use the MCP restamp tool) to set ${check.field} to the current HEAD (${check.headCommand}; currently ${check.currentHead}), then re-dispatch.`;
   const stamp = check.stamp;
 
   let valid = stamp !== undefined && FULL_SHA.test(stamp);

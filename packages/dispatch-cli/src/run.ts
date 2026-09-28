@@ -6,6 +6,7 @@ import {
   cleanup,
   createHandoff,
   launchDispatchBackground,
+  restamp,
   status,
   waitForRun,
   listUnhandledRuns,
@@ -15,6 +16,7 @@ import type {
   CheckEnvironmentResult,
   CleanupReport,
   CreateHandoffResult,
+  RestampResult,
   StatusResult,
   WaitForRunResult,
 } from '@kb/dispatch-core';
@@ -50,6 +52,7 @@ Commands:
   status                     Show current dispatch state
   dispatch                   Run the v2 dispatch pipeline
   wait-for-run               Wait for a run to reach terminal status
+  restamp                    Set an HO's base_sha (and base_wiki_sha) to current HEAD
 
 Global Options:
   --help                     Show this help text
@@ -113,6 +116,10 @@ Command Options:
       2  bad arguments
       3  watcher timeout (run still non-terminal)
       4  state unreadable or wait error
+
+  restamp
+    --dir <path>             Repository root directory (required)
+    --handoff <rel-path>     Relative path to handoff file (required)
 `.trim();
 
 async function cmdCheckEnvironment(): Promise<number> {
@@ -384,6 +391,30 @@ async function cmdWaitForRun(args: string[]): Promise<number> {
   return exitCodeForRunStatus(data.status);
 }
 
+async function cmdRestamp(args: string[]): Promise<number> {
+  const dir = getFlagValue(args, '--dir');
+  const handoff = getFlagValue(args, '--handoff');
+
+  if (!dir || !handoff) {
+    console.error('Error: --dir and --handoff are required');
+    return 1;
+  }
+
+  const result = await restamp({ dir, handoff });
+  if (!result.ok) {
+    console.error(`Restamp failed: [${result.error}] ${result.message}`);
+    return 1;
+  }
+
+  const data: RestampResult = result.data;
+  console.log(`Restamped ${data.handoffId}`);
+  console.log(`  base_sha: ${data.base_sha}`);
+  if (data.base_wiki_sha) {
+    console.log(`  base_wiki_sha: ${data.base_wiki_sha}`);
+  }
+  return 0;
+}
+
 export async function run(args: string[]): Promise<number> {
   const showHelp = getFlag(args, '--help') || getFlag(args, '-h');
   const showVersion = getFlag(args, '--version') || getFlag(args, '-v');
@@ -418,6 +449,9 @@ export async function run(args: string[]): Promise<number> {
       break;
     case 'wait-for-run':
       exitCode = await cmdWaitForRun(args);
+      break;
+    case 'restamp':
+      exitCode = await cmdRestamp(args);
       break;
     default:
       console.error(`Unknown command: ${command}`);
