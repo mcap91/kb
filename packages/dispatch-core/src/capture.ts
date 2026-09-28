@@ -12,8 +12,10 @@
  * (`pipeline.ts`) job — this module computes content/fields only, no mother
  * repo I/O.
  */
+import { readFileSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
-import { basename, join } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import type { DispatchResult } from './errors.js';
 import { fail, ok } from './errors.js';
@@ -23,6 +25,195 @@ import type { RecoveryBlockEvidence, RecoveryBlockPayload } from './recovery-blo
 import type { PiCompaction } from './adapters/pi.js';
 import type { BackendFamily } from './repo-config.js';
 
+/**
+ * kb-owned location of the vendored LiteLLM rate snapshot (WK-0123) — mirrors
+ * pipeline.ts's `KB_ROOT` resolution (this file lives at the same
+ * `packages/dispatch-core/src/` depth). Always the RUNNING kb checkout's own
+ * `contract/` dir, never `opts.dir` (the mother repo being dispatched into).
+ */
+const THIS_DIR = dirname(fileURLToPath(import.meta.url));
+const KB_ROOT = resolve(THIS_DIR, '..', '..', '..');
+const TOKEN_RATES_PATH = join(KB_ROOT, 'contract', 'token-rates.json');
+
+/** One `contract/token-rates.json` row. `null` = no known rate for that bucket. */
+export interface TokenRateEntry {
+  input_per_1m: number | null;
+  output_per_1m: number | null;
+  cache_read_per_1m: number | null;
+  cache_write_per_1m: number | null;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function numberOrNull(value: unknown): number | null {
+  return typeof value === 'number' ? value : null;
+}
+
+let cachedTokenRates: Record<string, TokenRateEntry> | null = null;
+
+/**
+ * Load + parse the vendored `contract/token-rates.json` (WK-0123). Keys
+ * starting with `_` are metadata (`_source`/`_captured`/`_notes`), not model
+ * rows, and are skipped. Cached after the first read. Missing/malformed file
+ * degrades to `{}` — every model then estimates to `null` (unavailable),
+ * never a fabricated rate.
+ */
+export function loadTokenRates(): Record<string, TokenRateEntry> {
+  if (cachedTokenRates) return cachedTokenRates;
+  const table: Record<string, TokenRateEntry> = {};
+  try {
+    const raw = readFileSync(TOKEN_RATES_PATH, 'utf8');
+    const parsed = JSON.parse(raw) as unknown;
+    if (isRecord(parsed)) {
+      for (const [key, value] of Object.entries(parsed)) {
+        if (key.startsWith('_') || !isRecord(value)) continue;
+        table[key] = {
+          input_per_1m: numberOrNull(value.input_per_1m),
+          output_per_1m: numberOrNull(value.output_per_1m),
+          cache_read_per_1m: numberOrNull(value.cache_read_per_1m),
+          cache_write_per_1m: numberOrNull(value.cache_write_per_1m),
+        };
+      }
+    }
+  } catch {
+    // Missing/malformed vendored table — degrade to empty (every model
+    // estimates to unavailable rather than throwing).
+  }
+  cachedTokenRates = table;
+  return cachedTokenRates;
+}
+
+/**
+ * Per-field token usage (WK-0123) — widened from the old rolled-up
+ * `{totalTokens, costUsd}` pair. Each adapter family reports a different
+ * subset of fields; a field the family doesn't report is `null`, never a
+ * fabricated 0 (0 means "reported zero", not "unknown").
+ */
+export interface WorkerUsageDetail {
+  inputTokens: number | null;
+  outputTokens: number | null;
+  cacheReadTokens: number | null;
+  cacheWriteTokens: number | null;
+  reasoningTokens: number | null;
+  /** Family-reported (Pi) or summed input+output (Codex/Claude). */
+  totalTokens: number;
+  /** Provider-reported cost; 0 when the provider doesn't report one (Codex) or the backend is a subscription seat. */
+  costUsd: number;
+}
+
+/**
+ * Compute `est_cost_usd` from the vendored rate table (WK-0123). Provider-
+ * reported cost is authoritative when present and the backend isn't a
+ * subscription seat; otherwise the estimate is rate-table-derived. Pi's
+ * `WorkerUsageDetail` carries only `totalTokens` (no input/output split — see
+ * the operator ruling in `wiki/issues/WK-0123.md`), so that case degrades to a
+ * bounded `floor–ceiling` range rather than inventing a single blended number.
+ */
+/**
+ * Older/looser callers (pre-WK-0123 test fixtures constructing `piResult`
+ * by hand) may pass a `usage` object with only `{totalTokens, costUsd}` —
+ * the new per-field keys come through as `undefined`, not `null`, in that
+ * case. Normalize both to `null` ("unknown") so the rest of this module only
+ * ever has to check one falsy-ish sentinel.
+ */
+function normalizeUsage(usage: WorkerUsageDetail): WorkerUsageDetail {
+  return {
+    inputTokens: usage.inputTokens ?? null,
+    outputTokens: usage.outputTokens ?? null,
+    cacheReadTokens: usage.cacheReadTokens ?? null,
+    cacheWriteTokens: usage.cacheWriteTokens ?? null,
+    reasoningTokens: usage.reasoningTokens ?? null,
+    totalTokens: usage.totalTokens ?? 0,
+    costUsd: usage.costUsd ?? 0,
+  };
+}
+
+export function computeEstCostUsd(
+  rawUsage: WorkerUsageDetail,
+  modelId: string | undefined,
+  billing: 'seat' | 'api' | undefined,
+): string {
+  const usage = normalizeUsage(rawUsage);
+  const useRateTable = billing === 'seat' || usage.costUsd === 0;
+  if (!useRateTable) {
+    return `$${usage.costUsd.toFixed(4)}`;
+  }
+
+  const rate = modelId ? loadTokenRates()[modelId] : undefined;
+  if (!rate) return 'unavailable';
+
+  const hasSplit = usage.inputTokens !== null && usage.outputTokens !== null;
+  if (!hasSplit) {
+    // Pi total-only ruling: bounded range, never a blended figure.
+    if (usage.totalTokens <= 0 || rate.input_per_1m === null || rate.output_per_1m === null) return 'unavailable';
+    const floor = (usage.totalTokens / 1_000_000) * rate.input_per_1m;
+    const ceiling = (usage.totalTokens / 1_000_000) * rate.output_per_1m;
+    return `$${floor.toFixed(4)}–$${ceiling.toFixed(4)}`;
+  }
+
+  let total = 0;
+  let anyRate = false;
+  if (usage.inputTokens !== null && rate.input_per_1m !== null) {
+    total += (usage.inputTokens / 1_000_000) * rate.input_per_1m;
+    anyRate = true;
+  }
+  if (usage.outputTokens !== null && rate.output_per_1m !== null) {
+    total += (usage.outputTokens / 1_000_000) * rate.output_per_1m;
+    anyRate = true;
+  }
+  if (usage.cacheReadTokens !== null && rate.cache_read_per_1m !== null) {
+    total += (usage.cacheReadTokens / 1_000_000) * rate.cache_read_per_1m;
+    anyRate = true;
+  }
+  if (usage.cacheWriteTokens !== null && rate.cache_write_per_1m !== null) {
+    total += (usage.cacheWriteTokens / 1_000_000) * rate.cache_write_per_1m;
+    anyRate = true;
+  }
+  if (!anyRate) return 'unavailable';
+  return `$${total.toFixed(4)}`;
+}
+
+function formatTokenCount(value: number | null): string {
+  return value === null ? '—' : value.toLocaleString('en-US');
+}
+
+/**
+ * Render the `## Token Detail` section (WK-0123): the full per-field
+ * breakdown a family reports (nulls render as `—`), plus both the
+ * provider-reported `cost_usd` and the rate-table-derived `est_cost_usd`.
+ * Frontmatter keeps the old rolled-up `total_tokens`/`cost_usd` pair for
+ * backward compat; this section is the new, non-lossy detail.
+ */
+function formatTokenDetailSection(
+  rawUsage: WorkerUsageDetail | undefined,
+  modelId: string | undefined,
+  billing: 'seat' | 'api' | undefined,
+): string[] {
+  if (!rawUsage) return [];
+  const usage = normalizeUsage(rawUsage);
+  const estCostUsd = computeEstCostUsd(usage, modelId, billing);
+  const rows: Array<[string, string]> = [
+    ['input_tokens', formatTokenCount(usage.inputTokens)],
+    ['output_tokens', formatTokenCount(usage.outputTokens)],
+    ['cache_read_tokens', formatTokenCount(usage.cacheReadTokens)],
+    ['cache_write_tokens', formatTokenCount(usage.cacheWriteTokens)],
+    ['reasoning_tokens', formatTokenCount(usage.reasoningTokens)],
+    ['total_tokens', formatTokenCount(usage.totalTokens)],
+    ['cost_usd', `$${usage.costUsd.toFixed(4)}`],
+    ['est_cost_usd', estCostUsd],
+  ];
+  return [
+    '## Token Detail',
+    '',
+    '| Field | Count |',
+    '|-------|-------|',
+    ...rows.map(([field, count]) => `| ${field} | ${count} |`),
+    '',
+  ];
+}
+
 export interface CaptureOpts {
   /** Windows path to the run dir */
   runDir: string;
@@ -30,8 +221,16 @@ export interface CaptureOpts {
   handoff: { id: string; title: string; mode: string };
   /** Delivery outcome */
   delivery: DeliveryOutcome;
-  /** Pi adapter result (usage, outcome) */
-  piResult?: { outcome: string; usage: { totalTokens: number; costUsd: number } };
+  /** Worker adapter result (usage, outcome) — `usage` carries the full per-field breakdown (WK-0123). */
+  piResult?: { outcome: string; usage: WorkerUsageDetail };
+  /**
+   * Bare model id (`ResolvedModel.modelId`, not the `backend/modelId`
+   * canonical string in `model` below) — the rate-table lookup key
+   * (`contract/token-rates.json` is keyed by canonical model id; WK-0123).
+   */
+  modelId?: string;
+  /** Backend billing kind (`repo-config.ts`'s `BackendEntry.billing`; WK-0123) — defaults to `api` when absent. */
+  billing?: 'seat' | 'api';
   /** Compaction statistics from parsePiOutput (T33 Phase 3). */
   compaction?: PiCompaction;
   /** Model used */
@@ -461,6 +660,7 @@ export async function writeResponseDoc(opts: CaptureOpts): Promise<DispatchResul
     '## Usage',
     formatUsageSection(piResult),
     '',
+    ...formatTokenDetailSection(piResult?.usage, opts.modelId, opts.billing),
     '## Worker Report (evidence, not verdict)',
     '',
     formatWorkerReportSection(opts.lastAssistantText),

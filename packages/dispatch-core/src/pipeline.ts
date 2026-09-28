@@ -72,11 +72,11 @@ import {
   parseDeliveryOutput,
   type DeliveryOutcome,
 } from './delivery.js';
-import { writeResponseDoc, buildProvenanceWriteBack } from './capture.js';
+import { writeResponseDoc, buildProvenanceWriteBack, type WorkerUsageDetail } from './capture.js';
 import { commitArtifacts } from './commit-artifacts.js';
 import { runPreflight } from './preflight.js';
 import { getRunDir } from './paths.js';
-import { loadProfilesConfig, type BackendFamily, type EffortMapping } from './repo-config.js';
+import { loadProfilesConfig, loadBackendsTable, type BackendFamily, type EffortMapping } from './repo-config.js';
 import {
   resolveCredentials,
   checkCredentialPolicy,
@@ -702,6 +702,13 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
   if (!modelResult.ok) return modelResult;
   const model = modelResult.data;
   const canonicalModel = `${model.backend}/${model.modelId}`;
+  // WK-0123: `ResolvedModel` (model-registry.ts) doesn't carry `billing` —
+  // that module is out of this WK's write scope — so re-load the backends
+  // table here for the one field capture.ts needs. `resolveModelFromConfig`
+  // above already proved backends.json parses, so this call cannot newly
+  // fail; ok() defaults to 'api' (repo-config.ts's BackendEntry doc comment).
+  const backendsForBilling = await loadBackendsTable(dir);
+  const billing = backendsForBilling.ok ? backendsForBilling.data[model.backend]?.billing ?? 'api' : 'api';
 
   // 3b. Effort gate (S3 ruling 9; WK-0122 — keyed on effort_mapping existence,
   // not the old supportsEffort boolean: the mapping IS the capability
@@ -1299,7 +1306,7 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
     }
 
     let workerOutcome: string;
-    let workerUsage: { totalTokens: number; costUsd: number };
+    let workerUsage: WorkerUsageDetail;
     let lastAssistantText: string;
     let compaction = { total: 0, succeeded: 0, failed: 0 };
 
@@ -1322,7 +1329,20 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       logVerbose(verbose, `pi outcome: ${piParsed.data.outcome}`);
 
       workerOutcome = piParsed.data.outcome;
-      workerUsage = piParsed.data.usage;
+      // WK-0123 (DEC-0009 capture-first ruling): pi.ts now parses the
+      // per-field split when the stream carries it (real Pi/OpenRouter
+      // captures do); a stream that genuinely lacks it reports null fields
+      // here, and capture.ts's computeEstCostUsd falls back to a bounded
+      // floor–ceiling range in that case rather than inventing one.
+      workerUsage = {
+        inputTokens: piParsed.data.usage.inputTokens,
+        outputTokens: piParsed.data.usage.outputTokens,
+        cacheReadTokens: piParsed.data.usage.cacheReadTokens,
+        cacheWriteTokens: piParsed.data.usage.cacheWriteTokens,
+        reasoningTokens: piParsed.data.usage.reasoningTokens,
+        totalTokens: piParsed.data.usage.totalTokens,
+        costUsd: piParsed.data.usage.costUsd,
+      };
       lastAssistantText = piParsed.data.lastAssistantText;
       compaction = piParsed.data.compaction;
     } else if (model.family === 'codex') {
@@ -1335,9 +1355,15 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
 
       workerOutcome = codexParsed.data.outcome;
       // CodexUsage carries no cost figure (adapters/codex.ts module doc) —
-      // costUsd stays 0. capture.ts's usage shape ({totalTokens, costUsd}) is
-      // already family-agnostic, so no capture.ts change is needed here.
+      // costUsd stays 0, so capture.ts's est_cost_usd always rate-table-
+      // estimates for codex. No cache-write field either (Codex only reports
+      // cached_input_tokens, a read-side cache figure).
       workerUsage = {
+        inputTokens: codexParsed.data.usage.inputTokens,
+        outputTokens: codexParsed.data.usage.outputTokens,
+        cacheReadTokens: codexParsed.data.usage.cachedInputTokens,
+        cacheWriteTokens: null,
+        reasoningTokens: codexParsed.data.usage.reasoningOutputTokens,
         totalTokens: codexParsed.data.usage.inputTokens + codexParsed.data.usage.outputTokens,
         costUsd: 0,
       };
@@ -1352,6 +1378,11 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
 
       workerOutcome = claudeParsed.data.outcome;
       workerUsage = {
+        inputTokens: claudeParsed.data.usage.inputTokens,
+        outputTokens: claudeParsed.data.usage.outputTokens,
+        cacheReadTokens: claudeParsed.data.usage.cacheReadInputTokens,
+        cacheWriteTokens: claudeParsed.data.usage.cacheCreationInputTokens,
+        reasoningTokens: null,
         totalTokens: claudeParsed.data.usage.inputTokens + claudeParsed.data.usage.outputTokens,
         costUsd: claudeParsed.data.usage.costUsd,
       };
@@ -1559,6 +1590,8 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       piResult: { outcome: workerOutcome, usage: workerUsage },
       compaction,
       model: canonicalModel,
+      modelId: model.modelId,
+      billing,
       isolationBackend,
       lastAssistantText,
       credentialsGranted: credResult.data.granted,
