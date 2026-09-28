@@ -168,15 +168,15 @@ export interface DispatchResult2 {
   runDir: string;
   /**
    * Extracted + validated `kb-dispatch-recovery.v1` evidence (D1 ruling 1;
-   * mid_project_review_rulings.md) from the worker/reviewer/redteam's
-   * terminal fenced output block. Absent for `research` mode (prose-only,
-   * never emits the block — ruling 1 item 1). For every other mode this is
-   * always populated (a missing/malformed block still yields an evidence
-   * envelope with `valid: false` and diagnostics — extraction never
-   * throws). V4 note 3 role asymmetry: for `implement` this is diagnostic
-   * evidence only and never changes the run's verdict; for
-   * `code_review`/`redteam` an invalid/absent block drives the response
-   * doc's verdict to `failed` (`missing_review_artifact`) in capture.ts's
+   * mid_project_review_rulings.md) from the worker/reviewer/redteam/
+   * researcher's terminal fenced output block. Always populated (a
+   * missing/malformed block still yields an evidence envelope with
+   * `valid: false` and diagnostics — extraction never throws). V4 note 3
+   * role asymmetry: for `implement` this is diagnostic evidence only and
+   * never changes the run's verdict; for `code_review`/`redteam` an
+   * invalid/absent block falls back to prose delivery in capture.ts's
+   * `deriveVerdict` (DEC-0037); for `research` the block is likewise
+   * optional structured metadata (WK-0145/WK-0146) and never consulted by
    * `deriveVerdict`.
    */
   recoveryEvidence?: RecoveryBlockEvidence;
@@ -1353,18 +1353,17 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
     // 15b. Extract the kb-dispatch-recovery.v1 recovery block (D1 ruling 1,
     // mid_project_review_rulings.md; V4 note 3 role asymmetry). Transport is
     // the worker's own terminal LLM output (assemble.ts's prompt contract
-    // instructs every non-research mode to emit it) — no file artifact, no
-    // `.dispatch-out/`. `research` is prose-only and never emits this block
-    // (ruling 1 item 1; recovery-block.ts's own module doc: "never invoked
-    // for it") — skip extraction there so `recoveryEvidence` stays undefined
-    // rather than reporting a spurious `missing_result` diagnostic.
-    // Extraction never throws and never gates the pipeline by itself; V4
-    // note 3's role asymmetry (implement: evidence only; code_review/redteam:
-    // the block IS the deliverable) is enforced downstream in capture.ts's
-    // `deriveVerdict`, not here.
-    const recoveryEvidence: RecoveryBlockEvidence | undefined =
-      handoff.mode === 'research' ? undefined : extractRecoveryBlock(lastAssistantText);
-    if (recoveryEvidence && !recoveryEvidence.valid) {
+    // instructs every mode, including `research`, to emit it — WK-0145/
+    // WK-0146) — no file artifact, no `.dispatch-out/`. Extraction is
+    // attempted for every mode; a missing/malformed block still yields an
+    // evidence envelope with `valid: false` and diagnostics rather than
+    // throwing. Extraction never gates the pipeline by itself; V4 note 3's
+    // role asymmetry (implement: evidence only; code_review/redteam: the
+    // block drives mechanical merge gating; research: evidence only, same
+    // as implement) is enforced downstream in capture.ts's `deriveVerdict`,
+    // not here.
+    const recoveryEvidence: RecoveryBlockEvidence = extractRecoveryBlock(lastAssistantText);
+    if (!recoveryEvidence.valid) {
       logVerbose(verbose, `recovery block invalid: ${recoveryEvidence.diagnostics.map((d) => d.code).join(', ')}`);
     }
 

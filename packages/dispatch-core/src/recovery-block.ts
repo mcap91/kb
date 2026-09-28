@@ -5,11 +5,13 @@
  * "D1: Structured recovery signal"). Replaces the deleted `needs:` field
  * (DEC-0010) and the bespoke `.dispatch-out/review.yaml` file channel with
  * one schema across every role that emits it: `implement` (worker),
- * `code_review` (reviewer), and `redteam`. The worker/reviewer/redteam emits
- * exactly one fenced JSON block, info-string `kb-dispatch-recovery.v1`, as
- * the terminal content of its LLM output; this module extracts and
- * validates that block. `research` is prose-only (ruling 1 item 1) and never
- * emits this block — this module is never invoked for it.
+ * `code_review` (reviewer), `redteam`, and `research` (researcher, WK-0146).
+ * The worker/reviewer/redteam/researcher emits exactly one fenced JSON
+ * block, info-string `kb-dispatch-recovery.v1`, as the terminal content of
+ * its LLM output; this module extracts and validates that block. For
+ * `research` the block is optional structured metadata, not the deliverable
+ * (WK-0145/WK-0146) — a missing or malformed block loses only diagnostic
+ * evidence, same as `implement`.
  *
  * Design source: agent-chassis's `agent-role-result.v1`
  * (`agent-launch-core/data/agent-role-result.v1.schema.json`,
@@ -107,8 +109,8 @@ export type WorkerOutcome = 'completed' | 'partial' | 'blocked' | 'failed';
 /** `code_review`/`redteam` role outcomes. */
 export type FindingsOutcome = 'no_findings' | 'passed_no_blocking_or_medium_findings' | 'changes_requested';
 
-/** Roles this schema covers. */
-export type ReportedRole = 'worker' | 'reviewer' | 'redteam';
+/** Roles this schema covers. `researcher` (WK-0146) uses the same findings-shaped payload as `reviewer`/`redteam`. */
+export type ReportedRole = 'worker' | 'reviewer' | 'redteam' | 'researcher';
 
 /** Finding severity (mirrors agent-chassis's closed vocabulary). */
 export type FindingSeverity = 'critical' | 'high' | 'medium' | 'low' | 'info';
@@ -202,7 +204,7 @@ export interface RecoveryBlockEvidence {
 // Closed vocabularies
 // ---------------------------------------------------------------------------
 
-export const REPORTED_ROLES: readonly ReportedRole[] = ['worker', 'reviewer', 'redteam'];
+export const REPORTED_ROLES: readonly ReportedRole[] = ['worker', 'reviewer', 'redteam', 'researcher'];
 export const WORKER_OUTCOMES: readonly WorkerOutcome[] = ['completed', 'partial', 'blocked', 'failed'];
 export const FINDINGS_OUTCOMES: readonly FindingsOutcome[] = [
   'no_findings',
@@ -827,7 +829,10 @@ export function validateRecoveryPayload(payload: unknown): RecoveryBlockEvidence
   }
 
   const isWorker = payload.reported_role === 'worker';
-  const isFindingsRole = payload.reported_role === 'reviewer' || payload.reported_role === 'redteam';
+  const isFindingsRole =
+    payload.reported_role === 'reviewer' ||
+    payload.reported_role === 'redteam' ||
+    payload.reported_role === 'researcher';
 
   if (isWorker) {
     if (!isWorkerOutcome(payload.reported_outcome)) {
