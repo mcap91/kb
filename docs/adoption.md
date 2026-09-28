@@ -170,37 +170,51 @@ Sync updates record templates but does not overwrite `wiki/schema.md`, `wiki/con
 
 ## Dispatch Setup
 
-The Dispatch Protocol enables reviewed multi-agent handoff workflows.
+The Dispatch Protocol enables reviewed multi-agent handoff workflows (see
+[docs/dispatch-protocol.md](./dispatch-protocol.md) for the full technical reference). `dispatch` is one
+atomic, gated call — admission, clone, jail, worker, delivery, and capture all happen inside a single
+`dispatch` invocation. There is no separate global operator registry and no pre-launch review-token step;
+dispatch config is repo-local, under the consuming repo's own `wiki/.dispatch/`.
 
-### Initialize Config
+### 1. Scaffold Dispatch Config
 
-Set up the operator dispatch configuration (one-time):
-
-```
-npm run dispatch -- init-config
-```
-
-If you are upgrading from an older `kb` dispatch install, run:
+Scaffold the consuming repo's `wiki/.dispatch/` config tables (one-time, write-once):
 
 ```
-npm run dispatch -- init-config --force
+npm run dispatch -- init-dispatch --dir ../my-project
 ```
 
-The registry file is operator-owned and is not overwritten by default. `--force` rewrites `launchers.v1.json` into the current adapter-based format.
+This creates, only if absent (a re-run never overwrites existing content):
 
-This creates the config directory with:
+- `wiki/.dispatch/models.json` -- model slug to backend + provider `model_id` (starts blank `{}`)
+- `wiki/.dispatch/backends.json` -- backend name to family/base_url/api_key_env/secrets_file (starts blank `{}`)
+- `wiki/.dispatch/profiles.json` -- credential profiles (starts `{"schema_version": 1}`)
+- `wiki/.dispatch/README.md` -- reference docs for the tables above, including example entries
 
-- `token.key` -- HMAC signing key
-- `launchers.v1.json` -- agent registry with default entries (claude, codex, fake-agent)
-- `fake-agent` is wired to the `kb` checkout via absolute `tsx` + fixture paths so it can launch from consuming repos
-- Token state directories (`pending/`, `launching/`, `consumed/`, `rejected/`)
+Edit `models.json` and `backends.json` to register at least one model/backend pair before dispatching
+(see the generated README for the shape). A local model server (Ollama, vLLM) is just a `pi`-family
+backend entry pointed at a `base_url`.
 
-Config location:
+### 2. Check the Host
 
-- Windows: `%APPDATA%\kb-dispatch\`
-- POSIX: `~/.config/kb-dispatch/`
+Probe bubblewrap/container/writability facts before your first dispatch:
 
-### Write a Handoff
+```
+npm run dispatch -- check-environment
+```
+
+`dispatch` gates every call on the same live bubblewrap probe (does the binary run, does a
+`--unshare-user` round trip succeed); `check-environment` runs that identical probe on demand plus
+informational container detection so you can see what a real `dispatch` call will do on this host.
+
+If a host cannot satisfy the required bubblewrap capability, the right response depends on the host. On
+a **shared / multi-tenant** host (workstation, shared VM), treat it as a host problem: the kernel sandbox
+is a real boundary, so prefer fixing the host and do not weaken permissions to work around it. On a
+**single-tenant container pod** (Saturn Cloud, Posit, generic Kubernetes), bubblewrap cannot run and
+cannot be fixed from inside the pod — `dispatch` fails closed with `NO_ISOLATION_ROUTE` there. `kb` does
+not ship a weaker-permission fallback profile by default.
+
+### 3. Write a Handoff
 
 Create a durable handoff in your repo:
 
@@ -213,7 +227,7 @@ This writes `wiki/handoffs/HO-XXXX.md`. You can also author handoffs manually if
 Fill in or refine:
 
 - `allowed_agents`
-- `mode`: `implement`, `code_review`, or `redteam`
+- `mode`: `implement`, `code_review`, `redteam`, or `research`
 - `write_scope`
 - `## Read First`
 - `## Objective`
@@ -221,81 +235,32 @@ Fill in or refine:
 - `## Expected Output`
 - `## Context`
 
-`write_scope` may contain file paths or directory paths. During review, dispatch normalizes those
-into reviewed access directories. For Claude non-redteam launches, those directories become
-`--add-dir` grants. This is directory-granularity access, not per-file enforcement.
+`write_scope` entries may be file paths or directory paths, repo-relative. Only `implement` mode may
+deliver a commit; `code_review`/`redteam`/`research` must carry an empty `write_scope` and never gain
+write authority inside the jail regardless of what the HO asks for.
 
-### Review and Launch
+### 4. Dispatch and Wait
 
-Review the handoff (operator must explicitly acknowledge):
-
-```
-npm run dispatch -- review --dir ../my-project --handoff wiki/handoffs/HO-0001.md --agent fake-agent --reviewed-and-accept-risks
-```
-
-Review validates the handoff, creates an immutable reviewed bundle, and issues a pending token. The output includes a review ID (`RV-<uuid>`).
-
-If you want an explicit host probe before launch, run:
+Run the handoff through the v2 pipeline:
 
 ```
-npm run dispatch -- check-environment
+npm run dispatch -- dispatch --dir ../my-project --handoff wiki/handoffs/HO-0001.md
 ```
 
-This writes an operator-owned `host-capabilities.v1.json` record next to the dispatch registry and
-prints a route-viability report (container detection, HOME/config-dir writability, and a per-route
-verdict for plain adapters / headless Claude / `write_scope` enforcement level / Codex / redteam).
-Run it first on any new host. Launch also refreshes that record automatically when it is missing or
-stale for the current registry hash.
-
-Reviewed bundle layout:
+`dispatch` always runs in the background and returns a `runId` immediately. Wait for it to reach a
+terminal status:
 
 ```
-.agent-runs/reviews/RV-<uuid>/
-  agent-visible/
-    wrapper.md
-    handoff.snapshot.md
-    context/
-  metadata/
-    input-manifest.json
-    review.json
+npm run dispatch -- wait-for-run --dir ../my-project --run-id RUN-<uuid>
 ```
 
-Launch the reviewed handoff:
+For `implement` mode, a successful run lands a scope-checked commit onto `refs/heads/dispatch/HO-XXXX`
+and writes the result to `wiki/handoffs/HO-XXXX.response.md` (both auto-committed). Advisory modes
+(`code_review`/`redteam`/`research`) never deliver a commit — the worker's response is the deliverable.
 
-```
-npm run dispatch -- launch --review-id RV-<uuid> --dir ../my-project
-```
-
-Launch re-verifies hashes, copies the reviewed bundle into `.agent-runs/runs/<handoffId>/RUN-<uuid>/`, spawns the agent from `agent-visible/`, and captures the response in `response.md`.
-
-For a single-step operator flow, use:
-
-```
-npm run dispatch -- review-and-launch --dir ../my-project --handoff wiki/handoffs/HO-0001.md --agent codex --reviewed-and-accept-risks
-```
-
-The generated default `claude` and `codex` launcher entries are configured for non-interactive
-child runs against the reviewed bundle. The launched child does not need `kb` MCP tools for the
-core workflow. The interactive parent/operator uses `kb-dispatch` MCP tools such as `status`,
-`wait-for-run`, and `get-response` to monitor the child run and retrieve its artifacts.
-
-Current defaults stream the reviewed wrapper over stdin for both Claude and Codex. Codex writes its
-last message to the launcher-owned response file via `-o {response_path}`.
-
-`read_only.argv_suffix` is a separate restriction layer used only for `mode: redteam`. It
-constrains the launched child run; it does not turn the child into a headless MCP client.
-
-If a host cannot satisfy the required bubblewrap capability, the right response depends on the host.
-On a **shared / multi-tenant** host (workstation, shared VM), treat it as a host problem: the kernel
-sandbox is a real boundary, so prefer fixing the host and do not weaken permissions to work around it.
-On a **single-tenant container pod** (Saturn Cloud, Posit, generic Kubernetes), bubblewrap cannot run
-and cannot be fixed from inside the pod — the pod itself is the isolation boundary. There, "fix the
-host" does not apply: run `check-environment` and use its per-route verdicts. Plain-process adapters
-and headless Claude work; non-redteam Claude `write_scope` degrades to app-level enforcement (recorded
-as a launch warning); redteam still fails closed. If `$HOME` is read-only, redirect the config store
-with `export XDG_CONFIG_HOME="$PWD/.kbconfig"` before `init-config`. See the "Linux Sandbox Caveat"
-section of `docs/dispatch-protocol.md` for the full recipe. `kb` does not ship a weaker-permission
-fallback profile by default.
+If admission fails, `dispatch` refuses synchronously, before any worker spawns, with a structured
+refusal code (`MISSING_WRITE_SCOPE`, `DIRTY_REPO`, `NO_ISOLATION_ROUTE`, and others — see
+[docs/dispatch-protocol.md](./dispatch-protocol.md#refusal-codes)).
 
 ### Consultation Handoffs
 
@@ -306,25 +271,22 @@ Use the existing handoff schema for advice or design review:
 - put questions and decision context in `## Objective` and `## Context`
 - ask for short answers, rationale, risks, and recommended plan adjustments in `## Expected Output`
 
-Do not add a separate `consult` mode. HOs are route-neutral packets: they can be read manually,
-reviewed into immutable bundles, or launched through dispatch when the selected agent supports that
-route. With `write_scope: []`, a launched child should be expected to work from the reviewed bundle
-only, not from broad live-repo access.
+Do not add a separate `consult` mode. HOs are route-neutral packets: they can be read manually or
+dispatched through the pipeline. With `write_scope: []`, the worker gets no write authority regardless
+of what the HO asks for.
 
 ### Claude After June 15, 2026
 
-The default dispatch `claude` profile uses Claude Code print mode. Anthropic has announced that,
+The default dispatch `claude` backend uses Claude Code print mode. Anthropic has announced that,
 starting June 15, 2026, Claude Code `--print` / `-p` and Agent SDK usage on Max plans draws from
 separate Agent SDK credits instead of normal interactive Claude usage.
 
 If you do not want a separate Anthropic API or Agent SDK billing path, do not rely on dispatch-launched
 Claude automation. Use Claude interactively as the parent/operator with kb MCP tools, or have Claude
-read and answer HOs manually. For dispatch-launched automation, use Codex, fake-agent, or a local-agent
-registry profile.
+read and answer HOs manually. For dispatch-launched automation, use Codex or a local-agent backend entry.
 
-Local models such as Qwen/Ollama should be exposed through a thin local agent wrapper, not by putting a
-model name in the HO. The wrapper should read `AGENT_BLACKBOARD_HANDOFF_PATH`, read context from
-`AGENT_BLACKBOARD_CONTEXT_DIR`, call the local model, and write `AGENT_BLACKBOARD_RESPONSE_PATH`.
+Local models such as Qwen/Ollama should be registered as a `pi`-family entry in `wiki/.dispatch/backends.json`
+pointed at the local server's `base_url` — there is no separate pluggable-agent-wrapper mechanism.
 
 ### Status and Cleanup
 
@@ -334,11 +296,10 @@ Check dispatch state:
 npm run dispatch -- status --dir ../my-project
 ```
 
-For MCP callers, `status` returns active launches with `reviewId`, `runId`, run directory, response
-path, metadata paths, heartbeat timestamps, and process IDs. Use that output to decide whether to
-call `wait-for-run`, retrieve partial artifacts with `get-response`, or continue other work.
+`status` returns active runs (model, delivery status, branch, heartbeat age, log tail) plus the 10 most
+recent terminal runs. Use that output to decide whether to call `wait-for-run` or continue other work.
 
-Clean up stale state (orphan reviews, expired tokens):
+Clean up stale state (orphan run/review directories past the retention window, stale/expired tokens):
 
 ```
 npm run dispatch -- cleanup --dir ../my-project
@@ -398,34 +359,32 @@ Wiki MCP exposes:
 
 Dispatch MCP exposes:
 
-- `init-config`
+- `init-dispatch`
 - `check-environment`
 - `create-handoff`
-- `review`
-- `launch`
-- `review-and-launch`
+- `dispatch`
 - `status`
 - `cleanup`
-- `wait-for-run`
-- `get-response`
+- `derive-review`
+- `merge-delivery`
+- `restamp`
+- `stop-run`
 
-For MCP callers, `launch` and `review-and-launch` default to background mode: the tool returns after
-the child agent has started and run artifacts exist. Use `wait-for-run` to short-poll or wait for
-terminal status, then `get-response` to retrieve `response.md`, metadata, state, and logs. Pass
-`background: false` only when a blocking launch is desired.
+`dispatch` always runs in background mode: the tool returns a `runId` immediately, plus a `watch`
+command to poll for terminal status. `wait-for-run` and `init-dispatch` are also available as
+`dispatch-cli` subcommands; `derive-review`, `merge-delivery`, and `stop-run` are MCP-only today.
 
-Typical MCP dispatch workflow:
+Typical MCP dispatch workflow (see [docs/dispatch-protocol.md](./dispatch-protocol.md#post-run-lifecycle-tools-wk-0132)
+for the full orchestration recipe):
 
-1. Create or reuse a `wiki/handoffs/HO-*.md`.
-2. Review it with the selected registry agent.
-3. Launch it through MCP; background mode returns `reviewId`, `runId`, and artifact paths.
-4. Call `wait-for-run` with a short timeout while the parent agent keeps working.
-5. Call `get-response` by `reviewId` or `runId`.
-6. Inspect the answer, incorporate it, or create a follow-up HO.
+1. Create or reuse a `wiki/handoffs/HO-*.md` with `create-handoff`.
+2. Dispatch it; background mode returns `runId` and a `watch` command.
+3. Poll or wait for terminal status, then read `wiki/handoffs/HO-XXXX.response.md`.
+4. On a delivered `implement` HO, derive a `code_review` HO with `derive-review`.
+5. Dispatch the review HO the same way; read its response doc.
+6. On a passing review, merge the delivery branch with `merge-delivery`.
 
 Each wiki or dispatch tool call accepts a `dir` parameter to target a consuming repo.
-
-For existing installations upgraded from the older registry format, run `npm run dispatch -- init-config --force` once before using dispatch MCP or CLI launch commands.
 
 ## Recommended .gitignore Additions
 

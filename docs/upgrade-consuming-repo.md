@@ -91,10 +91,10 @@ Expected results:
 v2 dispatch config is repo-local under `wiki/.dispatch/` (`models.json`, `backends.json`,
 `profiles.json`, plus a write-once `README.md`) — there is no user-global dispatch registry.
 
-Scaffold a consuming repo's tables by calling the `init-dispatch` MCP tool (`kb-dispatch` server) with
-`dir` set to the consuming repo path. Every file, including the README, is written only if absent — a
-re-run never overwrites existing content. `init-dispatch` is not currently wired into `dispatch-cli` as
-a subcommand; the MCP tool is the only working entrypoint.
+Scaffold a consuming repo's tables by calling the `init-dispatch` MCP tool (`kb-dispatch` server) or the
+CLI subcommand (`npm run dispatch -- init-dispatch --dir /path/to/consuming-repo`), both pointed at the
+consuming repo path. Every file, including the README, is written only if absent — a re-run never
+overwrites existing content.
 
 **Removed: `init-config`.** The old user-global dispatch config layer (`init-config`,
 `~/.config/kb-dispatch/token.key`, `~/.config/kb-dispatch/launchers.v1.json`) is retired (WK-0133
@@ -138,5 +138,5 @@ For strict stdio clients, use direct `node --import ... server.ts` registrations
   normal mode without resetting existing allocations.
 - Use `--mcp-client codex` to get `codex mcp add` commands instead of writing `.mcp.json`.
 - Use `--no-agent-instructions` to skip the managed block entirely.
-- `init-dispatch`, `derive-review`, `merge-delivery`, and `stop-run` are MCP-only today —
-  `dispatch-cli` does not expose them as subcommands. Use the corresponding `kb-dispatch` MCP tool.
+- `derive-review`, `merge-delivery`, and `stop-run` are MCP-only today — `dispatch-cli` does not expose
+  them as subcommands. Use the corresponding `kb-dispatch` MCP tool.
