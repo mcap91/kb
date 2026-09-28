@@ -31,6 +31,7 @@ import { promisify } from 'node:util';
 
 import type { DispatchResult } from './errors.js';
 import { ok, fail } from './errors.js';
+import { SYSTEM_ROOTS } from './jail.js';
 
 /** The three required-enforcement tiers (spec §11, rev 3). */
 export type HostTier = 'bwrap-direct' | 'bwrap-wsl2' | 'pod-attested';
@@ -254,9 +255,21 @@ async function probeBwrapVersion(): Promise<string | null> {
   }
 }
 
+/**
+ * Mirrors the curated SYSTEM_ROOTS jail dispatch actually builds (jail.ts:
+ * 131-133), not a whole-root `--ro-bind / /` — a different namespace that
+ * cannot catch the CLI-reachability failure class this probe exists to
+ * surface (SRC-0013, WK-0174).
+ */
 async function probeUnshareUser(): Promise<boolean> {
   try {
-    await execFileAsync('bwrap', ['--unshare-user', '--ro-bind', '/', '/', 'true']);
+    await execFileAsync('bwrap', [
+      '--unshare-user',
+      ...SYSTEM_ROOTS.flatMap((r) => ['--ro-bind-try', r, r]),
+      '--proc', '/proc',
+      '--dev', '/dev',
+      'true',
+    ]);
     return true;
   } catch {
     return false;

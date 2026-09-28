@@ -1110,13 +1110,20 @@ describe('dispatch v2 e2e (fake-tier) — WK-0156 relay cleanup (mocked spawnIso
 
       // PROMPT=$(cat ...) still precedes the backgrounded worker invocation
       // (ordering preserved — only the final line's leading `exec ` is
-      // stripped, the rest of execLines is untouched).
+      // stripped, the rest of execLines is untouched). WK-0174: the worker is
+      // now exec'd by its resolve-first ABSOLUTE path, not the bare `claude`
+      // name — so the invocation is matched on its flag shape, not the CLI
+      // name, and separately asserted to be an absolute single-quoted path.
       const promptIdx = script.indexOf('PROMPT=$(cat');
-      const workerIdx = script.indexOf('claude -p --output-format json');
+      const workerIdx = script.indexOf('-p --output-format json');
       const workerPidIdx = script.indexOf('WORKER_PID=$!');
       expect(promptIdx).toBeGreaterThan(-1);
       expect(workerIdx).toBeGreaterThan(promptIdx);
       expect(workerPidIdx).toBeGreaterThan(workerIdx);
+      // The backgrounded worker line has its leading `exec ` stripped
+      // (buildInnerScript's own contract, unchanged by WK-0174) — the
+      // absolute-path assertion is on the single-quoted CLI path itself.
+      expect(script).toMatch(/'\/\S+' -p --output-format json/);
     } finally {
       await rm(repoRoot, { recursive: true, force: true });
     }
@@ -1148,12 +1155,16 @@ describe('dispatch v2 e2e (fake-tier) — WK-0156 relay cleanup (mocked spawnIso
       const script = innerScript!;
       expectRelayCleanupWiring(script);
 
+      // WK-0174: exec'd by its resolve-first ABSOLUTE path, not bare `codex`
+      // — matched on the subcommand's own flag shape, not the CLI name.
       const promptIdx = script.indexOf('PROMPT=$(cat');
-      const workerIdx = script.indexOf('codex exec "$PROMPT"');
+      const workerIdx = script.indexOf('exec "$PROMPT" --sandbox');
       const workerPidIdx = script.indexOf('WORKER_PID=$!');
       expect(promptIdx).toBeGreaterThan(-1);
       expect(workerIdx).toBeGreaterThan(promptIdx);
       expect(workerPidIdx).toBeGreaterThan(workerIdx);
+      // Same leading-`exec `-stripped contract as the claude case above.
+      expect(script).toMatch(/'\/\S+' exec "\$PROMPT" --sandbox/);
     } finally {
       await rm(repoRoot, { recursive: true, force: true });
     }
