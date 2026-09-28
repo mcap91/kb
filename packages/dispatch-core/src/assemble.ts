@@ -54,9 +54,8 @@ function bulletList(entries: string[]): string {
  * `implement` it costs only diagnostic evidence (ruling 1 item 8); for `code_review`/`redteam`/
  * `research` the prose is the deliverable and the block is optional structured metadata — its
  * absence does not fail the run (DEC-0037 reverses V4 note 3; WK-0145 widens this optional-
- * metadata treatment to research). Note: pipeline.ts still mode-gates recovery-block
- * extraction to skip `research` entirely — this prompt invites the block, but nothing
- * downstream parses it yet (WK-0145 is a prompt-only change).
+ * metadata treatment to research). WK-0146 removed pipeline.ts's research mode-gate —
+ * extraction now runs for every mode, and `researcher` is a valid `reported_role`.
  */
 const RECOVERY_BLOCK_INTRO =
   'As the LAST content in your output, emit exactly one fenced JSON block whose info-string ' +
