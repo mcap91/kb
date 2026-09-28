@@ -98,6 +98,14 @@ export interface CaptureOpts {
    */
   wikiCommit?: string;
   inferenceProvider?: string;
+  /**
+   * Host-side, deterministic mount-write manifest (WK-0164): per-`export_mount`
+   * files whose mtime is newer than the run's start time, walked by
+   * pipeline.ts after the worker exits — never a worker self-report. Renders
+   * as a `## Mount Writes` section when non-empty; omitted entirely when
+   * absent/empty.
+   */
+  mountWrites?: Array<{ mountPath: string; files: string[] }>;
 }
 
 export interface CaptureResult {
@@ -348,6 +356,27 @@ function formatRecoveryBlockSection(evidence: RecoveryBlockEvidence): string[] {
 }
 
 /**
+ * Render the `## Mount Writes` section (WK-0164) — a per-mount subsection
+ * (mount path as heading) listing the relative file paths the host-side walk
+ * found newer than run start. Returns an empty array (nothing rendered) when
+ * `mountWrites` is absent/empty.
+ */
+function formatMountWritesSection(mountWrites: CaptureOpts['mountWrites']): string[] {
+  if (!mountWrites || mountWrites.length === 0) return [];
+  const lines: string[] = ['## Mount Writes', ''];
+  for (const mount of mountWrites) {
+    lines.push(`### ${mount.mountPath}`, '');
+    if (mount.files.length === 0) {
+      lines.push('(none)');
+    } else {
+      lines.push(...mount.files.map((file) => `- ${file}`));
+    }
+    lines.push('');
+  }
+  return lines;
+}
+
+/**
  * Serialize a `BackendFingerprint` for the `backend_fingerprint` provenance
  * field. host/model are written even when `serverVersion` is null (no
  * version endpoint for this backend kind, or the probe failed) — losing
@@ -432,6 +461,9 @@ export async function writeResponseDoc(opts: CaptureOpts): Promise<DispatchResul
       `${opts.compaction.total} compaction events: ${opts.compaction.succeeded} succeeded, ${opts.compaction.failed} failed.`,
       '',
     );
+  }
+  if (opts.mountWrites && opts.mountWrites.length > 0) {
+    bodyLines.push(...formatMountWritesSection(opts.mountWrites));
   }
   if (opts.recoveryEvidence) {
     bodyLines.push(...formatRecoveryBlockSection(opts.recoveryEvidence));
