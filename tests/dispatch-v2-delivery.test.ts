@@ -11,7 +11,8 @@
  * access key), never real-looking live keys.
  */
 import { describe, expect, it, afterEach } from 'vitest';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
+import { mkdtemp, readFile, rm, writeFile, mkdir, open } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -334,6 +335,90 @@ describe('buildDeliveryScript excludePrefixes — generic git-add exclusion (no 
     expect(scriptContent).toContain("':!.pi-agent'");
     expect(scriptContent).toContain("':!.codex'");
     expect(scriptContent).toContain('add -A --');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// delivery.ts — WK-0169: untouched 0-byte write_scope skeleton filtering
+//
+// A live-execution test (real git, real bash) rather than a stdout-shape
+// assertion: this is exactly the mechanism the bug report needed proven —
+// that the generated script itself, not just its text, excludes an
+// untouched skeleton blob from the landed tree/diff.
+// ---------------------------------------------------------------------------
+
+describe('delivery.ts — buildDeliveryScript filters untouched 0-byte write_scope skeletons (WK-0169)', () => {
+  it('generates the empty-blob exclusion fragment', () => {
+    const { scriptContent } = buildDeliveryScript({
+      clonePath: '/tmp/run/clone',
+      motherRepoWsl: '/mnt/c/example/projects/kb',
+      handoffId: 'HO-0002',
+      baseSha: 'deadbeef',
+    });
+
+    expect(scriptContent).toContain('e69de29bb2d1d6434b8b29ae775ad8c2e48c5391');
+    expect(scriptContent).toContain('update-index --force-remove');
+    expect(scriptContent).toContain('cat-file -e "$BASE_SHA:$ENTRY_PATH"');
+  });
+
+  it('excludes an untouched skeleton but includes a worker-written file in a real delivery', async () => {
+    const motherRepo = await createTempDir('kb-wk0169-mother-');
+    const cloneRepo = await createTempDir('kb-wk0169-clone-');
+    // Deliberately outside cloneRepo — the delivery script must not land itself.
+    const scriptDir = await createTempDir('kb-wk0169-script-');
+    try {
+      execFileSync('git', ['init'], { cwd: motherRepo });
+      execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: motherRepo });
+      execFileSync('git', ['config', 'user.name', 'Test User'], { cwd: motherRepo });
+      await writeFile(join(motherRepo, 'README.md'), 'fixture repo\n', 'utf8');
+      execFileSync('git', ['add', '-A'], { cwd: motherRepo });
+      execFileSync('git', ['commit', '-m', 'initial commit'], { cwd: motherRepo });
+      const baseSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: motherRepo }).toString().trim();
+
+      // Simulate the ephemeral clone: a plain checkout of the mother repo at baseSha.
+      await rm(cloneRepo, { recursive: true, force: true });
+      execFileSync('git', ['clone', motherRepo, cloneRepo]);
+      execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: cloneRepo });
+      execFileSync('git', ['config', 'user.name', 'Test User'], { cwd: cloneRepo });
+
+      // Step 9b skeleton pre-creation: two write_scope entries touched into
+      // existence as 0-byte files (O_CREAT|O_EXCL, chassis pattern).
+      await mkdir(join(cloneRepo, 'src'), { recursive: true });
+      await (await open(join(cloneRepo, 'src', 'skeleton-untouched.txt'), 'wx')).close();
+      await (await open(join(cloneRepo, 'src', 'skeleton-active.ts'), 'wx')).close();
+
+      // The worker writes to only one of the two skeleton files.
+      await writeFile(join(cloneRepo, 'src', 'skeleton-active.ts'), 'export const x = 1;\n', 'utf8');
+
+      const { scriptContent } = buildDeliveryScript({
+        clonePath: cloneRepo,
+        motherRepoWsl: motherRepo,
+        handoffId: 'HO-WK0169',
+        baseSha,
+      });
+      const scriptPath = join(scriptDir, 'dispatch-deliver.sh');
+      await writeFile(scriptPath, scriptContent, 'utf8');
+      const stdout = execFileSync('bash', [scriptPath]).toString();
+
+      const delivery = parseDeliveryOutput(stdout);
+      expect(delivery.status).toBe('delivered');
+      if (delivery.status !== 'delivered') return;
+      expect(delivery.changedFiles).toEqual(['src/skeleton-active.ts']);
+      expect(delivery.changedFiles).not.toContain('src/skeleton-untouched.txt');
+
+      // Cross-check against the actual landed commit in the mother repo.
+      const showTree = execFileSync(
+        'git',
+        ['show', '--stat', '--format=', `refs/heads/dispatch/HO-WK0169`],
+        { cwd: motherRepo },
+      ).toString();
+      expect(showTree).toContain('src/skeleton-active.ts');
+      expect(showTree).not.toContain('src/skeleton-untouched.txt');
+    } finally {
+      await rm(motherRepo, { recursive: true, force: true });
+      await rm(cloneRepo, { recursive: true, force: true });
+      await rm(scriptDir, { recursive: true, force: true });
+    }
   });
 });
 
