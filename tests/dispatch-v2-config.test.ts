@@ -55,6 +55,7 @@ describe('errors.ts — V2_REFUSAL_CODES', () => {
       'CONTEXT_BUDGET_EXCEEDED',
       'BAD_DATA_MOUNT',
       'NO_ISOLATION_ROUTE',
+      'CLI_PATH_NOT_MOUNTABLE',
       'WORK_ITEM_NOT_FOUND',
       'CLAUDE_PERMISSION_PROBE_FAILED',
       'BASE_DRIFT',

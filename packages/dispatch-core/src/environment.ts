@@ -13,7 +13,35 @@ import type { DispatchResult } from './errors.js';
 import { ok } from './errors.js';
 import { getConfigDir } from './paths.js';
 import { APPARMOR_REMEDIATION_TEXT, MISSING_BWRAP_TEXT, probeBwrap, type BwrapProbeResult } from './tier.js';
+import { SYSTEM_ROOTS } from './jail.js';
+import { execBash } from './exec-direct.js';
 import { attachStreamErrorHandlers } from './stream-utils.js';
+
+/**
+ * Per-backend CLI reachability fact (WK-0174 / SRC-0013): does `command -v
+ * <cli>` resolve to a path under a mountable root ($HOME or SYSTEM_ROOTS)?
+ * Mirrors the exact mountability rule `pipeline.ts`'s `resolveToolchainPaths`
+ * gates a real dispatch on. Declared here (not types.ts, out of this WK's
+ * write scope) and merged onto `CheckEnvironmentResult` via the module
+ * augmentation below — interface declaration merging applies at the
+ * type-program level regardless of which module a consumer imports from.
+ */
+export interface CliReachability {
+  family: string;
+  cli: string;
+  /** Real (readlink -f'd) resolved path, or null if the CLI is not on PATH. */
+  resolvedPath: string | null;
+  /** True when `resolvedPath` is under $HOME or a SYSTEM_ROOTS entry. */
+  mountable: boolean;
+  detail: string;
+}
+
+declare module './types.js' {
+  interface CheckEnvironmentResult {
+    /** Per-backend CLI reachability probes (WK-0174). */
+    cliReachability: CliReachability[];
+  }
+}
 
 async function pathExists(path: string): Promise<boolean> {
   try {
@@ -180,6 +208,57 @@ export async function probeWritability(): Promise<{
 }
 
 // ---------------------------------------------------------------------------
+// Per-backend CLI reachability (WK-0174 / SRC-0013): does `command -v <cli>`
+// resolve to a path under a mountable root ($HOME or SYSTEM_ROOTS)? Mirrors
+// the exact mountability rule pipeline.ts's `resolveToolchainPaths` gates a
+// real dispatch on, so check-environment reports what a real dispatch will
+// do rather than a `--ro-bind / /` approximation of it (tier.ts's
+// `probeUnshareUser` fix above closes the matching gap for the bwrap round
+// trip itself).
+// ---------------------------------------------------------------------------
+
+const CLI_BACKENDS: ReadonlyArray<{ family: string; cli: string }> = [
+  { family: 'claude', cli: 'claude' },
+  { family: 'codex', cli: 'codex' },
+  { family: 'pi', cli: 'pi' },
+];
+
+function isMountablePath(path: string, home: string | null): boolean {
+  if (home !== null && home.length > 0 && path.startsWith(home)) return true;
+  return SYSTEM_ROOTS.some((root) => path.startsWith(root));
+}
+
+/** Resolve one backend's CLI via `command -v` + `readlink -f` and classify mountability. */
+async function probeOneCliReachability(family: string, cli: string, home: string | null): Promise<CliReachability> {
+  const whichResult = await execBash({ scriptContent: `command -v ${cli} 2>/dev/null`, timeoutMs: 5000 });
+  const whichPath = whichResult.ok ? whichResult.data.stdout.trim() : '';
+  if (whichPath.length === 0) {
+    return { family, cli, resolvedPath: null, mountable: false, detail: `${cli} was not found on PATH.` };
+  }
+
+  const realResult = await execBash({ scriptContent: `readlink -f ${whichPath} 2>/dev/null`, timeoutMs: 5000 });
+  const realPath = realResult.ok ? realResult.data.stdout.trim() : '';
+  const resolvedPath = realPath.length > 0 ? realPath : whichPath;
+  const mountable = isMountablePath(resolvedPath, home);
+
+  return {
+    family,
+    cli,
+    resolvedPath,
+    mountable,
+    detail: mountable
+      ? `${cli} resolves to ${resolvedPath}, under a mountable root ($HOME or SYSTEM_ROOTS).`
+      : `${cli} resolves to ${resolvedPath}, outside $HOME and SYSTEM_ROOTS — dispatch will refuse with CLI_PATH_NOT_MOUNTABLE.`,
+  };
+}
+
+/** Per-backend CLI reachability probes for check-environment (WK-0174). */
+export async function probeCliReachability(): Promise<CliReachability[]> {
+  const home = resolveHomePath();
+  return Promise.all(CLI_BACKENDS.map(({ family, cli }) => probeOneCliReachability(family, cli, home)));
+}
+
+// ---------------------------------------------------------------------------
 // Route-viability verdicts (derived, not persisted)
 // ---------------------------------------------------------------------------
 
@@ -217,10 +296,11 @@ export function deriveRouteVerdicts(bwrap: BwrapProbeResult): RouteVerdict[] {
 
 export async function checkEnvironment(): Promise<DispatchResult<CheckEnvironmentResult>> {
   const checkedAt = new Date().toISOString();
-  const [bwrap, container, writability] = await Promise.all([
+  const [bwrap, container, writability, cliReachability] = await Promise.all([
     probeBwrap(),
     detectContainer(),
     probeWritability(),
+    probeCliReachability(),
   ]);
 
   return ok({
@@ -230,6 +310,7 @@ export async function checkEnvironment(): Promise<DispatchResult<CheckEnvironmen
     bwrap,
     container,
     writability,
+    cliReachability,
     verdicts: deriveRouteVerdicts(bwrap),
   });
 }
