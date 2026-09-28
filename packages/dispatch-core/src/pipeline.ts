@@ -433,9 +433,9 @@ export interface ToolchainResolution {
 }
 
 /** True when `path` is under $HOME or one of jail.ts's curated SYSTEM_ROOTS. */
-function isMountableRoot(path: string, home: string): boolean {
-  if (home.length > 0 && path.startsWith(home)) return true;
-  return SYSTEM_ROOTS.some((root) => path.startsWith(root));
+export function isMountableRoot(path: string, home: string): boolean {
+  if (home.length > 0 && (path === home || path.startsWith(`${home}/`))) return true;
+  return SYSTEM_ROOTS.some((root) => path === root || path.startsWith(`${root}/`));
 }
 
 /** `command -v <cmd>` then `readlink -f` on the result — the real, symlink-resolved path, or null if either step fails. */

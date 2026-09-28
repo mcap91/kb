@@ -1,7 +1,8 @@
 import { access, readFile, stat } from 'node:fs/promises';
 import { constants } from 'node:fs';
-import { spawn } from 'node:child_process';
+import { spawn, execFile as execFileCb } from 'node:child_process';
 import { dirname } from 'node:path';
+import { promisify } from 'node:util';
 
 import type {
   CheckEnvironmentResult,
@@ -223,33 +224,83 @@ const CLI_BACKENDS: ReadonlyArray<{ family: string; cli: string }> = [
   { family: 'pi', cli: 'pi' },
 ];
 
+const execFileAsync = promisify(execFileCb);
+
+/** Path-boundary-safe: `root` itself, or a real path segment under it — `/usrlocal/bin` must NOT match `/usr`. */
 function isMountablePath(path: string, home: string | null): boolean {
-  if (home !== null && home.length > 0 && path.startsWith(home)) return true;
-  return SYSTEM_ROOTS.some((root) => path.startsWith(root));
+  if (home !== null && home.length > 0 && (path === home || path.startsWith(`${home}/`))) return true;
+  return SYSTEM_ROOTS.some((root) => path === root || path.startsWith(`${root}/`));
 }
 
-/** Resolve one backend's CLI via `command -v` + `readlink -f` and classify mountability. */
+type NamespaceReachability = 'reachable' | 'unreachable' | 'bwrap-unavailable';
+
+/**
+ * Probe whether `command -v <cli>` succeeds INSIDE a bwrap namespace built
+ * from the exact curated SYSTEM_ROOTS binds jail.ts uses (WK-0174 review F1,
+ * AC2) — not a host-side `command -v` string check, and not a whole-root
+ * `--ro-bind / /` approximation (that shape can't catch a CLI genuinely
+ * missing from the curated jail). Mirrors tier.ts's `probeUnshareUser`
+ * exec pattern. `command` is a shell builtin, not an executable, so the
+ * in-jail invocation runs it through `sh -c`.
+ */
+async function probeCliInNamespace(cli: string): Promise<NamespaceReachability> {
+  try {
+    await execFileAsync('bwrap', [
+      '--unshare-user',
+      ...SYSTEM_ROOTS.flatMap((r) => ['--ro-bind-try', r, r]),
+      '--proc', '/proc',
+      '--dev', '/dev',
+      'sh', '-c', `command -v ${cli}`,
+    ]);
+    return 'reachable';
+  } catch (err) {
+    const code = (err as { code?: unknown } | null)?.code;
+    return code === 'ENOENT' ? 'bwrap-unavailable' : 'unreachable';
+  }
+}
+
+/**
+ * Resolve one backend's CLI via `command -v` + `readlink -f` on the host
+ * (diagnostics only) and classify mountability by actually probing
+ * reachability inside a curated-SYSTEM_ROOTS bwrap namespace.
+ */
 async function probeOneCliReachability(family: string, cli: string, home: string | null): Promise<CliReachability> {
   const whichResult = await execBash({ scriptContent: `command -v ${cli} 2>/dev/null`, timeoutMs: 5000 });
   const whichPath = whichResult.ok ? whichResult.data.stdout.trim() : '';
-  if (whichPath.length === 0) {
-    return { family, cli, resolvedPath: null, mountable: false, detail: `${cli} was not found on PATH.` };
+  let resolvedPath: string | null = null;
+  if (whichPath.length > 0) {
+    const realResult = await execBash({ scriptContent: `readlink -f ${whichPath} 2>/dev/null`, timeoutMs: 5000 });
+    const realPath = realResult.ok ? realResult.data.stdout.trim() : '';
+    resolvedPath = realPath.length > 0 ? realPath : whichPath;
+  }
+  const pathDetail = resolvedPath !== null ? `resolves to ${resolvedPath} on the host` : 'was not found on PATH';
+
+  const namespaceResult = await probeCliInNamespace(cli);
+  if (namespaceResult === 'bwrap-unavailable') {
+    return {
+      family,
+      cli,
+      resolvedPath,
+      mountable: false,
+      detail: `bwrap is not available; cannot probe ${cli} reachability inside the curated SYSTEM_ROOTS jail namespace.`,
+    };
   }
 
-  const realResult = await execBash({ scriptContent: `readlink -f ${whichPath} 2>/dev/null`, timeoutMs: 5000 });
-  const realPath = realResult.ok ? realResult.data.stdout.trim() : '';
-  const resolvedPath = realPath.length > 0 ? realPath : whichPath;
-  const mountable = isMountablePath(resolvedPath, home);
+  const mountable = namespaceResult === 'reachable';
+  if (mountable) {
+    return {
+      family,
+      cli,
+      resolvedPath,
+      mountable,
+      detail: `${cli} ${pathDetail} and is reachable via \`command -v\` inside a bwrap namespace mirroring the curated SYSTEM_ROOTS jail.`,
+    };
+  }
 
-  return {
-    family,
-    cli,
-    resolvedPath,
-    mountable,
-    detail: mountable
-      ? `${cli} resolves to ${resolvedPath}, under a mountable root ($HOME or SYSTEM_ROOTS).`
-      : `${cli} resolves to ${resolvedPath}, outside $HOME and SYSTEM_ROOTS — dispatch will refuse with CLI_PATH_NOT_MOUNTABLE.`,
-  };
+  const detail = resolvedPath !== null && isMountablePath(resolvedPath, home)
+    ? `${cli} ${pathDetail}, under $HOME or SYSTEM_ROOTS, but was not reachable via \`command -v\` inside the curated SYSTEM_ROOTS-only namespace (a real dispatch also binds $HOME toolchain leaves separately).`
+    : `${cli} ${pathDetail} and is not reachable inside a bwrap namespace mirroring the curated SYSTEM_ROOTS jail — dispatch will refuse with CLI_PATH_NOT_MOUNTABLE.`;
+  return { family, cli, resolvedPath, mountable, detail };
 }
 
 /** Per-backend CLI reachability probes for check-environment (WK-0174). */
