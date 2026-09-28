@@ -435,6 +435,17 @@ export async function writeResponseDoc(opts: CaptureOpts): Promise<DispatchResul
   if (opts.backendFingerprint) frontmatterLines.push(`backend_fingerprint: ${formatBackendFingerprint(opts.backendFingerprint)}`);
   if (opts.wikiCommit) frontmatterLines.push(`wiki_commit: ${opts.wikiCommit}`);
   if (opts.inferenceProvider) frontmatterLines.push(`inference_provider: ${opts.inferenceProvider}`);
+  // WK-0166: stamp the recovery evidence merge-delivery needs so it can read
+  // frontmatter instead of re-parsing the rendered `## Worker Report` markdown
+  // (the regex it used to run stopped at the FIRST `\n## `, which is the
+  // worker's own heading when its report starts with one — see WK-0166).
+  const recoveryOutcome =
+    opts.recoveryEvidence?.valid && opts.recoveryEvidence.result ? opts.recoveryEvidence.result.reported_outcome : '';
+  const recoveryValid = opts.recoveryEvidence?.valid ?? false;
+  const workerReportChars = (opts.lastAssistantText?.trim() ?? '').length;
+  frontmatterLines.push(`recovery_outcome: ${recoveryOutcome}`);
+  frontmatterLines.push(`recovery_valid: ${recoveryValid}`);
+  frontmatterLines.push(`worker_report_chars: ${workerReportChars}`);
   frontmatterLines.push('---', '');
   const frontmatter = frontmatterLines.join('\n');
 
