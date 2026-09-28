@@ -21,7 +21,7 @@
     },
     "reported_role": {
       "type": "string",
-      "enum": ["worker", "reviewer", "redteam"]
+      "enum": ["worker", "reviewer", "redteam", "researcher"]
     },
     "reported_subject": {
       "type": "string",

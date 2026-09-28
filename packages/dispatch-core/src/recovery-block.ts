@@ -160,7 +160,7 @@ export interface RecoveryBlockPayload {
   findings: RecoveryFinding[];
   finding_counts: FindingCounts;
   reviewed_controls: ReviewedControl[];
-  /** kb extension (divergence 2 above). Always `null` for reviewer/redteam. */
+  /** kb extension (divergence 2 above). Always `null` for reviewer/redteam/researcher. */
   kind: RecoveryKind | null;
 }
 
@@ -840,7 +840,7 @@ export function validateRecoveryPayload(payload: unknown): RecoveryBlockEvidence
     }
   } else if (isFindingsRole) {
     if (!isFindingsOutcome(payload.reported_outcome)) {
-      add('role_outcome_mismatch', 'reviewer/redteam payload must use a findings outcome', '$.reported_outcome');
+      add('role_outcome_mismatch', 'reviewer/redteam/researcher payload must use a findings outcome', '$.reported_outcome');
     }
   } else {
     add('invalid_reported_outcome', 'reported_outcome cannot be validated for an unknown role', '$.reported_outcome');
