@@ -320,3 +320,11 @@ export { mergeDelivery } from './merge-delivery.js';
 
 export type { StopRunOpts, StopRunResult } from './stop-run.js';
 export { stopRun } from './stop-run.js';
+
+// ---------------------------------------------------------------------------
+// Restamp (WK-0175) — sets an HO's base_sha (and base_wiki_sha) to current
+// HEAD, mechanizing BASE_DRIFT remediation. Local only.
+// ---------------------------------------------------------------------------
+
+export type { RestampOpts, RestampResult } from './restamp.js';
+export { restamp } from './restamp.js';
