@@ -39,6 +39,24 @@ function findTypeByPrefix(
   return undefined;
 }
 
+/**
+ * Scan a record directory for the highest `${prefix}-NNNN.md` id present on disk.
+ * Returns 0 if the directory does not exist or no matching file is found.
+ */
+function findMaxIdOnDisk(recordDir: string, prefix: string): number {
+  if (!fs.existsSync(recordDir)) return 0;
+  const re = new RegExp(`^${prefix}-(\\d+)\\.md$`);
+  let max = 0;
+  for (const filename of fs.readdirSync(recordDir)) {
+    const match = re.exec(filename);
+    if (match) {
+      const n = parseInt(match[1], 10);
+      if (n > max) max = n;
+    }
+  }
+  return max;
+}
+
 // ---------------------------------------------------------------------------
 // Allocate
 // ---------------------------------------------------------------------------
@@ -121,7 +139,26 @@ export async function allocate(
     idState[prefix] = { next: 1, allocated: [] };
   }
 
-  // 3. Allocate the next ID.
+  const entry = idState[prefix];
+  const recordDir = path.join(targetDir, typeDef.directory);
+
+  // 3. Reconcile state against disk (WK-0178).
+  //
+  // .id-state.json can lag reality: the live incident that motivated this guard was a
+  // hand-authored record (SRC-0012.md) committed directly to disk without ever going
+  // through allocate()/create(), so its number was never reflected in `next`. The next
+  // allocate() then handed out the same number again and create() silently overwrote the
+  // existing file. Heal forward instead of trusting the counter blindly: `next` can never
+  // be lower than one past the highest id actually present on disk for this prefix. This
+  // only ever moves `next` up — gaps left by deleted mid-records are never reclaimed.
+  const maxOnDisk = findMaxIdOnDisk(recordDir, prefix);
+  let stateChanged = false;
+  if (maxOnDisk + 1 > entry.next) {
+    entry.next = maxOnDisk + 1;
+    stateChanged = true;
+  }
+
+  // 4. Allocate the next ID.
   //
   // Allocation is idempotent until a record file claims the ID. A bare allocate
   // (a "peek"/reserve that writes no record) advances `next` exactly once, leaving
@@ -130,8 +167,6 @@ export async function allocate(
   // onto the same number rather than burning orphaned IDs. We only reclaim the
   // contiguous tail slot (`next - 1`); gaps left by deleted mid-records are never
   // refilled, so existing references are never resurrected.
-  const entry = idState[prefix];
-  const recordDir = path.join(targetDir, typeDef.directory);
   const reservedNumber = entry.next - 1;
   const reservedIsFileless =
     reservedNumber >= 1 &&
@@ -139,14 +174,20 @@ export async function allocate(
 
   let number: number;
   if (reservedIsFileless) {
-    // Reuse the prior reservation; state is unchanged, so no write needed.
+    // Reuse the prior reservation. Reconciliation above guarantees this slot is not the
+    // one it just bumped `next` past (that slot is always file-backed by construction), so
+    // reusing it here can never resurrect a stale/colliding id.
     number = reservedNumber;
   } else {
     number = entry.next;
     entry.next = number + 1;
     if (!entry.allocated.includes(number)) entry.allocated.push(number);
+    stateChanged = true;
+  }
 
-    // 4. Write state atomically (write-to-temp-then-rename)
+  // 5. Write state atomically (write-to-temp-then-rename) whenever it changed —
+  // either from reconciliation or from advancing `next` for a fresh allocation.
+  if (stateChanged) {
     const tmpPath = idStatePath + `.tmp-${crypto.randomBytes(4).toString('hex')}`;
     try {
       const content = JSON.stringify(idState, null, 2) + '\n';
@@ -165,7 +206,7 @@ export async function allocate(
     }
   }
 
-  // 5. Return the allocated ID
+  // 6. Return the allocated ID
   const id = `${prefix}-${padId(number)}`;
   debug(`allocated: ${id}`);
 
