@@ -47,6 +47,13 @@ export interface BackendEntry {
   /** Optional per-family effort/reasoning CLI mapping (WK-0122). Absent = effort not supported for this backend. */
   effort_mapping?: EffortMapping;
   request_params?: Record<string, unknown>;
+  /**
+   * Cost model for this backend (WK-0123): `api` backends have true
+   * per-token cost; `seat` backends (Claude Max, ChatGPT Pro) are flat-rate
+   * subscriptions with no per-token API cost. Absent defaults to `api` — no
+   * existing backends.json entry needs to be updated for this field to work.
+   */
+  billing?: 'seat' | 'api';
 }
 
 export interface ModelTableEntry {
@@ -118,11 +125,13 @@ function warnUnknownKeys(entry: Record<string, unknown>, knownKeys: ReadonlySet<
   }
 }
 
-const BACKEND_ENTRY_KNOWN_KEYS = new Set(['family', 'base_url', 'api_key_env', 'secrets_file', 'notes', 'serving', 'effort_mapping', 'request_params']);
+const BACKEND_ENTRY_KNOWN_KEYS = new Set(['family', 'base_url', 'api_key_env', 'secrets_file', 'notes', 'serving', 'effort_mapping', 'request_params', 'billing']);
 
 const EFFORT_MAPPING_STYLES: readonly EffortMapping['style'][] = ['flag_value', 'key_equals_value'];
 
 const BACKEND_FAMILIES: readonly BackendFamily[] = ['pi', 'codex', 'claude'];
+
+const BILLING_KINDS: readonly NonNullable<BackendEntry['billing']>[] = ['seat', 'api'];
 
 function validateBackendEntry(name: string, raw: unknown): DispatchResult<BackendEntry> {
   if (!isPlainObject(raw)) {
@@ -187,6 +196,13 @@ function validateBackendEntry(name: string, raw: unknown): DispatchResult<Backen
     return fail('BAD_RECORD', `Backend "${name}" in backends.json: "request_params" must be an object.`);
   }
 
+  if (raw.billing !== undefined && !BILLING_KINDS.includes(raw.billing as 'seat' | 'api')) {
+    return fail(
+      'BAD_RECORD',
+      `Backend "${name}" in backends.json: "billing" must be one of: ${BILLING_KINDS.join(', ')}.`,
+    );
+  }
+
   const entry: BackendEntry = {
     family: raw.family as BackendFamily,
     base_url: raw.base_url as string | null,
@@ -204,6 +220,7 @@ function validateBackendEntry(name: string, raw: unknown): DispatchResult<Backen
   }
   if (effortMapping) entry.effort_mapping = effortMapping;
   if (isPlainObject(raw.request_params)) entry.request_params = raw.request_params as Record<string, unknown>;
+  if (typeof raw.billing === 'string') entry.billing = raw.billing as BackendEntry['billing'];
   return ok(entry);
 }
 
