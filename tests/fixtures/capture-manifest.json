@@ -1,0 +1,32 @@
+{
+  "pi": {
+    "capturedWith": "0.85.1",
+    "fixtures": [
+      "pi-output-code-review.jsonl",
+      "pi-output-compaction.jsonl",
+      "pi-output-vllm-qwen25.jsonl"
+    ]
+  },
+  "codex": {
+    "capturedWith": "0.154.0",
+    "fixtures": [
+      "codex-exec-output.txt",
+      "codex-exec-output-model-not-found.txt",
+      "codex-exec-output-permission-denied.txt",
+      "codex-exec-output-stream-json.jsonl",
+      "codex-exec-output-stream-json.stderr.txt",
+      "codex-exec-output-with-effort.jsonl"
+    ]
+  },
+  "claude": {
+    "capturedWith": "2.1.223",
+    "fixtures": [
+      "claude-p-output.txt",
+      "claude-p-output-default-text.txt",
+      "claude-p-output-model-not-found.txt",
+      "claude-p-output-permission-denied.txt",
+      "claude-p-output-stream-json.jsonl",
+      "claude-p-output-with-effort.txt"
+    ]
+  }
+}
