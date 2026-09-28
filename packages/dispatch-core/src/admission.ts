@@ -17,7 +17,7 @@
  * resolution, outside the upstream §7 numbering.
  */
 import { execFile as execFileCb } from 'node:child_process';
-import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { isAbsolute, join, relative, resolve } from 'node:path';
 import { stat } from 'node:fs/promises';
 import { promisify } from 'node:util';
 
@@ -25,6 +25,7 @@ import type { DispatchResult } from './errors.js';
 import { fail, ok } from './errors.js';
 import type { Handoff, HandoffMode } from './ho.js';
 import { probeWikiSource } from './wiki-source.js';
+import { validateWriteScopeChain } from './write-scope-chain.js';
 
 const execFile = promisify(execFileCb);
 
@@ -82,11 +83,14 @@ function checkEnvelope(handoff: Handoff): DispatchResult<null> {
 }
 
 /**
- * §7.3 `stale_write_scope`. Every entry must resolve inside the repo, and
- * either the path itself or its immediate parent directory must already
- * exist — a brand-new top-level directory (e.g. `src/` in an empty repo) is
- * fine because its parent is the repo root, but a multi-level path under a
- * nonexistent ancestor is refused.
+ * §7.3 `stale_write_scope`. Every entry must be repo-relative and resolve
+ * inside the repo, then pass the ancestor-chain check (WK-0163,
+ * `validateWriteScopeChain`): walk up to the nearest existing ancestor and
+ * require its realpath stay within the repo root's realpath. A brand-new
+ * multi-level path (e.g. `tests/golden/smoke.txt` in a repo with no `tests/`)
+ * is admitted — pipeline step 9b creates the full hierarchy — but a symlink
+ * ancestor that resolves outside the repo is refused (D2 soft posture:
+ * within-repo symlinks are fine).
  */
 async function checkStaleWriteScope(handoff: Handoff, repoRootResolved: string): Promise<DispatchResult<null>> {
   for (const entry of handoff.write_scope) {
@@ -107,14 +111,8 @@ async function checkStaleWriteScope(handoff: Handoff, repoRootResolved: string):
       );
     }
 
-    if (await pathExists(resolved)) continue;
-    if (await pathExists(dirname(resolved))) continue;
-
-    return fail(
-      'STALE_WRITE_SCOPE',
-      `Handoff ${handoff.id} write_scope entry "${entry}" does not exist, and neither does its parent directory.`,
-      { entry },
-    );
+    const chainCheck = await validateWriteScopeChain(repoRootResolved, entry);
+    if (!chainCheck.ok) return chainCheck;
   }
 
   return ok(null);

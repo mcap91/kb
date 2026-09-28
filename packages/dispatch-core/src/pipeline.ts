@@ -61,6 +61,7 @@ import { spawnIsolated, type SpawnResult } from './spawn-isolated.js';
 import { buildWorkerEnv } from './env-policy.js';
 import { createClone, removeClone, sweepOrphanClones } from './clone.js';
 import { probeWikiSource } from './wiki-source.js';
+import { validateWriteScopeChain } from './write-scope-chain.js';
 import {
   buildEnumerateScript,
   parseEnumerateOutput,
@@ -520,6 +521,68 @@ export function buildEffortArgs(mapping: EffortMapping, effort: string): string[
   return [mapping.flag, effort];
 }
 
+/**
+ * Step 9b: pre-create the write_scope skeleton in the CLONE (never the
+ * mother repo — D1, WK-0163) so every declared path exists on disk before
+ * `buildBwrapPlan` (bwrap cannot mkdir a new path under a ro-bound root,
+ * jail.ts's own module doc). Validates each entry's ancestor chain
+ * (`validateWriteScopeChain`, the same D2 containment rule admission.ts
+ * runs against the mother repo) before creating anything, against the RAW
+ * entry — an entry that is absolute or escapes the clone via `..` resolves
+ * outside `clonePath` and is refused here even in isolation from admission,
+ * which has already run against every entry reaching this call site in the
+ * real pipeline. File entries: mkdir the parent, touch the file (chassis
+ * pattern: O_CREAT | O_EXCL). Directory entries: mkdir the entry itself.
+ */
+export async function precreateWriteScopeSkeleton(writeScope: string[], clonePath: string): Promise<DispatchResult<null>> {
+  if (writeScope.length > 0) {
+    for (const rel of writeScope) {
+      const trimmed = rel.replace(/^\/+/, '').replace(/\/+$/, '');
+      if (!trimmed) continue;
+
+      const chainCheck = await validateWriteScopeChain(clonePath, rel);
+      if (!chainCheck.ok) return chainCheck;
+
+      const entryPath = join(clonePath, trimmed);
+      if (classifyEntry(entryPath, trimmed) === 'file') {
+        const parentDir = dirname(entryPath);
+        try {
+          await mkdir(parentDir, { recursive: true });
+        } catch (err) {
+          return fail('PIPELINE_FAILED', `Failed to create write_scope skeleton dir: ${parentDir}`, err);
+        }
+        try {
+          closeSync(openSync(entryPath, fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY, 0o644));
+        } catch (err) {
+          if ((err as NodeJS.ErrnoException)?.code !== 'EEXIST') {
+            return fail('PIPELINE_FAILED', `Failed to create write_scope skeleton file: ${entryPath}`, err);
+          }
+        }
+      } else {
+        try {
+          await mkdir(entryPath, { recursive: true });
+        } catch (err) {
+          return fail('PIPELINE_FAILED', `Failed to create write_scope skeleton dir: ${entryPath}`, err);
+        }
+      }
+    }
+  }
+
+  return ok(null);
+}
+
+/**
+ * Step 9c: wiki mount-target skeleton for nested-private shape (WK-0149).
+ * Extracted as-is (WK-0163 scope note) — throws unhandled on mkdir failure,
+ * unlike 9b's Result-returning contract; the two failure modes are
+ * deliberately left unnormalized.
+ */
+export async function precreateWikiMountSkeleton(wikiShape: WikiShape, clonePath: string): Promise<void> {
+  if (wikiShape === 'nested-private') {
+    await mkdir(join(clonePath, 'wiki'), { recursive: true });
+  }
+}
+
 export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<DispatchResult2>> {
   const dir = resolve(opts.dir);
   const { verbose } = opts;
@@ -716,41 +779,11 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
     // 9b. Pre-create skeleton for write_scope sparse binds — bwrap cannot
     // mkdir a new path under a ro-bound root (jail.ts's own module doc), so
     // every write_scope path must already exist on disk before buildBwrapPlan.
-    // File entries: mkdir the parent, touch the file (chassis pattern:
-    // O_CREAT | O_EXCL). Directory entries: mkdir the entry itself.
-    if (handoff.write_scope.length > 0) {
-      for (const rel of handoff.write_scope) {
-        const trimmed = rel.replace(/^\/+/, '').replace(/\/+$/, '');
-        if (!trimmed) continue;
-        const entryPath = join(clonePath, trimmed);
-        if (classifyEntry(entryPath, trimmed) === 'file') {
-          const parentDir = dirname(entryPath);
-          try {
-            await mkdir(parentDir, { recursive: true });
-          } catch (err) {
-            return fail('PIPELINE_FAILED', `Failed to create write_scope skeleton dir: ${parentDir}`, err);
-          }
-          try {
-            closeSync(openSync(entryPath, fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY, 0o644));
-          } catch (err) {
-            if ((err as NodeJS.ErrnoException)?.code !== 'EEXIST') {
-              return fail('PIPELINE_FAILED', `Failed to create write_scope skeleton file: ${entryPath}`, err);
-            }
-          }
-        } else {
-          try {
-            await mkdir(entryPath, { recursive: true });
-          } catch (err) {
-            return fail('PIPELINE_FAILED', `Failed to create write_scope skeleton dir: ${entryPath}`, err);
-          }
-        }
-      }
-    }
+    const skeletonResult = await precreateWriteScopeSkeleton(handoff.write_scope, clonePath);
+    if (!skeletonResult.ok) return skeletonResult;
 
     // 9c. Wiki mount-target skeleton for nested-private shape (WK-0149).
-    if (wikiShape === 'nested-private') {
-      await mkdir(join(clonePath, 'wiki'), { recursive: true });
-    }
+    await precreateWikiMountSkeleton(wikiShape, clonePath);
 
     // 10. Build the family-specific worker invocation (T33 family-aware
     // pipeline). Each branch below produces two family-agnostic outputs
