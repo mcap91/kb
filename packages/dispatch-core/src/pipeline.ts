@@ -58,6 +58,7 @@ import {
   type WikiShape,
 } from './jail.js';
 import { spawnIsolated, type SpawnResult } from './spawn-isolated.js';
+import { attachStreamErrorHandlers } from './stream-utils.js';
 import { buildWorkerEnv } from './env-policy.js';
 import { createClone, removeClone, sweepOrphanClones } from './clone.js';
 import { probeWikiSource } from './wiki-source.js';
@@ -262,8 +263,7 @@ function spawnAndWait(
     const child = spawn(command, args, { cwd: opts.cwd, stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '';
     let stderr = '';
-    child.stdout?.on('error', () => { /* swallow — exit/close path handles cleanup */ });
-    child.stderr?.on('error', () => { /* swallow — exit/close path handles cleanup */ });
+    attachStreamErrorHandlers(child.stdout, child.stderr);
     child.stdout?.on('data', (chunk: Buffer) => { stdout += chunk.toString('utf8'); });
     child.stderr?.on('data', (chunk: Buffer) => { stderr += chunk.toString('utf8'); });
     child.once('close', (code) => resolvePromise({ code, stdout, stderr }));
@@ -581,6 +581,46 @@ export async function precreateWikiMountSkeleton(wikiShape: WikiShape, clonePath
   if (wikiShape === 'nested-private') {
     await mkdir(join(clonePath, 'wiki'), { recursive: true });
   }
+}
+
+/**
+ * Step 12c: in-jail command wrapper script — bring lo up, start the relay,
+ * conditionally `npm rebuild` when a lockfile is present, then run the
+ * worker as a TRACKED FOREGROUND CHILD, not `exec`'d (WK-0156 fix): `exec`
+ * replaces the shell with the worker, destroying the backgrounded relay's
+ * PID/trap along with it, so a TERM/EXIT/INT trap can no longer reach it.
+ * Backgrounding the worker and `wait`ing on it explicitly lets the trap
+ * interrupt promptly and kill both the worker and the relay (WK-0162:
+ * extracted verbatim from the inline step 12c block — all inputs are plain
+ * locals from the caller, no side effects, no early returns).
+ */
+export function buildInnerScript(opts: {
+  execLines: string[];
+  relayScriptPath: string;
+  tunnelSocketPath: string;
+  hasLockfile: boolean;
+}): string {
+  const { execLines, relayScriptPath, tunnelSocketPath, hasLockfile } = opts;
+  const lastExecLine = execLines[execLines.length - 1] ?? '';
+  const workerLine = lastExecLine.startsWith('exec ') ? lastExecLine.slice('exec '.length) : lastExecLine;
+  return [
+    'set -euo pipefail',
+    'ip link set lo up 2>/dev/null || true',
+    `node ${shQuote(relayScriptPath)} ${shQuote(String(TUNNEL_RELAY_PORT))} ${shQuote(tunnelSocketPath)} < /dev/null > /dev/null 2>&1 &`,
+    'RELAY_PID=$!',
+    'WORKER_PID=""',
+    'cleanup() {',
+    '  if [ -n "$WORKER_PID" ]; then kill "$WORKER_PID" 2>/dev/null || true; fi',
+    '  kill "$RELAY_PID" 2>/dev/null || true',
+    '}',
+    'trap cleanup EXIT TERM INT',
+    'sleep 0.2',
+    ...(hasLockfile ? ['npm rebuild 1>&2'] : []),
+    ...execLines.slice(0, -1),
+    `${workerLine} &`,
+    'WORKER_PID=$!',
+    'wait "$WORKER_PID"',
+  ].join('\n');
 }
 
 export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<DispatchResult2>> {
@@ -1088,26 +1128,7 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
     // than touching all three per-family branches.
     const lockfilePath = join(clonePath, 'package-lock.json');
     const hasLockfile = existsSync(lockfilePath);
-    const lastExecLine = execLines[execLines.length - 1] ?? '';
-    const workerLine = lastExecLine.startsWith('exec ') ? lastExecLine.slice('exec '.length) : lastExecLine;
-    const innerScript = [
-      'set -euo pipefail',
-      'ip link set lo up 2>/dev/null || true',
-      `node ${shQuote(relayScriptPath)} ${shQuote(String(TUNNEL_RELAY_PORT))} ${shQuote(tunnelSocketPath)} < /dev/null > /dev/null 2>&1 &`,
-      'RELAY_PID=$!',
-      'WORKER_PID=""',
-      'cleanup() {',
-      '  if [ -n "$WORKER_PID" ]; then kill "$WORKER_PID" 2>/dev/null || true; fi',
-      '  kill "$RELAY_PID" 2>/dev/null || true',
-      '}',
-      'trap cleanup EXIT TERM INT',
-      'sleep 0.2',
-      ...(hasLockfile ? ['npm rebuild 1>&2'] : []),
-      ...execLines.slice(0, -1),
-      `${workerLine} &`,
-      'WORKER_PID=$!',
-      'wait "$WORKER_PID"',
-    ].join('\n');
+    const innerScript = buildInnerScript({ execLines, relayScriptPath, tunnelSocketPath, hasLockfile });
 
     // 12d. Build the frozen bwrap plan (D6 ruling 7 components 1-4/15).
     // `bwrapInjectedFiles` is Pi's models.json or Claude's settings.json
