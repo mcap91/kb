@@ -27,7 +27,7 @@
 import { spawn } from 'node:child_process';
 import { closeSync, constants as fsConstants, existsSync, openSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -522,6 +522,46 @@ export function buildEffortArgs(mapping: EffortMapping, effort: string): string[
 }
 
 /**
+ * Step 19b: host-side mount-write manifest (WK-0164) — walks each
+ * `export_mount` path on the HOST (never inside the jail, never worker
+ * self-report) and collects files whose mtime is newer than `since` (the
+ * run's start time). Best-effort per mount: a walk failure (mount path
+ * doesn't exist, permission denied) logs a verbose warning and yields an
+ * empty file list for that mount rather than failing the pipeline over a
+ * traceability walk.
+ * @internal pipeline.ts internal — exported only for direct unit testing.
+ */
+export async function collectMountWrites(
+  exportMounts: string[],
+  since: Date,
+  verbose: boolean | undefined,
+): Promise<Array<{ mountPath: string; files: string[] }>> {
+  const results: Array<{ mountPath: string; files: string[] }> = [];
+  for (const mountPath of exportMounts) {
+    const files: string[] = [];
+    try {
+      const entries = await readdir(mountPath, { recursive: true });
+      for (const relPath of entries) {
+        const fullPath = join(mountPath, relPath);
+        let fileStat;
+        try {
+          fileStat = await stat(fullPath);
+        } catch {
+          continue;
+        }
+        if (fileStat.isFile() && fileStat.mtime > since) {
+          files.push(relPath);
+        }
+      }
+    } catch (err) {
+      logVerbose(verbose, `warning: mount-write walk failed for export_mount ${mountPath}: ${err}`);
+    }
+    results.push({ mountPath, files });
+  }
+  return results;
+}
+
+/**
  * Step 9b: pre-create the write_scope skeleton in the CLONE (never the
  * mother repo — D1, WK-0163) so every declared path exists on disk before
  * `buildBwrapPlan` (bwrap cannot mkdir a new path under a ro-bound root,
@@ -626,6 +666,10 @@ export function buildInnerScript(opts: {
 export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<DispatchResult2>> {
   const dir = resolve(opts.dir);
   const { verbose } = opts;
+  // WK-0164: run start timestamp, captured before any clone/jail work — the
+  // watermark the post-exit export_mount walk (step 19b) compares file mtimes
+  // against.
+  const runStartTime = new Date();
 
   // 0. Best-effort orphan-clone sweep (D6 ruling 7 component 13 / ruling 6
   // item 4): never blocks or fails the run — a failure here is logged only.
@@ -1487,6 +1531,12 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       delivery = { status: 'no_changes' };
     }
 
+    // 19b. Mount-write manifest (WK-0164): host-side, deterministic walk of
+    // each export_mount path — never a worker self-report. Runs after the
+    // worker has exited and delivery is resolved, before capture.
+    logVerbose(verbose, 'walking export_mounts for mount-write manifest');
+    const mountWrites = await collectMountWrites(handoff.export_mounts, runStartTime, verbose);
+
     // 20. Capture. `piResult`/`compaction`/`lastAssistantText` are
     // capture.ts's pre-existing field names (CaptureOpts); their shapes
     // ({outcome: string; usage: {totalTokens, costUsd}} and PiCompaction)
@@ -1516,6 +1566,7 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       effort: opts.effort,
       wikiCommit,
       inferenceProvider,
+      mountWrites,
     });
     if (!captureResult.ok) return captureResult;
 

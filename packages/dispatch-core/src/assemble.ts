@@ -300,6 +300,27 @@ export async function assemblePrompt(handoff: Handoff, repoRoot: string): Promis
     );
   }
 
+  if (handoff.data_mounts.length > 0 || handoff.export_mounts.length > 0) {
+    const mountLines: string[] = ['### Declared Mounts'];
+    if (handoff.data_mounts.length > 0) {
+      mountLines.push(
+        '',
+        'Read-only input data at these absolute paths — you may read from them but must not write to them:',
+        bulletList(handoff.data_mounts),
+      );
+    }
+    if (handoff.export_mounts.length > 0) {
+      mountLines.push(
+        '',
+        'Writable output paths at these absolute paths — contents persist after the run but are NOT ' +
+          'committed to git; these are separate from write_scope (the only surface that lands in git). ' +
+          'You may create or modify files under these paths:',
+        bulletList(handoff.export_mounts),
+      );
+    }
+    sections.push(mountLines.join('\n'));
+  }
+
   if (modeParts.includeAcceptance) {
     sections.push(`### Acceptance Criteria\n${bulletList(handoff.acceptance)}`);
   }

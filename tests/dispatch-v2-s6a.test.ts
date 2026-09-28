@@ -406,8 +406,14 @@ describe('adapters/pi.ts — lastAssistantText/accumulatedText extraction', () =
 
 type Mode = 'implement' | 'code_review' | 'redteam' | 'research';
 
-function hoMarkdownForMode(mode: Mode, fixupContext?: string): string {
+function hoMarkdownForMode(
+  mode: Mode,
+  fixupContext?: string,
+  mounts?: { data_mounts?: string[]; export_mounts?: string[] },
+): string {
   const fixupLine = fixupContext ? `fixup_context: "${fixupContext}"\n` : '';
+  const dataMountsYaml = `[${(mounts?.data_mounts ?? []).map((p) => JSON.stringify(p)).join(', ')}]`;
+  const exportMountsYaml = `[${(mounts?.export_mounts ?? []).map((p) => JSON.stringify(p)).join(', ')}]`;
   return `---
 id: HO-TEST
 title: Test task
@@ -416,7 +422,8 @@ write_scope: ["src/"]
 base_ref: null
 web: false
 credentials: []
-data_mounts: []
+data_mounts: ${dataMountsYaml}
+export_mounts: ${exportMountsYaml}
 read_first: []
 acceptance:
   - "AC-1: Works"
@@ -441,8 +448,12 @@ describe('assemble.ts — mode-specific framings (S6a)', () => {
     await rm(repoRoot, { recursive: true, force: true });
   });
 
-  async function assembleForMode(mode: Mode, fixupContext?: string) {
-    const content = hoMarkdownForMode(mode, fixupContext);
+  async function assembleForMode(
+    mode: Mode,
+    fixupContext?: string,
+    mounts?: { data_mounts?: string[]; export_mounts?: string[] },
+  ) {
+    const content = hoMarkdownForMode(mode, fixupContext, mounts);
     await writeFile(join(repoRoot, 'wiki', 'handoffs', 'HO-TEST.md'), content, 'utf8');
     const parsed = parseHandoffContent(content, 'HO-TEST.md');
     if (!parsed.ok) throw new Error(`fixture HO markdown failed to parse: ${parsed.message}`);
@@ -571,6 +582,42 @@ describe('assemble.ts — mode-specific framings (S6a)', () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.data.text).not.toContain('Prior Review Findings');
+  });
+
+  it('renders both mount classes with correct access mode labels when declared (WK-0164)', async () => {
+    const result = await assembleForMode('implement', undefined, {
+      data_mounts: ['/data/input'],
+      export_mounts: ['/data/output'],
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.data.text).toContain('### Declared Mounts');
+    expect(result.data.text).toContain('/data/input');
+    expect(result.data.text).toContain('read-only');
+    expect(result.data.text).toContain('/data/output');
+    expect(result.data.text).toContain('Writable output paths');
+    expect(result.data.text).toContain('NOT');
+    expect(result.data.text).toContain('committed to git');
+  });
+
+  it('renders the Declared Mounts section for advisory modes too (generic, not mode-gated)', async () => {
+    const result = await assembleForMode('redteam', undefined, {
+      data_mounts: ['/data/input'],
+      export_mounts: ['/data/output'],
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.data.text).toContain('### Declared Mounts');
+  });
+
+  it('omits the Declared Mounts section when both mount arrays are empty', async () => {
+    const result = await assembleForMode('implement');
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.data.text).not.toContain('Declared Mounts');
   });
 });
 

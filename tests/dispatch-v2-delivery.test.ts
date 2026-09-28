@@ -436,6 +436,51 @@ describe('capture.ts — writeResponseDoc', () => {
     expect(result.data.responseContent).toContain('aws_access_key_id');
     expect(result.data.responseContent).toContain('quarantine.diff');
   });
+
+  it('renders a ## Mount Writes section with file entries when mountWrites is provided (WK-0164)', async () => {
+    runDir = await createTempDir('kb-capture-mountwrites-');
+
+    const result = await writeResponseDoc({
+      runDir,
+      handoff: { id: 'HO-0011', title: 'Mount write test', mode: 'implement' },
+      delivery: { status: 'no_changes' },
+      mountWrites: [
+        { mountPath: '/data/output', files: ['result.csv', 'nested/log.txt'] },
+      ],
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.responseContent).toContain('## Mount Writes');
+    expect(result.data.responseContent).toContain('/data/output');
+    expect(result.data.responseContent).toContain('- result.csv');
+    expect(result.data.responseContent).toContain('- nested/log.txt');
+  });
+
+  it('omits the ## Mount Writes section when mountWrites is empty or undefined', async () => {
+    runDir = await createTempDir('kb-capture-nomountwrites-');
+
+    const withoutField = await writeResponseDoc({
+      runDir,
+      handoff: { id: 'HO-0012', title: 'No mount writes test', mode: 'implement' },
+      delivery: { status: 'no_changes' },
+    });
+    expect(withoutField.ok).toBe(true);
+    if (withoutField.ok) {
+      expect(withoutField.data.responseContent).not.toContain('## Mount Writes');
+    }
+
+    const withEmptyArray = await writeResponseDoc({
+      runDir,
+      handoff: { id: 'HO-0013', title: 'Empty mount writes test', mode: 'implement' },
+      delivery: { status: 'no_changes' },
+      mountWrites: [],
+    });
+    expect(withEmptyArray.ok).toBe(true);
+    if (withEmptyArray.ok) {
+      expect(withEmptyArray.data.responseContent).not.toContain('## Mount Writes');
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
