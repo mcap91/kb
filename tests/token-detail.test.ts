@@ -1,42 +1,4 @@
-/**
- * WK-0123 — granular per-field token capture + on-the-fly cost estimation.
- *
- * NOTE ON DISCOVERY (flagged, not silently worked around): this file lives at
- * the write_scope path granted to this handoff (`packages/dispatch-core/
- * tests/`), but the repo's ONLY vitest config (`vitest.config.ts` at the repo
- * root) declares `include: ["tests/**\/*.test.ts"]` — the root-level `tests/`
- * directory, where every other dispatch-core test actually lives (e.g.
- * `tests/dispatch-v2-adapters.test.ts`). Verified empirically
- * (`npx vitest list`): a file placed under `packages/dispatch-core/tests/`
- * is never discovered by `npm test`. Neither `vitest.config.ts` nor the root
- * `tests/` directory is in this handoff's write_scope, so this file cannot be
- * moved to where it would actually run without an out-of-scope change. See
- * the final handoff response for the explicit stop/decision-needed note.
- *
- * Golden fixtures used (DEC-0009, real unedited captures, `tests/fixtures/`
- * relative to the repo root):
- *  - `codex-exec-output-stream-json.jsonl` — real `codex exec --json` capture;
- *    carries the full `turn.completed` usage object this WK needs
- *    (input/cached-input/output/reasoning).
- *  - `claude-p-output.txt` — real `claude -p --output-format json` capture;
- *    carries the full usage object (input/cache-creation/cache-read/output)
- *    plus a real `total_cost_usd`. NOT `claude-p-output-stream-json.jsonl` —
- *    that fixture is `--output-format stream-json` (multiple JSON-lines
- *    events for a different consumer, `dispatch-worker-events.test.ts`'s
- *    `parseWorkerEvents`), and fails `parseClaudeOutput` (which expects
- *    stdout to be exactly one JSON object) with `ADAPTER_FAILED` — verified
- *    directly against this repo's `parseClaudeOutput`. `claude-p-output.txt`
- *    is the real, already-golden fixture that actually carries the usage
- *    frame this WK's acceptance criterion asks for.
- *  - Pi: no captured stream-json fixture exists for `parsePiOutput` with a
- *    hand-derived edge case, so the two Pi fixtures below are hand-derived
- *    JSONL, mirroring the exact real event shape captured in
- *    `tests/fixtures/pi-output-code-review.jsonl` (`message_end` /
- *    `message.usage.{input,output,cacheRead,cacheWrite,reasoning,
- *    totalTokens,cost.total}` / `agent_end`) — verified against that real
- *    fixture's structure before authoring these by hand (DEC-0009: no
- *    invented field names).
- */
+// WK-0123 — granular per-field token capture + on-the-fly cost estimation.
 import { describe, expect, it, afterEach } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
