@@ -398,7 +398,7 @@ Both must pass. The gate must be green on Linux (WSL2 ext4).
 
 ## Test Consuming Repo
 
-`/home/mcap91/projects/test_kb` is a test consuming repo. It can be cleared and re-bootstrapped at any time. Use it for smoke-testing dispatch, bootstrap, sync-contract, and any feature that targets a consuming repo via `--dir`. Do not treat its contents as durable.
+`/home/mcap91/projects/test_kb` is a test consuming repo. It can be cleared and re-bootstrapped at any time. Use it for smoke-testing dispatch, bootstrap, sync-contract, and any feature that targets a consuming repo via `--dir`. Do not treat its contents as durable. See `docs/verify-dispatch.md` for the generic live smoke-test runbook (scratch-repo setup, golden fixture, review chain, Pi fixture, redteam, mount traversal).
 
 ## What Not To Do
 
