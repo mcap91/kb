@@ -12,7 +12,7 @@ Use this model:
 
 - Run the **wiki MCP server** and, when needed, the **dispatch MCP server** from the `kb` repo.
 - Use **MCP for wiki operations**: `bootstrap`, `sync-contract`, `allocate-id`, `create`, `lint`, `generate`, `build-search-index`, `search`.
-- Use **MCP or CLI for dispatch operations**: `init-config`, `check-environment`, `create-handoff`, `review`, `launch`, `review-and-launch`, `status`, `cleanup`.
+- Use **MCP or CLI for dispatch operations**: `init-dispatch`, `check-environment`, `create-handoff`, `dispatch`, `wait-for-run`, `restamp`, `status`, `cleanup`. (`derive-review`, `merge-delivery`, `stop-run` are MCP-only today.)
 - Use the **CLI from the `kb` repo** for `graph`.
 - Always target the consuming repo explicitly with `dir`.
 
@@ -302,7 +302,7 @@ From the `kb` repo:
 
 ```bash
 npm run wiki -- bootstrap --dir ../my-project --repo org/my-project
-npm run dispatch -- init-config
+npm run dispatch -- init-dispatch --dir ../my-project
 npm run wiki -- generate --dir ../my-project
 npm run wiki -- build-search-index --dir ../my-project
 npm run graph -- --dir ../my-project
@@ -312,7 +312,7 @@ What this does:
 
 - creates `wiki/` structure in the consuming repo
 - copies bootstrap surfaces and templates
-- initializes operator dispatch config
+- scaffolds repo-local dispatch config (`wiki/.dispatch/`)
 - generates standard wiki views
 - builds the search index
 - writes graph artifacts
@@ -378,17 +378,20 @@ And when needed:
 Run from the `kb` repo:
 
 ```bash
-# initialize operator config
-npm run dispatch -- init-config
+# scaffold repo-local dispatch config (wiki/.dispatch/) — one-time, write-once
+npm run dispatch -- init-dispatch --dir ../my-project
 
-# probe and persist host sandbox capabilities
+# probe host sandbox capabilities
 npm run dispatch -- check-environment
 
 # create a durable handoff in the consuming repo
 npm run dispatch -- create-handoff --dir ../my-project --title "Fix auth regression" --subject "Authentication" --allowed-agents codex,claude --mode implement --work-item WK-0001 --write-scope src/auth.ts,tests/auth.test.ts --read-first AGENTS.md,wiki/issues/WK-0001.md
 
-# review and launch in one step
-npm run dispatch -- review-and-launch --dir ../my-project --handoff wiki/handoffs/HO-0001.md --agent codex --reviewed-and-accept-risks
+# run the v2 dispatch pipeline (admission -> clone -> jail -> worker -> delivery -> capture)
+npm run dispatch -- dispatch --dir ../my-project --handoff wiki/handoffs/HO-0001.md
+
+# wait for the run to reach a terminal status
+npm run dispatch -- wait-for-run --dir ../my-project --run-id RUN-<uuid>
 
 # inspect dispatch state
 npm run dispatch -- status --dir ../my-project
@@ -402,10 +405,10 @@ Notes:
 - `HO-*` handoffs are dispatch-owned
 - do not try to create `HO-*` via `wiki create`
 - `dispatch create-handoff` writes durable files under `wiki/handoffs/`
-- `review` snapshots inputs under `.agent-runs/reviews/RV-.../agent-visible/` and `.agent-runs/reviews/RV-.../metadata/`
-- `launch` runs the agent from the reviewed `agent-visible/` bundle, not the live repo root
-- `dispatch check-environment` writes `host-capabilities.v1.json` in the operator config and launch consults it automatically
-- Claude non-redteam launches honor reviewed `write_scope` by deriving directory-granularity `--add-dir` access; they do not receive blanket repo-root access unless the reviewed scope requires it
+- `dispatch` is one atomic, gated call — there is no separate review/launch step; every admission check gates the call itself, at the time it runs (see [docs/dispatch-protocol.md](docs/dispatch-protocol.md))
+- `dispatch` always backgrounds and returns a `runId`; use `wait-for-run` to block for terminal status
+- the worker runs inside a bubblewrap jail against an ephemeral clone, never the live repo root; `write_scope` is enforced at delivery time
+- `dispatch check-environment` probes bubblewrap availability on demand; `dispatch` itself gates on the same probe every call
 - if a host cannot satisfy the required sandbox capability, fix the host or use a different host rather than weakening permissions
 
 ### Graph
@@ -435,10 +438,10 @@ npm test
 npm run wiki -- sync-contract --dir ../my-project
 ```
 
-If the consuming repo uses dispatch and is upgrading from the older dispatch registry format, also run:
+If the consuming repo uses dispatch and hasn't scaffolded its repo-local config tables yet, also run:
 
 ```bash
-npm run dispatch -- init-config --force
+npm run dispatch -- init-dispatch --dir ../my-project
 ```
 
 After syncing the contract, regenerate the consuming repo artifacts:
@@ -454,8 +457,7 @@ Important caveats:
 
 - Pulling `kb` is not enough. Update the consuming repo's `AGENTS.md` and `CLAUDE.md` separately using the paste-ready snippets below. `sync-contract` does not touch agent instruction files.
 - `sync-contract` updates record templates and shared surfaces, but does not overwrite `wiki/schema.md`, `wiki/conventions.md`, or `wiki/index.md`.
-- `init-config --force` is specifically for upgrades from the older dispatch registry format, because `launchers.v1.json` is operator-owned and is not overwritten by default.
-- If you changed agent launcher config intentionally, re-review pending handoffs before launching them, because registry hash changes invalidate prior review tokens.
+- `init-dispatch` is write-once per file — a re-run never overwrites existing `wiki/.dispatch/` content.
 - If this is a first-time adoption rather than an upgrade, use `wiki bootstrap` instead.
 
 ## Paste-Ready `AGENTS.md` Snippet for a Consuming Repo
@@ -501,12 +503,12 @@ When you need dispatch operations, prefer the `kb` dispatch MCP server or the `k
 
 Dispatch operations:
 
-- `init-config`
+- `init-dispatch`
 - `check-environment`
 - `create-handoff`
-- `review`
-- `launch`
-- `review-and-launch`
+- `dispatch`
+- `wait-for-run`
+- `restamp`
 - `status`
 - `cleanup`
 
@@ -547,7 +549,7 @@ If this repo has not been bootstrapped yet:
 ```bash
 cd ../kb
 npm run wiki -- bootstrap --dir ../<this-repo-name> --repo <owner/name>
-npm run dispatch -- init-config
+npm run dispatch -- init-dispatch --dir ../<this-repo-name>
 npm run wiki -- generate --dir ../<this-repo-name>
 npm run wiki -- build-search-index --dir ../<this-repo-name>
 npm run graph -- --dir ../<this-repo-name>
@@ -566,13 +568,6 @@ npm run wiki -- lint --dir ../<this-repo-name>
 npm run wiki -- generate --dir ../<this-repo-name>
 npm run wiki -- build-search-index --dir ../<this-repo-name>
 npm run graph -- --dir ../<this-repo-name>
-```
-
-If this repo uses dispatch and is upgrading from the older dispatch registry format:
-
-```bash
-cd ../kb
-npm run dispatch -- init-config --force
 ```
 
 `sync-contract` refreshes the managed block in `AGENTS.md`/`CLAUDE.md` and merges `.mcp.json`.
@@ -645,7 +640,6 @@ the initial retrieval pass.
 
 - If MCP is unavailable, fall back to the `kb` CLI for wiki operations too.
 - If dispatch MCP is unavailable, fall back to the `kb` CLI for dispatch too.
-- The `fake-agent` launcher written by `npm run dispatch -- init-config --force` is concrete and sister-repo safe.
 - The wiki MCP server serves the `kb` repo but operates on the consuming repo through `dir`.
 - If wiki records and code/tests disagree, report the mismatch explicitly instead of silently trusting grep-first conclusions.
 

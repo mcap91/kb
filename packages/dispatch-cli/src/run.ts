@@ -5,6 +5,7 @@ import {
   checkEnvironment,
   cleanup,
   createHandoff,
+  initDispatch,
   launchDispatchBackground,
   restamp,
   status,
@@ -16,6 +17,7 @@ import type {
   CheckEnvironmentResult,
   CleanupReport,
   CreateHandoffResult,
+  InitDispatchResult,
   RestampResult,
   StatusResult,
   WaitForRunResult,
@@ -47,6 +49,7 @@ Usage:
 
 Commands:
   check-environment          Probe host bwrap/container/writability facts
+  init-dispatch              Scaffold repo-local wiki/.dispatch/ config tables
   create-handoff             Create a repo-local HO handoff
   cleanup                    Clean up stale dispatch state
   status                     Show current dispatch state
@@ -62,6 +65,9 @@ Global Options:
 Command Options:
   check-environment
     (no required flags)
+
+  init-dispatch
+    --dir <path>             Repository root directory (required)
 
   create-handoff
     --dir <path>             Repository root directory (required)
@@ -147,6 +153,29 @@ async function cmdCheckEnvironment(): Promise<number> {
   for (const verdict of data.verdicts) {
     console.log(`  ${verdict.route}: ${verdict.viability}`);
     console.log(`    ${verdict.detail}`);
+  }
+  return 0;
+}
+
+async function cmdInitDispatch(args: string[]): Promise<number> {
+  const dir = getFlagValue(args, '--dir');
+
+  if (!dir) {
+    console.error('Error: --dir is required');
+    return 1;
+  }
+
+  const result = await initDispatch({ dir });
+  if (!result.ok) {
+    console.error(`Init dispatch failed: [${result.error}] ${result.message}`);
+    return 1;
+  }
+
+  const data: InitDispatchResult = result.data;
+  console.log(`Scaffolded wiki/.dispatch/`);
+  console.log(`  Created: ${data.created.length > 0 ? data.created.join(', ') : '(none — already present)'}`);
+  if (data.updated.length > 0) {
+    console.log(`  Updated: ${data.updated.join(', ')}`);
   }
   return 0;
 }
@@ -434,6 +463,9 @@ export async function run(args: string[]): Promise<number> {
   switch (command) {
     case 'check-environment':
       exitCode = await cmdCheckEnvironment();
+      break;
+    case 'init-dispatch':
+      exitCode = await cmdInitDispatch(args);
       break;
     case 'create-handoff':
       exitCode = await cmdCreateHandoff(args);
