@@ -239,6 +239,19 @@ structured evidence (outcome, findings, kind) extracted from the worker's own la
 never changes the run's verdict; for `code_review`/`redteam` the block *is* the deliverable, and a
 missing or invalid block drives the response doc's verdict to `failed` (`missing_review_artifact`).
 
+The response doc's own frontmatter also stamps three fields distilled from that evidence (WK-0166), so
+downstream consumers (e.g. `merge-delivery`) can read a fact instead of re-parsing the rendered
+`## Worker Report` markdown:
+
+- `recovery_outcome` — the block's `reported_outcome` string (e.g. `passed_no_blocking_or_medium_findings`)
+  when a valid block was extracted; empty string otherwise.
+- `recovery_valid` — boolean; whether a valid `kb-dispatch-recovery.v1` block was extracted at all.
+- `worker_report_chars` — the trimmed length of the worker's final assistant message; the fail-closed
+  "did a review/run actually happen" fact, independent of whether it carried a parseable block.
+
+A response doc written before this change carries none of these three fields — consumers must refuse
+loudly on that absence rather than falling back to parsing the markdown body.
+
 ## Base Drift Gate (WK-0152)
 
 A fresh-HEAD HO (`base_ref` null — the normal "cut from current HEAD" path) must carry the commit it
@@ -303,13 +316,16 @@ Merges `dispatch/<handoff_id>` into the current branch and deletes the delivery 
 remote push.
 
 Preconditions (checked in order, fail-closed):
-1. Review evidence: a `code_review` HO whose `base_ref` is `dispatch/<handoff_id>` has a non-empty
-   response doc. DEC-0037: review is prose-first — a valid `kb-dispatch-recovery.v1` block reporting
-   `no_findings`/`passed_no_blocking_or_medium_findings` merges with `verdict: structured`; a block
-   reporting anything else (e.g. `changes_requested`) refuses, no operator override in this slice; a
-   missing/unparsable block backed by real review prose still merges, as `verdict: advisory` (the
-   orchestrator/operator reads the prose) — only a genuinely empty response, or a missing review HO/doc,
-   refuses outright.
+1. Review evidence: a `code_review` HO whose `base_ref` is `dispatch/<handoff_id>` has a response doc.
+   Evidence is read from that doc's frontmatter — `recovery_outcome`, `recovery_valid`,
+   `worker_report_chars` (see "Capture and Provenance") — never by re-parsing the rendered
+   `## Worker Report` markdown (WK-0166). DEC-0037: review is prose-first — `recovery_valid: true` with a
+   passing `recovery_outcome` (`no_findings`/`passed_no_blocking_or_medium_findings`) merges with
+   `verdict: structured`; a passing-shaped block reporting anything else (e.g. `changes_requested`)
+   refuses, no operator override in this slice; `recovery_valid` false/absent with `worker_report_chars >
+   0` still merges, as `verdict: advisory` (the orchestrator/operator reads the prose) — only
+   `worker_report_chars === 0`, a missing review HO/doc, or a response doc predating these frontmatter
+   fields (all three absent — no legacy regex fallback) refuses outright.
 2. Working tree clean
 3. Delivery branch exists
 4. Merge succeeds (fast-forward or a real merge) — aborts and refuses on conflict

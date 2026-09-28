@@ -8,16 +8,23 @@
  * Preconditions, checked in order, fail closed throughout:
  *   1. Review evidence: a `code_review` HO in `wiki/handoffs/` whose
  *      `base_ref` is `dispatch/<handoff_id>` has a response doc
- *      (`<review_id>.response.md`). A `kb-dispatch-recovery.v1` block
- *      reporting `no_findings` or `passed_no_blocking_or_medium_findings`
- *      merges with `verdict: 'structured'`; `changes_requested` refuses
+ *      (`<review_id>.response.md`). Evidence is read from the response
+ *      doc's frontmatter (`recovery_outcome`, `recovery_valid`,
+ *      `worker_report_chars` — stamped by capture.ts's `writeResponseDoc`),
+ *      never re-derived by parsing the rendered markdown body (WK-0166: the
+ *      old `## Worker Report` regex stopped at the FIRST `\n## `, which is
+ *      the worker's own heading when its report starts with one). A
+ *      `recovery_valid: true` doc reporting `no_findings` or
+ *      `passed_no_blocking_or_medium_findings` merges with
+ *      `verdict: 'structured'`; a non-passing outcome refuses
  *      (ADMISSION_FAILED) — there is no operator override in this slice.
  *      DEC-0037: code_review/redteam is prose-first, so an absent or
- *      unparsable block is not itself a gate — when the response doc has
- *      real review content, the merge proceeds with `verdict: 'advisory'`
- *      (the orchestrator/operator reads the prose). Only a missing review
- *      HO, a missing response doc, or an empty response (no evidence a
- *      review ran at all) refuses.
+ *      invalid block is not itself a gate — when `worker_report_chars > 0`,
+ *      the merge proceeds with `verdict: 'advisory'` (the
+ *      orchestrator/operator reads the prose). Only a missing review HO, a
+ *      missing response doc, an empty report (`worker_report_chars === 0`),
+ *      or a response doc that predates frontmatter-based evidence (all
+ *      three fields absent) refuses.
  *   2. The working tree is clean (`git status --porcelain` empty).
  *   3. Branch `dispatch/<handoff_id>` exists as a local branch.
  *   4. The merge succeeds (fast-forward or a real merge) with no conflict —
@@ -36,7 +43,6 @@ import { join } from 'node:path';
 import { promisify } from 'node:util';
 
 import { parseHandoffContent, type Handoff } from './ho.js';
-import { extractRecoveryBlock } from './recovery-block.js';
 import type { DispatchResult } from './errors.js';
 import { ok, fail } from './errors.js';
 
@@ -64,14 +70,54 @@ export interface MergeDeliveryResult {
 /** `FindingsOutcome` values that gate a merge open (recovery-block.ts's `FINDINGS_OUTCOMES` minus `changes_requested`). */
 const PASSING_OUTCOMES: readonly string[] = ['no_findings', 'passed_no_blocking_or_medium_findings'];
 
+interface ResponseDocEvidence {
+  recoveryOutcome: string | undefined;
+  recoveryValid: boolean | undefined;
+  workerReportChars: number | undefined;
+}
+
+/**
+ * Parse a response doc's YAML frontmatter for the three fields capture.ts's
+ * `writeResponseDoc` stamps (WK-0166): `recovery_outcome`, `recovery_valid`,
+ * `worker_report_chars`. Mirrors the `---`-delimited split + line-oriented
+ * `key: value` scan used elsewhere in this codebase (ho.ts's
+ * `splitFrontmatter`/`parseFrontmatterYaml`, pipeline.ts's
+ * `mergeProvenanceFrontmatter`), scoped to just these three scalars. A field
+ * is `undefined` only when its line is entirely absent — distinct from an
+ * empty string value, which means present-but-blank.
+ */
+function parseResponseDocFrontmatter(content: string): ResponseDocEvidence {
+  const normalized = content.replace(/\r\n/g, '\n');
+  const match = normalized.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
+  if (!match) {
+    return { recoveryOutcome: undefined, recoveryValid: undefined, workerReportChars: undefined };
+  }
+
+  const fields: Record<string, string> = {};
+  for (const line of (match[1] ?? '').split('\n')) {
+    const kvMatch = line.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(.*)$/);
+    if (!kvMatch) continue;
+    fields[kvMatch[1]!] = (kvMatch[2] ?? '').trim();
+  }
+
+  return {
+    recoveryOutcome: fields.recovery_outcome,
+    recoveryValid: fields.recovery_valid === undefined ? undefined : fields.recovery_valid === 'true',
+    workerReportChars: fields.worker_report_chars === undefined ? undefined : Number.parseInt(fields.worker_report_chars, 10),
+  };
+}
+
 /**
  * Scan `wiki/handoffs/` for a `code_review` HO whose `base_ref` equals
- * `branchName`, then extract and validate its response doc's recovery block.
- * Fails closed on: no matching review HO, no response doc, an empty
- * response, or a structured block reporting a non-passing outcome. A
- * missing/unparsable block backed by real review content returns
- * `verdict: 'advisory'` instead of failing (DEC-0037 — the block is
- * optional metadata, never a gate, for code_review/redteam).
+ * `branchName`, then read its response doc's frontmatter evidence fields
+ * (WK-0166 — no markdown re-parsing). Fails closed on: no matching review
+ * HO, no response doc, a response doc that predates frontmatter-based
+ * evidence (all three fields absent), an empty report
+ * (`worker_report_chars === 0`), or a structured block reporting a
+ * non-passing outcome. A missing/invalid block backed by real review
+ * content (`worker_report_chars > 0`) returns `verdict: 'advisory'` instead
+ * of failing (DEC-0037 — the block is optional metadata, never a gate, for
+ * code_review/redteam).
  */
 async function checkReviewEvidence(
   dir: string,
@@ -117,28 +163,35 @@ async function checkReviewEvidence(
     return fail('ADMISSION_FAILED', `Review response doc missing: ${reviewId}.response.md`);
   }
 
-  const workerReportMatch = reviewResponseContent.match(
-    /## Worker Report[^\n]*\n([\s\S]*?)(?=\n## |\n---\s*$|$)/
-  );
-  const reviewText = workerReportMatch?.[1] ?? reviewResponseContent;
-  const evidence = extractRecoveryBlock(reviewText);
-  if (!evidence.valid || !evidence.result) {
-    // DEC-0037: code_review/redteam is prose-first — the recovery block is optional
-    // structured metadata, never a gate. A missing/unparsable block still merges as long
-    // as the response doc has real review content; only a genuinely empty response (no
-    // evidence a review ran at all) fails closed.
-    if (reviewText.trim().length > 0) {
-      return ok({ reviewId, outcome: 'advisory', verdict: 'advisory' as const });
+  const { recoveryOutcome, recoveryValid, workerReportChars } = parseResponseDocFrontmatter(reviewResponseContent);
+
+  // A response doc predating frontmatter-based evidence has none of the
+  // three fields — refuse loudly rather than silently falling back to a
+  // legacy markdown re-parse (WK-0166: no regex fallback, no dual-path
+  // parsing).
+  if (recoveryOutcome === undefined && recoveryValid === undefined && workerReportChars === undefined) {
+    return fail(
+      'ADMISSION_FAILED',
+      `Review ${reviewId} response doc predates frontmatter-based evidence — re-run the review to generate updated fields`,
+    );
+  }
+
+  if (recoveryValid === true) {
+    if (recoveryOutcome !== undefined && PASSING_OUTCOMES.includes(recoveryOutcome)) {
+      return ok({ reviewId, outcome: recoveryOutcome, verdict: 'structured' as const });
     }
-    return fail('ADMISSION_FAILED', `Review ${reviewId} response is empty — no evidence of a completed review`);
+    return fail('ADMISSION_FAILED', `Review ${reviewId} outcome is "${recoveryOutcome}" — merge blocked`);
   }
 
-  const outcome = evidence.result.reported_outcome;
-  if (!PASSING_OUTCOMES.includes(outcome)) {
-    return fail('ADMISSION_FAILED', `Review ${reviewId} outcome is "${outcome}" — merge blocked`);
+  // DEC-0037: code_review/redteam is prose-first — the recovery block is optional
+  // structured metadata, never a gate. A missing/invalid block still merges as long
+  // as the response doc has real review content; only a genuinely empty report (no
+  // evidence a review ran at all) fails closed.
+  if ((workerReportChars ?? 0) > 0) {
+    return ok({ reviewId, outcome: 'advisory', verdict: 'advisory' as const });
   }
 
-  return ok({ reviewId, outcome, verdict: 'structured' as const });
+  return fail('ADMISSION_FAILED', `Review ${reviewId} response is empty — no evidence of a completed review`);
 }
 
 /**

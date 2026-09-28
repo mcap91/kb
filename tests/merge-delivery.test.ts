@@ -116,11 +116,10 @@ function makeReviewHO(id: string, title: string, baseRef: string, workItem: stri
  * block, wrapped in the real response-doc shape the pipeline produces
  * (capture.ts's `writeResponseDoc`): the fenced block sits inside
  * `## Worker Report`, itself followed by a `## Recovery Signal` section —
- * NOT as the doc's own terminal content. A fixture with the fence as the
- * literal last bytes of the file would never exercise
- * `trailing_prose_after_result`, which is exactly the shape that tripped up
- * `checkReviewEvidence` before it was fixed to extract the `## Worker
- * Report` section before calling `extractRecoveryBlock`.
+ * NOT as the doc's own terminal content. The frontmatter carries the
+ * `recovery_outcome`/`recovery_valid`/`worker_report_chars` fields
+ * `checkReviewEvidence` actually reads (WK-0166); the body is realistic
+ * evidence only, never re-parsed.
  *
  * `changes_requested` requires >=1 finding to be schema-valid
  * (recovery-block.ts's `validateOutcomeConsistency`), so `includeFinding`
@@ -159,6 +158,9 @@ function makeReviewResponse(outcome: string, subject: string, includeFinding: bo
     '---',
     `handoff_id: ${subject}`,
     'outcome: delivered',
+    `recovery_outcome: ${outcome}`,
+    'recovery_valid: true',
+    'worker_report_chars: 500',
     '---',
     '',
     '# Response: Code review',
@@ -194,6 +196,9 @@ function makeProseOnlyReviewResponse(subject: string): string {
     '---',
     `handoff_id: ${subject}`,
     'outcome: delivered',
+    'recovery_outcome: ',
+    'recovery_valid: false',
+    'worker_report_chars: 200',
     '---',
     '',
     '# Response: Code review',
@@ -219,6 +224,9 @@ function makeEmptyReviewResponse(subject: string): string {
     '---',
     `handoff_id: ${subject}`,
     'outcome: delivered',
+    'recovery_outcome: ',
+    'recovery_valid: false',
+    'worker_report_chars: 0',
     '---',
     '',
     '# Response: Code review',
@@ -231,6 +239,102 @@ function makeEmptyReviewResponse(subject: string): string {
     '## Recovery Signal',
     '',
     '(none)',
+    '',
+  ].join('\n');
+}
+
+/**
+ * A response doc predating frontmatter-based evidence (WK-0166): no
+ * `recovery_outcome`/`recovery_valid`/`worker_report_chars` fields at all,
+ * even though the body has a real, passing recovery block. Must refuse —
+ * there is no legacy regex fallback.
+ */
+function makeLegacyReviewResponse(outcome: string, subject: string): string {
+  const payload = {
+    schema_version: 'kb-dispatch-recovery.v1',
+    reported_role: 'reviewer',
+    reported_subject: subject,
+    reported_outcome: outcome,
+    summary: 'Review complete',
+    findings: [],
+    finding_counts: { total: 0, blocking: 0, critical: 0, high: 0, medium: 0, low: 0, info: 0 },
+    reviewed_controls: [],
+    kind: null,
+  };
+  return [
+    '---',
+    `handoff_id: ${subject}`,
+    'outcome: delivered',
+    '---',
+    '',
+    '# Response: Code review',
+    '',
+    '## Outcome',
+    'Delivered.',
+    '',
+    '## Worker Report (evidence, not verdict)',
+    '',
+    'Some review narration text.',
+    '',
+    '```kb-dispatch-recovery.v1',
+    JSON.stringify(payload, null, 2),
+    '```',
+    '',
+    '## Recovery Signal',
+    '',
+    `**Reported outcome:** ${outcome}`,
+    '',
+    'Review complete',
+    '',
+  ].join('\n');
+}
+
+/**
+ * A structured-passing response doc whose worker report body starts with its
+ * OWN `## ` heading (e.g. a reviewer's `## Review: WK-XXXX — ...`) — the
+ * exact shape that broke the old `## Worker Report` regex (WK-0166: the
+ * lazy `*?` stopped at this FIRST `\n## `, capturing only the blank line
+ * between the section header and this heading). The frontmatter-based path
+ * never looks at the body at all, so this must still merge as structured.
+ */
+function makeReviewResponseWithHeadingInBody(subject: string): string {
+  return [
+    '---',
+    `handoff_id: ${subject}`,
+    'outcome: delivered',
+    'recovery_outcome: passed_no_blocking_or_medium_findings',
+    'recovery_valid: true',
+    'worker_report_chars: 500',
+    '---',
+    '',
+    '# Response: Code review',
+    '',
+    '## Outcome',
+    'Delivered.',
+    '',
+    '## Worker Report (evidence, not verdict)',
+    '',
+    `## Review: ${subject} — Example change`,
+    '',
+    'The change is correct, tests pass, and no blocking issues were found.',
+    '',
+    '```kb-dispatch-recovery.v1',
+    JSON.stringify(
+      {
+        schema_version: 'kb-dispatch-recovery.v1',
+        reported_role: 'reviewer',
+        reported_subject: subject,
+        reported_outcome: 'passed_no_blocking_or_medium_findings',
+        summary: 'Review complete',
+        findings: [],
+        finding_counts: { total: 0, blocking: 0, critical: 0, high: 0, medium: 0, low: 0, info: 0 },
+        reviewed_controls: [],
+        kind: null,
+      },
+      null,
+      2,
+    ),
+    '```',
     '',
   ].join('\n');
 }
@@ -447,5 +551,109 @@ describe('mergeDelivery (WK-0132 Slice 3)', () => {
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error(`expected ok, got: ${result.error}: ${result.message}`);
     expect(result.data.verdict).toBe('structured');
+  });
+
+  // -- WK-0166: frontmatter-based evidence (regex re-parse deleted) --------
+
+  it('merges as structured when the worker report body has its own ## headings (WK-0166)', async () => {
+    await writeAndCommit(
+      repoDir,
+      {
+        'wiki/handoffs/HO-0016.md': makeImplementHO('HO-0016', 'Implement heading-in-body thing', 'WK-0166'),
+        'wiki/handoffs/HO-0017.md': makeReviewHO(
+          'HO-0017',
+          'Code review: Implement heading-in-body thing',
+          'dispatch/HO-0016',
+          'WK-0166',
+        ),
+        'wiki/handoffs/HO-0017.response.md': makeReviewResponseWithHeadingInBody('HO-0016'),
+      },
+      'add implement + review HOs (heading-in-body worker report)',
+    );
+    await createDeliveryBranch(repoDir, 'HO-0016');
+
+    const result = await mergeDelivery({ dir: repoDir, handoff_id: 'HO-0016' });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(`expected ok, got: ${result.error}: ${result.message}`);
+    expect(result.data.reviewId).toBe('HO-0017');
+    expect(result.data.verdict).toBe('structured');
+    expect(result.data.reviewOutcome).toBe('passed_no_blocking_or_medium_findings');
+    expect(await branchExists(repoDir, 'dispatch/HO-0016')).toBe(false);
+  });
+
+  it('merges as advisory when frontmatter reports recovery_valid: false with a non-empty worker report', async () => {
+    await writeAndCommit(
+      repoDir,
+      {
+        'wiki/handoffs/HO-0018.md': makeImplementHO('HO-0018', 'Implement advisory-frontmatter thing', 'WK-0166'),
+        'wiki/handoffs/HO-0019.md': makeReviewHO(
+          'HO-0019',
+          'Code review: Implement advisory-frontmatter thing',
+          'dispatch/HO-0018',
+          'WK-0166',
+        ),
+        'wiki/handoffs/HO-0019.response.md': makeProseOnlyReviewResponse('HO-0018'),
+      },
+      'add implement + review HOs (advisory frontmatter)',
+    );
+    await createDeliveryBranch(repoDir, 'HO-0018');
+
+    const result = await mergeDelivery({ dir: repoDir, handoff_id: 'HO-0018' });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(`expected ok, got: ${result.error}: ${result.message}`);
+    expect(result.data.verdict).toBe('advisory');
+  });
+
+  it('fails closed when frontmatter reports worker_report_chars: 0', async () => {
+    await writeAndCommit(
+      repoDir,
+      {
+        'wiki/handoffs/HO-0020.md': makeImplementHO('HO-0020', 'Implement empty-frontmatter thing', 'WK-0166'),
+        'wiki/handoffs/HO-0021.md': makeReviewHO(
+          'HO-0021',
+          'Code review: Implement empty-frontmatter thing',
+          'dispatch/HO-0020',
+          'WK-0166',
+        ),
+        'wiki/handoffs/HO-0021.response.md': makeEmptyReviewResponse('HO-0020'),
+      },
+      'add implement + review HOs (empty frontmatter)',
+    );
+    await createDeliveryBranch(repoDir, 'HO-0020');
+
+    const result = await mergeDelivery({ dir: repoDir, handoff_id: 'HO-0020' });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('expected refusal, got ok');
+    expect(result.error).toBe('ADMISSION_FAILED');
+    expect(await branchExists(repoDir, 'dispatch/HO-0020')).toBe(true);
+  });
+
+  it('refuses a legacy response doc predating frontmatter-based evidence, with no regex fallback', async () => {
+    await writeAndCommit(
+      repoDir,
+      {
+        'wiki/handoffs/HO-0022.md': makeImplementHO('HO-0022', 'Implement legacy-doc thing', 'WK-0166'),
+        'wiki/handoffs/HO-0023.md': makeReviewHO(
+          'HO-0023',
+          'Code review: Implement legacy-doc thing',
+          'dispatch/HO-0022',
+          'WK-0166',
+        ),
+        'wiki/handoffs/HO-0023.response.md': makeLegacyReviewResponse('no_findings', 'HO-0022'),
+      },
+      'add implement + review HOs (legacy response doc)',
+    );
+    await createDeliveryBranch(repoDir, 'HO-0022');
+
+    const result = await mergeDelivery({ dir: repoDir, handoff_id: 'HO-0022' });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('expected refusal, got ok');
+    expect(result.error).toBe('ADMISSION_FAILED');
+    expect(result.message).toContain('predates frontmatter-based evidence');
+    expect(await branchExists(repoDir, 'dispatch/HO-0022')).toBe(true);
   });
 });
