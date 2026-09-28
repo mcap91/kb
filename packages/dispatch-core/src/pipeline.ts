@@ -38,6 +38,7 @@ import { checkAdmission } from './admission.js';
 import {
   resolveModelFromConfig,
   checkHarnessVersion,
+  gatePiPresence,
   buildFingerprintFragment,
   parseFingerprintOutput,
   type ResolvedModel,
@@ -777,6 +778,13 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
     // Harness version gate (S3 ruling 7) — refuse-below/warn-above/fail-closed,
     // gated against the in-code PI_HARNESS_INFO constant (model-registry.ts).
     piVersion = preflight.data.piVersion;
+    // Refuse a pi-family dispatch when pi is not installed (WK-0165) — the
+    // preflight probe returns undefined and would otherwise silently skip the
+    // gate and fail later at worker invocation.
+    const presenceGate = gatePiPresence(model.family, piVersion);
+    if (presenceGate) {
+      return fail('PREFLIGHT_FAILED', presenceGate.message);
+    }
     if (piVersion) {
       const versionGate = checkHarnessVersion(piVersion);
       if (versionGate.status === 'refuse') {

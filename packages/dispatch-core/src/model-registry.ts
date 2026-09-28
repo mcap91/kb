@@ -318,6 +318,27 @@ export interface VersionGateResult {
  * post-D2 amendment). Fails closed: unparseable or below `knownGood` both
  * refuse; above `testedWith` warns and proceeds.
  */
+/**
+ * Refuse a pi-family dispatch when pi is not installed (preflight probe
+ * returned undefined). Non-pi families (claude, codex) never need pi, so
+ * they pass through as null. Returns a refuse VersionGateResult for the
+ * pi/undefined case, null otherwise.
+ */
+export function gatePiPresence(
+  family: string,
+  piVersion: string | undefined,
+  installCmd: string = PI_HARNESS_INFO.installCmd,
+): VersionGateResult | null {
+  if (family === 'pi' && piVersion === undefined) {
+    return {
+      status: 'refuse',
+      version: '',
+      message: `Pi is not installed but is required for backend family "${family}". Install: ${installCmd}`,
+    };
+  }
+  return null;
+}
+
 export function checkHarnessVersion(versionString: string): VersionGateResult {
   if (!parse(versionString)) {
     return {

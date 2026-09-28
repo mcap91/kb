@@ -19,6 +19,7 @@ import {
   resolveModelByMode,
   resolveModelInferBackend,
   checkHarnessVersion,
+  gatePiPresence,
   buildFingerprintFragment,
   parseFingerprintOutput,
   PI_HARNESS_INFO,
@@ -408,6 +409,31 @@ describe('model-registry.ts — checkHarnessVersion', () => {
     const result = checkHarnessVersion('not-a-version');
     expect(result.status).toBe('refuse');
     expect(result.message).toContain('not-a-version');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// gatePiPresence
+// ---------------------------------------------------------------------------
+
+describe('model-registry.ts — gatePiPresence', () => {
+  it('refuses a pi-family dispatch when pi is not installed, with the install command in the message', () => {
+    const result = gatePiPresence('pi', undefined);
+    expect(result).not.toBeNull();
+    expect(result!.status).toBe('refuse');
+    expect(result!.message).toContain(PI_HARNESS_INFO.installCmd);
+  });
+
+  it('passes through (null) for a pi-family dispatch when pi is installed', () => {
+    expect(gatePiPresence('pi', '0.85.1')).toBeNull();
+  });
+
+  it('passes through (null) for a claude-family dispatch with pi not installed', () => {
+    expect(gatePiPresence('claude', undefined)).toBeNull();
+  });
+
+  it('passes through (null) for a codex-family dispatch with pi not installed', () => {
+    expect(gatePiPresence('codex', undefined)).toBeNull();
   });
 });
 
