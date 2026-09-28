@@ -247,12 +247,14 @@ export function scanSecrets(diff: string): { ok: true } | { ok: false; patterns:
 
 /**
  * Phase 2 (land): the canonical b4r delivery sequence — seed a temp index
- * from `base_sha`, stage the clone's full delta, write-tree/commit-tree with
- * the pinned committer, then CAS-push onto `refs/heads/dispatch/<handoffId>`
- * in the mother repo. Never touches the real index; never force-pushes.
- * On a fresh delivery the script also echoes the branch name and the
- * base..tree changed-file list so `parseDeliveryOutput` can fill in a
- * complete `DeliveryOutcome` from stdout alone.
+ * from `base_sha`, stage the clone's full delta, drop untouched 0-byte
+ * write_scope skeleton files (WK-0169 — see the inline script comment),
+ * write-tree/commit-tree with the pinned committer, then CAS-push onto
+ * `refs/heads/dispatch/<handoffId>` in the mother repo. Never touches the
+ * real index; never force-pushes. On a fresh delivery the script also
+ * echoes the branch name and the base..tree changed-file list so
+ * `parseDeliveryOutput` can fill in a complete `DeliveryOutcome` from
+ * stdout alone — already skeleton-filtered, since it diffs against `TREE`.
  */
 export function buildDeliveryScript(opts: {
   clonePath: string;
@@ -290,6 +292,21 @@ cd "$CLONE_PATH"
 # working-tree delta (modified + untracked + deleted) into it.
 $GIT read-tree "$BASE_SHA"
 ${gitAddLine}
+
+# WK-0169: drop untouched 0-byte write_scope skeleton files (step 9b
+# precreateWriteScopeSkeleton) from this commit. A skeleton file is created
+# via O_CREAT|O_EXCL and left empty; if the worker never writes to it, its
+# blob is still the canonical empty blob. Only paths that did not already
+# exist at BASE_SHA are candidates — a pre-existing tracked file the worker
+# deliberately truncated to empty is a real change and stays staged.
+EMPTY_BLOB="e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"
+$GIT ls-files -s | while IFS= read -r ENTRY; do
+  ENTRY_HASH=$(printf '%s' "$ENTRY" | cut -d' ' -f2)
+  ENTRY_PATH=$(printf '%s' "$ENTRY" | cut -f2)
+  if [ "$ENTRY_HASH" = "$EMPTY_BLOB" ] && ! $GIT cat-file -e "$BASE_SHA:$ENTRY_PATH" 2>/dev/null; then
+    $GIT update-index --force-remove -- "$ENTRY_PATH"
+  fi
+done
 
 TREE=$($GIT write-tree)
 
