@@ -489,9 +489,10 @@ function formatChangedFilesSection(delivery: DeliveryOutcome): string {
   return files.map((file) => `- ${file}`).join('\n');
 }
 
-function formatUsageSection(piResult: CaptureOpts['piResult']): string {
+function formatUsageSection(piResult: CaptureOpts['piResult'], billing?: 'seat' | 'api'): string {
   if (!piResult) return '- Tokens: unavailable\n- Cost: unavailable';
-  return `- Tokens: ${piResult.usage.totalTokens}\n- Cost: $${piResult.usage.costUsd}`;
+  const cost = billing === 'seat' ? 0 : piResult.usage.costUsd;
+  return `- Tokens: ${piResult.usage.totalTokens}\n- Cost: $${cost}`;
 }
 
 /**
@@ -658,7 +659,7 @@ export async function writeResponseDoc(opts: CaptureOpts): Promise<DispatchResul
     formatChangedFilesSection(delivery),
     '',
     '## Usage',
-    formatUsageSection(piResult),
+    formatUsageSection(piResult, opts.billing),
     '',
     ...formatTokenDetailSection(piResult?.usage, opts.modelId, opts.billing),
     '## Worker Report (evidence, not verdict)',
