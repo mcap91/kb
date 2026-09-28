@@ -306,7 +306,7 @@ describe('probeCliReachability — in-namespace bwrap probe (WK-0174 review F1/F
     await probeCliReachability();
 
     expect(vi.mocked(execFile).mock.calls.length).toBeGreaterThan(0);
-    const [cmd, args] = vi.mocked(execFile).mock.calls[0] as [string, string[]];
+    const [cmd, args] = vi.mocked(execFile).mock.calls[0] as unknown as [string, string[]];
     expect(cmd).toBe('bwrap');
     expect(args).not.toContain('/');
     for (const root of ['/usr', '/bin', '/sbin', '/lib', '/lib64', '/etc', '/opt', '/var']) {
