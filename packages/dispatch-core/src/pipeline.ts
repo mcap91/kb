@@ -1592,6 +1592,7 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
           motherRepoWsl: dir,
           handoffId: handoff.id,
           baseSha: admission.data.baseSha,
+          writeScope: handoff.write_scope,
         });
         const deliveryExec = await execBash({
           scriptContent: deliveryScript.scriptContent,
