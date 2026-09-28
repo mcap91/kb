@@ -987,7 +987,7 @@ describe('capture.ts — mechanical verdict ladder (DEC-0010 / WK-0095)', () => 
       handoff,
       delivery,
       recoveryEvidence,
-      piResult: { outcome: 'completed', usage: { totalTokens: 50, costUsd: 0 } },
+      piResult: { outcome: 'completed', usage: { inputTokens: null, outputTokens: null, cacheReadTokens: null, cacheWriteTokens: null, reasoningTokens: null, totalTokens: 50, costUsd: 0 } },
     });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
@@ -1006,7 +1006,7 @@ describe('capture.ts — mechanical verdict ladder (DEC-0010 / WK-0095)', () => 
       handoff,
       delivery,
       recoveryEvidence,
-      piResult: { outcome: 'error', usage: { totalTokens: 10, costUsd: 0 } },
+      piResult: { outcome: 'error', usage: { inputTokens: null, outputTokens: null, cacheReadTokens: null, cacheWriteTokens: null, reasoningTokens: null, totalTokens: 10, costUsd: 0 } },
     });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
@@ -1027,7 +1027,7 @@ describe('capture.ts — mechanical verdict ladder (DEC-0010 / WK-0095)', () => 
       handoff,
       delivery,
       recoveryEvidence,
-      piResult: { outcome: 'failed', usage: { totalTokens: 10, costUsd: 0 } },
+      piResult: { outcome: 'failed', usage: { inputTokens: null, outputTokens: null, cacheReadTokens: null, cacheWriteTokens: null, reasoningTokens: null, totalTokens: 10, costUsd: 0 } },
     });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
@@ -1044,7 +1044,7 @@ describe('capture.ts — mechanical verdict ladder (DEC-0010 / WK-0095)', () => 
       runDir,
       handoff,
       delivery,
-      piResult: { outcome: 'completed', usage: { totalTokens: 100, costUsd: 0 } },
+      piResult: { outcome: 'completed', usage: { inputTokens: null, outputTokens: null, cacheReadTokens: null, cacheWriteTokens: null, reasoningTokens: null, totalTokens: 100, costUsd: 0 } },
     });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
@@ -1059,7 +1059,7 @@ describe('capture.ts — mechanical verdict ladder (DEC-0010 / WK-0095)', () => 
       runDir,
       handoff,
       delivery,
-      piResult: { outcome: 'failed', usage: { totalTokens: 50, costUsd: 0 } },
+      piResult: { outcome: 'failed', usage: { inputTokens: null, outputTokens: null, cacheReadTokens: null, cacheWriteTokens: null, reasoningTokens: null, totalTokens: 50, costUsd: 0 } },
     });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
@@ -1173,7 +1173,7 @@ describe('capture.ts — no worker-to-success path (DEC-0010 structural acceptan
       // at all — only the delivery-gate fact (no_delta = no deliverable;
       // no_changes is reserved for an idempotent redelivery and is NOT this
       // case — see the verdict-ladder tests above).
-      piResult: { outcome: 'completed', usage: { totalTokens: 999, costUsd: 0 } },
+      piResult: { outcome: 'completed', usage: { inputTokens: null, outputTokens: null, cacheReadTokens: null, cacheWriteTokens: null, reasoningTokens: null, totalTokens: 999, costUsd: 0 } },
       lastAssistantText: 'Task completed successfully! Everything is done.',
     });
     expect(result.ok).toBe(true);

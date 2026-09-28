@@ -53,6 +53,23 @@ export interface PiInvocation {
 export interface PiUsage {
   totalTokens: number;
   costUsd: number;
+  /**
+   * Per-field split (WK-0123), summed across every assistant `message_end`
+   * event exactly like `totalTokens`/`costUsd` above. `null` when the field
+   * never appeared in ANY event of the stream (older captures, or a
+   * provider that genuinely doesn't report it) — never a fabricated 0.
+   * DEC-0009 capture-first ruling (`wiki/issues/WK-0123.md`): a real
+   * captured Pi/OpenRouter stream (`tests/fixtures/pi-output-code-
+   * review.jsonl`) carries this split under `usage.input/output/cacheRead/
+   * cacheWrite/reasoning`, so it is parsed here rather than falling back to
+   * capture.ts's bounded-range estimate, which now only triggers when these
+   * fields are genuinely absent.
+   */
+  inputTokens: number | null;
+  outputTokens: number | null;
+  cacheReadTokens: number | null;
+  cacheWriteTokens: number | null;
+  reasoningTokens: number | null;
 }
 
 /** Compaction event statistics extracted from the Pi event stream (T33 Phase 3). */
@@ -236,6 +253,16 @@ export function parsePiOutput(stdout: string): DispatchResult<PiResult> {
   let parsedCount = 0;
   let totalTokens = 0;
   let costUsd = 0;
+  let inputTokens = 0;
+  let outputTokens = 0;
+  let cacheReadTokens = 0;
+  let cacheWriteTokens = 0;
+  let reasoningTokens = 0;
+  let sawInputTokens = false;
+  let sawOutputTokens = false;
+  let sawCacheReadTokens = false;
+  let sawCacheWriteTokens = false;
+  let sawReasoningTokens = false;
   let sawError = false;
   let stopReason: string | undefined;
   let accumulatedText = '';
@@ -277,6 +304,30 @@ export function parsePiOutput(stdout: string): DispatchResult<PiResult> {
         if (isRecord(usage.cost) && typeof usage.cost.total === 'number') {
           costUsd += usage.cost.total;
         }
+        // WK-0123 (DEC-0009 capture-first ruling): real captured
+        // Pi/OpenRouter streams carry this split under `usage.input/output/
+        // cacheRead/cacheWrite/reasoning` — verified against
+        // tests/fixtures/pi-output-code-review.jsonl.
+        if (typeof usage.input === 'number') {
+          inputTokens += usage.input;
+          sawInputTokens = true;
+        }
+        if (typeof usage.output === 'number') {
+          outputTokens += usage.output;
+          sawOutputTokens = true;
+        }
+        if (typeof usage.cacheRead === 'number') {
+          cacheReadTokens += usage.cacheRead;
+          sawCacheReadTokens = true;
+        }
+        if (typeof usage.cacheWrite === 'number') {
+          cacheWriteTokens += usage.cacheWrite;
+          sawCacheWriteTokens = true;
+        }
+        if (typeof usage.reasoning === 'number') {
+          reasoningTokens += usage.reasoning;
+          sawReasoningTokens = true;
+        }
       }
       // WK-0092/WK-0093: text rides on the assembled `content` array of the
       // assistant message_end, not a top-level `text_delta` event (Pi never
@@ -316,7 +367,15 @@ export function parsePiOutput(stdout: string): DispatchResult<PiResult> {
       outcome: 'failed',
       stopReason: 'empty_stream',
       hasAgentEnd: false,
-      usage: { totalTokens: 0, costUsd: 0 },
+      usage: {
+        totalTokens: 0,
+        costUsd: 0,
+        inputTokens: null,
+        outputTokens: null,
+        cacheReadTokens: null,
+        cacheWriteTokens: null,
+        reasoningTokens: null,
+      },
       compaction: { total: compactionTotal, succeeded: compactionSucceeded, failed: compactionFailed },
       accumulatedText: '',
       lastAssistantText: '',
@@ -346,7 +405,15 @@ export function parsePiOutput(stdout: string): DispatchResult<PiResult> {
     outcome,
     stopReason,
     hasAgentEnd,
-    usage: { totalTokens, costUsd },
+    usage: {
+      totalTokens,
+      costUsd,
+      inputTokens: sawInputTokens ? inputTokens : null,
+      outputTokens: sawOutputTokens ? outputTokens : null,
+      cacheReadTokens: sawCacheReadTokens ? cacheReadTokens : null,
+      cacheWriteTokens: sawCacheWriteTokens ? cacheWriteTokens : null,
+      reasoningTokens: sawReasoningTokens ? reasoningTokens : null,
+    },
     compaction: { total: compactionTotal, succeeded: compactionSucceeded, failed: compactionFailed },
     accumulatedText,
     lastAssistantText,
