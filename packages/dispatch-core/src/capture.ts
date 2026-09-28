@@ -462,11 +462,19 @@ function deriveVerdict(
 
 function describeOutcome(delivery: DeliveryOutcome): string {
   switch (delivery.status) {
-    case 'delivered':
-      return `Delivered to \`${delivery.branch}\` at commit \`${delivery.commitSha}\`.`;
+    case 'delivered': {
+      const base = `Delivered to \`${delivery.branch}\` at commit \`${delivery.commitSha}\`.`;
+      if (delivery.ignoredFiles && delivery.ignoredFiles.length > 0) {
+        return `${base} Note: ${delivery.ignoredFiles.length} gitignored file(s) under write_scope were skipped: ${delivery.ignoredFiles.join(', ')}.`;
+      }
+      return base;
+    }
     case 'no_changes':
       return 'No changes were delivered (either the worker made none, or this is an idempotent redelivery already landed on the branch).';
     case 'no_delta':
+      if (delivery.ignoredFiles && delivery.ignoredFiles.length > 0) {
+        return `No changes: worker wrote only gitignored paths (${delivery.ignoredFiles.join(', ')}); delivery's "git add -A" cannot capture them.`;
+      }
       return 'No changes: the worker produced no diff from the base tree. No branch was created.';
     case 'refused_out_of_scope':
       return `Refused: changes touched paths outside the declared write_scope (${delivery.offendingPaths.join(', ')}). Diff quarantined at \`${delivery.quarantinePath}\`.`;
