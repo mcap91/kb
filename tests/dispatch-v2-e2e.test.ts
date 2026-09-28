@@ -290,7 +290,7 @@ describe('dispatch v2 e2e (fake-tier) — full pipeline chain', () => {
         runDir,
         handoff: { id: handoff.id, title: handoff.title, mode: handoff.mode },
         delivery,
-        piResult: { outcome: 'completed', usage: { totalTokens: 321, costUsd: 0.0042 } },
+        piResult: { outcome: 'completed', usage: { inputTokens: null, outputTokens: null, cacheReadTokens: null, cacheWriteTokens: null, reasoningTokens: null, totalTokens: 321, costUsd: 0.0042 } },
         model: canonicalModel,
         isolationBackend: 'bwrap-wsl2',
       });

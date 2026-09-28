@@ -447,7 +447,7 @@ describe('capture.ts — writeResponseDoc', () => {
       runDir,
       handoff: { id: 'HO-0002', title: 'Add a slugify utility with node:test coverage', mode: 'implement' },
       delivery,
-      piResult: { outcome: 'completed', usage: { totalTokens: 125, costUsd: 0.0012 } },
+      piResult: { outcome: 'completed', usage: { inputTokens: null, outputTokens: null, cacheReadTokens: null, cacheWriteTokens: null, reasoningTokens: null, totalTokens: 125, costUsd: 0.0012 } },
       model: 'deepseek/deepseek-v4-flash-0731',
       isolationBackend: 'bwrap-wsl2',
     });
