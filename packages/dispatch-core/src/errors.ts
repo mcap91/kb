@@ -67,6 +67,7 @@ export type DispatchErrorCode =
   | 'REVIEW_PARSE_FAILED'
   // --- v2 native spawn pipeline (PLN-0004 D6 — mid_project_review_rulings.md ruling 7) ---
   | 'BWRAP_SPAWN_FAILED'
+  | 'CLI_PATH_NOT_MOUNTABLE'
   | 'EXEC_FAILED'
   // --- v2 claude permission probe (WK-0131) ---
   | 'CLAUDE_PERMISSION_PROBE_FAILED'
@@ -107,6 +108,7 @@ export const V2_REFUSAL_CODES = [
   'CONTEXT_BUDGET_EXCEEDED',
   'BAD_DATA_MOUNT',
   'NO_ISOLATION_ROUTE',
+  'CLI_PATH_NOT_MOUNTABLE',
   'WORK_ITEM_NOT_FOUND',
   'CLAUDE_PERMISSION_PROBE_FAILED',
   'BASE_DRIFT',
