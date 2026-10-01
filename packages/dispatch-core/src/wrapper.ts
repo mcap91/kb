@@ -1,5 +1,4 @@
 import type {
-  CheckEnvironmentResult,
   CleanupOpts,
   CleanupReport,
   CreateHandoffOpts,
@@ -10,7 +9,6 @@ import type { DispatchResult } from './errors.js';
 import { createHandoff } from './create-handoff.js';
 import { cleanup } from './cleanup.js';
 import { status } from './status.js';
-import { checkEnvironment } from './environment.js';
 
 // ---------------------------------------------------------------------------
 // Dispatch convenience wrapper
@@ -29,10 +27,6 @@ export async function createHandoffRecord(
   opts: CreateHandoffOpts,
 ): Promise<DispatchResult<CreateHandoffResult>> {
   return createHandoff(opts);
-}
-
-export async function checkDispatchEnvironment(): Promise<DispatchResult<CheckEnvironmentResult>> {
-  return checkEnvironment();
 }
 
 /**
