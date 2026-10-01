@@ -51,7 +51,7 @@ const INSTRUCTIONS = [
   '| dispatch | Gate + launch (background, atomic); returns a `watch` command |',
   '| init-dispatch | Scaffold wiki/.dispatch/ config tables |',
   '| status | Repo-wide run state + v2 runs[] |',
-  '| check-environment | Host tier probes |',
+  '| check-environment | Host tier probes, incl. per-backend×model endpoint-eligibility |',
   '| create-handoff | Scaffold an HO |',
   '| cleanup | Stale state removal |',
   '| derive-review | Create a code_review HO from a delivered implement HO |',

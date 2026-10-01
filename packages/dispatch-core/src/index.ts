@@ -106,7 +106,6 @@ export { waitForRun } from './wait.js';
 // Wrapper (convenience functions)
 export {
   createHandoffRecord,
-  checkDispatchEnvironment,
   cleanupState,
   readDispatchStatus,
 } from './wrapper.js';
