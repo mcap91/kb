@@ -1378,6 +1378,13 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
     let workerUsage: WorkerUsageDetail;
     let lastAssistantText: string;
     let compaction = { total: 0, succeeded: 0, failed: 0 };
+    // WK-0187 fix-up (HO-0066 F1): `stopReason` is on all three adapters'
+    // result shapes; `accumulatedText` (the whole-transcript backstop signal)
+    // is pi-only — codex/claude have no equivalent field, so it stays
+    // undefined for those families (capture.ts's `deriveVerdict` skips the
+    // backstop entirely when absent, not just when empty).
+    let stopReason: string | undefined;
+    let accumulatedText: string | undefined;
 
     if (model.family === 'pi') {
       const piParsed = parsePiOutput(piOutputContent);
@@ -1414,6 +1421,8 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       };
       lastAssistantText = piParsed.data.lastAssistantText;
       compaction = piParsed.data.compaction;
+      stopReason = piParsed.data.stopReason;
+      accumulatedText = piParsed.data.accumulatedText;
     } else if (model.family === 'codex') {
       if (spawnData.timedOut) {
         return fail('PIPELINE_FAILED', `Worker timed out after ${WORKER_TIMEOUT_SECS}s (watchdog fired).`, spawnData);
@@ -1437,6 +1446,7 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
         costUsd: 0,
       };
       lastAssistantText = codexParsed.data.lastAssistantText;
+      stopReason = codexParsed.data.stopReason;
     } else {
       if (spawnData.timedOut) {
         return fail('PIPELINE_FAILED', `Worker timed out after ${WORKER_TIMEOUT_SECS}s (watchdog fired).`, spawnData);
@@ -1456,6 +1466,7 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
         costUsd: claudeParsed.data.usage.costUsd,
       };
       lastAssistantText = claudeParsed.data.lastAssistantText;
+      stopReason = claudeParsed.data.stopReason;
     }
 
     // 15b. Extract the kb-dispatch-recovery.v1 recovery block (D1 ruling 1,
@@ -1653,17 +1664,23 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
     // this. (`piResult` is a Pi-only-named leftover field on CaptureOpts; the
     // `agent: 'pi'` hardcode this comment used to point at was fixed by
     // WK-0136 — see buildProvenanceWriteBack's `family` parameter below.)
+    // WK-0187 fix-up (HO-0066 F1): `stopReason`/`accumulatedText` threaded
+    // from step 15's per-family parse so the `worker_stop_reason` frontmatter
+    // field and the advisory-mode empty-transcript backstop are live on real
+    // runs, not just in unit tests that call deriveVerdict/writeResponseDoc
+    // directly.
     const captureResult = await writeResponseDoc({
       runDir,
       handoff: { id: handoff.id, title: handoff.title, mode: handoff.mode },
       delivery,
-      piResult: { outcome: workerOutcome, usage: workerUsage },
+      piResult: { outcome: workerOutcome, usage: workerUsage, stopReason },
       compaction,
       model: canonicalModel,
       modelId: model.modelId,
       billing,
       isolationBackend,
       lastAssistantText,
+      accumulatedText,
       credentialsGranted: credResult.data.granted,
       recoveryEvidence,
       // Resolved-value provenance (S3 ruling 8): the real endpoint the tunnel
