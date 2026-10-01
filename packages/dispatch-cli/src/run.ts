@@ -10,7 +10,6 @@ import {
   restamp,
   status,
   waitForRun,
-  listUnhandledRuns,
 } from '@kb/dispatch-core';
 
 import type {
@@ -489,23 +488,6 @@ export async function run(args: string[]): Promise<number> {
       console.error(`Unknown command: ${command}`);
       console.error('Run with --help to see available commands.');
       return 1;
-  }
-
-  // WK-0153: post-command unhandled-runs banner to stderr
-  const dir = getFlagValue(args, '--dir');
-  if (dir) {
-    try {
-      const unhandledResult = await listUnhandledRuns(resolve(dir));
-      if (unhandledResult.ok) {
-        for (const run of unhandledResult.data) {
-          console.error(`⚑ UNHANDLED: ${run.handoff_id} ${run.status} ${run.completed_at} → ${run.branch}`);
-        }
-      } else {
-        console.error(`⚑ unhandled-runs check failed: ${unhandledResult.error}`);
-      }
-    } catch {
-      console.error('⚑ unhandled-runs check failed: unexpected error');
-    }
   }
 
   return exitCode;
