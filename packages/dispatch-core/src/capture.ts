@@ -221,8 +221,16 @@ export interface CaptureOpts {
   handoff: { id: string; title: string; mode: string };
   /** Delivery outcome */
   delivery: DeliveryOutcome;
-  /** Worker adapter result (usage, outcome) — `usage` carries the full per-field breakdown (WK-0123). */
-  piResult?: { outcome: string; usage: WorkerUsageDetail };
+  /**
+   * Worker adapter result (usage, outcome) — `usage` carries the full
+   * per-field breakdown (WK-0123). `stopReason` (WK-0187) is the adapter's
+   * facts-only classification of the final assistant message/process state
+   * (e.g. `error`, `length`, `all_attempts_errored`) — surfaced verbatim into
+   * the response doc's `worker_stop_reason` frontmatter field so an operator
+   * can distinguish an infra-refusal from a truncation without opening
+   * `worker-output.log`; never consulted by `deriveVerdict`.
+   */
+  piResult?: { outcome: string; usage: WorkerUsageDetail; stopReason?: string };
   /**
    * Bare model id (`ResolvedModel.modelId`, not the `backend/modelId`
    * canonical string in `model` below) — the rate-table lookup key
@@ -252,6 +260,19 @@ export interface CaptureOpts {
    * `lastAssistantText` (adapters/pi.ts).
    */
   lastAssistantText?: string;
+  /**
+   * The worker's concatenated transcript text across EVERY assistant message
+   * in the run (WK-0187 backstop), typically `piResult`'s own
+   * `accumulatedText` (adapters/pi.ts) — deliberately NOT `lastAssistantText`
+   * (last-message-only), because a legitimate run ending on a pure-tool-call
+   * final turn has an empty `lastAssistantText` despite a real, non-empty
+   * transcript. `deriveVerdict` refuses `delivered` for advisory modes
+   * (code_review/redteam/research) when this is present and empty — the
+   * structural signal that nothing was ever produced. Absent (not an empty
+   * string) skips the check entirely, so callers that don't thread this
+   * field through see no behavior change.
+   */
+  accumulatedText?: string;
   /** Credential profile names granted for this run (names only; S3 T10). */
   credentialsGranted?: string[];
   /** Resolved backend base_url actually used (never the {{WIN_HOST}} template; S3 ruling 8). */
@@ -392,30 +413,49 @@ interface VerdictResult {
  *        tree, so no branch was ever created) -> `failed` (`no_deliverable`
  *        — DEC-0010's "silence plus no deliverable is failure, never
  *        success"). `recoveryEvidence` is never consulted in this branch.
- *      - code_review: a valid block -> `delivered` (`delivery_method:
+ *      - code_review: checked FIRST, before the block-validity fallback
+ *        (WK-0187 backstop, below): an empty accumulated transcript ->
+ *        `failed` (`empty_transcript`) — structural, mode-wide, since for an
+ *        advisory mode the transcript IS the product (no diff ever lands).
+ *        Otherwise: a valid block -> `delivered` (`delivery_method:
  *        structured`, no reason); an invalid/absent block -> `delivered`,
  *        reason `prose_fallback` (`delivery_method: prose_fallback`,
  *        DEC-0037) — the chat transcript (`## Worker Report`) is the
  *        deliverable in that case.
- *      - redteam: same block-validity fallback as code_review, but a
- *        crashed/errored worker process (`piResult.outcome` `failed`/
- *        `error`) still fails with reason `process_error` regardless of
- *        block validity — checked FIRST and dominant, so prose fallback
- *        only ever covers a malformed/absent BLOCK from a process that
- *        otherwise ran, never a process that produced no real output at
- *        all (DEC-0010: no worker-authored content can manufacture a
+ *      - redteam: same empty-transcript backstop and block-validity fallback
+ *        as code_review, but a crashed/errored worker process
+ *        (`piResult.outcome` `failed`/`error`) still fails with reason
+ *        `process_error` regardless of transcript/block — checked FIRST and
+ *        dominant over both, so prose fallback only ever covers a
+ *        malformed/absent BLOCK from a process that otherwise ran and
+ *        produced real output, never a process that produced no real output
+ *        at all (DEC-0010: no worker-authored content can manufacture a
  *        success verdict).
  *      - research: no deliverable block exists for this mode (prose-only,
  *        ruling 1 item 1) — the transcript IS the product (`## Worker
  *        Report`); `delivered` here claims only "the process ran to
  *        completion", never findings quality. A crashed/errored process
- *        still fails.
+ *        still fails (checked first, same as redteam), then the same
+ *        empty-transcript backstop.
+ *
+ * WK-0187 backstop predicate: keyed off `accumulatedText` (the WHOLE
+ * transcript), never `lastAssistantText`/`worker_report_chars` (last message
+ * only) — a legitimate run ending on a pure-tool-call final turn has an
+ * empty last message but a non-empty transcript, and must not false-flip to
+ * `failed`. Only fires when `accumulatedText` is present (an empty STRING,
+ * not merely absent) and trims to nothing; absent (caller didn't thread it
+ * through) skips the check entirely — no behavior change for such callers.
  */
+function isEmptyTranscript(accumulatedText: string | undefined): boolean {
+  return accumulatedText !== undefined && accumulatedText.trim().length === 0;
+}
+
 function deriveVerdict(
   delivery: DeliveryOutcome,
   handoffMode: string,
   piResult?: CaptureOpts['piResult'],
   recoveryEvidence?: RecoveryBlockEvidence,
+  accumulatedText?: string,
 ): VerdictResult {
   if (delivery.status === 'refused_out_of_scope' || delivery.status === 'secret_in_diff') {
     return { outcome: 'refused', reason: delivery.status };
@@ -432,6 +472,10 @@ function deriveVerdict(
     if (delivery.status === 'no_delta') return { outcome: 'failed', reason: 'no_deliverable' }; // F2: empty delta
   }
   if (handoffMode === 'code_review') {
+    // WK-0187 backstop: structural, mode-wide — see the ladder doc comment.
+    if (isEmptyTranscript(accumulatedText)) {
+      return { outcome: 'failed', reason: 'empty_transcript' };
+    }
     // DEC-0037 (reverses DEC-0023 V4 note 3 for advisory modes; WK-0125):
     // the block is opportunistic, not the deliverable — never hard-fail a
     // genuine review over a JSON shape mismatch.
@@ -441,10 +485,14 @@ function deriveVerdict(
     return { outcome: 'delivered', deliveryMethod: 'structured' };
   }
   if (handoffMode === 'redteam') {
-    // Crash detection is UNCHANGED and dominant (checked before the block-
-    // validity fallback) — see the ladder doc comment above.
+    // Crash detection is UNCHANGED and dominant (checked before the
+    // empty-transcript backstop and the block-validity fallback) — see the
+    // ladder doc comment above.
     if (piResult?.outcome === 'failed' || piResult?.outcome === 'error') {
       return { outcome: 'failed', reason: 'process_error' };
+    }
+    if (isEmptyTranscript(accumulatedText)) {
+      return { outcome: 'failed', reason: 'empty_transcript' };
     }
     if (!recoveryEvidence?.valid) {
       return { outcome: 'delivered', reason: 'prose_fallback', deliveryMethod: 'prose_fallback' };
@@ -454,6 +502,9 @@ function deriveVerdict(
   if (handoffMode === 'research') {
     if (piResult?.outcome === 'failed' || piResult?.outcome === 'error') {
       return { outcome: 'failed', reason: 'process_error' };
+    }
+    if (isEmptyTranscript(accumulatedText)) {
+      return { outcome: 'failed', reason: 'empty_transcript' };
     }
     return { outcome: 'delivered' };
   }
@@ -604,7 +655,7 @@ function formatBackendFingerprint(fingerprint: BackendFingerprint): string {
 export async function writeResponseDoc(opts: CaptureOpts): Promise<DispatchResult<CaptureResult>> {
   const { runDir, handoff, delivery, piResult, model, isolationBackend } = opts;
 
-  const verdict = deriveVerdict(delivery, handoff.mode, piResult, opts.recoveryEvidence);
+  const verdict = deriveVerdict(delivery, handoff.mode, piResult, opts.recoveryEvidence, opts.accumulatedText);
   const branch = deriveBranch(handoff.id, delivery);
   const changedFiles = delivery.status === 'delivered' ? delivery.changedFiles : [];
   const totalTokens = piResult?.usage.totalTokens ?? 0;
@@ -640,6 +691,11 @@ export async function writeResponseDoc(opts: CaptureOpts): Promise<DispatchResul
   if (opts.baseUrl) frontmatterLines.push(`base_url: ${opts.baseUrl}`);
   if (opts.backend) frontmatterLines.push(`backend: ${opts.backend}`);
   if (opts.piVersion) frontmatterLines.push(`pi_version: ${opts.piVersion}`);
+  // WK-0187: surfaces the adapter's final-message/process stopReason (e.g.
+  // `error`/`length`/`all_attempts_errored`) so an operator can distinguish
+  // an infra-refusal from a truncation without opening worker-output.log.
+  // Diagnostic only — never consulted by deriveVerdict above.
+  if (opts.piResult?.stopReason) frontmatterLines.push(`worker_stop_reason: ${opts.piResult.stopReason}`);
   if (opts.backendFingerprint) frontmatterLines.push(`backend_fingerprint: ${formatBackendFingerprint(opts.backendFingerprint)}`);
   if (opts.wikiCommit) frontmatterLines.push(`wiki_commit: ${opts.wikiCommit}`);
   if (opts.inferenceProvider) frontmatterLines.push(`inference_provider: ${opts.inferenceProvider}`);
