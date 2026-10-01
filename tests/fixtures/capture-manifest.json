@@ -4,7 +4,10 @@
     "fixtures": [
       "pi-output-code-review.jsonl",
       "pi-output-compaction.jsonl",
-      "pi-output-vllm-qwen25.jsonl"
+      "pi-output-vllm-qwen25.jsonl",
+      "pi-output-errored-single-message.jsonl",
+      "pi-output-errored-404-account-zdr.jsonl",
+      "pi-output-truncation-length.jsonl"
     ]
   },
   "codex": {
