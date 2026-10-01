@@ -1,7 +1,8 @@
-import { access, readFile, stat } from 'node:fs/promises';
+import { access, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { spawn, execFile as execFileCb } from 'node:child_process';
-import { dirname } from 'node:path';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
 
 import type {
@@ -17,6 +18,10 @@ import { APPARMOR_REMEDIATION_TEXT, MISSING_BWRAP_TEXT, probeBwrap, type BwrapPr
 import { SYSTEM_ROOTS } from './jail.js';
 import { execBash } from './exec-direct.js';
 import { attachStreamErrorHandlers } from './stream-utils.js';
+import { buildInvocation, buildModelsJson } from './adapters/pi.js';
+import type { ModelEntry } from './model-registry.js';
+import { loadBackendsTable, loadModelsTable } from './repo-config.js';
+import type { BackendEntry, ModelTableEntry } from './repo-config.js';
 
 /**
  * Per-backend CLI reachability fact (WK-0174 / SRC-0013): does `command -v
@@ -41,6 +46,8 @@ declare module './types.js' {
   interface CheckEnvironmentResult {
     /** Per-backend CLI reachability probes (WK-0174). */
     cliReachability: CliReachability[];
+    /** Per-backend×model endpoint-eligibility probes (WK-0189). */
+    endpointEligibility: EndpointEligibilityVerdict[];
   }
 }
 
@@ -310,6 +317,278 @@ export async function probeCliReachability(): Promise<CliReachability[]> {
 }
 
 // ---------------------------------------------------------------------------
+// Endpoint-eligibility probe (WK-0189): config-time, operator-initiated. A
+// backend's `request_params.provider`/`zdr` constraints can exclude every
+// endpoint for a given model (OpenRouter's guardrail/data-policy routing),
+// which only HO-0064/HO-0065's live dispatches discovered by burning a full
+// cycle. The constraint set is static config (backends.json + the model
+// id), so one minimal dry-run completion per qualifying backend×model pair,
+// fired here rather than per-dispatch, tells the operator up front — 404
+// (OpenRouter's structured "0 endpoints... matching your guardrail
+// restrictions" body) vs. anything else IS the verdict, no classification
+// beyond that. Captured evidence for the 404 shape: RUN-089e6deb /
+// RUN-51fec485 (`tests/fixtures/pi-output-errored-single-message.jsonl`,
+// `pi-output-errored-404-account-zdr.jsonl`), both unedited. An eligible
+// response is an ordinary completed Pi/OpenRouter run — already captured
+// (`tests/fixtures/pi-output-code-review.jsonl`, provider "openrouter",
+// model "deepseek/deepseek-v4-flash-0731" — the exact model the
+// "deepseek"/"openrouter-oss" pair resolves to) — so no new [UNVERIFIED-
+// SHAPE] capture is needed for that side of the verdict (DEC-0009).
+// ---------------------------------------------------------------------------
+
+/** One reason OpenRouter excluded every endpoint for a probed model, echoed verbatim from its 404 body. */
+export interface OpenRouterIneligibilityReason {
+  reason: string;
+  endpoint_count: number;
+  configure_url: string;
+}
+
+export interface EndpointEligibilityVerdict {
+  backend: string;
+  modelAlias: string;
+  modelId: string;
+  /**
+   * `unknown` covers both "not probed" (no resolvable API key — e.g. no
+   * secrets file in this host/sandbox) and "probe ran but errored without
+   * OpenRouter's structured ineligibility shape" — neither is evidence of
+   * eligibility, so neither is reported as `eligible`.
+   */
+  status: 'eligible' | 'ineligible' | 'unknown';
+  detail: string;
+  /** Verbatim from OpenRouter's 404 `metadata.ineligibility_reasons`; null unless `status === 'ineligible'`. */
+  ineligibilityReasons: OpenRouterIneligibilityReason[] | null;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+/**
+ * Parse OpenRouter's structured 404 body out of a Pi `errorMessage` string
+ * (Pi prefixes it `"404: "` before the JSON — see the captured fixtures).
+ * Returns null for anything that isn't that exact shape: a non-404 `code`,
+ * a missing/malformed `metadata.ineligibility_reasons` array, or JSON that
+ * doesn't parse at all. Deterministic, no classification beyond this shape
+ * check (rule 17).
+ */
+function parseOpenRouterIneligibility(errorMessage: string): OpenRouterIneligibilityReason[] | null {
+  const jsonStart = errorMessage.indexOf('{');
+  if (jsonStart === -1) return null;
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(errorMessage.slice(jsonStart));
+  } catch {
+    return null;
+  }
+  if (!isRecord(parsed) || parsed.code !== 404) return null;
+
+  const metadata = parsed.metadata;
+  if (!isRecord(metadata) || !Array.isArray(metadata.ineligibility_reasons)) return null;
+
+  const reasons: OpenRouterIneligibilityReason[] = [];
+  for (const entry of metadata.ineligibility_reasons) {
+    if (
+      isRecord(entry) &&
+      typeof entry.reason === 'string' &&
+      typeof entry.endpoint_count === 'number' &&
+      typeof entry.configure_url === 'string'
+    ) {
+      reasons.push({ reason: entry.reason, endpoint_count: entry.endpoint_count, configure_url: entry.configure_url });
+    }
+  }
+  return reasons.length > 0 ? reasons : null;
+}
+
+/**
+ * Derive the eligibility verdict from one dry-run probe's raw Pi `--mode
+ * json` stdout — pure function, golden-fixture testable without a live
+ * network call. Scans for a `message_end`/`turn_end` event whose `message.
+ * stopReason` is `"error"` (verified against the real captured fixtures —
+ * `stopReason`/`errorMessage` ride on the nested `message` object, NOT the
+ * top-level event, contrary to `adapters/pi.ts`'s `parsePiOutput`, which
+ * reads `event.stopReason` and so never observes this signal on these same
+ * fixtures; that is WK-0187's pre-existing bug to fix, out of this WK's
+ * write scope, so this probe parses the raw stream itself rather than
+ * reusing `parsePiOutput`). If `message.errorMessage` carries OpenRouter's
+ * structured ineligibility body, `ineligible`; if the stream errored
+ * WITHOUT that shape, `unknown` (an unrelated failure is not evidence of
+ * eligibility); otherwise `eligible`.
+ */
+export function deriveEndpointEligibility(
+  backendName: string,
+  modelAlias: string,
+  modelId: string,
+  piStdout: string,
+): EndpointEligibilityVerdict {
+  const base = { backend: backendName, modelAlias, modelId };
+  const lines = piStdout.split('\n').map((line) => line.trim()).filter((line) => line.length > 0);
+
+  for (const line of lines) {
+    let event: unknown;
+    try {
+      event = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (!isRecord(event)) continue;
+    if (event.type !== 'message_end' && event.type !== 'turn_end') continue;
+    const message = event.message;
+    if (!isRecord(message) || message.stopReason !== 'error' || typeof message.errorMessage !== 'string') continue;
+
+    const reasons = parseOpenRouterIneligibility(message.errorMessage);
+    if (reasons) {
+      const urls = reasons.map((r) => r.configure_url).join(', ');
+      return {
+        ...base,
+        status: 'ineligible',
+        detail: `OpenRouter returned 0 eligible endpoints for "${modelId}" under "${backendName}"'s provider/ZDR constraints. Configure: ${urls}`,
+        ineligibilityReasons: reasons,
+      };
+    }
+    return {
+      ...base,
+      status: 'unknown',
+      detail: `Dry-run probe for "${modelId}" on "${backendName}" errored without OpenRouter's structured ineligibility shape: ${message.errorMessage}`,
+      ineligibilityReasons: null,
+    };
+  }
+
+  return {
+    ...base,
+    status: 'eligible',
+    detail: `Dry-run probe for "${modelId}" on "${backendName}" completed with no OpenRouter ineligibility error.`,
+    ineligibilityReasons: null,
+  };
+}
+
+/** `grep -m1 '^VAR=' file | cut -d= -f2-` equivalent, Node-side (credentials.ts's script-side-only rule is about the generated DISPATCH script; this probe is a direct, operator-initiated host-side process, same trust boundary as the `pi` CLI it spawns). Returns null when the file or the var line is absent. */
+async function resolveSecretValue(secretsFile: string, varName: string): Promise<string | null> {
+  let content: string;
+  try {
+    content = await readFile(secretsFile, 'utf8');
+  } catch {
+    return null;
+  }
+  for (const line of content.split('\n')) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith(`${varName}=`)) {
+      return trimmed.slice(varName.length + 1);
+    }
+  }
+  return null;
+}
+
+/** Candidate pairs: pi-family backends whose `request_params` carries `provider` or `zdr`, crossed with every model whose `available_on` names that backend. */
+function selectEligibilityCandidates(
+  backends: Record<string, BackendEntry>,
+  models: Record<string, ModelTableEntry>,
+): Array<{ backendName: string; backend: BackendEntry; modelAlias: string; modelEntry: ModelTableEntry }> {
+  const candidates: Array<{ backendName: string; backend: BackendEntry; modelAlias: string; modelEntry: ModelTableEntry }> = [];
+  for (const [backendName, backend] of Object.entries(backends)) {
+    if (backend.family !== 'pi') continue;
+    const params = backend.request_params;
+    if (!isRecord(params) || !('provider' in params || 'zdr' in params)) continue;
+
+    for (const [modelAlias, modelEntry] of Object.entries(models)) {
+      if (modelEntry.available_on.includes(backendName)) {
+        candidates.push({ backendName, backend, modelAlias, modelEntry });
+      }
+    }
+  }
+  return candidates;
+}
+
+/** One minimal (max_tokens: 1) dry-run completion against a real backend×model pair. */
+async function probeOneEndpointEligibility(
+  backendName: string,
+  backend: BackendEntry,
+  modelAlias: string,
+  modelEntry: ModelTableEntry,
+): Promise<EndpointEligibilityVerdict> {
+  const base = { backend: backendName, modelAlias, modelId: modelEntry.model_id };
+
+  if (backend.base_url === null) {
+    return { ...base, status: 'unknown', detail: `Backend "${backendName}" has no base_url; cannot fire a dry-run completion.`, ineligibilityReasons: null };
+  }
+
+  const apiKeyValue = backend.api_key_env && backend.secrets_file
+    ? await resolveSecretValue(backend.secrets_file, backend.api_key_env)
+    : null;
+  if (backend.api_key_env !== null && apiKeyValue === null) {
+    return {
+      ...base,
+      status: 'unknown',
+      detail: `Could not resolve "${backend.api_key_env}" from ${backend.secrets_file ?? '(no secrets_file configured)'}; skipped the dry-run probe for "${modelEntry.model_id}" on "${backendName}".`,
+      ineligibilityReasons: null,
+    };
+  }
+
+  const model: ModelEntry = {
+    provider: backendName,
+    modelId: modelEntry.model_id,
+    displayName: `${modelAlias} (${backendName})`,
+    baseUrl: backend.base_url,
+    api: 'openai-completions',
+    apiKeyEnv: backend.api_key_env,
+    contextWindow: 4096,
+    maxTokens: 1,
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+  };
+
+  let workDir: string | undefined;
+  try {
+    workDir = await mkdtemp(join(tmpdir(), 'kb-eligibility-'));
+    const promptPath = join(workDir, 'prompt.txt');
+    await writeFile(promptPath, 'ping', 'utf8');
+
+    const invocation = buildInvocation(promptPath, model, workDir, workDir);
+    const modelsJsonContent = backend.request_params
+      ? JSON.stringify(buildModelsJson(model, backend.request_params))
+      : invocation.modelsJsonContent;
+    await writeFile(join(workDir, 'models.json'), modelsJsonContent, 'utf8');
+
+    const env: Record<string, string | undefined> = { ...process.env, ...invocation.env };
+    if (model.apiKeyEnv && apiKeyValue !== null) {
+      env[model.apiKeyEnv] = apiKeyValue;
+    }
+
+    const result = await runProcess(invocation.cmd, invocation.args, env, 30000);
+    return deriveEndpointEligibility(backendName, modelAlias, modelEntry.model_id, result.stdout);
+  } catch (err) {
+    return {
+      ...base,
+      status: 'unknown',
+      detail: `Dry-run probe for "${modelEntry.model_id}" on "${backendName}" failed to run: ${String(err)}`,
+      ineligibilityReasons: null,
+    };
+  } finally {
+    if (workDir) await rm(workDir, { recursive: true, force: true });
+  }
+}
+
+/**
+ * Endpoint-eligibility probes for check-environment (WK-0189). Loads
+ * `wiki/.dispatch/{backends,models}.json` from `dir`, selects every
+ * provider-pin/ZDR-constrained pi-family backend×model pair, and fires one
+ * minimal dry-run completion per pair. Absent config, or no qualifying
+ * pairs, resolves to `[]` with no file I/O beyond the two table loads and
+ * no network call — the zero-cost path this WK requires when the probe
+ * doesn't apply.
+ */
+export async function probeEndpointEligibility(dir: string): Promise<EndpointEligibilityVerdict[]> {
+  const [backendsResult, modelsResult] = await Promise.all([loadBackendsTable(dir), loadModelsTable(dir)]);
+  if (!backendsResult.ok || !modelsResult.ok) return [];
+
+  const candidates = selectEligibilityCandidates(backendsResult.data, modelsResult.data);
+  return Promise.all(
+    candidates.map(({ backendName, backend, modelAlias, modelEntry }) =>
+      probeOneEndpointEligibility(backendName, backend, modelAlias, modelEntry),
+    ),
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Route-viability verdicts (derived, not persisted)
 // ---------------------------------------------------------------------------
 
@@ -345,13 +624,14 @@ export function deriveRouteVerdicts(bwrap: BwrapProbeResult): RouteVerdict[] {
 // beyond the informational writability check below.
 // ---------------------------------------------------------------------------
 
-export async function checkEnvironment(): Promise<DispatchResult<CheckEnvironmentResult>> {
+export async function checkEnvironment(dir: string = process.cwd()): Promise<DispatchResult<CheckEnvironmentResult>> {
   const checkedAt = new Date().toISOString();
-  const [bwrap, container, writability, cliReachability] = await Promise.all([
+  const [bwrap, container, writability, cliReachability, endpointEligibility] = await Promise.all([
     probeBwrap(),
     detectContainer(),
     probeWritability(),
     probeCliReachability(),
+    probeEndpointEligibility(dir),
   ]);
 
   return ok({
@@ -362,6 +642,7 @@ export async function checkEnvironment(): Promise<DispatchResult<CheckEnvironmen
     container,
     writability,
     cliReachability,
+    endpointEligibility,
     verdicts: deriveRouteVerdicts(bwrap),
   });
 }
