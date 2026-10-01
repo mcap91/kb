@@ -1040,6 +1040,47 @@ describe('dispatch v2 e2e (fake-tier) — WK-0122 effort passthrough (mocked spa
 });
 
 // ---------------------------------------------------------------------------
+// HO-0069 (HO-0066 F1 fix-up) — pipeline.ts's real `writeResponseDoc` call
+// site (step 20) threads `accumulatedText`/`stopReason` from the per-family
+// parse at step 15 through to capture.ts, not just capture.ts's own unit
+// tests (tests/dispatch-v2-s6a.test.ts calls `writeResponseDoc` directly).
+// This test goes through the production path — a real `runDispatch()` with
+// only `spawnIsolated` mocked (same technique as the WK-0122 block above) —
+// replaying the real DEC-0009 golden fixture
+// `pi-output-errored-single-message.jsonl` (a single assistant message, an
+// immediate 404, `stopReason: "error"` on the message itself) as the
+// worker's output log, and asserts `worker_stop_reason: error` lands in the
+// on-disk response doc frontmatter.
+// ---------------------------------------------------------------------------
+
+describe('dispatch v2 e2e (fake-tier) — HO-0069: pipeline.ts threads stopReason into writeResponseDoc (mocked spawnIsolated)', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('redteam mode + errored pi fixture: worker_stop_reason: error lands in the response-doc frontmatter via the real runDispatch() path', async () => {
+    const repoRoot = await setupS3Repo({ mode: 'redteam' });
+    mockSpawnIsolated(readFixtureFile('pi-output-errored-single-message.jsonl'));
+    try {
+      const result = await runDispatch({
+        dir: repoRoot,
+        handoff: 'wiki/handoffs/HO-S3TEST.md',
+        model: 'deepseek',
+        backend: 'openrouter',
+        preflight: false,
+      });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      const responseContent = await readFile(result.data.responsePath, 'utf8');
+      expect(responseContent).toContain('worker_stop_reason: error');
+    } finally {
+      await rm(repoRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // WK-0156 — relay.js orphan fix. Root cause: the innerScript used to `exec`
 // the worker command, which replaces the wrapper shell process outright —
 // the backgrounded relay's PID (and any trap that could kill it) died along
