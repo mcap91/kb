@@ -1,10 +1,30 @@
 # kb
 
-`kb` is an agent-facing toolkit for adopting and operating a structured repo-local wiki, reviewed multi-agent dispatch, and deterministic code-first graph extraction in a separate consuming repository.
+Two tools for working with coding agents: **kb-wiki** and **kb-dispatch**. They are separate tools, they can be used together, and they run from this repo while operating on your project's repo.
 
-This repository is the **tooling repo**. The other repository is the **consuming repo**. `kb` runs from its own checkout and targets the consuming repo via `--dir`.
+## Why does this exist?
 
-When you are working on `kb` itself, this same checkout can also act as the consuming repo. In that self-hosted case, the MCP servers still run from `kb`, and tool calls use `dir` pointing back at this `kb` checkout.
+Your coding agent did good work yesterday — it learned how your project fits together, weighed options, and settled decisions. Where did all of that go? It vanished when the session ended, and today's session starts from zero: re-reading the code, rebuilding context, sometimes re-deciding things that were already decided. Chat history is not a record — nothing was written down in a form the next session can find.
+
+## kb-wiki: give the work a place to live
+
+kb-wiki puts a small, structured wiki inside your project repo: issues, decisions, initiatives, and sources, each a plain markdown file with an ID. Agents search the wiki *before* touching code, so settled decisions stay settled and open questions stay visible. It ships with validation, generated overview pages, search, and a link graph — all plain code, no model involved. It works in any repo, with or without dispatch.
+
+## A second question
+
+Now you hand a task to an agent and walk away. How do you know it understood the task, touched only the files it was allowed to, and actually finished? Reading every line it wrote defeats the point of delegating. Hoping is not a plan.
+
+## kb-dispatch: delegation with guardrails
+
+kb-dispatch runs that handoff as a gated pipeline. A vague task is refused before any agent starts — the task file must name its goal, its allowed files, and its acceptance checks. The worker (Claude, Codex, or an open model) runs in an isolated sandbox against a disposable copy of the repo, and only the files the task named can come back. A second agent then reviews the result against the original task, and the whole trail — task, run, review — is saved as files in your repo.
+
+## Separate tools, better together
+
+The wiki holds the spec, dispatch executes it, and the review lands back in the wiki. Plan with a strong model, execute with a cheap one — the spec leaves nothing for the worker to decide. Either tool stands alone if that's all you need.
+
+## How it runs
+
+This repository is the **tooling repo**; your project is the **consuming repo**. `kb` runs from its own checkout and targets the consuming repo via `--dir`. When you are working on `kb` itself, this same checkout can also act as the consuming repo — the MCP servers still run from `kb`, with `dir` pointing back at this checkout. Everything below is setup and day-to-day operation.
 
 ## What Agents Should Do
 
