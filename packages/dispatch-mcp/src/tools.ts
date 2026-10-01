@@ -27,9 +27,9 @@ const dirSchema = z.object({
 export const tools: ToolDef[] = [
   {
     name: 'check-environment',
-    description: 'Probe host bwrap/container/writability facts (stateless — no persisted record)',
-    inputSchema: z.object({}),
-    handler: async () => checkEnvironment(),
+    description: 'Probe host bwrap/container/writability facts, including per-backend×model endpoint-eligibility (OpenRouter provider/ZDR constraints) (stateless — no persisted record)',
+    inputSchema: dirSchema,
+    handler: async (input) => checkEnvironment(input.dir as string),
   },
   {
     name: 'create-handoff',

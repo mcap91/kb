@@ -64,7 +64,7 @@ Global Options:
 
 Command Options:
   check-environment
-    (no required flags)
+    --dir <path>             Repository root directory (defaults to cwd)
 
   init-dispatch
     --dir <path>             Repository root directory (required)
@@ -128,8 +128,9 @@ Command Options:
     --handoff <rel-path>     Relative path to handoff file (required)
 `.trim();
 
-async function cmdCheckEnvironment(): Promise<number> {
-  const result = await checkEnvironment();
+async function cmdCheckEnvironment(args: string[]): Promise<number> {
+  const dir = getFlagValue(args, '--dir') ?? process.cwd();
+  const result = await checkEnvironment(dir);
   if (!result.ok) {
     console.error(`Environment check failed: [${result.error}] ${result.message}`);
     return 1;
@@ -153,6 +154,22 @@ async function cmdCheckEnvironment(): Promise<number> {
   for (const verdict of data.verdicts) {
     console.log(`  ${verdict.route}: ${verdict.viability}`);
     console.log(`    ${verdict.detail}`);
+  }
+
+  console.log('');
+  console.log('Endpoint eligibility (provider-pin/ZDR-constrained backend×model pairs):');
+  if (data.endpointEligibility.length === 0) {
+    console.log('  (no qualifying backend×model pairs configured)');
+  } else {
+    for (const verdict of data.endpointEligibility) {
+      console.log(`  ${verdict.backend} / ${verdict.modelAlias} (${verdict.modelId}): ${verdict.status}`);
+      console.log(`    ${verdict.detail}`);
+      if (verdict.ineligibilityReasons) {
+        for (const reason of verdict.ineligibilityReasons) {
+          console.log(`    - ${reason.reason} (endpoint_count=${reason.endpoint_count}) configure: ${reason.configure_url}`);
+        }
+      }
+    }
   }
   return 0;
 }
@@ -462,7 +479,7 @@ export async function run(args: string[]): Promise<number> {
   let exitCode: number;
   switch (command) {
     case 'check-environment':
-      exitCode = await cmdCheckEnvironment();
+      exitCode = await cmdCheckEnvironment(args);
       break;
     case 'init-dispatch':
       exitCode = await cmdInitDispatch(args);
