@@ -265,6 +265,15 @@ export function parsePiOutput(stdout: string): DispatchResult<PiResult> {
   let sawReasoningTokens = false;
   let sawError = false;
   let stopReason: string | undefined;
+  // WK-0187 root cause: Pi rides the real stopReason ("error" on an
+  // immediate API-level failure, "length" on a token-cap truncation) on the
+  // assistant MESSAGE object's own `stopReason` field (`message_start` and/or
+  // `message_end`), never on the event's top-level `stopReason` — the old
+  // event-level-only check above never sees it. Overwritten (not sticky) on
+  // every assistant message_start/message_end in stream order, so only the
+  // FINAL assistant message's value survives the loop: a transient mid-run
+  // error followed by a successful retry does not false-fail a completed run.
+  let finalAssistantStopReason: string | undefined;
   let accumulatedText = '';
   let lastAssistantText = '';
   let hasAgentEnd = false;
@@ -285,6 +294,15 @@ export function parsePiOutput(stdout: string): DispatchResult<PiResult> {
 
     if (!isRecord(event)) continue;
     const type = event.type;
+
+    if (
+      (type === 'message_start' || type === 'message_end') &&
+      isRecord(event.message) &&
+      event.message.role === 'assistant' &&
+      typeof event.message.stopReason === 'string'
+    ) {
+      finalAssistantStopReason = event.message.stopReason;
+    }
 
     if (type === 'message_end' || type === 'turn_end') {
       if (event.stopReason === 'error') {
@@ -382,6 +400,15 @@ export function parsePiOutput(stdout: string): DispatchResult<PiResult> {
     });
   }
 
+  // WK-0187: the final assistant message's own stopReason (see
+  // `finalAssistantStopReason` above) — "error" is an infra-level refusal
+  // (e.g. a 404 from the provider) that rode on a single message with a
+  // clean `agent_end`, so the legacy event-level `sawError` check never
+  // fired; "length" is a token-cap truncation (same clean-`agent_end` shape).
+  // Both must fail the run despite `hasAgentEnd` being true.
+  const assistantErrored = finalAssistantStopReason === 'error';
+  const assistantTruncated = finalAssistantStopReason === 'length';
+
   // Facts-only: the launcher (not this adapter) owns outcome policy beyond
   // error-detection. `agent_end` presence with no observed error defaults to
   // 'completed'. Post-DEC-0010, the response-doc-level verdict is computed
@@ -390,13 +417,19 @@ export function parsePiOutput(stdout: string): DispatchResult<PiResult> {
   // is embedded verbatim as evidence only (`## Worker Report`).
   const outcome: PiResult['outcome'] = allAttemptsErrored
     ? 'failed'
-    : sawError
+    : sawError || assistantErrored
       ? 'error'
-      : hasAgentEnd
-        ? 'completed'
-        : 'failed';
+      : assistantTruncated
+        ? 'failed'
+        : hasAgentEnd
+          ? 'completed'
+          : 'failed';
   if (allAttemptsErrored) {
     stopReason = 'all_attempts_errored';
+  } else if (assistantErrored && stopReason === undefined) {
+    stopReason = 'error';
+  } else if (assistantTruncated) {
+    stopReason = 'length';
   } else if (outcome === 'failed' && stopReason === undefined) {
     stopReason = 'truncated_stream';
   }

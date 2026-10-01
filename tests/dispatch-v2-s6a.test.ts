@@ -25,6 +25,7 @@
  */
 import { describe, expect, it, beforeEach, afterEach } from 'vitest';
 import { execFileSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -1206,5 +1207,321 @@ describe('golden fixture evidence — old outcome.yaml channel behavior (WK-0095
     const fixturePath = join(process.cwd(), 'tests', 'fixtures', 'RUN-a4444bdc-blocked-outcome', 'HO-0009.response.md');
     const content = await readFile(fixturePath, 'utf8');
     expect(content).toContain('outcome: blocked');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// adapters/pi.ts — WK-0187: the final assistant message's own `stopReason`
+// (`message.stopReason`, nested — never the event's top-level `stopReason`
+// the pre-existing logic above already covers) rides an immediate API-level
+// refusal ("error") or a token-cap truncation ("length"), even when the
+// stream otherwise settles cleanly (`agent_end` present, no `auto_retry_end`
+// failure). Golden fixtures (DEC-0009, real unedited captures, registered in
+// tests/fixtures/capture-manifest.json):
+//  - pi-output-errored-single-message.jsonl (RUN-089e6deb) — a single
+//    assistant message, immediate 404, zero tokens, zero output.
+//  - pi-output-errored-404-account-zdr.jsonl (RUN-51fec485) — same shape,
+//    second live instance (account-level ZDR variant).
+//  - pi-output-truncation-length.jsonl (RUN-c9e2d5b7) — 14 real tool-use
+//    turns, then a final message that hits the output-token cap
+//    (`stopReason: "length"`), zero final text.
+// ---------------------------------------------------------------------------
+
+describe('adapters/pi.ts — WK-0187 final-assistant-message stopReason (golden fixtures)', () => {
+  it('pi-output-errored-single-message.jsonl: reports outcome error with stopReason error, zero usage, despite a clean agent_end', () => {
+    const fixturePath = join(process.cwd(), 'tests', 'fixtures', 'pi-output-errored-single-message.jsonl');
+    const content = readFileSync(fixturePath, 'utf8');
+
+    const result = parsePiOutput(content);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.hasAgentEnd).toBe(true);
+    expect(result.data.outcome).toBe('error');
+    expect(result.data.stopReason).toBe('error');
+    expect(result.data.usage.totalTokens).toBe(0);
+    expect(result.data.accumulatedText).toBe('');
+    expect(result.data.lastAssistantText).toBe('');
+  });
+
+  it('pi-output-errored-404-account-zdr.jsonl: same shape, second live instance — same outcome/stopReason', () => {
+    const fixturePath = join(process.cwd(), 'tests', 'fixtures', 'pi-output-errored-404-account-zdr.jsonl');
+    const content = readFileSync(fixturePath, 'utf8');
+
+    const result = parsePiOutput(content);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.outcome).toBe('error');
+    expect(result.data.stopReason).toBe('error');
+    expect(result.data.usage.totalTokens).toBe(0);
+  });
+
+  it('pi-output-truncation-length.jsonl: reports outcome failed with stopReason length, despite a clean agent_end and real prior tool-use turns', () => {
+    const fixturePath = join(process.cwd(), 'tests', 'fixtures', 'pi-output-truncation-length.jsonl');
+    const content = readFileSync(fixturePath, 'utf8');
+
+    const result = parsePiOutput(content);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.hasAgentEnd).toBe(true);
+    expect(result.data.outcome).toBe('failed');
+    expect(result.data.stopReason).toBe('length');
+    // The final message was pure `thinking` content that hit the cap — no
+    // text block — but the 14 preceding real tool-use turns did narrate.
+    expect(result.data.lastAssistantText).toBe('');
+    expect(result.data.accumulatedText.length).toBeGreaterThan(0);
+  });
+
+  it('a transient mid-run assistant error followed by a successful final message does not false-fail the run (scoped to the FINAL assistant message, not a sticky flag)', () => {
+    const lines = [
+      JSON.stringify({ type: 'agent_start' }),
+      JSON.stringify({ type: 'turn_start' }),
+      JSON.stringify({
+        type: 'message_start',
+        message: { role: 'assistant', content: [], stopReason: 'error', errorMessage: '404: unavailable' },
+      }),
+      JSON.stringify({
+        type: 'message_end',
+        message: { role: 'assistant', content: [], stopReason: 'error', errorMessage: '404: unavailable' },
+      }),
+      JSON.stringify({ type: 'turn_end' }),
+      JSON.stringify({ type: 'turn_start' }),
+      JSON.stringify({ type: 'message_start', message: { role: 'assistant', content: [], stopReason: 'pending' } }),
+      JSON.stringify({
+        type: 'message_end',
+        message: {
+          role: 'assistant',
+          content: [{ type: 'text', text: 'Retried and finished successfully.' }],
+          stopReason: 'stop',
+          usage: { totalTokens: 20 },
+        },
+      }),
+      JSON.stringify({ type: 'turn_end' }),
+      JSON.stringify({ type: 'agent_end' }),
+    ].join('\n');
+
+    const result = parsePiOutput(lines);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.outcome).toBe('completed');
+    expect(result.data.stopReason).toBeUndefined();
+    expect(result.data.lastAssistantText).toBe('Retried and finished successfully.');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// capture.ts — WK-0187: the three golden fixtures above replayed end-to-end
+// through `writeResponseDoc`, using the exact `piResult`/`lastAssistantText`/
+// `accumulatedText` shape `parsePiOutput` produces — proving the fix at the
+// level an operator actually sees (the response doc), not just the adapter's
+// internal fields. All three are real redteam-mode captures (HO-0064/
+// HO-0065), so the dominant `piResult.outcome` crash check in the redteam
+// ladder branch is what fires here; the `worker_stop_reason` frontmatter
+// surface (fix 3) is asserted per fixture regardless of which ladder branch
+// produced the `failed` verdict.
+// ---------------------------------------------------------------------------
+
+describe('capture.ts — WK-0187 golden fixtures replayed through writeResponseDoc (never delivered)', () => {
+  let runDir: string;
+
+  beforeEach(async () => {
+    runDir = await createTempDir('kb-capture-wk0187-');
+  });
+
+  afterEach(async () => {
+    await rm(runDir, { recursive: true, force: true });
+  });
+
+  const redteamFixtures: Array<{ file: string; expectedStopReason: string }> = [
+    { file: 'pi-output-errored-single-message.jsonl', expectedStopReason: 'error' },
+    { file: 'pi-output-errored-404-account-zdr.jsonl', expectedStopReason: 'error' },
+    { file: 'pi-output-truncation-length.jsonl', expectedStopReason: 'length' },
+  ];
+
+  for (const { file, expectedStopReason } of redteamFixtures) {
+    it(`${file}: redteam mode derives failed, never delivered, with worker_stop_reason: ${expectedStopReason}`, async () => {
+      const fixturePath = join(process.cwd(), 'tests', 'fixtures', file);
+      const content = readFileSync(fixturePath, 'utf8');
+      const parsed = parsePiOutput(content);
+      expect(parsed.ok).toBe(true);
+      if (!parsed.ok) return;
+
+      const handoff = { id: 'HO-TEST', title: 'Test task', mode: 'redteam' };
+      const delivery: DeliveryOutcome = { status: 'no_changes' };
+      const result = await writeResponseDoc({
+        runDir,
+        handoff,
+        delivery,
+        piResult: { outcome: parsed.data.outcome, usage: parsed.data.usage, stopReason: parsed.data.stopReason },
+        lastAssistantText: parsed.data.lastAssistantText,
+        accumulatedText: parsed.data.accumulatedText,
+      });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      const written = await readFile(result.data.responsePath, 'utf8');
+      expect(written).toContain('outcome: failed');
+      expect(written).not.toContain('outcome: delivered');
+      expect(written).toContain(`worker_stop_reason: ${expectedStopReason}`);
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// capture.ts — WK-0187 backstop: `deriveVerdict` refuses `delivered` for
+// advisory modes (code_review/redteam/research) when the ACCUMULATED
+// transcript is empty, independent of `piResult.outcome` — closing the same
+// hole for code_review, which never consults `piResult` at all. Keyed off
+// `accumulatedText`, never `lastAssistantText`/`worker_report_chars` (the
+// false-positive guard below).
+// ---------------------------------------------------------------------------
+
+describe('capture.ts — WK-0187 empty-transcript backstop (advisory modes)', () => {
+  let runDir: string;
+
+  beforeEach(async () => {
+    runDir = await createTempDir('kb-capture-wk0187-backstop-');
+  });
+
+  afterEach(async () => {
+    await rm(runDir, { recursive: true, force: true });
+  });
+
+  const delivery: DeliveryOutcome = { status: 'no_changes' };
+
+  it('code_review mode + empty accumulatedText -> outcome: failed, reason: empty_transcript (code_review never consults piResult, so this is the only guard for this mode)', async () => {
+    const handoff = { id: 'HO-TEST', title: 'Test task', mode: 'code_review' };
+    const result = await writeResponseDoc({ runDir, handoff, delivery, accumulatedText: '', lastAssistantText: '' });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const written = await readFile(result.data.responsePath, 'utf8');
+    expect(written).toContain('outcome: failed');
+    expect(written).toContain('reason: empty_transcript');
+    expect(written).not.toContain('outcome: delivered');
+  });
+
+  it('redteam mode + a clean process + empty accumulatedText -> outcome: failed, reason: empty_transcript (the backstop fires even when piResult.outcome claims completed)', async () => {
+    const handoff = { id: 'HO-TEST', title: 'Test task', mode: 'redteam' };
+    const result = await writeResponseDoc({
+      runDir,
+      handoff,
+      delivery,
+      piResult: { outcome: 'completed', usage: { inputTokens: null, outputTokens: null, cacheReadTokens: null, cacheWriteTokens: null, reasoningTokens: null, totalTokens: 0, costUsd: 0 } },
+      accumulatedText: '',
+      lastAssistantText: '',
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const written = await readFile(result.data.responsePath, 'utf8');
+    expect(written).toContain('outcome: failed');
+    expect(written).toContain('reason: empty_transcript');
+    expect(written).not.toContain('outcome: delivered');
+  });
+
+  it('research mode + a clean process + empty accumulatedText -> outcome: failed, reason: empty_transcript', async () => {
+    const handoff = { id: 'HO-TEST', title: 'Test task', mode: 'research' };
+    const result = await writeResponseDoc({
+      runDir,
+      handoff,
+      delivery,
+      piResult: { outcome: 'completed', usage: { inputTokens: null, outputTokens: null, cacheReadTokens: null, cacheWriteTokens: null, reasoningTokens: null, totalTokens: 0, costUsd: 0 } },
+      accumulatedText: '   \n  ',
+      lastAssistantText: '',
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const written = await readFile(result.data.responsePath, 'utf8');
+    expect(written).toContain('outcome: failed');
+    expect(written).toContain('reason: empty_transcript');
+  });
+
+  it('code_review mode + accumulatedText absent (not threaded through by the caller) -> backstop does not fire; the pre-existing prose_fallback path still runs unchanged', async () => {
+    const handoff = { id: 'HO-TEST', title: 'Test task', mode: 'code_review' };
+    const result = await writeResponseDoc({ runDir, handoff, delivery });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const written = await readFile(result.data.responsePath, 'utf8');
+    expect(written).toContain('outcome: delivered');
+    expect(written).toContain('reason: prose_fallback');
+    expect(written).not.toContain('empty_transcript');
+  });
+
+  it('false-positive guard (HO-0065 F2): a pure-tool-call FINAL turn with non-empty EARLIER transcript text still derives delivered — never keyed off worker_report_chars/lastAssistantText', async () => {
+    const handoff = { id: 'HO-TEST', title: 'Test task', mode: 'code_review' };
+    const result = await writeResponseDoc({
+      runDir,
+      handoff,
+      delivery,
+      // The final turn was pure tool calls (documented benign shape,
+      // pi.ts:115-119) — lastAssistantText/worker_report_chars is empty —
+      // but the run narrated real content in an earlier turn.
+      accumulatedText: 'Let me look at the diff first.\nRunning the build now.',
+      lastAssistantText: '',
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const written = await readFile(result.data.responsePath, 'utf8');
+    expect(written).toContain('worker_report_chars: 0');
+    expect(written).toContain('outcome: delivered');
+    expect(written).not.toContain('outcome: failed');
+    expect(written).not.toContain('empty_transcript');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// capture.ts — WK-0187 fix 3: `worker_stop_reason` frontmatter surface,
+// independent of the golden-fixture replay tests above (those also assert
+// it, per fixture; these cover the field's presence/absence rules directly).
+// ---------------------------------------------------------------------------
+
+describe('capture.ts — WK-0187 worker_stop_reason frontmatter surface', () => {
+  let runDir: string;
+
+  beforeEach(async () => {
+    runDir = await createTempDir('kb-capture-wk0187-stopreason-');
+  });
+
+  afterEach(async () => {
+    await rm(runDir, { recursive: true, force: true });
+  });
+
+  const delivery: DeliveryOutcome = { status: 'no_changes' };
+
+  it('stamps worker_stop_reason when piResult.stopReason is present', async () => {
+    const handoff = { id: 'HO-TEST', title: 'Test task', mode: 'redteam' };
+    const result = await writeResponseDoc({
+      runDir,
+      handoff,
+      delivery,
+      piResult: { outcome: 'error', stopReason: 'error', usage: { inputTokens: null, outputTokens: null, cacheReadTokens: null, cacheWriteTokens: null, reasoningTokens: null, totalTokens: 0, costUsd: 0 } },
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const written = await readFile(result.data.responsePath, 'utf8');
+    expect(written).toContain('worker_stop_reason: error');
+  });
+
+  it('omits worker_stop_reason when piResult.stopReason is absent', async () => {
+    const handoff = { id: 'HO-TEST', title: 'Test task', mode: 'implement' };
+    const delivered: DeliveryOutcome = { status: 'delivered', branch: 'dispatch/HO-TEST', commitSha: 'abc123', changedFiles: ['src/foo.ts'] };
+    const result = await writeResponseDoc({
+      runDir,
+      handoff,
+      delivery: delivered,
+      piResult: { outcome: 'completed', usage: { inputTokens: null, outputTokens: null, cacheReadTokens: null, cacheWriteTokens: null, reasoningTokens: null, totalTokens: 50, costUsd: 0 } },
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const written = await readFile(result.data.responsePath, 'utf8');
+    expect(written).not.toContain('worker_stop_reason');
+  });
+
+  it('omits worker_stop_reason when piResult itself is absent', async () => {
+    const handoff = { id: 'HO-TEST', title: 'Test task', mode: 'implement' };
+    const delivered: DeliveryOutcome = { status: 'delivered', branch: 'dispatch/HO-TEST', commitSha: 'abc123', changedFiles: ['src/foo.ts'] };
+    const result = await writeResponseDoc({ runDir, handoff, delivery: delivered });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const written = await readFile(result.data.responsePath, 'utf8');
+    expect(written).not.toContain('worker_stop_reason');
   });
 });
