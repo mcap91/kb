@@ -35,7 +35,7 @@ export interface AdmissionResult {
   baseSha: string;
 }
 
-const VALID_MODES: readonly HandoffMode[] = ['implement', 'code_review', 'redteam', 'research'];
+const VALID_MODES: readonly HandoffMode[] = ['implement', 'code_review', 'redteam', 'research', 'explore_code'];
 
 async function pathExists(path: string): Promise<boolean> {
   try {
@@ -58,9 +58,9 @@ function isWithinRoot(root: string, target: string): boolean {
  * possible are: write_scope declared outside `implement` (implement's own
  * requirement that it be non-empty is `missing_write_scope`'s job below, not
  * this check's — a ceiling caps a request, it doesn't impose a floor); and
- * web:true for `code_review`/`redteam` (both never allow it). `research`
- * permits web either way and `implement` permits it opt-in, so neither mode
- * can trip this check on web.
+ * web:true for `code_review`/`redteam`/`explore_code` (none of the three ever
+ * allow it). `research` permits web either way and `implement` permits it
+ * opt-in, so neither mode can trip this check on web.
  */
 function checkEnvelope(handoff: Handoff): DispatchResult<null> {
   if (handoff.mode !== 'implement' && handoff.write_scope.length > 0) {
@@ -71,7 +71,7 @@ function checkEnvelope(handoff: Handoff): DispatchResult<null> {
     );
   }
 
-  if ((handoff.mode === 'code_review' || handoff.mode === 'redteam') && handoff.web) {
+  if ((handoff.mode === 'code_review' || handoff.mode === 'redteam' || handoff.mode === 'explore_code') && handoff.web) {
     return fail(
       'ENVELOPE_EXCEEDS_MODE',
       `Handoff ${handoff.id} (mode=${handoff.mode}) requests web:true, exceeding the mode ceiling (web is never allowed for mode=${handoff.mode}).`,

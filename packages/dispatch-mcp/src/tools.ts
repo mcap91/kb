@@ -38,7 +38,7 @@ export const tools: ToolDef[] = [
       title: z.string(),
       subject: z.string(),
       allowed_agents: z.array(z.string()),
-      mode: z.enum(['implement', 'code_review', 'redteam']),
+      mode: z.enum(['implement', 'code_review', 'redteam', 'research', 'explore_code']),
       status: z.enum(['draft', 'reviewed', 'launched', 'completed', 'failed']).optional(),
       depends_on: z.array(z.string()).optional(),
       area: z.string().optional(),

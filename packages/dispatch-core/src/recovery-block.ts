@@ -109,8 +109,12 @@ export type WorkerOutcome = 'completed' | 'partial' | 'blocked' | 'failed';
 /** `code_review`/`redteam` role outcomes. */
 export type FindingsOutcome = 'no_findings' | 'passed_no_blocking_or_medium_findings' | 'changes_requested';
 
-/** Roles this schema covers. `researcher` (WK-0146) uses the same findings-shaped payload as `reviewer`/`redteam`. */
-export type ReportedRole = 'worker' | 'reviewer' | 'redteam' | 'researcher';
+/**
+ * Roles this schema covers. `researcher` (WK-0146) uses the same findings-shaped
+ * payload as `reviewer`/`redteam`; `explorer` (WK-0183, explore_code mode) joins
+ * the same findings-shaped group.
+ */
+export type ReportedRole = 'worker' | 'reviewer' | 'redteam' | 'researcher' | 'explorer';
 
 /** Finding severity (mirrors agent-chassis's closed vocabulary). */
 export type FindingSeverity = 'critical' | 'high' | 'medium' | 'low' | 'info';
@@ -204,7 +208,7 @@ export interface RecoveryBlockEvidence {
 // Closed vocabularies
 // ---------------------------------------------------------------------------
 
-export const REPORTED_ROLES: readonly ReportedRole[] = ['worker', 'reviewer', 'redteam', 'researcher'];
+export const REPORTED_ROLES: readonly ReportedRole[] = ['worker', 'reviewer', 'redteam', 'researcher', 'explorer'];
 export const WORKER_OUTCOMES: readonly WorkerOutcome[] = ['completed', 'partial', 'blocked', 'failed'];
 export const FINDINGS_OUTCOMES: readonly FindingsOutcome[] = [
   'no_findings',
@@ -832,7 +836,8 @@ export function validateRecoveryPayload(payload: unknown): RecoveryBlockEvidence
   const isFindingsRole =
     payload.reported_role === 'reviewer' ||
     payload.reported_role === 'redteam' ||
-    payload.reported_role === 'researcher';
+    payload.reported_role === 'researcher' ||
+    payload.reported_role === 'explorer';
 
   if (isWorker) {
     if (!isWorkerOutcome(payload.reported_outcome)) {
@@ -840,7 +845,7 @@ export function validateRecoveryPayload(payload: unknown): RecoveryBlockEvidence
     }
   } else if (isFindingsRole) {
     if (!isFindingsOutcome(payload.reported_outcome)) {
-      add('role_outcome_mismatch', 'reviewer/redteam/researcher payload must use a findings outcome', '$.reported_outcome');
+      add('role_outcome_mismatch', 'reviewer/redteam/researcher/explorer payload must use a findings outcome', '$.reported_outcome');
     }
   } else {
     add('invalid_reported_outcome', 'reported_outcome cannot be validated for an unknown role', '$.reported_outcome');

@@ -20,10 +20,10 @@ import { basename } from 'node:path';
 import type { DispatchResult } from './errors.js';
 import { ok } from './errors.js';
 
-/** The four §6 mode ceilings — all valid at parse time; execution support is a pipeline concern. */
-export type HandoffMode = 'implement' | 'code_review' | 'redteam' | 'research';
+/** The five §6 mode ceilings — all valid at parse time; execution support is a pipeline concern. */
+export type HandoffMode = 'implement' | 'code_review' | 'redteam' | 'research' | 'explore_code';
 
-const VALID_MODES: readonly HandoffMode[] = ['implement', 'code_review', 'redteam', 'research'];
+const VALID_MODES: readonly HandoffMode[] = ['implement', 'code_review', 'redteam', 'research', 'explore_code'];
 
 /**
  * §5 HO-*.md frontmatter (rev 5). Distinct from v1's `HandoffFrontmatter` in types.ts.
