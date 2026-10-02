@@ -65,6 +65,8 @@ const INSTRUCTIONS = [
   '| implement | New code / feature work | Writes code, runs validation |',
   '| code_review | Post-delivery review | Reviews branch diff against spec + acceptance; writes no code |',
   '| redteam | Adversarial testing | Actively tries to break the implementation |',
+  '| research | Web-aided investigation | Read-only, web tools if granted; reports findings + sources |',
+  '| explore_code | Read-only codebase investigation | Read-only, no web; reports structured findings |',
   '',
   'Post-delivery review flow: `derive-review` creates a `code_review` HO from a delivered `implement` HO. `redteam` is adversarial robustness testing, not spec-compliance review.',
   '',

@@ -20,6 +20,7 @@ import { fileURLToPath } from 'node:url';
 import type { DispatchResult } from './errors.js';
 import { fail, ok } from './errors.js';
 import type { DeliveryOutcome } from './delivery.js';
+import type { HandoffMode } from './ho.js';
 import type { BackendFingerprint } from './model-registry.js';
 import type { RecoveryBlockEvidence, RecoveryBlockPayload } from './recovery-block.js';
 import type { PiCompaction } from './adapters/pi.js';
@@ -437,6 +438,10 @@ interface VerdictResult {
  *        completion", never findings quality. A crashed/errored process
  *        still fails (checked first, same as redteam), then the same
  *        empty-transcript backstop.
+ *      - explore_code (WK-0183): mirrors research exactly — read-only
+ *        codebase exploration, no diff ever lands, the transcript/prose is
+ *        the product. A crashed/errored process still fails (checked first),
+ *        then the same empty-transcript backstop, otherwise `delivered`.
  *
  * WK-0187 backstop predicate: keyed off `accumulatedText` (the WHOLE
  * transcript), never `lastAssistantText`/`worker_report_chars` (last message
@@ -452,7 +457,7 @@ function isEmptyTranscript(accumulatedText: string | undefined): boolean {
 
 function deriveVerdict(
   delivery: DeliveryOutcome,
-  handoffMode: string,
+  handoffMode: HandoffMode,
   piResult?: CaptureOpts['piResult'],
   recoveryEvidence?: RecoveryBlockEvidence,
   accumulatedText?: string,
@@ -500,6 +505,15 @@ function deriveVerdict(
     return { outcome: 'delivered', deliveryMethod: 'structured' };
   }
   if (handoffMode === 'research') {
+    if (piResult?.outcome === 'failed' || piResult?.outcome === 'error') {
+      return { outcome: 'failed', reason: 'process_error' };
+    }
+    if (isEmptyTranscript(accumulatedText)) {
+      return { outcome: 'failed', reason: 'empty_transcript' };
+    }
+    return { outcome: 'delivered' };
+  }
+  if (handoffMode === 'explore_code') {
     if (piResult?.outcome === 'failed' || piResult?.outcome === 'error') {
       return { outcome: 'failed', reason: 'process_error' };
     }
@@ -655,7 +669,7 @@ function formatBackendFingerprint(fingerprint: BackendFingerprint): string {
 export async function writeResponseDoc(opts: CaptureOpts): Promise<DispatchResult<CaptureResult>> {
   const { runDir, handoff, delivery, piResult, model, isolationBackend } = opts;
 
-  const verdict = deriveVerdict(delivery, handoff.mode, piResult, opts.recoveryEvidence, opts.accumulatedText);
+  const verdict = deriveVerdict(delivery, handoff.mode as HandoffMode, piResult, opts.recoveryEvidence, opts.accumulatedText);
   const branch = deriveBranch(handoff.id, delivery);
   const changedFiles = delivery.status === 'delivered' ? delivery.changedFiles : [];
   const totalTokens = piResult?.usage.totalTokens ?? 0;

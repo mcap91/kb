@@ -16,6 +16,7 @@ import type {
   CheckEnvironmentResult,
   CleanupReport,
   CreateHandoffResult,
+  HandoffMode,
   InitDispatchResult,
   RestampResult,
   StatusResult,
@@ -73,7 +74,7 @@ Command Options:
     --title <text>           Handoff title (required)
     --subject <text>         Handoff subject (required)
     --allowed-agents <csv>   Allowed agents, comma-separated (required)
-    --mode <mode>            implement | code_review | redteam (required)
+    --mode <mode>            implement | code_review | redteam | research | explore_code (required)
     --acceptance <csv>       Acceptance criteria, comma-separated (required)
     --validation <csv>       Validation commands, comma-separated (required)
     --work-item <WK-id>      Optional linked work item
@@ -220,7 +221,7 @@ async function cmdCreateHandoff(args: string[]): Promise<number> {
     title,
     subject,
     allowed_agents: allowedAgents,
-    mode: mode as 'implement' | 'code_review' | 'redteam',
+    mode: mode as HandoffMode,
     work_item: getFlagValue(args, '--work-item'),
     area: getFlagValue(args, '--area'),
     initiative: getFlagValue(args, '--initiative'),

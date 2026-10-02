@@ -6,7 +6,7 @@ import { z } from 'zod';
 
 // `handoffModeSchema` predates the v1 handoff-frontmatter schema it once fed (removed
 // under WK-0118 Phase 1) but survives because `tokenPayloadSchema` below still embeds it.
-export const handoffModeSchema = z.enum(['redteam', 'code_review', 'implement']);
+export const handoffModeSchema = z.enum(['redteam', 'code_review', 'implement', 'research', 'explore_code']);
 
 // ---------------------------------------------------------------------------
 // Token payload Zod schema

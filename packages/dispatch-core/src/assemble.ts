@@ -67,11 +67,12 @@ function recoveryBlockExample(example: Record<string, unknown>): string {
 }
 
 /**
- * Shared instruction body for `code_review`, `redteam`, and `research` — identical payload
- * shape (ruling 1 item 4: "redteam | Same as reviewer"; WK-0145 extends the same optional-
- * metadata treatment to research), differing only in `reported_role`.
+ * Shared instruction body for `code_review`, `redteam`, `research`, and `explore_code` —
+ * identical payload shape (ruling 1 item 4: "redteam | Same as reviewer"; WK-0145 extends
+ * the same optional-metadata treatment to research; WK-0183 extends it again to
+ * explore_code's `explorer` role), differing only in `reported_role`.
  */
-function reviewerRecoveryFormat(role: 'reviewer' | 'redteam' | 'researcher'): string {
+function reviewerRecoveryFormat(role: 'reviewer' | 'redteam' | 'researcher' | 'explorer'): string {
   const example = recoveryBlockExample({
     schema_version: 'kb-dispatch-recovery.v1',
     reported_role: role,
@@ -193,6 +194,14 @@ const RESEARCH_FRAMING =
 
 const RESEARCH_RESPONSE_FORMAT = reviewerRecoveryFormat('researcher');
 
+const EXPLORE_CODE_FRAMING =
+  'You have read-only access to the full repository including the wiki. This is codebase ' +
+  'investigation, not web research — no web tools are granted.\n\n' +
+  'Your deliverable is structured findings about the codebase. Do not modify any files.\n\n' +
+  'If you cannot finish, end your final message stating exactly what you needed and why you stopped.';
+
+const EXPLORE_CODE_RESPONSE_FORMAT = reviewerRecoveryFormat('explorer');
+
 const SIMPLE_RESPONSE_FORMAT =
   'If you cannot finish, end your final message stating exactly what you needed and why you stopped.';
 
@@ -250,6 +259,17 @@ function getModeParts(handoff: Handoff): ModeParts {
         includeAcceptance: false,
         includeValidation: false,
         responseFormat: RESEARCH_RESPONSE_FORMAT,
+      };
+    case 'explore_code':
+      return {
+        introLine:
+          'You are a code explorer. Investigate the codebase question/topic below and report ' +
+          'structured findings.',
+        framing: EXPLORE_CODE_FRAMING,
+        includeWriteScope: false,
+        includeAcceptance: true,
+        includeValidation: false,
+        responseFormat: EXPLORE_CODE_RESPONSE_FORMAT,
       };
   }
 }
