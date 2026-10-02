@@ -12,13 +12,6 @@
  *    `validateRecoveryPayload` and participates in the findings-outcome vocabulary
  *    (the `isFindingsRole` OR-chain, HO-0064 F1 critical finding).
  *
- * NOTE (mirrors HO-0046 F1): this directory (`packages/dispatch-core/tests/`) is
- * not in vitest.config.ts's `include` glob (`tests/**\/*.test.ts`, repo-root-relative),
- * so this file is not discovered by `npm test` as committed. It was verified passing
- * out-of-band via `npx vitest run --config <temp-config> packages/dispatch-core/tests/explore-code.test.ts`
- * during authoring. Written at this path because it is the write_scope this HO grants;
- * moving it into the discovered `tests/` root is outside write_scope.
- *
  * No personal/absolute paths appear in fixtures (WK-0043 rule); all filesystem tests
  * use temp dirs.
  */
@@ -28,12 +21,12 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { parseHandoffContent, type Handoff } from '../src/ho.js';
-import { checkAdmission } from '../src/admission.js';
-import { assemblePrompt } from '../src/assemble.js';
-import { writeResponseDoc } from '../src/capture.js';
-import type { DeliveryOutcome } from '../src/delivery.js';
-import { validateRecoveryPayload, KB_DISPATCH_RECOVERY_VERSION } from '../src/recovery-block.js';
+import { parseHandoffContent, type Handoff } from '../packages/dispatch-core/src/ho.js';
+import { checkAdmission } from '../packages/dispatch-core/src/admission.js';
+import { assemblePrompt } from '../packages/dispatch-core/src/assemble.js';
+import { writeResponseDoc } from '../packages/dispatch-core/src/capture.js';
+import type { DeliveryOutcome } from '../packages/dispatch-core/src/delivery.js';
+import { validateRecoveryPayload, KB_DISPATCH_RECOVERY_VERSION } from '../packages/dispatch-core/src/recovery-block.js';
 
 async function createTempDir(prefix: string): Promise<string> {
   return mkdtemp(join(tmpdir(), prefix));
