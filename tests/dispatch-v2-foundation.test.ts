@@ -19,6 +19,7 @@ import { checkAdmission } from '../packages/dispatch-core/src/admission.js';
 import { getDefaultRegistry, resolveModel } from '../packages/dispatch-core/src/model-registry.js';
 import { assemblePrompt } from '../packages/dispatch-core/src/assemble.js';
 import { buildInvocation, buildModelsJson, parsePiOutput } from '../packages/dispatch-core/src/adapters/pi.js';
+import { extractRecoveryBlock, validateRecoveryPayload } from '../packages/dispatch-core/src/recovery-block.js';
 
 // ---------------------------------------------------------------------------
 // Frozen HO drafts — verbatim from wiki/plans/PLN-0004/execution/s0-rulings.md
@@ -834,5 +835,45 @@ describe('adapters/pi.ts — golden fixture (real captured pi-output.log)', () =
     expect(result.data.hasAgentEnd).toBe(true);
     expect(result.data.outcome).toBe('completed');
     expect(result.data.usage.totalTokens).toBeGreaterThan(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// adapters/pi.ts — golden fixture (WK-0183 Tier 4, DEC-0009): unedited
+// capture from HO-0082 RUN-7993e2a7 (deepseek via openrouter-oss/CoreWeave,
+// explore_code mode). Proves parsePiOutput + recovery-block extraction against
+// the real explore_code stream shape.
+// ---------------------------------------------------------------------------
+
+describe('adapters/pi.ts — explore_code golden fixture (WK-0183 Tier 4)', () => {
+  const fixturePath = join(process.cwd(), 'tests', 'fixtures', 'pi-output-explore-code.jsonl');
+  const fixtureContent = readFileSync(fixturePath, 'utf8');
+
+  it('parses successfully with outcome completed and non-zero usage', () => {
+    const result = parsePiOutput(fixtureContent);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.hasAgentEnd).toBe(true);
+    expect(result.data.outcome).toBe('completed');
+    expect(result.data.usage.totalTokens).toBeGreaterThan(0);
+  });
+
+  it('accumulatedText is non-empty (the transcript is the product for explore_code)', () => {
+    const result = parsePiOutput(fixtureContent);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.accumulatedText.length).toBeGreaterThan(0);
+  });
+
+  it('lastAssistantText contains a valid explorer recovery block', () => {
+    const result = parsePiOutput(fixtureContent);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const evidence = extractRecoveryBlock(result.data.lastAssistantText);
+    expect(evidence.diagnostics).toEqual([]);
+    expect(evidence.valid).toBe(true);
+    expect(evidence.result?.reported_role).toBe('explorer');
+    expect(evidence.result?.reported_outcome).toBe('passed_no_blocking_or_medium_findings');
   });
 });

@@ -7,7 +7,8 @@
       "pi-output-vllm-qwen25.jsonl",
       "pi-output-errored-single-message.jsonl",
       "pi-output-errored-404-account-zdr.jsonl",
-      "pi-output-truncation-length.jsonl"
+      "pi-output-truncation-length.jsonl",
+      "pi-output-explore-code.jsonl"
     ]
   },
   "codex": {
