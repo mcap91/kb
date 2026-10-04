@@ -104,7 +104,7 @@ they exist, never writes them.
 
 ## Role Preambles (`install-roles`)
 
-`contract/roles/*.md` are the canonical orchestrator/planner role preambles. Stamp them into the
+`contract/roles/*.md` are the canonical orchestrator/planner/overseer role preambles. Stamp them into the
 user-global command directories both Claude Code and Codex read from:
 
 ```bash
