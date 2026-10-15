@@ -54,6 +54,11 @@
 import { existsSync, statSync } from 'node:fs';
 import { dirname } from 'node:path';
 
+import { SYSTEM_ROOTS } from './mountability.js';
+
+/** Re-exported for existing external imports (mountability.ts owns the definition, WK-0201 fix-up F2). */
+export { SYSTEM_ROOTS };
+
 /** Wiki shape in the mother repo — the dual-shape read axis (T25, D19). */
 export type WikiShape = 'tracked' | 'nested-private';
 
@@ -131,16 +136,6 @@ export interface JailArgs {
 export function classifyWikiShape(lsFilesOutput: string): WikiShape {
   return lsFilesOutput.trim().length > 0 ? 'tracked' : 'nested-private';
 }
-
-/**
- * Curated system-root dirs bound read-only into every jail (chassis pattern:
- * buildSystemBaselineArgs's systemReadOnlyRoots loop,
- * launch-isolation-bwrap.mjs:59-95). --ro-bind-try so absent dirs (e.g.
- * /lib64 on non-x86) are silently skipped rather than failing bwrap.
- */
-export const SYSTEM_ROOTS: readonly string[] = [
-  '/usr', '/bin', '/sbin', '/lib', '/lib64', '/etc', '/opt', '/var',
-];
 
 /**
  * Join a write_scope-style relative path onto the clone root. Strips leading

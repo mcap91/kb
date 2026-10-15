@@ -26,7 +26,7 @@ import { fail, ok } from './errors.js';
 import type { Handoff, HandoffMode } from './ho.js';
 import { probeWikiSource } from './wiki-source.js';
 import { validateWriteScopeChain } from './write-scope-chain.js';
-import { isMountableRoot } from './pipeline.js';
+import { isMountableRoot } from './mountability.js';
 
 const execFile = promisify(execFileCb);
 
@@ -323,7 +323,14 @@ async function checkRuntimeEnvs(handoff: Handoff): Promise<DispatchResult<readon
     }
 
     for (const exportEntry of handoff.export_mounts) {
-      const exportResolved = resolve(exportEntry);
+      let exportResolved: string;
+      try {
+        exportResolved = await realpath(exportEntry);
+      } catch {
+        // Doesn't exist on disk — data_mount validation already caught this,
+        // or the bind will fail later; either way there's nothing to overlap.
+        continue;
+      }
       if (isWithinRoot(canonical, exportResolved) || isWithinRoot(exportResolved, canonical)) {
         return fail(
           'RUNTIME_EXPORT_OVERLAP',

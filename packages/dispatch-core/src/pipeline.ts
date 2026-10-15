@@ -55,10 +55,10 @@ import {
   classifyEntry,
   deriveDirectoryScopedMounts,
   deriveExactFileMounts,
-  SYSTEM_ROOTS,
   type BwrapPlan,
   type WikiShape,
 } from './jail.js';
+import { isMountableRoot } from './mountability.js';
 import { spawnIsolated, type SpawnResult } from './spawn-isolated.js';
 import { attachStreamErrorHandlers } from './stream-utils.js';
 import { buildWorkerEnv } from './env-policy.js';
@@ -93,6 +93,9 @@ import {
 } from './tunnel.js';
 import { probeBwrap, APPARMOR_REMEDIATION_TEXT, MISSING_BWRAP_TEXT } from './tier.js';
 import { extractRecoveryBlock, type RecoveryBlockEvidence } from './recovery-block.js';
+
+/** Re-exported for existing external imports (mountability.ts owns the definition, WK-0201 fix-up F2). */
+export { isMountableRoot };
 
 /**
  * Claude vendor domain set (DEC-0011 ruling 2, WK-0104). Seed from Anthropic's
@@ -430,12 +433,6 @@ export interface ToolchainResolution {
   bindPaths: string[];
   /** Set when a resolved path (CLI dir, node dir, or npm prefix) lands outside $HOME and SYSTEM_ROOTS — the CLI_PATH_NOT_MOUNTABLE refusal fact. */
   unmountable: { what: string; resolvedPath: string } | null;
-}
-
-/** True when `path` is under $HOME or one of jail.ts's curated SYSTEM_ROOTS. */
-export function isMountableRoot(path: string, home: string): boolean {
-  if (home.length > 0 && (path === home || path.startsWith(`${home}/`))) return true;
-  return SYSTEM_ROOTS.some((root) => path === root || path.startsWith(`${root}/`));
 }
 
 /** `command -v <cmd>` then `readlink -f` on the result — the real, symlink-resolved path, or null if either step fails. */
