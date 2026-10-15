@@ -27,6 +27,9 @@
  *                                      unconditional whenever the full S5
  *                                      recipe runs
  *   5.  --die-with-parent             cleanup on parent exit
+ *   5a. --unshare-pid                 PID namespace (WK-0202: no host PID visibility)
+ *   5b. --unshare-ipc                 IPC namespace (WK-0202, chassis baseline)
+ *   5c. --new-session                 setsid (WK-0202, chassis baseline: no terminal signals)
  *   6.  --unshare-net                 opt-in (T26/D21): no network stack
  *   6a. toolchain leaf binds (DEC-0011) --ro-bind-try each opts.toolchainPaths
  *                                      entry (CLI binaries living under $HOME)
@@ -200,6 +203,8 @@ function buildJailPlanSteps(opts: JailOpts): JailPlanSteps {
   synthetic('tmpfs', '/tmp');
   // 5: cleanup on parent exit (unchanged since S0).
   mountArgv.push('--die-with-parent');
+  // 5a-c: PID/IPC namespace + session isolation (WK-0202, chassis baseline).
+  mountArgv.push('--unshare-pid', '--unshare-ipc', '--new-session');
   // 6: network namespace removal (T26/D21) — opt-in.
   if (opts.unshareNet) {
     mountArgv.push('--unshare-net');

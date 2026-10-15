@@ -48,6 +48,9 @@ describe('buildJailArgs — write_scope sparse binds', () => {
       '--dev', '/dev',
       '--tmpfs', '/tmp',
       '--die-with-parent',
+      '--unshare-pid',
+      '--unshare-ipc',
+      '--new-session',
       '--ro-bind', clonePath, clonePath,
       '--bind', `${clonePath}/src`, `${clonePath}/src`,
       '--bind', `${clonePath}/test`, `${clonePath}/test`,
@@ -76,6 +79,9 @@ describe('buildJailArgs — write_scope sparse binds', () => {
       '--dev', '/dev',
       '--tmpfs', '/tmp',
       '--die-with-parent',
+      '--unshare-pid',
+      '--unshare-ipc',
+      '--new-session',
       '--ro-bind', clonePath, clonePath,
       '--chdir', clonePath,
       '--',
@@ -97,6 +103,9 @@ describe('buildJailArgs — wiki read axis (T25/D19)', () => {
       '--dev', '/dev',
       '--tmpfs', '/tmp',
       '--die-with-parent',
+      '--unshare-pid',
+      '--unshare-ipc',
+      '--new-session',
       '--bind', clonePath, clonePath,
       '--chdir', clonePath,
       '--',
@@ -118,6 +127,9 @@ describe('buildJailArgs — wiki read axis (T25/D19)', () => {
       '--dev', '/dev',
       '--tmpfs', '/tmp',
       '--die-with-parent',
+      '--unshare-pid',
+      '--unshare-ipc',
+      '--new-session',
       '--bind', clonePath, clonePath,
       '--chdir', clonePath,
       '--',
@@ -139,6 +151,9 @@ describe('buildJailArgs — wiki read axis (T25/D19)', () => {
       '--dev', '/dev',
       '--tmpfs', '/tmp',
       '--die-with-parent',
+      '--unshare-pid',
+      '--unshare-ipc',
+      '--new-session',
       '--bind', clonePath, clonePath,
       '--ro-bind', motherWikiPath, `${clonePath}/wiki`,
       '--chdir', clonePath,
@@ -161,6 +176,9 @@ describe('buildJailArgs — wiki read axis (T25/D19)', () => {
       '--dev', '/dev',
       '--tmpfs', '/tmp',
       '--die-with-parent',
+      '--unshare-pid',
+      '--unshare-ipc',
+      '--new-session',
       '--bind', clonePath, clonePath,
       '--ro-bind', motherWikiPath, `${clonePath}/wiki`,
       '--chdir', clonePath,
@@ -177,6 +195,9 @@ describe('buildJailArgs — wiki read axis (T25/D19)', () => {
       '--dev', '/dev',
       '--tmpfs', '/tmp',
       '--die-with-parent',
+      '--unshare-pid',
+      '--unshare-ipc',
+      '--new-session',
       '--bind', clonePath, clonePath,
       '--chdir', clonePath,
       '--',
@@ -200,6 +221,9 @@ describe('buildJailArgs — data mounts', () => {
       '--dev', '/dev',
       '--tmpfs', '/tmp',
       '--die-with-parent',
+      '--unshare-pid',
+      '--unshare-ipc',
+      '--new-session',
       '--bind', clonePath, clonePath,
       '--ro-bind', '/data/ref', '/data/ref',
       '--chdir', clonePath,
@@ -216,6 +240,9 @@ describe('buildJailArgs — data mounts', () => {
       '--dev', '/dev',
       '--tmpfs', '/tmp',
       '--die-with-parent',
+      '--unshare-pid',
+      '--unshare-ipc',
+      '--new-session',
       '--bind', clonePath, clonePath,
       '--bind', '/tmp/scratch', '/tmp/scratch',
       '--chdir', clonePath,
@@ -238,6 +265,9 @@ describe('buildJailArgs — data mounts', () => {
       '--dev', '/dev',
       '--tmpfs', '/tmp',
       '--die-with-parent',
+      '--unshare-pid',
+      '--unshare-ipc',
+      '--new-session',
       '--bind', clonePath, clonePath,
       '--ro-bind', '/data/ref', '/data/ref',
       '--bind', '/tmp/scratch', '/tmp/scratch',
@@ -248,15 +278,36 @@ describe('buildJailArgs — data mounts', () => {
 });
 
 // ---------------------------------------------------------------------------
+// buildJailArgs — PID/IPC/session isolation (WK-0202)
+// ---------------------------------------------------------------------------
+
+describe('buildJailArgs — PID/IPC/session isolation (WK-0202)', () => {
+  it('always adds --unshare-pid, --unshare-ipc, --new-session after --die-with-parent', () => {
+    const result = buildJailArgs({ clonePath });
+    const dieIdx = result.argv.indexOf('--die-with-parent');
+    expect(result.argv[dieIdx + 1]).toBe('--unshare-pid');
+    expect(result.argv[dieIdx + 2]).toBe('--unshare-ipc');
+    expect(result.argv[dieIdx + 3]).toBe('--new-session');
+  });
+
+  it('flags are present even with no S5 options set', () => {
+    const result = buildJailArgs({ clonePath });
+    expect(result.argv).toContain('--unshare-pid');
+    expect(result.argv).toContain('--unshare-ipc');
+    expect(result.argv).toContain('--new-session');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // buildJailArgs — network egress (T26/D21)
 // ---------------------------------------------------------------------------
 
 describe('buildJailArgs — unshare-net (T26/D21)', () => {
-  it('unshareNet:true adds --unshare-net right after --die-with-parent', () => {
+  it('unshareNet:true adds --unshare-net right after --new-session (WK-0202 flags between --die-with-parent and --unshare-net)', () => {
     const result = buildJailArgs({ clonePath, unshareNet: true });
     expect(result.argv).toContain('--unshare-net');
     const idx = result.argv.indexOf('--unshare-net');
-    expect(result.argv[idx - 1]).toBe('--die-with-parent');
+    expect(result.argv[idx - 1]).toBe('--new-session');
   });
 
   it('unshareNet:false (explicit, other S5 options set) omits --unshare-net', () => {
@@ -285,6 +336,9 @@ describe('buildJailArgs — tunnel socket and relay script binds', () => {
       '--dev', '/dev',
       '--tmpfs', '/tmp',
       '--die-with-parent',
+      '--unshare-pid',
+      '--unshare-ipc',
+      '--new-session',
       '--bind', clonePath, clonePath,
       '--bind', tunnelSocketPath, tunnelSocketPath,
       '--chdir', clonePath,
@@ -302,6 +356,9 @@ describe('buildJailArgs — tunnel socket and relay script binds', () => {
       '--dev', '/dev',
       '--tmpfs', '/tmp',
       '--die-with-parent',
+      '--unshare-pid',
+      '--unshare-ipc',
+      '--new-session',
       '--bind', clonePath, clonePath,
       '--ro-bind', relayScriptPath, relayScriptPath,
       '--chdir', clonePath,
@@ -343,6 +400,9 @@ describe('buildJailArgs — full combined recipe', () => {
       '--dev', '/dev',
       '--tmpfs', '/tmp',
       '--die-with-parent',
+      '--unshare-pid',
+      '--unshare-ipc',
+      '--new-session',
       '--unshare-net',
       '--ro-bind', clonePath, clonePath,
       '--bind', `${clonePath}/src`, `${clonePath}/src`,
@@ -413,6 +473,9 @@ describe('buildBwrapPlan — plan object shape', () => {
       '--dev', '/dev',
       '--tmpfs', '/tmp',
       '--die-with-parent',
+      '--unshare-pid',
+      '--unshare-ipc',
+      '--new-session',
       '--bind', clonePath, clonePath,
       '--chdir', clonePath,
       '--',
@@ -469,6 +532,9 @@ describe('buildBwrapPlan — injectedFiles', () => {
       '--dev', '/dev',
       '--tmpfs', '/tmp',
       '--die-with-parent',
+      '--unshare-pid',
+      '--unshare-ipc',
+      '--new-session',
       '--bind', clonePath, clonePath,
       '--file', '3', injectedFiles[0].dest,
       '--file', '4', injectedFiles[1].dest,
@@ -498,6 +564,9 @@ describe('buildBwrapPlan — write_scope sparse binds', () => {
       '--dev', '/dev',
       '--tmpfs', '/tmp',
       '--die-with-parent',
+      '--unshare-pid',
+      '--unshare-ipc',
+      '--new-session',
       '--ro-bind', clonePath, clonePath,
       '--bind', `${clonePath}/src`, `${clonePath}/src`,
       '--bind', `${clonePath}/test`, `${clonePath}/test`,
@@ -523,6 +592,9 @@ describe('buildBwrapPlan — write_scope sparse binds', () => {
       '--dev', '/dev',
       '--tmpfs', '/tmp',
       '--die-with-parent',
+      '--unshare-pid',
+      '--unshare-ipc',
+      '--new-session',
       '--ro-bind', clonePath, clonePath,
       '--chdir', clonePath,
       '--',
@@ -544,6 +616,9 @@ describe('buildBwrapPlan — data mounts', () => {
       '--dev', '/dev',
       '--tmpfs', '/tmp',
       '--die-with-parent',
+      '--unshare-pid',
+      '--unshare-ipc',
+      '--new-session',
       '--bind', clonePath, clonePath,
       '--ro-bind', '/data/ref', '/data/ref',
       '--chdir', clonePath,
@@ -561,6 +636,9 @@ describe('buildBwrapPlan — data mounts', () => {
       '--dev', '/dev',
       '--tmpfs', '/tmp',
       '--die-with-parent',
+      '--unshare-pid',
+      '--unshare-ipc',
+      '--new-session',
       '--bind', clonePath, clonePath,
       '--bind', '/tmp/scratch', '/tmp/scratch',
       '--chdir', clonePath,
@@ -585,6 +663,9 @@ describe('buildBwrapPlan — data mounts', () => {
       '--dev', '/dev',
       '--tmpfs', '/tmp',
       '--die-with-parent',
+      '--unshare-pid',
+      '--unshare-ipc',
+      '--new-session',
       '--bind', clonePath, clonePath,
       '--ro-bind', '/data/ref', '/data/ref',
       '--bind', '/tmp/scratch', '/tmp/scratch',
@@ -612,6 +693,9 @@ describe('buildBwrapPlan — wiki read axis (T25/D19)', () => {
       '--dev', '/dev',
       '--tmpfs', '/tmp',
       '--die-with-parent',
+      '--unshare-pid',
+      '--unshare-ipc',
+      '--new-session',
       '--bind', clonePath, clonePath,
       '--chdir', clonePath,
       '--',
@@ -642,6 +726,9 @@ describe('buildBwrapPlan — wiki read axis (T25/D19)', () => {
       '--dev', '/dev',
       '--tmpfs', '/tmp',
       '--die-with-parent',
+      '--unshare-pid',
+      '--unshare-ipc',
+      '--new-session',
       '--bind', clonePath, clonePath,
       '--ro-bind', motherWikiPath, `${clonePath}/wiki`,
       '--chdir', clonePath,
