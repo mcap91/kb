@@ -33,6 +33,7 @@ function makeHandoff(overrides: Partial<Handoff> = {}): Handoff {
     credentials: [],
     data_mounts: [],
     export_mounts: [],
+    runtime_envs: [],
     read_first: ['README.md'],
     vars: [],
     acceptance: ['AC-1: example'],
@@ -200,6 +201,98 @@ describe('admission.ts — S4 full admission gate (new refusal codes)', () => {
       expect(result.error).toBe('BAD_DATA_MOUNT');
       expect(result.message).toContain('inside the repo root');
     });
+  });
+
+  describe('runtime_envs (WK-0201)', () => {
+    let fakeHome: string;
+    let originalHome: string | undefined;
+
+    beforeEach(async () => {
+      originalHome = process.env.HOME;
+      fakeHome = await mkdtemp(join(tmpdir(), 'dispatch-runtime-home-'));
+      process.env.HOME = fakeHome;
+    });
+
+    afterEach(async () => {
+      if (originalHome === undefined) delete process.env.HOME;
+      else process.env.HOME = originalHome;
+      await rm(fakeHome, { recursive: true, force: true });
+    });
+
+    it('admits a valid runtime_envs entry (realpath, mountable, bin/ present) — next gate is WORK_ITEM_NOT_FOUND', async () => {
+      const envRoot = join(fakeHome, 'miniconda3', 'envs', 'myproject');
+      await mkdir(join(envRoot, 'bin'), { recursive: true });
+
+      const result = await checkAdmission(makeHandoff({ runtime_envs: [envRoot] }), tempDir);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error).toBe('WORK_ITEM_NOT_FOUND');
+    });
+
+    it('refuses a nonexistent runtime_envs entry with BAD_RUNTIME_ENV', async () => {
+      const missing = join(fakeHome, 'does-not-exist');
+      const result = await checkAdmission(makeHandoff({ runtime_envs: [missing] }), tempDir);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error).toBe('BAD_RUNTIME_ENV');
+    });
+
+    it('refuses a relative runtime_envs entry with BAD_RUNTIME_ENV', async () => {
+      const result = await checkAdmission(makeHandoff({ runtime_envs: ['relative/env'] }), tempDir);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error).toBe('BAD_RUNTIME_ENV');
+      expect(result.message).toContain('not an absolute path');
+    });
+
+    it('refuses $HOME itself with BAD_RUNTIME_ENV', async () => {
+      const result = await checkAdmission(makeHandoff({ runtime_envs: [fakeHome] }), tempDir);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error).toBe('BAD_RUNTIME_ENV');
+      expect(result.message).toContain('$HOME');
+    });
+
+    it('refuses a runtime_envs entry with no bin/ directory with BAD_RUNTIME_ENV', async () => {
+      const envRoot = join(fakeHome, 'no-bin-env');
+      await mkdir(envRoot, { recursive: true });
+
+      const result = await checkAdmission(makeHandoff({ runtime_envs: [envRoot] }), tempDir);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error).toBe('BAD_RUNTIME_ENV');
+      expect(result.message).toContain('bin');
+    });
+
+    it('refuses overlap with export_mounts (either direction) with RUNTIME_EXPORT_OVERLAP', async () => {
+      const envRoot = join(fakeHome, 'overlap-env');
+      await mkdir(join(envRoot, 'bin'), { recursive: true });
+
+      const result = await checkAdmission(
+        makeHandoff({ runtime_envs: [envRoot], export_mounts: [envRoot] }),
+        tempDir,
+      );
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error).toBe('RUNTIME_EXPORT_OVERLAP');
+    });
+
+    it.each(['code_review', 'redteam', 'research', 'explore_code'] as const)(
+      'refuses runtime_envs declared on mode=%s with ENVELOPE_EXCEEDS_MODE',
+      async (mode) => {
+        const envRoot = join(fakeHome, 'mode-gate-env');
+        await mkdir(join(envRoot, 'bin'), { recursive: true });
+
+        const result = await checkAdmission(
+          makeHandoff({ mode, write_scope: [], runtime_envs: [envRoot] }),
+          tempDir,
+        );
+        expect(result.ok).toBe(false);
+        if (result.ok) return;
+        expect(result.error).toBe('ENVELOPE_EXCEEDS_MODE');
+        expect(result.message).toContain('runtime_envs');
+      },
+    );
   });
 
   describe('MISSING_WRITE_SCOPE — S4 gate still catches deliberately under-specified HOs', () => {

@@ -179,6 +179,7 @@ export interface CreateHandoffOpts {
   credentials?: string[];
   data_mounts?: string[];
   export_mounts?: string[];
+  runtime_envs?: string[];
   base_ref?: string;
   vars?: string[];
   reviewed_run?: string;  // Run id this review targets (WK-0153 discharge evidence)

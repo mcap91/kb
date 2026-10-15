@@ -32,6 +32,9 @@
  *                                      entry (CLI binaries living under $HOME)
  *   6b. auth leaf binds (DEC-0011)    the ONLY $HOME paths let through —
  *                                      opts.authLeafBinds, ro or rw per entry
+ *   6c. runtime env binds (WK-0201)   strict --ro-bind each
+ *                                      opts.runtimeEnvPaths entry
+ *                                      (operator-declared, admission-validated)
  *   7.  clone bind                    ro-bind first if write_scope is
  *                                      sparse, else writable (legacy shape)
  *   8.  write_scope binds             selective rw layered over step 7
@@ -89,6 +92,13 @@ export interface JailOpts {
   /** Toolchain paths under $HOME that the worker's CLI binary needs (resolved at
    *  dispatch time via `which`). Each gets an --ro-bind-try. */
   toolchainPaths?: readonly string[];
+
+  /** Operator-declared runtime env roots (WK-0201), already canonicalized and
+   *  validated by admission.ts's `checkRuntimeEnvs` (realpath'd, not $HOME
+   *  itself, mountable, has a `bin/` dir, no export_mounts overlap). Each
+   *  gets a strict --ro-bind — never --ro-bind-try, since the path was
+   *  already proven to exist at admission time. */
+  runtimeEnvPaths?: readonly string[];
 
   /** Per-family auth leaf file binds — the ONLY $HOME paths let through.
    *  Each entry is { path, access } where access = 'ro' | 'rw'. */
@@ -217,6 +227,16 @@ function buildJailPlanSteps(opts: JailOpts): JailPlanSteps {
   if (opts.authLeafBinds) {
     for (const leaf of opts.authLeafBinds) {
       bind(leaf.access === 'rw' ? 'bind' : 'ro-bind', leaf.path, leaf.path);
+    }
+  }
+
+  // 6c. Operator-declared runtime env roots (WK-0201) — strict --ro-bind,
+  // already admission-validated (realpath'd, mountable, bin/ exists, no
+  // export_mounts overlap). PATH injection for <path>/bin happens in
+  // pipeline.ts's buildJailPathExport, not here — this module only mounts.
+  if (opts.runtimeEnvPaths) {
+    for (const p of opts.runtimeEnvPaths) {
+      bind('ro-bind', p, p);
     }
   }
 

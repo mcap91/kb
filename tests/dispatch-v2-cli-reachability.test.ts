@@ -210,6 +210,39 @@ describe('PATH-independent launch plan (WK-0174 acceptance criterion 3, SRC-0013
     expect(pathExport).toContain('/usr/sbin');
     expect(pathExport).toContain('/sbin');
   });
+
+  it('buildJailPathExport appends runtimeEnvPaths bin dirs AFTER the system dirs (WK-0201, HO-0086 F4)', () => {
+    const toolchain: ToolchainResolution = {
+      cliRealPath: FNM_CLAUDE_REAL,
+      nodeRealDir: `${FNM_HOME}/.local/share/fnm/node-versions/v22.23.2/installation/bin`,
+      npmPrefix: FNM_NPM_PREFIX,
+      bindPaths: [FNM_NPM_PREFIX],
+      unmountable: null,
+    };
+    const runtimeEnvPaths = ['/home/testuser/miniconda3/envs/myproject', '/home/testuser/.cargo'];
+
+    const pathExport = buildJailPathExport(toolchain, runtimeEnvPaths);
+
+    for (const p of runtimeEnvPaths) {
+      expect(pathExport).toContain(`${p}/bin`);
+    }
+    const sbinIdx = pathExport.indexOf('/sbin');
+    for (const p of runtimeEnvPaths) {
+      expect(pathExport.indexOf(`${p}/bin`)).toBeGreaterThan(sbinIdx);
+    }
+  });
+
+  it('buildJailPathExport omits runtime env bins when none are declared (undeclared → absent)', () => {
+    const toolchain: ToolchainResolution = {
+      cliRealPath: FNM_CLAUDE_REAL,
+      nodeRealDir: null,
+      npmPrefix: null,
+      bindPaths: [],
+      unmountable: null,
+    };
+    expect(buildJailPathExport(toolchain)).toBe(buildJailPathExport(toolchain, []));
+    expect(buildJailPathExport(toolchain)).toBe("export PATH='/usr/bin:/bin:/usr/sbin:/sbin'");
+  });
 });
 
 describe('preflight probe uses the curated SYSTEM_ROOTS jail, not --ro-bind / / (WK-0174)', () => {

@@ -48,6 +48,7 @@ function baseImplementOpts(overrides: Partial<CreateHandoffOpts> = {}): CreateHa
     credentials: [],
     data_mounts: [],
     export_mounts: [],
+    runtime_envs: [],
     vars: [],
     ...overrides,
   };

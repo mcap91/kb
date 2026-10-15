@@ -47,6 +47,7 @@ pipeline after the run (see "Capture and Provenance").
 | `web` | boolean | Default `false`. Never allowed for `code_review`/`redteam` |
 | `credentials` | string[] | Names from `wiki/.dispatch/profiles.json`. Mutually exclusive with `web: true` |
 | `data_mounts` / `export_mounts` | string[] | Absolute host paths *outside* the repo root, bound `ro` / `rw` into the jail. Must already exist |
+| `runtime_envs` | string[] | Absolute paths to pre-installed runtime env roots (e.g. a conda/mamba env), implement-mode only (WK-0201) — see "Runtime Env Projection" below |
 | `read_first` | string[] | Repo-relative paths; each must exist at dispatch time (`MISSING_READ_FIRST`) |
 | `vars` | string[] | `"KEY=value"` non-secret literal env for the worker |
 | `fixup_context` | string | Prior review findings injected verbatim on a re-dispatch |
@@ -88,6 +89,9 @@ here is a persisted review state — it all re-runs, every time, against the liv
 | Repo is clean (`git status --porcelain` over `write_scope`) | `DIRTY_REPO` |
 | `base_ref`, if set, starts with `dispatch/` and exists | `BAD_BASE_REF` |
 | Every `data_mounts`/`export_mounts` entry is absolute, exists, and is outside the repo root | `BAD_DATA_MOUNT` |
+| `runtime_envs` only declared for `mode: implement` | `ENVELOPE_EXCEEDS_MODE` |
+| Every `runtime_envs` entry canonicalizes (realpath) to an absolute, existing, mountable path that is not `$HOME` itself and has a `bin/` dir | `BAD_RUNTIME_ENV` |
+| No `runtime_envs` entry overlaps a `export_mounts` entry in either direction | `RUNTIME_EXPORT_OVERLAP` |
 | `implement` declares a `work_item` whose `wiki/issues/<id>.md` exists | `WORK_ITEM_NOT_FOUND` |
 | Fresh-HEAD HOs: declared paths haven't changed since `base_sha`/`base_wiki_sha` | `BASE_DRIFT` (see below) |
 
@@ -117,6 +121,39 @@ HO's declared `data_mounts`/`export_mounts`. There is no whole-root bind and no 
 - **Secret masking** — a clone's own `.env` is masked to `/dev/null` and `.claude/` to a fresh tmpfs,
   so a committed secret or agent config in the mother repo's working tree never reaches the jail.
 - Every family runs under `--unshare-net` — no network namespace at all inside the jail.
+
+### Runtime Env Projection (WK-0201)
+
+`implement`-mode HOs may declare `runtime_envs: string[]` — absolute paths to pre-installed
+environment roots (a conda/mamba env, a `.cargo` dir, etc.) that the worker's project needs but that
+live under `$HOME`, which is denied wholesale by Wall 1. For each declared path, admission:
+
+1. Canonicalizes with `realpath` (resolve-first — a symlink farm still resolves to its real,
+   bindable target, mirroring WK-0174's toolchain-path pattern).
+2. Refuses the canonical path if it is `$HOME` itself, outside both `$HOME` and the curated system
+   roots, or has no `bin/` directory — all three with `BAD_RUNTIME_ENV`.
+3. Refuses it if it overlaps a declared `export_mounts` entry in either direction — with
+   `RUNTIME_EXPORT_OVERLAP` (an `export_mounts` writable layer must never shadow a runtime ro-bind,
+   or vice versa).
+4. Refuses the whole HO with `ENVELOPE_EXCEEDS_MODE` if `runtime_envs` is declared outside
+   `mode: implement` — advisory modes read code but do not need a project runtime, and redteam gets
+   no declared toolchain access either (fail closed).
+
+Each validated, canonicalized path is bound strictly read-only (`--ro-bind`, not `--ro-bind-try` —
+the path was already proven to exist at admission time) and its `<path>/bin` is appended to the
+worker's `PATH` **after** the curated system dirs, so `python3`/`pytest`/etc. become reachable
+without shadowing `git`, `bash`, `curl`, or any other system tool.
+
+**Self-contained envs required.** A declared env's executables and libraries must all resolve
+within its own declared root. An env that symlinks outside itself (e.g. `uv` linking to a base
+interpreter, pyenv shims, `.cargo/bin` pointing into `.rustup`) needs a separate `runtime_envs`
+entry for each such dependency root — conda/mamba envs are self-contained by default and are the
+primary target.
+
+**Mutable scratch.** All runtime env mounts are read-only — nothing inside them can be installed
+into or modified. The jail already provides a writable `/tmp`; a worker that needs a cache
+directory should point its tool at it explicitly (e.g. `PYTHONPYCACHEPREFIX=/tmp`,
+`GOCACHE=/tmp/go-cache`) rather than relying on a path under the ro-bound env.
 
 ### Wall 2 — the tunnel: allowlist-by-default egress
 

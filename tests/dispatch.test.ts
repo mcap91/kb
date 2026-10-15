@@ -416,6 +416,7 @@ describe('dispatch', () => {
         credentials: [],
         data_mounts: [],
         export_mounts: [],
+        runtime_envs: [],
         read_first: [],
         vars: [],
         acceptance: ['AC-1: example'],

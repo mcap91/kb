@@ -120,6 +120,7 @@ export function renderHandoff(id: string, opts: CreateHandoffOpts, stamps: Hando
     ...listField('credentials', opts.credentials ?? []),
     ...listField('data_mounts', opts.data_mounts ?? []),
     ...listField('export_mounts', opts.export_mounts ?? []),
+    ...listField('runtime_envs', opts.runtime_envs ?? []),
     ...listField('vars', opts.vars ?? []),
     ...(opts.reviewed_run ? [`reviewed_run: ${quote(opts.reviewed_run)}`] : []),
     '---',

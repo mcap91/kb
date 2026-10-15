@@ -89,7 +89,7 @@ describe('restamp (WK-0175) — tracked wiki (the normal repo shape)', () => {
     const newHead = commitAll(repo, 'touch app');
 
     const before = await checkAdmission(
-      { id: 'HO-9175', title: 'x', mode: 'implement', write_scope: ['src/'], base_ref: null, base_sha: stampSha, web: false, credentials: [], data_mounts: [], export_mounts: [], read_first: ['README.md'], vars: [], work_item: 'WK-9175', acceptance: ['a'], validation: ['true'], status: 'draft' } as Handoff,
+      { id: 'HO-9175', title: 'x', mode: 'implement', write_scope: ['src/'], base_ref: null, base_sha: stampSha, web: false, credentials: [], data_mounts: [], export_mounts: [], runtime_envs: [], read_first: ['README.md'], vars: [], work_item: 'WK-9175', acceptance: ['a'], validation: ['true'], status: 'draft' } as Handoff,
       repo,
     );
     expect(before.ok).toBe(false);
@@ -227,6 +227,7 @@ describe('BASE_DRIFT refusal message names restamp (WK-0175)', () => {
       credentials: [],
       data_mounts: [],
       export_mounts: [],
+      runtime_envs: [],
       read_first: ['README.md'],
       vars: [],
       work_item: 'WK-9175',

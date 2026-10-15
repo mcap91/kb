@@ -88,6 +88,7 @@ Command Options:
     --credentials <csv>      Optional credential names, comma-separated
     --data-mounts <csv>      Optional data mount paths, comma-separated
     --export-mounts <csv>    Optional export mount paths, comma-separated
+    --runtime-envs <csv>     Optional runtime env root paths, comma-separated (implement-mode only)
     --base-ref <ref>         Optional base ref (branch/commit) for the worker
     --vars <csv>             Optional KEY=value vars, comma-separated
 
@@ -237,6 +238,7 @@ async function cmdCreateHandoff(args: string[]): Promise<number> {
     credentials: parseCsv(getFlagValue(args, '--credentials')),
     data_mounts: parseCsv(getFlagValue(args, '--data-mounts')),
     export_mounts: parseCsv(getFlagValue(args, '--export-mounts')),
+    runtime_envs: parseCsv(getFlagValue(args, '--runtime-envs')),
     base_ref: getFlagValue(args, '--base-ref'),
     vars: parseCsv(getFlagValue(args, '--vars')),
   });

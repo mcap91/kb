@@ -848,6 +848,41 @@ describe('DEC-0011 visibility wall assertions (WK-0103)', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// buildJailArgs/buildBwrapPlan — runtime env roots (WK-0201)
+// ---------------------------------------------------------------------------
+
+describe('runtime env roots (WK-0201)', () => {
+  it('declared runtimeEnvPaths produce a strict --ro-bind, positioned after toolchainPaths and before the clone bind', () => {
+    const toolchainPaths = ['/home/testuser/.npm-global-wsl/bin/claude'];
+    const runtimeEnvPaths = ['/home/testuser/miniconda3/envs/myproject'];
+    const { argv } = buildJailArgs({ clonePath, toolchainPaths, runtimeEnvPaths });
+
+    expect(argv).toEqual(expect.arrayContaining(['--ro-bind', runtimeEnvPaths[0], runtimeEnvPaths[0]]));
+    const roBindIdx = argv.indexOf('--ro-bind');
+    const toolchainIdx = argv.indexOf(toolchainPaths[0]);
+    const cloneIdx = argv.indexOf(clonePath);
+    expect(toolchainIdx).toBeGreaterThan(0);
+    expect(roBindIdx).toBeGreaterThan(toolchainIdx);
+    expect(cloneIdx).toBeGreaterThan(roBindIdx);
+  });
+
+  it('undeclared runtimeEnvPaths: no --ro-bind appears anywhere in the plan', () => {
+    const { argv } = buildJailArgs({ clonePath });
+    expect(argv.filter((tok) => tok === '--ro-bind')).toHaveLength(0);
+  });
+
+  it('multiple declared runtimeEnvPaths each get their own --ro-bind, reflected in both bwrapArgs and mounts', () => {
+    const runtimeEnvPaths = ['/opt/envs/python-project', '/home/testuser/.cargo'];
+    const plan = buildBwrapPlan({ clonePath, runtimeEnvPaths, command: ['pi'] });
+
+    for (const p of runtimeEnvPaths) {
+      expect(plan.bwrapArgs).toEqual(expect.arrayContaining(['--ro-bind', p, p]));
+      expect(plan.mounts).toEqual(expect.arrayContaining([{ kind: 'ro-bind', src: p, dst: p }]));
+    }
+  });
+});
+
 describe('classifyEntry / looksLikeFile — write_scope file vs directory classification', () => {
   it('looksLikeFile returns true for paths with file extensions', () => {
     expect(looksLikeFile('smoke-result.txt')).toBe(true);

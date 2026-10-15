@@ -506,12 +506,18 @@ export async function resolveToolchainPaths(family: BackendFamily): Promise<Tool
  * the worker's own inner script — the exec line itself never relies on this
  * PATH (it invokes the CLI by absolute path), but node/npm shebangs the CLI
  * spawns internally do.
+ *
+ * `runtimeEnvPaths` (WK-0201, admission-validated operator-declared env
+ * roots) are appended AFTER the system dirs — never before — so a project
+ * runtime's `python3`/`pytest`/etc. is reachable without shadowing `git`,
+ * `bash`, `curl`, or any other curated system tool (HO-0086 F4 mitigation).
  */
-export function buildJailPathExport(toolchain: ToolchainResolution): string {
+export function buildJailPathExport(toolchain: ToolchainResolution, runtimeEnvPaths?: readonly string[]): string {
   const dirs: string[] = [];
   if (toolchain.nodeRealDir !== null) dirs.push(toolchain.nodeRealDir);
   if (toolchain.npmPrefix !== null) dirs.push(`${toolchain.npmPrefix}/bin`);
   dirs.push('/usr/bin', '/bin', '/usr/sbin', '/sbin');
+  for (const p of runtimeEnvPaths ?? []) dirs.push(`${p}/bin`);
   return `export PATH=${shQuote(dirs.join(':'))}`;
 }
 
@@ -1084,7 +1090,7 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       }
       execLines = [
         `PROMPT=$(cat ${shQuote(promptPath)})`,
-        buildJailPathExport(toolchainResult),
+        buildJailPathExport(toolchainResult, admission.data.runtimeEnvPaths),
         `exec ${shQuote(toolchainResult.cliRealPath)} exec "$PROMPT" --sandbox ${sandbox} --json -o ${shQuote(codexOutputPath)} --model ${shQuote(model.modelId)}${codexEffortSuffix}${codexSchemaSuffix}`,
       ];
       if (recoverySchemaContent !== undefined) {
@@ -1133,7 +1139,7 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       execLines = [
         `PROMPT=$(cat ${shQuote(promptPath)})`,
         ...(recoverySchemaContent !== undefined ? [`SCHEMA=$(cat ${shQuote(RECOVERY_SCHEMA_JAIL_PATH)})`] : []),
-        buildJailPathExport(toolchainResult),
+        buildJailPathExport(toolchainResult, admission.data.runtimeEnvPaths),
         `exec ${shQuote(toolchainResult.cliRealPath)} -p --output-format json --permission-mode default --settings ${shQuote(claudeSettingsPath)}${claudeSchemaSuffix} --model ${shQuote(model.modelId)}${claudeEffortSuffix} -- "$PROMPT"`,
       ];
       bwrapInjectedFiles = [{ content: claudeSettingsContent, dest: claudeSettingsPath }];
@@ -1284,6 +1290,7 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       relayScriptPath,
       toolchainPaths: toolchainResult.bindPaths,
       authLeafBinds,
+      runtimeEnvPaths: admission.data.runtimeEnvPaths,
       runDirPath: runDir,
       command: ['bash', '-c', innerScript],
       env: workerEnv,

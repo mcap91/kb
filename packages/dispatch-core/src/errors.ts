@@ -61,6 +61,9 @@ export type DispatchErrorCode =
   | 'BASE_DRIFT'
   | 'CONTEXT_BUDGET_EXCEEDED'
   | 'BAD_DATA_MOUNT'
+  // --- v2 runtime env projection (WK-0201) ---
+  | 'BAD_RUNTIME_ENV'
+  | 'RUNTIME_EXPORT_OVERLAP'
   // --- v2 required enforcement (PLN-0004 S5) ---
   | 'NO_ISOLATION_ROUTE'
   // --- v2 work-item existence gate (IN-0006 WK-0116; narrowed by DEC-0036 WK-0121) ---
@@ -110,6 +113,8 @@ export const V2_REFUSAL_CODES = [
   'BAD_BASE_REF',
   'CONTEXT_BUDGET_EXCEEDED',
   'BAD_DATA_MOUNT',
+  'BAD_RUNTIME_ENV',
+  'RUNTIME_EXPORT_OVERLAP',
   'NO_ISOLATION_ROUTE',
   'CLI_PATH_NOT_MOUNTABLE',
   'WORK_ITEM_NOT_FOUND',

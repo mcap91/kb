@@ -55,6 +55,8 @@ describe('errors.ts — V2_REFUSAL_CODES', () => {
       'BAD_BASE_REF',
       'CONTEXT_BUDGET_EXCEEDED',
       'BAD_DATA_MOUNT',
+      'BAD_RUNTIME_ENV',
+      'RUNTIME_EXPORT_OVERLAP',
       'NO_ISOLATION_ROUTE',
       'CLI_PATH_NOT_MOUNTABLE',
       'WORK_ITEM_NOT_FOUND',

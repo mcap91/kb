@@ -41,6 +41,7 @@ export interface Handoff {
   credentials: string[];
   data_mounts: string[];
   export_mounts: string[];
+  runtime_envs: string[]; // WK-0201: operator-declared runtime env roots, ro-bound + PATH-injected — implement-mode only
   read_first: string[];
   vars: string[]; // Array of "KEY=value" strings; non-secret literal env for the worker
   fixup_context?: string; // Prior review findings injected verbatim as coordination context (s6-rulings.md ruling 3)
@@ -231,6 +232,10 @@ export function parseHandoffContent(content: string, filename: string): Dispatch
     return fail('Handoff export_mounts must be an array of strings.');
   }
 
+  if (raw.runtime_envs !== undefined && (!Array.isArray(raw.runtime_envs) || !raw.runtime_envs.every((entry) => typeof entry === 'string'))) {
+    return fail('Handoff runtime_envs must be an array of strings.');
+  }
+
   if (raw.read_first !== undefined && (!Array.isArray(raw.read_first) || !raw.read_first.every((entry) => typeof entry === 'string'))) {
     return fail('Handoff read_first must be an array of strings.');
   }
@@ -259,6 +264,7 @@ export function parseHandoffContent(content: string, filename: string): Dispatch
     credentials: Array.isArray(raw.credentials) ? (raw.credentials as string[]) : [],
     data_mounts: Array.isArray(raw.data_mounts) ? (raw.data_mounts as string[]) : [],
     export_mounts: Array.isArray(raw.export_mounts) ? (raw.export_mounts as string[]) : [],
+    runtime_envs: Array.isArray(raw.runtime_envs) ? (raw.runtime_envs as string[]) : [],
     read_first: Array.isArray(raw.read_first) ? (raw.read_first as string[]) : [],
     vars: Array.isArray(raw.vars) ? (raw.vars as string[]) : [],
     acceptance: raw.acceptance as string[],

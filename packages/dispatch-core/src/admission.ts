@@ -18,7 +18,7 @@
  */
 import { execFile as execFileCb } from 'node:child_process';
 import { isAbsolute, join, relative, resolve } from 'node:path';
-import { stat } from 'node:fs/promises';
+import { realpath, stat } from 'node:fs/promises';
 import { promisify } from 'node:util';
 
 import type { DispatchResult } from './errors.js';
@@ -26,6 +26,7 @@ import { fail, ok } from './errors.js';
 import type { Handoff, HandoffMode } from './ho.js';
 import { probeWikiSource } from './wiki-source.js';
 import { validateWriteScopeChain } from './write-scope-chain.js';
+import { isMountableRoot } from './pipeline.js';
 
 const execFile = promisify(execFileCb);
 
@@ -33,6 +34,8 @@ export interface AdmissionResult {
   handoff: Handoff;
   repoRoot: string;
   baseSha: string;
+  /** Canonicalized (realpath'd) `runtime_envs` entries (WK-0201) — empty when none declared. */
+  runtimeEnvPaths: readonly string[];
 }
 
 const VALID_MODES: readonly HandoffMode[] = ['implement', 'code_review', 'redteam', 'research', 'explore_code'];
@@ -238,6 +241,102 @@ async function checkDataMounts(handoff: Handoff, repoRootResolved: string): Prom
     }
   }
   return ok(null);
+}
+
+/**
+ * `runtime_envs` admission gate (WK-0201, SRC-0017 design-mirror): implement-
+ * mode-only operator-declared environment roots, ro-bound into the jail and
+ * PATH-injected (pipeline.ts's `buildJailPathExport`). Mirrors WK-0174's
+ * resolve-first pattern: canonicalize with `realpath` BEFORE any mountability
+ * check, so a symlink farm still resolves to its real target rather than
+ * being judged on its lexical (pre-symlink) path. Checked in order per the WK
+ * spec: mode ceiling first (an advisory-mode HO declaring `runtime_envs` is
+ * refused regardless of path validity), then per-entry absolute/exists/$HOME/
+ * mountable/bin-dir checks, then the export_mounts overlap check (needs the
+ * canonical path, so it runs last per entry). Returns the canonicalized paths
+ * on success — pipeline.ts threads these into `buildBwrapPlan`'s
+ * `runtimeEnvPaths` rather than re-resolving the raw HO strings.
+ */
+async function checkRuntimeEnvs(handoff: Handoff): Promise<DispatchResult<readonly string[]>> {
+  if (handoff.runtime_envs.length === 0) return ok([]);
+
+  if (handoff.mode !== 'implement') {
+    return fail(
+      'ENVELOPE_EXCEEDS_MODE',
+      `Handoff ${handoff.id} (mode=${handoff.mode}) declares runtime_envs, exceeding the mode ceiling (runtime_envs is implement-mode only).`,
+      { mode: handoff.mode, runtime_envs: handoff.runtime_envs },
+    );
+  }
+
+  const home = process.env.HOME ?? '';
+  const canonicalPaths: string[] = [];
+
+  for (const entry of handoff.runtime_envs) {
+    if (!isAbsolute(entry)) {
+      return fail(
+        'BAD_RUNTIME_ENV',
+        `Handoff ${handoff.id} runtime_envs entry "${entry}" is not an absolute path.`,
+        { entry },
+      );
+    }
+
+    let canonical: string;
+    try {
+      canonical = await realpath(entry);
+    } catch (err) {
+      return fail(
+        'BAD_RUNTIME_ENV',
+        `Handoff ${handoff.id} runtime_envs entry "${entry}" does not exist on disk.`,
+        { entry, err },
+      );
+    }
+
+    if (home.length > 0 && canonical === home) {
+      return fail(
+        'BAD_RUNTIME_ENV',
+        `Handoff ${handoff.id} runtime_envs entry "${entry}" resolves to $HOME itself, which is denied wholesale.`,
+        { entry, canonical },
+      );
+    }
+
+    if (!isMountableRoot(canonical, home)) {
+      return fail(
+        'BAD_RUNTIME_ENV',
+        `Handoff ${handoff.id} runtime_envs entry "${entry}" (canonical "${canonical}") is outside $HOME and every curated system root.`,
+        { entry, canonical },
+      );
+    }
+
+    const binPath = join(canonical, 'bin');
+    let binIsDir: boolean;
+    try {
+      binIsDir = (await stat(binPath)).isDirectory();
+    } catch {
+      binIsDir = false;
+    }
+    if (!binIsDir) {
+      return fail(
+        'BAD_RUNTIME_ENV',
+        `Handoff ${handoff.id} runtime_envs entry "${entry}" (canonical "${canonical}") has no "bin/" directory.`,
+        { entry, canonical },
+      );
+    }
+
+    for (const exportEntry of handoff.export_mounts) {
+      const exportResolved = resolve(exportEntry);
+      if (isWithinRoot(canonical, exportResolved) || isWithinRoot(exportResolved, canonical)) {
+        return fail(
+          'RUNTIME_EXPORT_OVERLAP',
+          `Handoff ${handoff.id} runtime_envs entry "${entry}" (canonical "${canonical}") overlaps with export_mounts entry "${exportEntry}".`,
+          { entry, canonical, exportEntry },
+        );
+      }
+    }
+
+    canonicalPaths.push(canonical);
+  }
+
+  return ok(canonicalPaths);
 }
 
 /**
@@ -474,6 +573,9 @@ export async function checkAdmission(handoff: Handoff, repoRoot: string): Promis
   const dataMountCheck = await checkDataMounts(handoff, repoRootResolved);
   if (!dataMountCheck.ok) return dataMountCheck;
 
+  const runtimeEnvsCheck = await checkRuntimeEnvs(handoff);
+  if (!runtimeEnvsCheck.ok) return runtimeEnvsCheck;
+
   const workItemExistsCheck = await checkWorkItemExists(handoff, repoRoot);
   if (!workItemExistsCheck.ok) return workItemExistsCheck;
 
@@ -495,5 +597,5 @@ export async function checkAdmission(handoff: Handoff, repoRoot: string): Promis
   const baseDriftCheck = await checkBaseDrift(handoff, repoRoot, baseSha);
   if (!baseDriftCheck.ok) return baseDriftCheck;
 
-  return ok({ handoff, repoRoot, baseSha });
+  return ok({ handoff, repoRoot, baseSha, runtimeEnvPaths: runtimeEnvsCheck.data });
 }
