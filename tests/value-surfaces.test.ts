@@ -2,7 +2,7 @@
  * T13 — Propagation tests for VAL surfaces (spec §11.2, §12).
  *
  * Tests (TDD, written first):
- *   1. bootstrap lands the "Value reports" recipe in BOTH AGENTS.md and CLAUDE.md
+ *   1. bootstrap lands the "Value reports" recipe in AGENTS.md (CLAUDE.md is a thin @AGENTS.md redirect)
  *   2. wiki/value-reports/ directory exists after bootstrap
  *   3. wiki/templates/value.md exists after bootstrap
  *   4. allocate --prefix VAL → VAL-0001
@@ -37,7 +37,7 @@ import {
 // ---------------------------------------------------------------------------
 
 /** Stable marker string embedded in the recipe text (spec §7).
- *  Both AGENTS.md and CLAUDE.md must contain this after bootstrap/sync. */
+ *  AGENTS.md must contain this after bootstrap/sync; CLAUDE.md is a thin @AGENTS.md redirect. */
 const RECIPE_MARKER = 'value-report-recipe-v3';
 
 const ROOT = resolve(process.cwd());
@@ -81,9 +81,10 @@ describe('VAL propagation — bootstrap', () => {
     expect(agents).toContain(RECIPE_MARKER);
   });
 
-  it('bootstrap: CLAUDE.md contains the value-report recipe marker', () => {
+  it('bootstrap: CLAUDE.md is a thin redirect (@AGENTS.md) — recipe lives in AGENTS.md only', () => {
     const claude = readText(tmp.dir, 'CLAUDE.md');
-    expect(claude).toContain(RECIPE_MARKER);
+    expect(claude).toContain('@AGENTS.md');
+    expect(claude).not.toContain(RECIPE_MARKER);
   });
 
   it('bootstrap: wiki/value-reports/ directory exists', () => {
@@ -131,21 +132,22 @@ describe('VAL propagation — sync-contract re-lands recipe', () => {
     expect(fs.readFileSync(agentsPath, 'utf-8')).toContain(RECIPE_MARKER);
   });
 
-  it('sync-contract restores the recipe marker after it has been stripped from CLAUDE.md', async () => {
+  it('sync-contract restores the @AGENTS.md pointer after CLAUDE.md managed block is corrupted', async () => {
     tmp = await createBootstrappedRepo();
 
     const claudePath = path.join(tmp.dir, 'CLAUDE.md');
     const original = fs.readFileSync(claudePath, 'utf-8');
+    // Strip the @AGENTS.md pointer from the managed block
     const stripped = original
       .split('\n')
-      .filter(line => !line.includes(RECIPE_MARKER))
+      .filter(line => !line.includes('@AGENTS.md'))
       .join('\n');
     fs.writeFileSync(claudePath, stripped, 'utf-8');
-    expect(fs.readFileSync(claudePath, 'utf-8')).not.toContain(RECIPE_MARKER);
+    expect(fs.readFileSync(claudePath, 'utf-8')).not.toContain('@AGENTS.md');
 
     const result = await sync({ dir: tmp.dir });
     expect(result.ok).toBe(true);
-    expect(fs.readFileSync(claudePath, 'utf-8')).toContain(RECIPE_MARKER);
+    expect(fs.readFileSync(claudePath, 'utf-8')).toContain('@AGENTS.md');
   });
 });
 

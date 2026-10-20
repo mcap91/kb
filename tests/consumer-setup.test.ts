@@ -55,9 +55,14 @@ describe('managed block', () => {
       const endCount = (content.match(/<!-- END kb-managed -->/g) || []).length;
       expect(beginCount, `${file} should have exactly one BEGIN marker`).toBe(1);
       expect(endCount, `${file} should have exactly one END marker`).toBe(1);
-      expect(content).toContain('kb integration');
-      expect(content).toContain('Retrieval');
     }
+    // AGENTS.md carries the full template; CLAUDE.md is a thin redirect
+    const agents = readText(tmp.dir, 'AGENTS.md');
+    expect(agents).toContain('kb integration');
+    expect(agents).toContain('Retrieval');
+    const claude = readText(tmp.dir, 'CLAUDE.md');
+    expect(claude).toContain('@AGENTS.md');
+    expect(claude).not.toContain('kb integration');
   });
 
   it('bootstrap into a repo with existing AGENTS.md (leading H1 + consumer content) inserts block and preserves consumer content', async () => {
@@ -123,11 +128,16 @@ describe('managed block', () => {
     for (const file of ['AGENTS.md', 'CLAUDE.md']) {
       const content = readText(tmp.dir, file);
       expect(content).not.toContain('Start from `wiki/catalog.md`');
-      expect(content).toContain('Retrieval');
-      expect(content).toContain('MCP');
       expect(content).toContain('My custom content.');
       expect(content).toContain('# My File');
     }
+    // AGENTS.md carries the full refreshed template
+    const agents = readText(tmp.dir, 'AGENTS.md');
+    expect(agents).toContain('Retrieval');
+    expect(agents).toContain('MCP');
+    // CLAUDE.md is a thin redirect
+    const claude = readText(tmp.dir, 'CLAUDE.md');
+    expect(claude).toContain('@AGENTS.md');
   });
 
   it('dryRun/check does not write managed block', async () => {
@@ -220,9 +230,12 @@ describe('writeManagedBlock', () => {
     const result = writeManagedBlock(tmp.dir, 'New body');
     expect(result.ok).toBe(true);
     if (result.ok) {
-      for (const entry of result.data) {
-        expect(entry.action).toBe('updated');
-      }
+      // AGENTS.md gets the new body → updated
+      const agentsEntry = result.data.find(e => e.file === 'AGENTS.md');
+      expect(agentsEntry?.action).toBe('updated');
+      // CLAUDE.md always gets @AGENTS.md → unchanged (body param doesn't affect it)
+      const claudeEntry = result.data.find(e => e.file === 'CLAUDE.md');
+      expect(claudeEntry?.action).toBe('unchanged');
     }
     const content = readText(tmp.dir, 'AGENTS.md');
     expect(content).toContain('New body');
