@@ -9,6 +9,13 @@ const MANAGED_COMMENT = 'Managed by kb — edits inside this block are overwritt
 
 const TARGET_FILES = ['AGENTS.md', 'CLAUDE.md'];
 
+/**
+ * CLAUDE.md's managed block is a thin redirect to AGENTS.md (the Claude Code
+ * file-reference directive). AGENTS.md remains the canonical content and
+ * never references itself.
+ */
+const CLAUDE_POINTER = '@AGENTS.md';
+
 interface ManagedBlockEntry {
   file: string;
   action: 'created' | 'updated' | 'unchanged';
@@ -84,17 +91,25 @@ function processFile(
   return { file: fileName, action: 'created' };
 }
 
+/**
+ * Write the kb-managed agent-instructions block to AGENTS.md and CLAUDE.md.
+ *
+ * Content differs per target file: AGENTS.md receives the full blockBody
+ * template; CLAUDE.md receives only the `@AGENTS.md` directive (inside the
+ * managed markers) so it is a thin redirect to the canonical AGENTS.md.
+ */
 export function writeManagedBlock(
   targetDir: string,
   blockBody: string,
   opts?: WriteManagedBlockOpts,
 ): Result<ManagedBlockEntry[]> {
   const dryRun = opts?.dryRun ?? false;
-  const wrappedBlock = buildWrappedBlock(blockBody);
   const results: ManagedBlockEntry[] = [];
 
   for (const file of TARGET_FILES) {
     const filePath = path.join(targetDir, file);
+    const body = file === 'CLAUDE.md' ? CLAUDE_POINTER : blockBody;
+    const wrappedBlock = buildWrappedBlock(body);
     results.push(processFile(filePath, wrappedBlock, dryRun));
   }
 

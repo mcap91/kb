@@ -23,6 +23,7 @@ import {
   buildSearchIndex,
   search,
   buildDependencyProjection,
+  writeManagedBlock,
 } from '../packages/wiki-core/src/index.js';
 
 import type {
@@ -330,6 +331,105 @@ describe('bootstrap', () => {
 
     // The wiki directory should NOT actually exist after a dry run
     expect(fs.existsSync(path.join(tmp.dir, 'wiki', '.wiki-contract.json'))).toBe(false);
+  });
+
+  it('bootstraps AGENTS.md with full template and CLAUDE.md with @AGENTS.md pointer (WK-0203)', async () => {
+    tmp = createTmpDir();
+    await bootstrap({ dir: tmp.dir, repo: 'test/repo' });
+
+    const agents = readText(tmp.dir, 'AGENTS.md');
+    expect(agents).toContain('<!-- BEGIN kb-managed -->');
+    expect(agents).toContain('<!-- END kb-managed -->');
+    // AGENTS.md carries the full template body
+    expect(agents).toContain('## kb integration');
+    expect(agents).toContain('### Operating rules');
+    // No @AGENTS.md self-reference inside AGENTS.md
+    expect(agents).not.toContain('@AGENTS.md');
+
+    const claude = readText(tmp.dir, 'CLAUDE.md');
+    // CLAUDE.md is a thin redirect: @AGENTS.md lives inside the managed markers
+    const beginIdx = claude.indexOf('<!-- BEGIN kb-managed -->');
+    const endIdx = claude.indexOf('<!-- END kb-managed -->');
+    const pointerIdx = claude.indexOf('@AGENTS.md');
+    expect(beginIdx).toBeGreaterThanOrEqual(0);
+    expect(endIdx).toBeGreaterThan(beginIdx);
+    expect(pointerIdx).toBeGreaterThan(beginIdx);
+    expect(pointerIdx).toBeLessThan(endIdx);
+    // CLAUDE.md does not duplicate the full template body
+    expect(claude).not.toContain('### Operating rules');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// writeManagedBlock (WK-0203: per-file managed block content)
+// ---------------------------------------------------------------------------
+
+describe('writeManagedBlock', () => {
+  let tmp: TmpRepo;
+
+  afterEach(() => {
+    tmp?.cleanup();
+  });
+
+  it('writes the full template to AGENTS.md', () => {
+    tmp = createTmpDir();
+    const template = '## Template\n\nFull instructions body.\n';
+    const result = writeManagedBlock(tmp.dir, template);
+    expect(result.ok).toBe(true);
+
+    const agents = readText(tmp.dir, 'AGENTS.md');
+    expect(agents).toContain('<!-- BEGIN kb-managed -->');
+    expect(agents).toContain('<!-- END kb-managed -->');
+    expect(agents).toContain('Full instructions body.');
+  });
+
+  it('writes only the @AGENTS.md directive to CLAUDE.md inside the markers', () => {
+    tmp = createTmpDir();
+    const template = '## Template\n\nFull instructions body.\n';
+    const result = writeManagedBlock(tmp.dir, template);
+    expect(result.ok).toBe(true);
+
+    const claude = readText(tmp.dir, 'CLAUDE.md');
+    const beginIdx = claude.indexOf('<!-- BEGIN kb-managed -->');
+    const endIdx = claude.indexOf('<!-- END kb-managed -->');
+    const pointerIdx = claude.indexOf('@AGENTS.md');
+    expect(beginIdx).toBeGreaterThanOrEqual(0);
+    expect(endIdx).toBeGreaterThan(beginIdx);
+    expect(pointerIdx).toBeGreaterThan(beginIdx);
+    expect(pointerIdx).toBeLessThan(endIdx);
+    // CLAUDE.md does not carry the full template body
+    expect(claude).not.toContain('Full instructions body.');
+  });
+
+  it('does not self-reference @AGENTS.md inside AGENTS.md', () => {
+    tmp = createTmpDir();
+    const template = '## Template\n\nFull instructions body.\n';
+    const result = writeManagedBlock(tmp.dir, template);
+    expect(result.ok).toBe(true);
+
+    const agents = readText(tmp.dir, 'AGENTS.md');
+    expect(agents).not.toContain('@AGENTS.md');
+  });
+
+  it('replaces an old full-template CLAUDE.md block with the pointer on refresh', () => {
+    tmp = createTmpDir();
+
+    // Simulate a pre-WK-0203 repo where CLAUDE.md got the full template block
+    const legacyFullBody =
+      '<!-- BEGIN kb-managed -->\nManaged by kb\n\nLegacy full template body.\n<!-- END kb-managed -->\n';
+    fs.writeFileSync(path.join(tmp.dir, 'CLAUDE.md'), legacyFullBody, 'utf-8');
+
+    const result = writeManagedBlock(tmp.dir, '## Template\n\nNew full body.\n');
+    expect(result.ok).toBe(true);
+
+    const claude = readText(tmp.dir, 'CLAUDE.md');
+    expect(claude).toContain('@AGENTS.md');
+    expect(claude).not.toContain('Legacy full template body.');
+    expect(claude).not.toContain('New full body.');
+
+    // AGENTS.md still gets the full template
+    const agents = readText(tmp.dir, 'AGENTS.md');
+    expect(agents).toContain('New full body.');
   });
 });
 

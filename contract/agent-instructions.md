@@ -33,6 +33,8 @@ the initial retrieval pass.
   instructions carry the full orchestration recipe (dispatch loop, polling, kind routing,
   fix-up budget, merge/cleanup, wiki-update-after-completion). Prefer `kb-dispatch` MCP
   tools; CLI fallback `npm run dispatch -- …`.
+- For pipeline work, delegate via kb-dispatch; do not spawn Claude Code subagents or
+  workflows unless the operator explicitly approves.
 - Graph: kb CLI (`npm run graph -- --dir <this repo>`).
 - Dashboard: `npm run dashboard -- <ID> --dir <this repo>` generates a self-contained HTML tracker
   for PLN, IN, or WK-set records. Output: `wiki/dashboard/<ID>.html`. See `docs/dashboard.md`.
