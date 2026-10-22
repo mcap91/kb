@@ -113,6 +113,16 @@ export interface ResolvedModel {
   effortMapping?: EffortMapping;
   /** §7.13 context-budget gate input (tokens). Defaults to DEFAULT_CONTEXT_WINDOW; floor at MIN_CONTEXT_WINDOW. */
   contextWindow: number;
+  /**
+   * Per-turn output budget (tokens) for the worker (WK-0205) — replaces the
+   * old hardcoded pi maxTokens of 8192 (pipeline.ts). resolveModelFromConfig
+   * always populates it (entry.max_tokens ?? DEFAULT_MAX_TOKENS), so it is
+   * optional here only so non-pi/legacy ResolvedModel literals outside the
+   * dispatch path don't need to carry it; consumers fall back to
+   * DEFAULT_MAX_TOKENS when absent. Refused as BAD_RECORD when >= the
+   * resolved contextWindow.
+   */
+  maxTokens?: number;
   requestParams?: Record<string, unknown>;
 }
 
@@ -123,6 +133,14 @@ export interface ResolvedModel {
  * serves at a smaller window (Ollama num_ctx, vLLM max_model_len).
  */
 export const DEFAULT_CONTEXT_WINDOW = 131072;
+
+/**
+ * Default per-turn output budget (tokens) when models.json omits max_tokens
+ * (WK-0205). 2× pi's 16,384 compaction reserve (compaction.js:76, Pi 0.85.1);
+ * a quarter of the 131,072 default context window. Must be below the resolved
+ * context window — resolveModelFromConfig refuses BAD_RECORD otherwise.
+ */
+export const DEFAULT_MAX_TOKENS = 32768;
 
 /**
  * Minimum context window (tokens). Pi's compaction reserve is 16384
@@ -199,6 +217,15 @@ export async function resolveModelFromConfig(
     );
   }
 
+  const maxTokens = modelEntry.max_tokens ?? DEFAULT_MAX_TOKENS;
+  if (maxTokens >= contextWindow) {
+    return fail(
+      'BAD_RECORD',
+      `Model "${slug}" max_tokens is ${maxTokens}, which is not below the resolved context window of ${contextWindow} tokens.`,
+      { maxTokens, contextWindow },
+    );
+  }
+
   return ok({
     slug,
     backend,
@@ -210,6 +237,7 @@ export async function resolveModelFromConfig(
     availableOn: modelEntry.available_on,
     effortMapping: backendEntry.effort_mapping,
     contextWindow,
+    maxTokens,
     ...(backendEntry.request_params ? { requestParams: backendEntry.request_params } : {}),
   });
 }

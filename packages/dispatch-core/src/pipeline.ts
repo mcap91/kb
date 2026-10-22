@@ -41,6 +41,7 @@ import {
   gatePiPresence,
   buildFingerprintFragment,
   parseFingerprintOutput,
+  DEFAULT_MAX_TOKENS,
   type ResolvedModel,
   type ModelEntry,
 } from './model-registry.js';
@@ -1023,7 +1024,7 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
         api: 'openai-completions',
         apiKeyEnv: model.apiKeyEnv,
         contextWindow: model.contextWindow,
-        maxTokens: 8192,
+        maxTokens: model.maxTokens ?? DEFAULT_MAX_TOKENS,
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
       };
       const invocation = buildInvocation(promptPath, piModelEntry, clonePath, workerDir);

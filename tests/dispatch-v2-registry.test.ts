@@ -22,9 +22,13 @@ import {
   gatePiPresence,
   buildFingerprintFragment,
   parseFingerprintOutput,
+  DEFAULT_MAX_TOKENS,
   PI_HARNESS_INFO,
   type ResolvedModel,
+  type ModelEntry,
 } from '../packages/dispatch-core/src/model-registry.js';
+import { loadModelsTable } from '../packages/dispatch-core/src/repo-config.js';
+import { buildModelsJson } from '../packages/dispatch-core/src/adapters/pi.js';
 
 async function createTempDir(prefix: string): Promise<string> {
   return mkdtemp(join(tmpdir(), prefix));
@@ -47,6 +51,7 @@ function makeResolvedModel(overrides: Partial<ResolvedModel> = {}): ResolvedMode
     secretsFile: '/home/operator/.config/kb-dispatch/secrets.env',
     availableOn: ['openrouter'],
     contextWindow: 131072,
+    maxTokens: DEFAULT_MAX_TOKENS,
     ...overrides,
   };
 }
@@ -106,6 +111,7 @@ describe('model-registry.ts — resolveModelFromConfig', () => {
       secretsFile: '/home/operator/.config/kb-dispatch/secrets.env',
       availableOn: ['openrouter'],
       contextWindow: 131072,
+      maxTokens: DEFAULT_MAX_TOKENS,
     });
   });
 
@@ -198,6 +204,174 @@ describe('model-registry.ts — resolveModelFromConfig', () => {
     if (result.ok) return;
     expect(result.error).toBe('MODEL_NOT_FOUND');
     expect(result.detail).toMatchObject({ available: [] });
+  });
+
+  // WK-0205: per-model max_tokens (pi worker per-turn output budget).
+  it('defaults maxTokens to DEFAULT_MAX_TOKENS when models.json omits max_tokens', async () => {
+    await seedTables();
+
+    const result = await resolveModelFromConfig(dir, 'deepseek', 'openrouter');
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.maxTokens).toBe(DEFAULT_MAX_TOKENS);
+  });
+
+  it('uses an explicit max_tokens from models.json on the resolved model', async () => {
+    await writeDispatchConfig(
+      dir,
+      'models.json',
+      JSON.stringify({ deepseek: { available_on: ['openrouter'], model_id: 'deepseek/deepseek-v4-flash-0731', max_tokens: 4096 } }),
+    );
+    await writeDispatchConfig(
+      dir,
+      'backends.json',
+      JSON.stringify({
+        openrouter: {
+          family: 'pi',
+          base_url: 'https://openrouter.ai/api/v1',
+          api_key_env: 'OPENROUTER_API_KEY',
+          secrets_file: null,
+        },
+      }),
+    );
+
+    const result = await resolveModelFromConfig(dir, 'deepseek', 'openrouter');
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.maxTokens).toBe(4096);
+  });
+
+  it('carries the resolved maxTokens into the pi models.json content written into the jail (WK-0205)', async () => {
+    await writeDispatchConfig(
+      dir,
+      'models.json',
+      JSON.stringify({ deepseek: { available_on: ['openrouter'], model_id: 'deepseek/deepseek-v4-flash-0731', max_tokens: 4096 } }),
+    );
+    await writeDispatchConfig(
+      dir,
+      'backends.json',
+      JSON.stringify({
+        openrouter: {
+          family: 'pi',
+          base_url: 'https://openrouter.ai/api/v1',
+          api_key_env: 'OPENROUTER_API_KEY',
+          secrets_file: null,
+        },
+      }),
+    );
+
+    const result = await resolveModelFromConfig(dir, 'deepseek', 'openrouter');
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const model = result.data;
+
+    // Mirror pipeline.ts's pi branch ModelEntry mapping (S3 ruling 1): the
+    // entry the jail's models.json content is built from, then materialized
+    // at /tmp/.pi-agent/models.json via bwrapInjectedFiles.
+    const piModelEntry: ModelEntry = {
+      provider: model.backend,
+      modelId: model.modelId,
+      displayName: `${model.slug} (${model.backend})`,
+      baseUrl: model.baseUrl as string,
+      api: 'openai-completions',
+      apiKeyEnv: model.apiKeyEnv,
+      contextWindow: model.contextWindow,
+      maxTokens: model.maxTokens ?? DEFAULT_MAX_TOKENS,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    };
+    const modelsJson = buildModelsJson(piModelEntry);
+    expect(modelsJson.providers.openrouter.models[0]).toMatchObject({
+      id: 'deepseek/deepseek-v4-flash-0731',
+      maxTokens: 4096,
+    });
+  });
+
+  it('refuses BAD_RECORD for a non-positive max_tokens, naming the model', async () => {
+    for (const bad of [0, -100]) {
+      await writeDispatchConfig(
+        dir,
+        'models.json',
+        JSON.stringify({ deepseek: { available_on: ['openrouter'], model_id: 'deepseek/deepseek-v4-flash-0731', max_tokens: bad } }),
+      );
+
+      const result = await loadModelsTable(dir);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error).toBe('BAD_RECORD');
+      expect(result.message).toContain('deepseek');
+      expect(result.message).toContain('max_tokens');
+    }
+  });
+
+  it('refuses BAD_RECORD for a non-integer max_tokens (string or float), naming the model', async () => {
+    for (const bad of ['32768', 1.5]) {
+      await writeDispatchConfig(
+        dir,
+        'models.json',
+        JSON.stringify({ deepseek: { available_on: ['openrouter'], model_id: 'deepseek/deepseek-v4-flash-0731', max_tokens: bad } }),
+      );
+
+      const result = await loadModelsTable(dir);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error).toBe('BAD_RECORD');
+      expect(result.message).toContain('deepseek');
+      expect(result.message).toContain('max_tokens');
+    }
+  });
+
+  it('refuses BAD_RECORD when max_tokens equals the resolved context window', async () => {
+    await writeDispatchConfig(
+      dir,
+      'models.json',
+      JSON.stringify({ deepseek: { available_on: ['openrouter'], model_id: 'deepseek/deepseek-v4-flash-0731', max_tokens: 131072 } }),
+    );
+    await writeDispatchConfig(
+      dir,
+      'backends.json',
+      JSON.stringify({
+        openrouter: {
+          family: 'pi',
+          base_url: 'https://openrouter.ai/api/v1',
+          api_key_env: 'OPENROUTER_API_KEY',
+          secrets_file: null,
+        },
+      }),
+    );
+
+    const result = await resolveModelFromConfig(dir, 'deepseek', 'openrouter');
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toBe('BAD_RECORD');
+    expect(result.message).toContain('max_tokens');
+    expect((result.detail as { maxTokens: number; contextWindow: number })).toEqual({ maxTokens: 131072, contextWindow: 131072 });
+  });
+
+  it('refuses BAD_RECORD when max_tokens exceeds the resolved context window', async () => {
+    await writeDispatchConfig(
+      dir,
+      'models.json',
+      JSON.stringify({ deepseek: { available_on: ['openrouter'], model_id: 'deepseek/deepseek-v4-flash-0731', max_tokens: 200000 } }),
+    );
+    await writeDispatchConfig(
+      dir,
+      'backends.json',
+      JSON.stringify({
+        openrouter: {
+          family: 'pi',
+          base_url: 'https://openrouter.ai/api/v1',
+          api_key_env: 'OPENROUTER_API_KEY',
+          secrets_file: null,
+        },
+      }),
+    );
+
+    const result = await resolveModelFromConfig(dir, 'deepseek', 'openrouter');
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toBe('BAD_RECORD');
+    expect(result.message).toContain('max_tokens');
+    expect((result.detail as { maxTokens: number; contextWindow: number }).maxTokens).toBe(200000);
   });
 });
 
