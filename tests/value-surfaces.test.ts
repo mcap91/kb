@@ -2,16 +2,18 @@
  * T13 — Propagation tests for VAL surfaces (spec §11.2, §12).
  *
  * Tests (TDD, written first):
- *   1. bootstrap lands the "Value reports" recipe in AGENTS.md (CLAUDE.md is a thin @AGENTS.md redirect)
+ *   1. bootstrap: AGENTS.md does NOT contain the (removed, WK-0209) value-report recipe marker,
+ *      and the dashboard bullet is explicitly kb-relative (CLAUDE.md is a thin @AGENTS.md redirect)
  *   2. wiki/value-reports/ directory exists after bootstrap
  *   3. wiki/templates/value.md exists after bootstrap
  *   4. allocate --prefix VAL → VAL-0001
- *   5. sync-contract re-lands the recipe after it has been stripped
+ *   5. sync-contract does not reintroduce the removed recipe marker, and keeps the dashboard bullet
+ *      kb-relative (WK-0209)
  *   6. a VAL record in wiki/value-reports/ graphs as a wiki_record node
  *   7. MCP tools array contains value-report and value-usage
  *   8. CLI dispatch recognises value-report and value-usage commands
  *
- * Stable marker string used in recipe assertions (grep for this):
+ * Stable marker string used in recipe-absence assertions (grep for this):
  *   "value-report-recipe-v3"
  */
 
@@ -36,9 +38,14 @@ import {
 // Constants
 // ---------------------------------------------------------------------------
 
-/** Stable marker string embedded in the recipe text (spec §7).
- *  AGENTS.md must contain this after bootstrap/sync; CLAUDE.md is a thin @AGENTS.md redirect. */
+/** Stable marker string that used to be embedded in the recipe text (spec §7).
+ *  WK-0209 removed the recipe section from the kb-managed contract block; AGENTS.md must NOT
+ *  contain this after bootstrap/sync. Kept for that absence check. */
 const RECIPE_MARKER = 'value-report-recipe-v3';
+
+/** Substring of the reworded dashboard bullet (WK-0209) — the dashboard doc path only exists in
+ *  the kb checkout, so the managed-block bullet must say so explicitly for consumer repos. */
+const DASHBOARD_KB_RELATIVE_MARKER = 'kb checkout';
 
 const ROOT = resolve(process.cwd());
 const TSX = process.platform === 'win32'
@@ -76,9 +83,10 @@ describe('VAL propagation — bootstrap', () => {
   beforeEach(async () => { tmp = await createBootstrappedRepo(); });
   afterEach(() => { tmp?.cleanup(); });
 
-  it('bootstrap: AGENTS.md contains the value-report recipe marker', () => {
+  it('bootstrap: AGENTS.md does not contain the removed value-report recipe marker, and the dashboard bullet is kb-relative', () => {
     const agents = readText(tmp.dir, 'AGENTS.md');
-    expect(agents).toContain(RECIPE_MARKER);
+    expect(agents).not.toContain(RECIPE_MARKER);
+    expect(agents).toContain(DASHBOARD_KB_RELATIVE_MARKER);
   });
 
   it('bootstrap: CLAUDE.md is a thin redirect (@AGENTS.md) — recipe lives in AGENTS.md only', () => {
@@ -105,31 +113,33 @@ describe('VAL propagation — bootstrap', () => {
 });
 
 // ---------------------------------------------------------------------------
-// T13.5 — sync-contract re-lands the recipe
+// T13.5 — sync-contract does not reintroduce the removed recipe (WK-0209)
 // ---------------------------------------------------------------------------
 
-describe('VAL propagation — sync-contract re-lands recipe', () => {
+describe('VAL propagation — sync-contract does not re-land recipe', () => {
   let tmp: TmpRepo;
 
   afterEach(() => { tmp?.cleanup(); });
 
-  it('sync-contract restores the recipe marker after it has been stripped from AGENTS.md', async () => {
+  it('sync-contract does not reintroduce the removed recipe marker, and keeps the dashboard bullet kb-relative', async () => {
     tmp = await createBootstrappedRepo();
 
-    // Strip the managed block from AGENTS.md (simulate a pre-recipe repo)
+    // Simulate a pre-WK-0209 consumer: its managed block still carries the old recipe section
     const agentsPath = path.join(tmp.dir, 'AGENTS.md');
     const original = fs.readFileSync(agentsPath, 'utf-8');
-    const stripped = original
-      .split('\n')
-      .filter(line => !line.includes(RECIPE_MARKER))
-      .join('\n');
-    fs.writeFileSync(agentsPath, stripped, 'utf-8');
-    expect(fs.readFileSync(agentsPath, 'utf-8')).not.toContain(RECIPE_MARKER);
+    const stale = original.replace(
+      '<!-- END kb-managed -->',
+      `### Value reports (${RECIPE_MARKER})\n\n<!-- END kb-managed -->`,
+    );
+    fs.writeFileSync(agentsPath, stale, 'utf-8');
+    expect(fs.readFileSync(agentsPath, 'utf-8')).toContain(RECIPE_MARKER);
 
-    // sync-contract should re-write the full managed block including the recipe
+    // sync-contract re-writes the full managed block from the current contract template
     const result = await sync({ dir: tmp.dir });
     expect(result.ok).toBe(true);
-    expect(fs.readFileSync(agentsPath, 'utf-8')).toContain(RECIPE_MARKER);
+    const synced = fs.readFileSync(agentsPath, 'utf-8');
+    expect(synced).not.toContain(RECIPE_MARKER);
+    expect(synced).toContain(DASHBOARD_KB_RELATIVE_MARKER);
   });
 
   it('sync-contract restores the @AGENTS.md pointer after CLAUDE.md managed block is corrupted', async () => {
