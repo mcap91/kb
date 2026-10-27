@@ -24,6 +24,8 @@ import {
   search,
   buildDependencyProjection,
   writeManagedBlock,
+  readBodyTable,
+  readSlices,
 } from '../packages/wiki-core/src/index.js';
 
 import type {
@@ -1976,6 +1978,429 @@ describe('lint', () => {
         d.file.includes('handoffs'),
       );
       expect(handoffDiags.length).toBe(0);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// WK-0211: shared body-table reader (readBodyTable / readSlices)
+// ---------------------------------------------------------------------------
+
+describe('readBodyTable', () => {
+  const COLUMNS = ['id', 'title', 'status'];
+
+  it('parses a well-formed table under the given heading', () => {
+    const body = [
+      '# Record',
+      '',
+      '## Widgets',
+      '',
+      '| id | title | status |',
+      '|----|-------|--------|',
+      '| w1 | First | todo |',
+      '| w2 | Second | done |',
+      '',
+      '## Notes',
+    ].join('\n');
+
+    const result = readBodyTable(body, 'Widgets', COLUMNS);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.data).toEqual([
+        { id: 'w1', title: 'First', status: 'todo' },
+        { id: 'w2', title: 'Second', status: 'done' },
+      ]);
+    }
+  });
+
+  it('fails when the heading section is missing', () => {
+    const body = '# Record\n\n## Notes\n';
+    const result = readBodyTable(body, 'Widgets', COLUMNS);
+    expect(result.ok).toBe(false);
+  });
+
+  it('fails on a header mismatch', () => {
+    const body = [
+      '## Widgets',
+      '',
+      '| id | name | status |',
+      '|----|------|--------|',
+      '| w1 | First | todo |',
+    ].join('\n');
+
+    const result = readBodyTable(body, 'Widgets', COLUMNS);
+    expect(result.ok).toBe(false);
+  });
+
+  it('fails on a row with the wrong cell count', () => {
+    const body = [
+      '## Widgets',
+      '',
+      '| id | title | status |',
+      '|----|-------|--------|',
+      '| w1 | First |',
+    ].join('\n');
+
+    const result = readBodyTable(body, 'Widgets', COLUMNS);
+    expect(result.ok).toBe(false);
+  });
+
+  it('treats an escaped pipe (\\|) inside a cell as a literal pipe, not a column break', () => {
+    const body = [
+      '## Widgets',
+      '',
+      '| id | title | status |',
+      '|----|-------|--------|',
+      '| w1 | A \\| B | todo |',
+    ].join('\n');
+
+    const result = readBodyTable(body, 'Widgets', COLUMNS);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.data).toEqual([{ id: 'w1', title: 'A | B', status: 'todo' }]);
+    }
+  });
+});
+
+describe('readSlices', () => {
+  it('returns ok([]) when the WK has no "## Slices" section', () => {
+    const body = '# WK-0001\n\n## Objective\n\nNo slices here.\n';
+    const result = readSlices(body);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.data).toEqual([]);
+    }
+  });
+
+  it('returns both rows, with write_scope/depends_on split into lists', () => {
+    const body = [
+      '# WK-0001',
+      '',
+      '## Slices',
+      '',
+      '| id | title | write_scope | depends_on | validation | status |',
+      '|----|-------|-------------|------------|------------|--------|',
+      '| s1 | First slice | path/a.ts, path/b.ts |  | npm test | todo |',
+      '| s2 | Second slice | path/c.ts | s1 | npm test | todo |',
+    ].join('\n');
+
+    const result = readSlices(body);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.data).toEqual([
+        {
+          id: 's1',
+          title: 'First slice',
+          write_scope: ['path/a.ts', 'path/b.ts'],
+          depends_on: [],
+          validation: 'npm test',
+          status: 'todo',
+        },
+        {
+          id: 's2',
+          title: 'Second slice',
+          write_scope: ['path/c.ts'],
+          depends_on: ['s1'],
+          validation: 'npm test',
+          status: 'todo',
+        },
+      ]);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// WK-0211: NESTED_FRONTMATTER lint rule + "## Slices" lint rules
+// ---------------------------------------------------------------------------
+
+describe('lint NESTED_FRONTMATTER (WK-0211)', () => {
+  let tmp: TmpRepo;
+
+  afterEach(() => {
+    tmp?.cleanup();
+  });
+
+  it('flags an indented frontmatter line that is not a plain list item', async () => {
+    tmp = await createBootstrappedRepo();
+
+    const raw = [
+      '---',
+      'id: "WK-0001"',
+      'title: "Test"',
+      'type: task',
+      'status: inbox',
+      'priority: medium',
+      'owner: "test"',
+      'created: "2025-01-01"',
+      'updated: "2025-01-01"',
+      'origin:',
+      '  source: nested',
+      '---',
+      '',
+      '# WK-0001',
+    ].join('\n');
+    fs.mkdirSync(path.join(tmp.dir, 'wiki/issues'), { recursive: true });
+    fs.writeFileSync(path.join(tmp.dir, 'wiki/issues/WK-0001.md'), raw, 'utf-8');
+
+    const result = await lint({ dir: tmp.dir });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const diags = result.data.diagnostics.filter(d => d.code === 'NESTED_FRONTMATTER');
+      expect(diags.length).toBe(1);
+      expect(diags[0].severity).toBe('error');
+    }
+  });
+
+  it('does not flag plain scalar list items', async () => {
+    tmp = await createBootstrappedRepo();
+
+    writeRecord(tmp.dir, 'wiki/issues/WK-0001.md', {
+      id: 'WK-0001',
+      title: 'Test',
+      type: 'task',
+      status: 'inbox',
+      priority: 'medium',
+      owner: 'test',
+      created: '2025-01-01',
+      updated: '2025-01-01',
+      depends_on: ['WK-0002', 'WK-0003'],
+    });
+
+    const result = await lint({ dir: tmp.dir });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const diags = result.data.diagnostics.filter(d => d.code === 'NESTED_FRONTMATTER');
+      expect(diags.length).toBe(0);
+    }
+  });
+
+  it('golden fixture: a nested 2-row slices: frontmatter block was silently dropped before WK-0211 (committed capture), and is caught by NESTED_FRONTMATTER now', async () => {
+    tmp = await createBootstrappedRepo();
+
+    const nested = fs.readFileSync(
+      path.join(__dirname, 'fixtures/wk-slices/nested-frontmatter.md'),
+      'utf-8',
+    );
+    const withoutBlock = fs.readFileSync(
+      path.join(__dirname, 'fixtures/wk-slices/nested-frontmatter-without-block.md'),
+      'utf-8',
+    );
+    fs.mkdirSync(path.join(tmp.dir, 'wiki/issues'), { recursive: true });
+    fs.writeFileSync(path.join(tmp.dir, 'wiki/issues/WK-9000.md'), nested, 'utf-8');
+    fs.writeFileSync(path.join(tmp.dir, 'wiki/issues/WK-9001.md'), withoutBlock, 'utf-8');
+
+    const golden = JSON.parse(
+      fs.readFileSync(path.join(__dirname, 'fixtures/wk-slices/golden-lint-before.json'), 'utf-8'),
+    );
+    // The committed "before" capture never saw NESTED_FRONTMATTER — that's the silent drop this
+    // rule exists to close.
+    expect(golden.before_nested_frontmatter_md.some((d: { code: string }) => d.code === 'NESTED_FRONTMATTER')).toBe(false);
+
+    const result = await lint({ dir: tmp.dir });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const nestedDiags = result.data.diagnostics.filter(
+        d => d.file === 'wiki/issues/WK-9000.md' && d.code === 'NESTED_FRONTMATTER',
+      );
+      expect(nestedDiags.length).toBeGreaterThan(0);
+
+      // The WK without the nested block is unaffected — golden diff.
+      const withoutBlockDiags = result.data.diagnostics.filter(
+        d => d.file === 'wiki/issues/WK-9001.md' && d.code === 'NESTED_FRONTMATTER',
+      );
+      expect(withoutBlockDiags.length).toBe(0);
+    }
+  });
+});
+
+describe('lint "## Slices" rules (WK-0211)', () => {
+  let tmp: TmpRepo;
+
+  afterEach(() => {
+    tmp?.cleanup();
+  });
+
+  const BASE_FRONTMATTER = {
+    id: 'WK-0001',
+    title: 'Test',
+    type: 'task',
+    status: 'todo',
+    priority: 'medium',
+    owner: 'test',
+    created: '2025-01-01',
+    updated: '2025-01-01',
+    initiative: 'IN-0001',
+  };
+
+  function writeWkWithSlicesBody(tmp: TmpRepo, slicesTable: string): void {
+    writeRecord(tmp.dir, 'wiki/initiatives/IN-0001.md', {
+      id: 'IN-0001',
+      title: 'Init',
+      status: 'todo',
+      priority: 'medium',
+      owner: 'test',
+      created: '2025-01-01',
+      updated: '2025-01-01',
+    });
+    writeRecord(
+      tmp.dir,
+      'wiki/issues/WK-0001.md',
+      BASE_FRONTMATTER,
+      `# WK-0001\n\n## Acceptance criteria\n\n- [ ] _criterion_\n\n${slicesTable}\n`,
+    );
+  }
+
+  it('a WK with a 2-row "## Slices" table lints clean', async () => {
+    tmp = await createBootstrappedRepo();
+    writeWkWithSlicesBody(
+      tmp,
+      [
+        '## Slices',
+        '',
+        '| id | title | write_scope | depends_on | validation | status |',
+        '|----|-------|-------------|------------|------------|--------|',
+        '| s1 | First slice | path/a.ts |  | npm test | todo |',
+        '| s2 | Second slice | path/b.ts | s1 | npm test | todo |',
+      ].join('\n'),
+    );
+
+    const result = await lint({ dir: tmp.dir });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const slicesDiags = result.data.diagnostics.filter(d => d.code.startsWith('SLICES_'));
+      expect(slicesDiags.length).toBe(0);
+    }
+  });
+
+  it('a WK without "## Slices" produces no SLICES_* diagnostics', async () => {
+    tmp = await createBootstrappedRepo();
+    writeRecord(tmp.dir, 'wiki/initiatives/IN-0001.md', {
+      id: 'IN-0001',
+      title: 'Init',
+      status: 'todo',
+      priority: 'medium',
+      owner: 'test',
+      created: '2025-01-01',
+      updated: '2025-01-01',
+    });
+    writeRecord(
+      tmp.dir,
+      'wiki/issues/WK-0001.md',
+      BASE_FRONTMATTER,
+      '# WK-0001\n\n## Acceptance criteria\n\n- [ ] _criterion_\n',
+    );
+
+    const result = await lint({ dir: tmp.dir });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const slicesDiags = result.data.diagnostics.filter(d => d.code.startsWith('SLICES_'));
+      expect(slicesDiags.length).toBe(0);
+    }
+  });
+
+  it('detects a duplicate slice row id', async () => {
+    tmp = await createBootstrappedRepo();
+    writeWkWithSlicesBody(
+      tmp,
+      [
+        '## Slices',
+        '',
+        '| id | title | write_scope | depends_on | validation | status |',
+        '|----|-------|-------------|------------|------------|--------|',
+        '| s1 | First slice | path/a.ts |  | npm test | todo |',
+        '| s1 | Duplicate id | path/b.ts |  | npm test | todo |',
+      ].join('\n'),
+    );
+
+    const result = await lint({ dir: tmp.dir });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const diags = result.data.diagnostics.filter(d => d.code === 'SLICES_DUPLICATE_ROW_ID');
+      expect(diags.length).toBeGreaterThan(0);
+    }
+  });
+
+  it('detects a depends_on targeting a row id not in the table', async () => {
+    tmp = await createBootstrappedRepo();
+    writeWkWithSlicesBody(
+      tmp,
+      [
+        '## Slices',
+        '',
+        '| id | title | write_scope | depends_on | validation | status |',
+        '|----|-------|-------------|------------|------------|--------|',
+        '| s1 | First slice | path/a.ts | s9 | npm test | todo |',
+      ].join('\n'),
+    );
+
+    const result = await lint({ dir: tmp.dir });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const diags = result.data.diagnostics.filter(d => d.code === 'SLICES_BROKEN_DEPENDS_ON');
+      expect(diags.length).toBeGreaterThan(0);
+    }
+  });
+
+  it('detects a glob character in write_scope', async () => {
+    tmp = await createBootstrappedRepo();
+    writeWkWithSlicesBody(
+      tmp,
+      [
+        '## Slices',
+        '',
+        '| id | title | write_scope | depends_on | validation | status |',
+        '|----|-------|-------------|------------|------------|--------|',
+        '| s1 | First slice | path/*.ts |  | npm test | todo |',
+      ].join('\n'),
+    );
+
+    const result = await lint({ dir: tmp.dir });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const diags = result.data.diagnostics.filter(d => d.code === 'SLICES_INVALID_WRITE_SCOPE');
+      expect(diags.length).toBeGreaterThan(0);
+    }
+  });
+
+  it('detects a status outside the WK status enum', async () => {
+    tmp = await createBootstrappedRepo();
+    writeWkWithSlicesBody(
+      tmp,
+      [
+        '## Slices',
+        '',
+        '| id | title | write_scope | depends_on | validation | status |',
+        '|----|-------|-------------|------------|------------|--------|',
+        '| s1 | First slice | path/a.ts |  | npm test | bogus |',
+      ].join('\n'),
+    );
+
+    const result = await lint({ dir: tmp.dir });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const diags = result.data.diagnostics.filter(d => d.code === 'SLICES_INVALID_STATUS');
+      expect(diags.length).toBeGreaterThan(0);
+    }
+  });
+
+  it('detects a malformed "## Slices" table (header mismatch)', async () => {
+    tmp = await createBootstrappedRepo();
+    writeWkWithSlicesBody(
+      tmp,
+      [
+        '## Slices',
+        '',
+        '| id | title | scope | depends_on | validation | status |',
+        '|----|-------|-------|------------|------------|--------|',
+        '| s1 | First slice | path/a.ts |  | npm test | todo |',
+      ].join('\n'),
+    );
+
+    const result = await lint({ dir: tmp.dir });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const diags = result.data.diagnostics.filter(d => d.code === 'SLICES_TABLE_INVALID');
+      expect(diags.length).toBe(1);
     }
   });
 });

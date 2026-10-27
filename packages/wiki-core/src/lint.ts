@@ -43,6 +43,19 @@
  *                                     updated in >=14 days, measured against a
  *                                     corpus-relative clock (max "updated" across all
  *                                     records), never wall-clock time
+ *   - NESTED_FRONTMATTER            — (error, every record, WK-0211) a frontmatter line
+ *                                     is indented and is not a plain `- item` list entry;
+ *                                     such lines are silently dropped by kb's parsers
+ *   - SLICES_TABLE_INVALID          — (error, WK, WK-0211) a WK's "## Slices" section is
+ *                                     present but its table is malformed (header
+ *                                     mismatch or a row with the wrong cell count)
+ *   - SLICES_DUPLICATE_ROW_ID       — (error, WK, WK-0211) two "## Slices" rows share an id
+ *   - SLICES_BROKEN_DEPENDS_ON      — (error, WK, WK-0211) a "## Slices" row's depends_on
+ *                                     is not a row id in the same table
+ *   - SLICES_INVALID_WRITE_SCOPE    — (error, WK, WK-0211) a "## Slices" row's write_scope
+ *                                     entry contains a glob character
+ *   - SLICES_INVALID_STATUS         — (error, WK, WK-0211) a "## Slices" row's status is
+ *                                     not in the WK status enum
  */
 
 import * as fs from 'node:fs';
@@ -56,9 +69,10 @@ import type {
   ManifestRecordType,
 } from './types.js';
 import { loadManifest } from './contract.js';
-import { frontmatterSchemas } from './schemas.js';
+import { frontmatterSchemas, workStatusSchema } from './schemas.js';
 import { debug, setVerbose } from './debug.js';
 import { buildDependencyProjection } from './deps.js';
+import { readSlices } from './body-table.js';
 
 // ---------------------------------------------------------------------------
 // Frontmatter parsing
@@ -77,6 +91,8 @@ interface ParsedRecord {
   typeKey: string;
   /** The manifest record type definition. */
   typeDef: ManifestRecordType;
+  /** Raw indented frontmatter lines (WK-0211 NESTED_FRONTMATTER) that `parseFrontmatter` silently dropped. */
+  nestedFrontmatterLines: string[];
 }
 
 /**
@@ -86,7 +102,7 @@ interface ParsedRecord {
  */
 function parseFrontmatter(
   raw: string,
-): { data: Record<string, unknown>; body: string } | null {
+): { data: Record<string, unknown>; body: string; yamlBlock: string } | null {
   const trimmed = raw.replace(/\r\n/g, '\n').replace(/^﻿/, ''); // strip BOM
   if (!trimmed.startsWith('---')) return null;
 
@@ -159,7 +175,37 @@ function parseFrontmatter(
     data[currentKey] = currentArray.length > 0 ? currentArray : undefined;
   }
 
-  return { data, body };
+  return { data, body, yamlBlock };
+}
+
+// ---------------------------------------------------------------------------
+// NESTED_FRONTMATTER (WK-0211)
+// ---------------------------------------------------------------------------
+
+/**
+ * Find frontmatter lines that `parseFrontmatter`'s hand-rolled parser silently drops:
+ * an indented line that is not a `- item` list entry (`^  ?- `), or a list entry
+ * shaped `- key: value` (a nested map, e.g. under a list-of-maps). Plain scalar list
+ * items (`  - WK-0001`) are fine; a nested mapping under any key is not — kb's
+ * frontmatter parsers (and graph-explore's wiki-overlay, which `line.trim()`s before
+ * key matching) don't understand nested YAML.
+ */
+function findNestedFrontmatterLines(yamlBlock: string): string[] {
+  const violations: string[] = [];
+  for (const line of yamlBlock.split('\n')) {
+    if (line.trim() === '') continue;
+    if (!/^\s/.test(line)) continue;
+
+    const listItemMatch = /^  ?- (.*)$/.exec(line);
+    if (!listItemMatch) {
+      violations.push(line);
+      continue;
+    }
+    if (/^[A-Za-z_][A-Za-z0-9_]*\s*:\s/.test(listItemMatch[1])) {
+      violations.push(line);
+    }
+  }
+  return violations;
 }
 
 // ---------------------------------------------------------------------------
@@ -347,6 +393,7 @@ export async function lint(opts: LintOpts): Promise<Result<LintResult>> {
         body: parsed ? parsed.body : raw,
         typeKey,
         typeDef,
+        nestedFrontmatterLines: parsed ? findNestedFrontmatterLines(parsed.yamlBlock) : [],
       });
     }
   }
@@ -372,6 +419,18 @@ export async function lint(opts: LintOpts): Promise<Result<LintResult>> {
   }
 
   for (const rec of records) {
+    // Rule: NESTED_FRONTMATTER — every record (WK-0211). Runs ahead of PARSE_ERROR
+    // since a file can have well-fenced frontmatter that still contains lines the
+    // hand-rolled parser above silently drops.
+    for (const line of rec.nestedFrontmatterLines) {
+      diagnostics.push({
+        file: rec.relPath,
+        code: 'NESTED_FRONTMATTER',
+        message: `Nested frontmatter line is not a plain list item and would be silently dropped: "${line.trim()}"`,
+        severity: 'error',
+      });
+    }
+
     // Rule: PARSE_ERROR — frontmatter could not be parsed
     if (rec.frontmatter === null) {
       diagnostics.push({
@@ -672,6 +731,73 @@ export async function lint(opts: LintOpts): Promise<Result<LintResult>> {
               field: fieldPath || undefined,
               code: 'SCHEMA_VALIDATION',
               message: issue.message,
+              severity: 'error',
+            });
+          }
+        }
+      }
+    }
+
+    // Rules: SLICES_* (WK-0211) — a WK's optional "## Slices" body table. No table is
+    // the common case and `readSlices` returns `ok([])` for it, so these rules are a
+    // no-op for the four in five WKs that never carry the section.
+    if (rec.typeDef.prefix === 'WK') {
+      const slicesResult = readSlices(rec.body);
+      if (!slicesResult.ok) {
+        diagnostics.push({
+          file: rec.relPath,
+          code: 'SLICES_TABLE_INVALID',
+          message: slicesResult.message,
+          severity: 'error',
+        });
+      } else if (slicesResult.data.length > 0) {
+        const rows = slicesResult.data;
+        const rowIds = new Set(rows.map(row => row.id));
+        const seenIds = new Set<string>();
+
+        for (const row of rows) {
+          // Rule: SLICES_DUPLICATE_ROW_ID
+          if (seenIds.has(row.id)) {
+            diagnostics.push({
+              file: rec.relPath,
+              code: 'SLICES_DUPLICATE_ROW_ID',
+              message: `Duplicate slice row id "${row.id}" in "## Slices"`,
+              severity: 'error',
+            });
+          }
+          seenIds.add(row.id);
+
+          // Rule: SLICES_BROKEN_DEPENDS_ON
+          for (const dep of row.depends_on) {
+            if (!rowIds.has(dep)) {
+              diagnostics.push({
+                file: rec.relPath,
+                code: 'SLICES_BROKEN_DEPENDS_ON',
+                message: `Slice row "${row.id}" depends_on "${dep}", which is not a row id in "## Slices"`,
+                severity: 'error',
+              });
+            }
+          }
+
+          // Rule: SLICES_INVALID_WRITE_SCOPE — literal paths only, no glob characters
+          // (mirrors chassis's work-record-repository-path.mjs:45-57).
+          for (const entry of row.write_scope) {
+            if (/[*?[\]{}]/.test(entry)) {
+              diagnostics.push({
+                file: rec.relPath,
+                code: 'SLICES_INVALID_WRITE_SCOPE',
+                message: `Slice row "${row.id}" write_scope entry "${entry}" contains a glob character; write_scope must be literal paths`,
+                severity: 'error',
+              });
+            }
+          }
+
+          // Rule: SLICES_INVALID_STATUS
+          if (!workStatusSchema.options.includes(row.status as (typeof workStatusSchema.options)[number])) {
+            diagnostics.push({
+              file: rec.relPath,
+              code: 'SLICES_INVALID_STATUS',
+              message: `Slice row "${row.id}" status "${row.status}" is not a valid WK status`,
               severity: 'error',
             });
           }

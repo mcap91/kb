@@ -146,6 +146,25 @@ export const valueDataTraceSchema = z.object({
   reason: z.string(),
 });
 
+/**
+ * One row of a WK's optional `## Slices` body table (WK-0211). `write_scope` and
+ * `depends_on` are already split into lists by the time this schema runs — the
+ * shared row splitter in `body-table.ts` is what turns the raw comma-separated
+ * cells into arrays. `status` is left as a free string here (not `workStatusSchema`):
+ * enforcing the WK status enum is a lint-level check (`SLICES_INVALID_STATUS`), not
+ * a structural parse failure, so one bad-status row doesn't blank out every other
+ * lint signal for the record.
+ */
+export const sliceRowSchema = z.object({
+  id: z.string(),
+  title: z.string(),
+  write_scope: z.array(z.string()),
+  depends_on: z.array(z.string()),
+  validation: z.string(),
+  status: z.string(),
+});
+export type SliceRow = z.infer<typeof sliceRowSchema>;
+
 // ---------------------------------------------------------------------------
 // Frontmatter Zod schemas for manifest-driven wiki record types
 // ---------------------------------------------------------------------------

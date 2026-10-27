@@ -1,0 +1,23 @@
+{
+  "captured_date": "2026-10-26",
+  "captured_by": "HO-0099 worker (WK-0211), pre-change lint.ts at commit da3c433",
+  "note": "Evidence rule capture: today's real lint() output for a WK carrying a nested 2-row slices: frontmatter block (nested-frontmatter.md), vs the same WK without it (nested-frontmatter-without-block.md). Before WK-0211, the two diagnostics lists differ only in the WK id/title text \u2014 the nested slices: block is silently dropped, never surfaced as a diagnostic. After WK-0211 (NESTED_FRONTMATTER), nested-frontmatter.md gains 4 NESTED_FRONTMATTER diagnostics; nested-frontmatter-without-block.md is unaffected (see tests/wiki-core.test.ts).",
+  "before_nested_frontmatter_md": [
+    {
+      "file": "wiki/issues/WK-9000.md",
+      "field": "initiative",
+      "code": "ORPHAN_WK",
+      "message": "WK-9000 is todo with no initiative; set `initiative: IN-####` to connect it, or move to inbox/parked if it is a deliberate loose idea.",
+      "severity": "error"
+    }
+  ],
+  "before_nested_frontmatter_without_block_md": [
+    {
+      "file": "wiki/issues/WK-9001.md",
+      "field": "initiative",
+      "code": "ORPHAN_WK",
+      "message": "WK-9001 is todo with no initiative; set `initiative: IN-####` to connect it, or move to inbox/parked if it is a deliberate loose idea.",
+      "severity": "error"
+    }
+  ]
+}
