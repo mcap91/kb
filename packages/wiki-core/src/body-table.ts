@@ -29,25 +29,34 @@ function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+/** Remove HTML comments (`<!-- ... -->`) so heading/table detection never sees commented-out examples. */
+function stripHtmlComments(body: string): string {
+  return body.replace(/<!--[\s\S]*?-->/g, '');
+}
+
 /**
  * True if the body has a `## <heading>` section at all. Used by `readSlices` to
  * distinguish "no table" (ok, optional feature unused) from "table present but
- * malformed" (a `readBodyTable` failure).
+ * malformed" (a `readBodyTable` failure). Ignores HTML comments.
  */
 function hasSection(body: string, heading: string): boolean {
   const re = new RegExp(`^##\\s+${escapeRegExp(heading)}\\s*$`, 'm');
-  return re.test(body);
+  return re.test(stripHtmlComments(body));
 }
 
-/** Slice a `## <heading>` section's content out of the body, up to the next `## ` heading or EOF. */
+/**
+ * Slice a `## <heading>` section's content out of the body, up to the next `## `
+ * heading or EOF. Ignores HTML comments.
+ */
 function getSectionContent(body: string, heading: string): string {
+  const stripped = stripHtmlComments(body);
   const re = new RegExp(`^##\\s+${escapeRegExp(heading)}\\s*$`, 'm');
-  const match = re.exec(body);
+  const match = re.exec(stripped);
   if (!match) return '';
 
   const start = match.index + match[0].length;
-  const nextHeading = body.indexOf('\n## ', start);
-  return nextHeading === -1 ? body.slice(start) : body.slice(start, nextHeading);
+  const nextHeading = stripped.indexOf('\n## ', start);
+  return nextHeading === -1 ? stripped.slice(start) : stripped.slice(start, nextHeading);
 }
 
 /**

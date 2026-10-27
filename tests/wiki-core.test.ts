@@ -2060,6 +2060,53 @@ describe('readBodyTable', () => {
       expect(result.data).toEqual([{ id: 'w1', title: 'A | B', status: 'todo' }]);
     }
   });
+
+  it('treats a heading/table that appears only inside an HTML comment as absent (HO-0100 F1)', () => {
+    const body = [
+      '# Record',
+      '',
+      '<!--',
+      '## Widgets',
+      '',
+      '| id | title | status |',
+      '|----|-------|--------|',
+      '| w1 | First | todo |',
+      '-->',
+      '',
+      '## Notes',
+    ].join('\n');
+
+    const result = readBodyTable(body, 'Widgets', COLUMNS);
+    expect(result.ok).toBe(false);
+  });
+
+  it('still parses an uncommented table when the body also contains unrelated HTML comments', () => {
+    const body = [
+      '# Record',
+      '',
+      '<!-- unrelated comment, not touching the Widgets section -->',
+      '',
+      '## Widgets',
+      '',
+      '| id | title | status |',
+      '|----|-------|--------|',
+      '| w1 | First | todo |',
+      '| w2 | Second | done |',
+      '',
+      '## Notes',
+      '',
+      '<!-- another unrelated comment -->',
+    ].join('\n');
+
+    const result = readBodyTable(body, 'Widgets', COLUMNS);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.data).toEqual([
+        { id: 'w1', title: 'First', status: 'todo' },
+        { id: 'w2', title: 'Second', status: 'done' },
+      ]);
+    }
+  });
 });
 
 describe('readSlices', () => {
@@ -2105,6 +2152,19 @@ describe('readSlices', () => {
           status: 'todo',
         },
       ]);
+    }
+  });
+
+  it('returns ok([]) for the real contract/templates/issue.md, whose "## Slices" example is commented out (HO-0100 F1)', () => {
+    const template = fs.readFileSync(
+      path.join(__dirname, '../contract/templates/issue.md'),
+      'utf-8',
+    );
+
+    const result = readSlices(template);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.data).toEqual([]);
     }
   });
 });
@@ -2289,6 +2349,33 @@ describe('lint "## Slices" rules (WK-0211)', () => {
       BASE_FRONTMATTER,
       '# WK-0001\n\n## Acceptance criteria\n\n- [ ] _criterion_\n',
     );
+
+    const result = await lint({ dir: tmp.dir });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const slicesDiags = result.data.diagnostics.filter(d => d.code.startsWith('SLICES_'));
+      expect(slicesDiags.length).toBe(0);
+    }
+  });
+
+  it('a WK body produced from the real contract/templates/issue.md (commented "## Slices" example intact) lints with no SLICES_* diagnostics (HO-0100 F1)', async () => {
+    tmp = await createBootstrappedRepo();
+    writeRecord(tmp.dir, 'wiki/initiatives/IN-0001.md', {
+      id: 'IN-0001',
+      title: 'Init',
+      status: 'todo',
+      priority: 'medium',
+      owner: 'test',
+      created: '2025-01-01',
+      updated: '2025-01-01',
+    });
+
+    const template = fs.readFileSync(
+      path.join(__dirname, '../contract/templates/issue.md'),
+      'utf-8',
+    );
+    const templateBody = template.replace(/^---\n[\s\S]*?\n---\n/, '');
+    writeRecord(tmp.dir, 'wiki/issues/WK-0001.md', BASE_FRONTMATTER, templateBody);
 
     const result = await lint({ dir: tmp.dir });
     expect(result.ok).toBe(true);
