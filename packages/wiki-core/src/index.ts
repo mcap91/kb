@@ -102,8 +102,10 @@ export {
   valueFrontmatterSchema,
   frontmatterSchemas,
   sliceRowSchema,
+  hardeningRowSchema,
+  resolutionRowSchema,
 } from './schemas.js';
-export type { SliceRow } from './schemas.js';
+export type { SliceRow, HardeningRow, ResolutionRow } from './schemas.js';
 
 // Debug utilities
 export { setVerbose, isVerbose, debug, debugTagged } from './debug.js';
@@ -176,7 +178,15 @@ export { archivePlan } from './archive-plan.js';
 export { lint } from './lint.js';
 
 // Shared body-table reader (WK-0211; `## Slices`, WK-0212's `## Resolutions` / `## Hardening`)
-export { readBodyTable, readSlices, SLICE_COLUMNS } from './body-table.js';
+export {
+  readBodyTable,
+  readSlices,
+  SLICE_COLUMNS,
+  readHardening,
+  readResolutions,
+  HARDENING_COLUMNS,
+  RESOLUTIONS_COLUMNS,
+} from './body-table.js';
 export type { BodyTableRow } from './body-table.js';
 
 // Dependency readiness projection (WK-0115: ready/blocked/done + cycle detection)

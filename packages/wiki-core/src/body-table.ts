@@ -10,7 +10,14 @@
  */
 
 import { ok, fail, type Result } from './errors.js';
-import { sliceRowSchema, type SliceRow } from './schemas.js';
+import {
+  sliceRowSchema,
+  type SliceRow,
+  hardeningRowSchema,
+  type HardeningRow,
+  resolutionRowSchema,
+  type ResolutionRow,
+} from './schemas.js';
 
 /** One row of a body table, keyed by column name. */
 export type BodyTableRow = Record<string, string>;
@@ -23,6 +30,23 @@ export const SLICE_COLUMNS = [
   'depends_on',
   'validation',
   'status',
+] as const;
+
+/** Fixed `## Hardening` header (WK-0212 Scope). */
+export const HARDENING_COLUMNS = ['#', 'date', 'check', 'by', 'verdict', 'notes'] as const;
+
+/** Fixed `## Resolutions` header (WK-0212 Scope). */
+export const RESOLUTIONS_COLUMNS = [
+  '#',
+  'date',
+  'seat',
+  'question',
+  'searched',
+  'evidence',
+  'options',
+  'choice',
+  'reason',
+  'cold check',
 ] as const;
 
 function escapeRegExp(s: string): string {
@@ -180,6 +204,80 @@ export function readSlices(wk: string): Result<SliceRow[]> {
       return fail(
         'SCHEMA_VALIDATION',
         `Invalid "## Slices" row "${raw.id}": ${parsed.error.issues.map(i => i.message).join('; ')}`,
+      );
+    }
+    rows.push(parsed.data);
+  }
+
+  return ok(rows);
+}
+
+/**
+ * Read the WK's optional `## Hardening` body table. No `## Hardening` section is the
+ * normal case (the feature is optional) and returns `ok([])`, not a failure.
+ */
+export function readHardening(wk: string): Result<HardeningRow[]> {
+  if (!hasSection(wk, 'Hardening')) {
+    return ok([]);
+  }
+
+  const tableResult = readBodyTable(wk, 'Hardening', HARDENING_COLUMNS);
+  if (!tableResult.ok) return tableResult;
+
+  const rows: HardeningRow[] = [];
+  for (const raw of tableResult.data) {
+    const candidate = {
+      num: raw['#'],
+      date: raw.date,
+      check: raw.check,
+      by: raw.by,
+      verdict: raw.verdict,
+      notes: raw.notes,
+    };
+    const parsed = hardeningRowSchema.safeParse(candidate);
+    if (!parsed.success) {
+      return fail(
+        'SCHEMA_VALIDATION',
+        `Invalid "## Hardening" row "${raw['#']}": ${parsed.error.issues.map(i => i.message).join('; ')}`,
+      );
+    }
+    rows.push(parsed.data);
+  }
+
+  return ok(rows);
+}
+
+/**
+ * Read the WK's optional `## Resolutions` body table. No `## Resolutions` section is
+ * the normal case (the feature is optional) and returns `ok([])`, not a failure.
+ */
+export function readResolutions(wk: string): Result<ResolutionRow[]> {
+  if (!hasSection(wk, 'Resolutions')) {
+    return ok([]);
+  }
+
+  const tableResult = readBodyTable(wk, 'Resolutions', RESOLUTIONS_COLUMNS);
+  if (!tableResult.ok) return tableResult;
+
+  const rows: ResolutionRow[] = [];
+  for (const raw of tableResult.data) {
+    const candidate = {
+      num: raw['#'],
+      date: raw.date,
+      seat: raw.seat,
+      question: raw.question,
+      searched: raw.searched,
+      evidence: raw.evidence,
+      options: raw.options,
+      choice: raw.choice,
+      reason: raw.reason,
+      coldCheck: raw['cold check'],
+    };
+    const parsed = resolutionRowSchema.safeParse(candidate);
+    if (!parsed.success) {
+      return fail(
+        'SCHEMA_VALIDATION',
+        `Invalid "## Resolutions" row "${raw['#']}": ${parsed.error.issues.map(i => i.message).join('; ')}`,
       );
     }
     rows.push(parsed.data);

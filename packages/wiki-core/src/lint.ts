@@ -56,6 +56,26 @@
  *                                     entry contains a glob character
  *   - SLICES_INVALID_STATUS         — (error, WK, WK-0211) a "## Slices" row's status is
  *                                     not in the WK status enum
+ *   - HARDENING_TABLE_INVALID       — (error, WK, WK-0212) a WK's "## Hardening" section
+ *                                     is present but its table is malformed (header
+ *                                     mismatch or a row with the wrong cell count)
+ *   - HARDENING_INVALID_VALUE       — (error, WK, WK-0212) a "## Hardening" row's `check`
+ *                                     or `verdict` cell is outside its closed value set,
+ *                                     or `verdict` is `n/a` on a non-`override` row
+ *   - HARDENING_EMPTY_OVERRIDE_NOTES — (error, WK, WK-0212) a "## Hardening" row with
+ *                                     `check` = `override` has an empty `notes` cell
+ *   - HARDENING_ROW_NUMBERING       — (error, WK, WK-0212) a "## Hardening" row's `#`
+ *                                     cell is not an integer, or the column has a gap
+ *                                     or duplicate across 1..n
+ *   - RESOLUTIONS_TABLE_INVALID     — (error, WK, WK-0212) a WK's "## Resolutions"
+ *                                     section is present but its table is malformed
+ *                                     (header mismatch or a row with the wrong cell count)
+ *   - RESOLUTIONS_INVALID_VALUE     — (error, WK, WK-0212) a "## Resolutions" row's
+ *                                     `cold check` cell is outside its closed value set,
+ *                                     or is `n/a` when `choice` is not `unresolved`
+ *   - RESOLUTIONS_ROW_NUMBERING     — (error, WK, WK-0212) a "## Resolutions" row's `#`
+ *                                     cell is not an integer, or the column has a gap
+ *                                     or duplicate across 1..n
  */
 
 import * as fs from 'node:fs';
@@ -69,10 +89,16 @@ import type {
   ManifestRecordType,
 } from './types.js';
 import { loadManifest } from './contract.js';
-import { frontmatterSchemas, workStatusSchema } from './schemas.js';
+import {
+  frontmatterSchemas,
+  workStatusSchema,
+  hardeningCheckSchema,
+  hardeningVerdictSchema,
+  resolutionColdCheckSchema,
+} from './schemas.js';
 import { debug, setVerbose } from './debug.js';
 import { buildDependencyProjection } from './deps.js';
-import { readSlices } from './body-table.js';
+import { readSlices, readHardening, readResolutions } from './body-table.js';
 
 // ---------------------------------------------------------------------------
 // Frontmatter parsing
@@ -323,6 +349,62 @@ function corpusLatestDate(records: ParsedRecord[]): Date | null {
     }
   }
   return latest;
+}
+
+/**
+ * Append-only check (v1, WK-0212 Scope) shared by "## Hardening" and "## Resolutions":
+ * the `#` column must run 1..n, integers, no gaps, no duplicates. No git-history
+ * comparison — editing a row in place or deleting+renumbering is undetected by design.
+ */
+function checkRowNumbering(
+  diagnostics: LintDiagnostic[],
+  relPath: string,
+  heading: string,
+  code: string,
+  raws: string[],
+): void {
+  const seen = new Map<number, number>();
+  let anyInvalid = false;
+
+  for (const raw of raws) {
+    const trimmed = raw.trim();
+    if (!/^\d+$/.test(trimmed)) {
+      diagnostics.push({
+        file: relPath,
+        code,
+        message: `"#" column value "${raw}" in "## ${heading}" is not a positive integer`,
+        severity: 'error',
+      });
+      anyInvalid = true;
+      continue;
+    }
+    const num = Number(trimmed);
+    seen.set(num, (seen.get(num) ?? 0) + 1);
+  }
+
+  for (const [num, count] of seen.entries()) {
+    if (count > 1) {
+      diagnostics.push({
+        file: relPath,
+        code,
+        message: `"#" column has duplicate value "${num}" in "## ${heading}"`,
+        severity: 'error',
+      });
+    }
+  }
+
+  if (!anyInvalid) {
+    for (let i = 1; i <= raws.length; i++) {
+      if (!seen.has(i)) {
+        diagnostics.push({
+          file: relPath,
+          code,
+          message: `"#" column is missing value ${i} (expected 1..${raws.length} with no gaps) in "## ${heading}"`,
+          severity: 'error',
+        });
+      }
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -798,6 +880,120 @@ export async function lint(opts: LintOpts): Promise<Result<LintResult>> {
               file: rec.relPath,
               code: 'SLICES_INVALID_STATUS',
               message: `Slice row "${row.id}" status "${row.status}" is not a valid WK status`,
+              severity: 'error',
+            });
+          }
+        }
+      }
+
+      // Rules: HARDENING_* (WK-0212) — a WK's optional "## Hardening" body table. No
+      // table is the common case and `readHardening` returns `ok([])` for it.
+      const hardeningResult = readHardening(rec.body);
+      if (!hardeningResult.ok) {
+        diagnostics.push({
+          file: rec.relPath,
+          code: 'HARDENING_TABLE_INVALID',
+          message: hardeningResult.message,
+          severity: 'error',
+        });
+      } else if (hardeningResult.data.length > 0) {
+        const rows = hardeningResult.data;
+
+        checkRowNumbering(
+          diagnostics,
+          rec.relPath,
+          'Hardening',
+          'HARDENING_ROW_NUMBERING',
+          rows.map(row => row.num),
+        );
+
+        for (const row of rows) {
+          // Rule: HARDENING_INVALID_VALUE — `check`
+          if (
+            !hardeningCheckSchema.options.includes(
+              row.check as (typeof hardeningCheckSchema.options)[number],
+            )
+          ) {
+            diagnostics.push({
+              file: rec.relPath,
+              code: 'HARDENING_INVALID_VALUE',
+              message: `Hardening row "${row.num}" check "${row.check}" is not one of: ${hardeningCheckSchema.options.join(' | ')}`,
+              severity: 'error',
+            });
+          }
+
+          // Rule: HARDENING_INVALID_VALUE — `verdict`
+          if (
+            !hardeningVerdictSchema.options.includes(
+              row.verdict as (typeof hardeningVerdictSchema.options)[number],
+            )
+          ) {
+            diagnostics.push({
+              file: rec.relPath,
+              code: 'HARDENING_INVALID_VALUE',
+              message: `Hardening row "${row.num}" verdict "${row.verdict}" is not one of: ${hardeningVerdictSchema.options.join(' | ')}`,
+              severity: 'error',
+            });
+          } else if (row.verdict === 'n/a' && row.check !== 'override') {
+            diagnostics.push({
+              file: rec.relPath,
+              code: 'HARDENING_INVALID_VALUE',
+              message: `Hardening row "${row.num}" verdict is "n/a" but check is "${row.check}"; "n/a" is only valid on "override" rows`,
+              severity: 'error',
+            });
+          }
+
+          // Rule: HARDENING_EMPTY_OVERRIDE_NOTES
+          if (row.check === 'override' && row.notes.trim() === '') {
+            diagnostics.push({
+              file: rec.relPath,
+              code: 'HARDENING_EMPTY_OVERRIDE_NOTES',
+              message: `Hardening row "${row.num}" has check "override" but an empty "notes" cell; override rows must name the reason in notes`,
+              severity: 'error',
+            });
+          }
+        }
+      }
+
+      // Rules: RESOLUTIONS_* (WK-0212) — a WK's optional "## Resolutions" body table.
+      // No table is the common case and `readResolutions` returns `ok([])` for it.
+      const resolutionsResult = readResolutions(rec.body);
+      if (!resolutionsResult.ok) {
+        diagnostics.push({
+          file: rec.relPath,
+          code: 'RESOLUTIONS_TABLE_INVALID',
+          message: resolutionsResult.message,
+          severity: 'error',
+        });
+      } else if (resolutionsResult.data.length > 0) {
+        const rows = resolutionsResult.data;
+
+        checkRowNumbering(
+          diagnostics,
+          rec.relPath,
+          'Resolutions',
+          'RESOLUTIONS_ROW_NUMBERING',
+          rows.map(row => row.num),
+        );
+
+        for (const row of rows) {
+          // Rule: RESOLUTIONS_INVALID_VALUE — `cold check`
+          if (
+            !resolutionColdCheckSchema.options.includes(
+              row.coldCheck as (typeof resolutionColdCheckSchema.options)[number],
+            )
+          ) {
+            diagnostics.push({
+              file: rec.relPath,
+              code: 'RESOLUTIONS_INVALID_VALUE',
+              message: `Resolutions row "${row.num}" cold check "${row.coldCheck}" is not one of: ${resolutionColdCheckSchema.options.join(' | ')}`,
+              severity: 'error',
+            });
+          } else if (row.coldCheck === 'n/a' && row.choice !== 'unresolved') {
+            diagnostics.push({
+              file: rec.relPath,
+              code: 'RESOLUTIONS_INVALID_VALUE',
+              message: `Resolutions row "${row.num}" cold check is "n/a" but choice is "${row.choice}"; "n/a" is only valid when choice is "unresolved"`,
               severity: 'error',
             });
           }

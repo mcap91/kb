@@ -165,6 +165,56 @@ export const sliceRowSchema = z.object({
 });
 export type SliceRow = z.infer<typeof sliceRowSchema>;
 
+/** Closed value set for a "## Hardening" row's `check` column (WK-0212 Scope). */
+export const hardeningCheckSchema = z.enum([
+  'spec-redteam',
+  'spec-check',
+  'code-redteam',
+  'override',
+]);
+
+/** Closed value set for a "## Hardening" row's `verdict` column (WK-0212 Scope); `n/a` is valid only on `override` rows — enforced by lint, not here. */
+export const hardeningVerdictSchema = z.enum(['pass', 'fail', 'n/a']);
+
+/** Closed value set for a "## Resolutions" row's `cold check` column (WK-0212 Scope); `n/a` is valid only when `choice` is `unresolved` — enforced by lint, not here. */
+export const resolutionColdCheckSchema = z.enum(['pass', 'amended', 'fail', 'n/a']);
+
+/**
+ * One row of a WK's optional `## Hardening` body table (WK-0212). `check`, `verdict`
+ * and `notes` are left as free strings here, same as `sliceRowSchema.status`: the
+ * closed-value and override-notes checks are lint-level (`HARDENING_*`) so one bad
+ * cell doesn't blank out every other lint signal for the record.
+ */
+export const hardeningRowSchema = z.object({
+  num: z.string(),
+  date: z.string(),
+  check: z.string(),
+  by: z.string(),
+  verdict: z.string(),
+  notes: z.string(),
+});
+export type HardeningRow = z.infer<typeof hardeningRowSchema>;
+
+/**
+ * One row of a WK's optional `## Resolutions` body table (WK-0212). `cold check` is
+ * left as a free string (keyed `coldCheck`) for the same reason as
+ * `hardeningRowSchema.verdict`: the closed-value check is lint-level
+ * (`RESOLUTIONS_*`).
+ */
+export const resolutionRowSchema = z.object({
+  num: z.string(),
+  date: z.string(),
+  seat: z.string(),
+  question: z.string(),
+  searched: z.string(),
+  evidence: z.string(),
+  options: z.string(),
+  choice: z.string(),
+  reason: z.string(),
+  coldCheck: z.string(),
+});
+export type ResolutionRow = z.infer<typeof resolutionRowSchema>;
+
 // ---------------------------------------------------------------------------
 // Frontmatter Zod schemas for manifest-driven wiki record types
 // ---------------------------------------------------------------------------

@@ -52,6 +52,12 @@ Body sections:
   Slices      — optional body table of merge units; see the commented example below
                 Notes. Add it only if this WK's work naturally splits into separately
                 written, separately reviewed units.
+  Resolutions — optional append-only body table of in-run decisions; see the commented
+                example below Notes. Rows are added as the work proceeds, never edited
+                or deleted.
+  Hardening   — optional append-only body table of spec-redteam / spec-check self-records;
+                see the commented example below Notes. Rows are added as checks run,
+                never edited or deleted.
 
 Do NOT read other WK files for examples. This template is self-contained.
 -->
@@ -85,4 +91,41 @@ merge-delivery, never by hand. Free text per slice may follow under "### Slice <
 ### Slice s1
 
 _free text about this slice_
+-->
+
+<!--
+Optional "## Resolutions" body table (WK-0212). Append-only: add a row per decision,
+never edit or delete an existing row. Header is fixed. Column guidance:
+  seat       — who filled this row in (interactive orchestrator or overseer)
+  question   — what needed deciding
+  searched   — where the seat searched (wiki/rules/code/web), with citations
+  evidence   — what was found
+  options    — the choices considered
+  choice     — what was decided; "unresolved" when no evidence was found
+  reason     — why; also where an escalation is recorded, never inferred from a cold
+               check failure
+  cold check — pass | amended | fail | n/a; `n/a` only when choice is "unresolved"
+The `#` column runs 1..n with no gaps or duplicates.
+
+## Resolutions
+
+| # | date | seat | question | searched | evidence | options | choice | reason | cold check |
+|---|------|------|----------|----------|----------|---------|--------|--------|-------------|
+| 1 | {{date}} | orchestrator | _question_ | _where searched, with citations_ | _evidence found_ | _options considered_ | _choice made_ | _reason_ | pass |
+-->
+
+<!--
+Optional "## Hardening" body table (WK-0212). Append-only: add a row per check, never
+edit or delete an existing row. Header is fixed. Column guidance:
+  check  — spec-redteam | spec-check | code-redteam | override
+  by     — HO id or session that ran the check (or made the override)
+  verdict — pass | fail, or n/a on an override row only
+  notes  — required (non-empty) on an override row: the reason the check was overridden
+The `#` column runs 1..n with no gaps or duplicates.
+
+## Hardening
+
+| # | date | check | by | verdict | notes |
+|---|------|-------|----|---------|-------|
+| 1 | {{date}} | spec-check | HO-0000 | pass | |
 -->

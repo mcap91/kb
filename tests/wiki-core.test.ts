@@ -26,6 +26,8 @@ import {
   writeManagedBlock,
   readBodyTable,
   readSlices,
+  readHardening,
+  readResolutions,
 } from '../packages/wiki-core/src/index.js';
 
 import type {
@@ -2488,6 +2490,289 @@ describe('lint "## Slices" rules (WK-0211)', () => {
     if (result.ok) {
       const diags = result.data.diagnostics.filter(d => d.code === 'SLICES_TABLE_INVALID');
       expect(diags.length).toBe(1);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// WK-0212: shared body-table readers for "## Resolutions" / "## Hardening"
+// ---------------------------------------------------------------------------
+
+function readAppendSectionsFixture(name: string): string {
+  return fs.readFileSync(
+    path.join(__dirname, 'fixtures/wk-append-sections', name),
+    'utf-8',
+  );
+}
+
+describe('readHardening', () => {
+  it('returns ok([]) when the WK has no "## Hardening" section', () => {
+    const body = '# WK-0001\n\n## Objective\n\nNo hardening here.\n';
+    const result = readHardening(body);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.data).toEqual([]);
+    }
+  });
+
+  it('returns the parsed rows for the both-sections-valid fixture', () => {
+    const body = readAppendSectionsFixture('both-sections-valid.md');
+    const result = readHardening(body);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.data).toEqual([
+        {
+          num: '1',
+          date: '2026-10-24',
+          check: 'spec-redteam',
+          by: 'HO-0103',
+          verdict: 'pass',
+          notes: '',
+        },
+        {
+          num: '2',
+          date: '2026-10-25',
+          check: 'spec-check',
+          by: 'HO-0103',
+          verdict: 'pass',
+          notes: '',
+        },
+        {
+          num: '3',
+          date: '2026-10-26',
+          check: 'override',
+          by: 'mcap91',
+          verdict: 'n/a',
+          notes: 'operator ruling lowers the intake requirement for this WK',
+        },
+      ]);
+    }
+  });
+
+  it('fails on the bad-header fixture, naming the expected and actual columns', () => {
+    const body = readAppendSectionsFixture('bad-header.md');
+    const result = readHardening(body);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.message).toContain('by');
+      expect(result.message).toContain('owner');
+    }
+  });
+
+  it('returns ok([]) for the real contract/templates/issue.md, whose "## Hardening" example is commented out', () => {
+    const template = fs.readFileSync(
+      path.join(__dirname, '../contract/templates/issue.md'),
+      'utf-8',
+    );
+    const result = readHardening(template);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.data).toEqual([]);
+    }
+  });
+});
+
+describe('readResolutions', () => {
+  it('returns ok([]) when the WK has no "## Resolutions" section', () => {
+    const body = '# WK-0001\n\n## Objective\n\nNo resolutions here.\n';
+    const result = readResolutions(body);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.data).toEqual([]);
+    }
+  });
+
+  it('returns the parsed rows for the both-sections-valid fixture', () => {
+    const body = readAppendSectionsFixture('both-sections-valid.md');
+    const result = readResolutions(body);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.data).toEqual([
+        {
+          num: '1',
+          date: '2026-10-24',
+          seat: 'orchestrator',
+          question: 'Which header spelling?',
+          searched: 'wiki/issues/WK-0211.md, code/body-table.ts',
+          evidence: 'WK-0211 precedent uses bare names',
+          options: 'searched, looked',
+          choice: 'searched',
+          reason: 'matches WK-0211 column style',
+          coldCheck: 'pass',
+        },
+        {
+          num: '2',
+          date: '2026-10-25',
+          seat: 'overseer',
+          question: 'Is there a prior fixture for this?',
+          searched: 'wiki/rules, code/fixtures',
+          evidence: 'nothing found',
+          options: 'unresolved',
+          choice: 'unresolved',
+          reason: 'no evidence found',
+          coldCheck: 'n/a',
+        },
+      ]);
+    }
+  });
+
+  it('returns ok([]) for the real contract/templates/issue.md, whose "## Resolutions" example is commented out', () => {
+    const template = fs.readFileSync(
+      path.join(__dirname, '../contract/templates/issue.md'),
+      'utf-8',
+    );
+    const result = readResolutions(template);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.data).toEqual([]);
+    }
+  });
+});
+
+describe('lint "## Resolutions" / "## Hardening" rules (WK-0212)', () => {
+  let tmp: TmpRepo;
+
+  afterEach(() => {
+    tmp?.cleanup();
+  });
+
+  function installFixture(t: TmpRepo, fixtureName: string, wkId: string): void {
+    const body = readAppendSectionsFixture(fixtureName);
+    fs.mkdirSync(path.join(t.dir, 'wiki/issues'), { recursive: true });
+    fs.writeFileSync(path.join(t.dir, 'wiki/issues', `${wkId}.md`), body, 'utf-8');
+  }
+
+  function appendDiags(result: Awaited<ReturnType<typeof lint>>) {
+    if (!result.ok) throw new Error('lint failed');
+    return result.data.diagnostics.filter(
+      d => d.code.startsWith('RESOLUTIONS_') || d.code.startsWith('HARDENING_'),
+    );
+  }
+
+  it('a WK with both valid sections lints clean', async () => {
+    tmp = await createBootstrappedRepo();
+    installFixture(tmp, 'both-sections-valid.md', 'WK-9100');
+
+    const result = await lint({ dir: tmp.dir });
+    expect(result.ok).toBe(true);
+    expect(appendDiags(result).length).toBe(0);
+  });
+
+  it('a WK without "## Resolutions" or "## Hardening" produces no RESOLUTIONS_* / HARDENING_* diagnostics', async () => {
+    tmp = await createBootstrappedRepo();
+    writeRecord(tmp.dir, 'wiki/issues/WK-0001.md', {
+      id: 'WK-0001',
+      title: 'Test',
+      type: 'task',
+      status: 'todo',
+      priority: 'medium',
+      owner: 'test',
+      created: '2025-01-01',
+      updated: '2025-01-01',
+    }, '# WK-0001\n\n## Acceptance criteria\n\n- [ ] _criterion_\n');
+
+    const result = await lint({ dir: tmp.dir });
+    expect(result.ok).toBe(true);
+    expect(appendDiags(result).length).toBe(0);
+  });
+
+  it('a WK body produced from the real contract/templates/issue.md (commented examples intact) lints with no RESOLUTIONS_* / HARDENING_* diagnostics', async () => {
+    tmp = await createBootstrappedRepo();
+    const template = fs.readFileSync(
+      path.join(__dirname, '../contract/templates/issue.md'),
+      'utf-8',
+    );
+    const templateBody = template.replace(/^---\n[\s\S]*?\n---\n/, '');
+    writeRecord(
+      tmp.dir,
+      'wiki/issues/WK-0001.md',
+      {
+        id: 'WK-0001',
+        title: 'Test',
+        type: 'task',
+        status: 'todo',
+        priority: 'medium',
+        owner: 'test',
+        created: '2025-01-01',
+        updated: '2025-01-01',
+      },
+      templateBody,
+    );
+
+    const result = await lint({ dir: tmp.dir });
+    expect(result.ok).toBe(true);
+    expect(appendDiags(result).length).toBe(0);
+  });
+
+  it('detects a malformed "## Hardening" table (header mismatch), naming the column', async () => {
+    tmp = await createBootstrappedRepo();
+    installFixture(tmp, 'bad-header.md', 'WK-9101');
+
+    const result = await lint({ dir: tmp.dir });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const diags = result.data.diagnostics.filter(d => d.code === 'HARDENING_TABLE_INVALID');
+      expect(diags.length).toBe(1);
+      expect(diags[0].message).toContain('by');
+    }
+  });
+
+  it('detects a Hardening check value outside the closed set', async () => {
+    tmp = await createBootstrappedRepo();
+    installFixture(tmp, 'invalid-value.md', 'WK-9102');
+
+    const result = await lint({ dir: tmp.dir });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const diags = result.data.diagnostics.filter(d => d.code === 'HARDENING_INVALID_VALUE');
+      expect(diags.length).toBeGreaterThan(0);
+    }
+  });
+
+  it('detects n/a misuse: Hardening verdict n/a on a non-override row, and Resolutions cold check n/a on a non-unresolved choice', async () => {
+    tmp = await createBootstrappedRepo();
+    installFixture(tmp, 'na-misuse.md', 'WK-9103');
+
+    const result = await lint({ dir: tmp.dir });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const hardeningDiags = result.data.diagnostics.filter(
+        d => d.code === 'HARDENING_INVALID_VALUE',
+      );
+      const resolutionsDiags = result.data.diagnostics.filter(
+        d => d.code === 'RESOLUTIONS_INVALID_VALUE',
+      );
+      expect(hardeningDiags.length).toBeGreaterThan(0);
+      expect(resolutionsDiags.length).toBeGreaterThan(0);
+    }
+  });
+
+  it('detects an override Hardening row with empty notes', async () => {
+    tmp = await createBootstrappedRepo();
+    installFixture(tmp, 'empty-override-notes.md', 'WK-9104');
+
+    const result = await lint({ dir: tmp.dir });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const diags = result.data.diagnostics.filter(
+        d => d.code === 'HARDENING_EMPTY_OVERRIDE_NOTES',
+      );
+      expect(diags.length).toBe(1);
+    }
+  });
+
+  it('detects a "#" column gap and duplicate in "## Hardening"', async () => {
+    tmp = await createBootstrappedRepo();
+    installFixture(tmp, 'row-numbering.md', 'WK-9105');
+
+    const result = await lint({ dir: tmp.dir });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const diags = result.data.diagnostics.filter(
+        d => d.code === 'HARDENING_ROW_NUMBERING',
+      );
+      expect(diags.some(d => d.message.includes('duplicate'))).toBe(true);
+      expect(diags.some(d => d.message.includes('missing'))).toBe(true);
     }
   });
 });
