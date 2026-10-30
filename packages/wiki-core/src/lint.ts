@@ -76,19 +76,23 @@
  *   - RESOLUTIONS_ROW_NUMBERING     — (error, WK, WK-0212) a "## Resolutions" row's `#`
  *                                     cell is not an integer, or the column has a gap
  *                                     or duplicate across 1..n
- *   - AC_MISSING                    — (error, WK, status-scoped, WK-0197/HO-0107) an
+ *   - AC_MISSING                    — (error, WK, status-scoped, WK-0197/HO-0109) an
  *                                     open WK (todo/in_progress/review/blocked) has no
- *                                     "## Acceptance criteria" section, or the section
- *                                     has no checkbox-style criteria at all (only plain
- *                                     bullets or prose), or the section holds only the
- *                                     template placeholder `_criterion_` — three
- *                                     distinct messages, one per case
- *   - AC_UNVERIFIABLE               — (warning, WK, status-scoped, WK-0197/HO-0107) one
- *                                     diagnostic per acceptance-criterion (checkbox plus
- *                                     its indented continuation lines, if any), on an
- *                                     open WK, whose combined text names no verifiable
- *                                     check, and per `_criterion_` placeholder bullet
- *                                     that sits beside real criteria
+ *                                     "## Acceptance criteria" section, or the section's
+ *                                     only list item is the template placeholder
+ *                                     `_criterion_` — two distinct messages, one per
+ *                                     case. A section holding plain (non-checkbox)
+ *                                     bullets or ordered list items is NOT this rule;
+ *                                     any list item is a criterion
+ *   - AC_UNVERIFIABLE               — (warning, WK, status-scoped, WK-0197/HO-0109) one
+ *                                     diagnostic per acceptance-criterion (any list
+ *                                     item plus its continuation lines, indented or
+ *                                     not), on an open WK, whose combined text names no
+ *                                     verifiable check; one per `_criterion_` placeholder
+ *                                     item that sits beside real criteria; and exactly
+ *                                     one, with a distinct message, when the section is
+ *                                     present but holds no list items at all (empty, or
+ *                                     prose with no bullets)
  */
 
 import * as fs from 'node:fs';
@@ -330,15 +334,18 @@ function isCheckedBox(line: string): boolean {
 // ---------------------------------------------------------------------------
 
 /**
- * Heading matcher for AC_MISSING / AC_UNVERIFIABLE only (HO-0107 F-heading): tolerates
- * trailing text after "## Acceptance criteria" (e.g. WK-0183's own heading,
- * "## Acceptance criteria (4 tiers, operator-ratified 2026-09-29)"). The shared
+ * Heading matcher for AC_MISSING / AC_UNVERIFIABLE only (HO-0107 F-heading, tightened
+ * HO-0109 F4): tolerates trailing text after "## Acceptance criteria" as long as it is
+ * separated by whitespace (e.g. WK-0183's own heading, "## Acceptance criteria (4
+ * tiers, operator-ratified 2026-09-29)"), but a heading with no separating whitespace
+ * — "## Acceptance criteria-ish" — is a different section and does not match, so it
+ * cannot shadow a later real "## Acceptance criteria" section. The shared
  * extractAcceptanceCriteriaSectionLines above requires an exact heading match and is
  * untouched by this — AC_COMPLETE_STATUS_OPEN and UNCHECKED_CHECKLIST keep requiring
  * an exact "## Acceptance criteria" heading.
  */
 function isAcceptanceCriteriaHeadingWithSuffix(line: string): boolean {
-  return /^##\s+Acceptance criteria\b/i.test(line.trim());
+  return /^##\s+Acceptance criteria(?:\s+\S.*)?$/i.test(line.trim());
 }
 
 /**
@@ -362,12 +369,22 @@ function extractAcceptanceCriteriaRawLines(body: string): string[] | null {
 }
 
 /**
- * Group a "## Acceptance criteria" section's raw lines into one combined text per
- * checkbox criterion, folding in each checkbox's indented continuation lines — any
- * non-blank line that starts with whitespace and immediately follows, with no
- * intervening blank line or new bullet. Plain (non-checkbox) bullets and bare prose are
- * not criteria and contribute no entry — that is exactly AC_MISSING's "section present
- * but no checkbox criteria" case: a non-null section with a zero-length result here.
+ * A Markdown list item start: `-`, `*`, `+`, or an ordered `1.` marker, with an
+ * optional `[ ]`/`[x]` checkbox immediately after. Capture group 1 is the item's own
+ * text (HO-0109: any list item is a criterion, not just checkbox lines).
+ */
+const AC_LIST_ITEM_RE = /^(?:[-*+]|\d+\.)\s+(?:\[[ xX]\]\s*)?(.*)$/;
+
+/**
+ * Group a "## Acceptance criteria" section's raw lines into one combined text per list
+ * item (HO-0109: a plain `-`/`*`/`+`/ordered item is a criterion exactly like a
+ * checkbox item), folding in each item's continuation lines. Per CommonMark lazy
+ * continuation, a continuation line does not need to be indented — any non-blank line
+ * that is not itself a new list item and immediately follows, with no intervening
+ * blank line, extends the open item regardless of indentation (HO-0108 F1/F4). A blank
+ * line or a new list item closes the previous item. Returns `[]` when the section has
+ * no list items at all (empty or prose-only) — the caller (AC_UNVERIFIABLE) reports
+ * that case with its own single diagnostic; it is not AC_MISSING.
  */
 function groupAcCriteria(rawLines: string[]): string[] {
   const criteria: string[] = [];
@@ -376,25 +393,24 @@ function groupAcCriteria(rawLines: string[]): string[] {
   for (const rawLine of rawLines) {
     const trimmed = rawLine.trim();
 
-    const checkboxMatch = /^-\s*\[[ xX]\]\s*(.*)$/.exec(trimmed);
-    if (checkboxMatch) {
-      criteria.push(checkboxMatch[1].trim());
-      openIdx = criteria.length - 1;
-      continue;
-    }
-
     if (trimmed === '') {
       openIdx = -1;
       continue;
     }
 
-    if (openIdx !== -1 && /^\s/.test(rawLine)) {
+    const listItemMatch = AC_LIST_ITEM_RE.exec(trimmed);
+    if (listItemMatch) {
+      criteria.push(listItemMatch[1].trim());
+      openIdx = criteria.length - 1;
+      continue;
+    }
+
+    if (openIdx !== -1) {
       criteria[openIdx] = `${criteria[openIdx]} ${trimmed}`.trim();
       continue;
     }
 
-    // Plain bullet or prose: not a criterion, and does not extend one.
-    openIdx = -1;
+    // Prose with no open item to extend: not a criterion, and does not start one.
   }
 
   return criteria;
@@ -402,46 +418,84 @@ function groupAcCriteria(rawLines: string[]): string[] {
 
 /**
  * Detection heuristic for "names a verifiable check" (WK-0197 delegates the exact
- * heuristic to implementation time; revised under HO-0107 F3). A criterion's combined
- * text counts as verifiable if it contains at least one of:
- *   - a repo-relative path: a slash-separated segment ending in a dotted extension
- *     (e.g. `packages/wiki-core/src/lint.ts`, `out/report.json`)
- *   - an npm/CLI invocation: `npm`, `npx`, `tsx`, `node`, `git`, or `curl` followed by
- *     an argument
+ * heuristic to implementation time; rebuilt under HO-0109 against an orchestrator-
+ * labeled set of real WK bullets — see tests/fixtures/wk-ac-verifiability and
+ * tests/wiki-core.test.ts). A criterion's combined text counts as verifiable if it
+ * contains at least one of:
+ *   - a CLI invocation: `npm`, `npx`, `tsx`, `node`, `git`, `curl`, `wiki`, or `graph`
+ *     followed by an argument
+ *   - an action verb (run/execute/verify/check, any inflection) followed by a target —
+ *     a structural shape, not an enumerated tool vocabulary, so it covers imperative
+ *     checks ("Verify README.md") and third-person uses ("One command runs all
+ *     scenarios") alike
  *   - a number with a unit or comparison (ms, s, sec, min, %, x, MB, GB, KB, or a
  *     `<`/`>`/`<=`/`>=`/`==` comparison against a number)
- *   - an explicit observable-behavior/predicate verb (returns, throws, logs, prints,
- *     outputs, produces, renders, emits, exit code, exits, responds with, displays,
- *     rejected/rejects, fires, flags)
+ *   - a copula (is/are/equals/returns) immediately followed by inline code — an
+ *     equality assertion against a literal value, not backticks by themselves
  *   - a command-like token immediately followed by an outcome word (passes, succeeds,
- *     fails, exits [with code] 0, and their inflections) — a structural shape, not an
- *     enumerated tool vocabulary, so it covers any command/test name
- *   - a filename or path (with or without a slash, extension, or trailing `/`) near an
- *     existence/content predicate (exists, contains, unchanged, is generated)
+ *     fails, exits [with code] 0, and their inflections), unless the word immediately
+ *     before the outcome word is an English modal auxiliary (must/should/will/shall/
+ *     would/can/could/might/may) — "the vibe must pass" names no command, "npm test
+ *     passes" does
+ *   - `returns`/`appears`/`appear`, unless immediately followed by a temporal adverb
+ *     (next/tomorrow/yesterday/later/soon/eventually) — "resolver returns a row" is a
+ *     function result, "discussion returns next week" is a calendar event
+ *   - an explicit observable-behavior/state verb or property word: throws, logs,
+ *     prints, outputs, produces, renders, emits, exit code, exits, responds with,
+ *     ends with, displays, rejected/rejects, fires, flags/flagged, exists/exist,
+ *     contains/contain, carries/carry, unchanged/changed/identical, correct/incorrect,
+ *     valid/invalid, idempotent, handled/unhandled, lost, is generated,
+ *     navigates/navigate, refused/refuses, registers/registered, reports/reported,
+ *     falls back/fallback, opens, loaded, exempt(ed), round-trip(s), observe(s/d/ing),
+ *     cites/cited/citing/citation(s), implements/implementation, creates/created,
+ *     removes/removed, archives/archived, launches/launched, completes/completed,
+ *     publishes/published, yields/yield, updated, writes/written, accepts/accept,
+ *     introduces/introduced, parked/unparked, references/referenced, untouched,
+ *     lints, refreshes/refreshed, enforces/enforced, resolves/resolved, survives/
+ *     survive, follows, documents/documented, prepends/prepended, installs/
+ *     installed, injects/inject, stores/stored, or a bare "test"/"tests" reference
+ *   - an arrow (`→`) between two tokens: a `before` → `after` transition/mapping is
+ *     inherently a testable assertion (an input-leads-to-output claim), regardless of
+ *     which words surround it
  * Deterministic regex presence checks only — no controlled vocabulary, no semantic
  * inference, no proof compilation (WK-0197 Out). Inline code (backticks) alone is not a
- * signal — bare backticked text passes only when it also matches one of the shapes
- * above (a path, a command, a verb, etc.), never on backticks by themselves.
+ * signal, and (HO-0109 constraint) neither is a bare repo-relative path by itself — both
+ * pass only inside one of the assertion shapes above (a copula, a command, a behavior
+ * verb, etc.), never on their own.
  */
-const AC_VERIFIABLE_REPO_PATH_RE = /\b[\w.-]+(?:\/[\w.-]+)+\.[A-Za-z0-9]{1,10}\b/;
-const AC_VERIFIABLE_CLI_COMMAND_RE = /\b(npm|npx|tsx|node|git|curl)\b\s+\S+/i;
+const AC_VERIFIABLE_CLI_COMMAND_RE = /\b(npm|npx|tsx|node|git|curl|wiki|graph)\b\s+\S+/i;
+const AC_ACTION_WORDS =
+  '(?:run|runs|ran|running|execute|executes|executed|executing|verify|verifies|verified|verifying|check|checks|checked|checking)';
+const AC_VERIFIABLE_ACTION_RE = new RegExp(`\\b${AC_ACTION_WORDS}\\b\\s+\\S+`, 'i');
 const AC_VERIFIABLE_METRIC_RE =
   /\b\d+(\.\d+)?\s?(ms|s|sec|secs|seconds|min|mins|minutes|%|x|MB|GB|KB)\b|[<>]=?\s*\d|==\s*\d/i;
+const AC_VERIFIABLE_ASSERTION_CODE_RE = /\b(?:is|are|equals?|returns?)\s+`[^`]+`/;
+const AC_MODAL_WORDS = '(?:must|should|will|shall|would|can|could|might|may)';
+const AC_OUTCOME_WORDS =
+  "(?:passes|passed|pass|succeeds|succeeded|succeed|fails|failed|fail|exits?\\s+(?:with\\s+)?(?:code\\s+)?0)";
+const AC_VERIFIABLE_OUTCOME_RE = new RegExp(
+  `\\b(?!${AC_MODAL_WORDS}\\s+${AC_OUTCOME_WORDS}\\b)[\\w'-]+\\s+${AC_OUTCOME_WORDS}\\b`,
+  'i',
+);
+const AC_TEMPORAL_WORDS = '(?:next|tomorrow|yesterday|later|soon|eventually)';
+const AC_VERIFIABLE_RETURNS_APPEARS_RE = new RegExp(
+  `\\b(?:returns?|appears?|appear)\\b(?!\\s+${AC_TEMPORAL_WORDS}\\b)`,
+  'i',
+);
 const AC_VERIFIABLE_BEHAVIOR_VERB_RE =
-  /\b(returns?|throws?|logs?|prints?|outputs?|produces?|renders?|emits?|exit code|exits?|responds with|displays?|rejected|rejects?|fires?|flags?)\b/i;
-const AC_VERIFIABLE_OUTCOME_RE =
-  /\b[\w'-]+\s+(passes|passed|pass|succeeds|succeeded|succeed|fails|failed|fail|exits?\s+(?:with\s+)?(?:code\s+)?0)\b/i;
-const AC_VERIFIABLE_ARTIFACT_RE =
-  /\b([\w.-]+\.[A-Za-z0-9]{1,10}|[\w.-]+\/)[^.?!]{0,30}?\b(exists?|contains?|unchanged|is\s+generated)\b/i;
+  /\b(throws?|logs?|prints?|outputs?|produces?|renders?|emits?|exit code|exits?|responds with|ends?\s+with|displays?|rejected|rejects?|fires?|flags?|flagged|exists?|exist|contains?|contain|carr(?:y|ies)|unchanged|changed|identical|correct|incorrect|valid|invalid|idempotent|handled|unhandled|lost|is\s+generated|navigates?|navigate|refused|refuses?|register(?:s|ed)?|reports?|reported|falls?\s+back|fallback|opens|loaded|exempt(?:ed)?|round-trip(?:s)?|observ(?:e|es|ed|ing)|cit(?:e|es|ed|ing|ation|ations)|implement(?:s|ation)?|creates?|created|removes?|removed|archives?|archived|launches?|launched|completes?|completed|publishes?|published|yields?|updated|tests?|dispatch(?:es|ed)?|deliver(?:s|ed)?|writes|written|accepts?|accept|introduces?|introduced|parked|unparked|reference(?:s|d)?|untouched|lints|refresh(?:es|ed)?|enforce(?:s|d)?|resolved|resolves|resolve|survives|survive|follows|document(?:s|ed)?|prepend(?:s|ed)?|install(?:s|ed)?|injects?|inject|stores?|stored)\b/i;
+const AC_VERIFIABLE_ARROW_RE = /→/;
 
 function bulletNamesVerifiableCheck(text: string): boolean {
   return (
-    AC_VERIFIABLE_REPO_PATH_RE.test(text) ||
     AC_VERIFIABLE_CLI_COMMAND_RE.test(text) ||
+    AC_VERIFIABLE_ACTION_RE.test(text) ||
     AC_VERIFIABLE_METRIC_RE.test(text) ||
-    AC_VERIFIABLE_BEHAVIOR_VERB_RE.test(text) ||
+    AC_VERIFIABLE_ASSERTION_CODE_RE.test(text) ||
     AC_VERIFIABLE_OUTCOME_RE.test(text) ||
-    AC_VERIFIABLE_ARTIFACT_RE.test(text)
+    AC_VERIFIABLE_RETURNS_APPEARS_RE.test(text) ||
+    AC_VERIFIABLE_BEHAVIOR_VERB_RE.test(text) ||
+    AC_VERIFIABLE_ARROW_RE.test(text)
   );
 }
 
@@ -937,20 +991,23 @@ export async function lint(opts: LintOpts): Promise<Result<LintResult>> {
       }
     }
 
-    // Rule: AC_MISSING — (error, WK, status-scoped, WK-0197/HO-0107) an open WK (todo/
+    // Rule: AC_MISSING — (error, WK, status-scoped, WK-0197/HO-0109) an open WK (todo/
     // in_progress/review/blocked) has no "## Acceptance criteria" section, or the
-    // section has no checkbox-style criteria at all (only plain bullets or prose, or
-    // nothing), or the section holds only the template placeholder `_criterion_` (no
-    // real criterion) — three distinct cases, three distinct messages.
-    // Rule: AC_UNVERIFIABLE — (warning, WK, status-scoped, WK-0197/HO-0107) one
-    // diagnostic per acceptance-criterion (a checkbox plus its indented continuation
-    // lines, grouped by groupAcCriteria), on an open WK, whose combined text names no
-    // verifiable check (see bulletNamesVerifiableCheck above), and per `_criterion_`
-    // placeholder bullet that sits beside real criteria. Does not run when AC_MISSING
-    // already fired for the record — a missing/empty/placeholder-only section has
-    // nothing to shape-check. `blocked` is in scope (HO-0107 correction of HO-0105,
-    // which wrongly exempted it against WK-0197's AC); inbox/parked/closed statuses
-    // stay exempt as unscoped or already-terminal.
+    // section's only list item(s) are the template placeholder `_criterion_` (no real
+    // criterion) — two distinct cases, two distinct messages. A present section whose
+    // list items are plain (non-checkbox) bullets or ordered items is NOT AC_MISSING;
+    // every list item is a criterion (HO-0109, correcting HO-0107's overreach).
+    // Rule: AC_UNVERIFIABLE — (warning, WK, status-scoped, WK-0197/HO-0109) one
+    // diagnostic per acceptance-criterion (a list item plus its continuation lines,
+    // grouped by groupAcCriteria), on an open WK, whose combined text names no
+    // verifiable check (see bulletNamesVerifiableCheck above); one per `_criterion_`
+    // placeholder item that sits beside real criteria; and exactly one, with its own
+    // message, when the section is present but has no list items at all (empty, or
+    // prose with no bullets). Does not run when AC_MISSING already fired for the
+    // record — a missing/placeholder-only section has nothing to shape-check.
+    // `blocked` is in scope (HO-0107 correction of HO-0105, which wrongly exempted it
+    // against WK-0197's AC); inbox/parked/closed statuses stay exempt as unscoped or
+    // already-terminal.
     if (rec.typeDef.prefix === 'WK') {
       const status = fm['status'];
       const AC_OPEN_STATUSES = ['todo', 'in_progress', 'review', 'blocked'];
@@ -970,10 +1027,10 @@ export async function lint(opts: LintOpts): Promise<Result<LintResult>> {
           if (criteriaTexts.length === 0) {
             diagnostics.push({
               file: rec.relPath,
-              code: 'AC_MISSING',
+              code: 'AC_UNVERIFIABLE',
               message:
-                'The "## Acceptance criteria" section has no checkbox-style criteria (only plain bullets or prose, if anything)',
-              severity: 'error',
+                'The "## Acceptance criteria" section has no list items ("-"/"*"/"+"/ordered bullets) to check — only prose, if anything',
+              severity: 'warning',
             });
           } else {
             const realCriteria = criteriaTexts.filter(text => text !== '_criterion_');

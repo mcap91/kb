@@ -4728,7 +4728,7 @@ describe('lint AC_MISSING / AC_UNVERIFIABLE (WK-0197)', () => {
     }
   });
 
-  it('AC_MISSING fires with a distinct "no checkbox criteria" message when the section holds only plain bullets (HO-0107 F2)', async () => {
+  it('AC_MISSING does not fire for a plain (non-checkbox) bullet; it is a criterion like any other (HO-0109, correcting HO-0107 F2)', async () => {
     tmp = await createBootstrappedRepo();
     installAcFixture(tmp, 'plain-bullets-only.md', 'WK-9112');
 
@@ -4736,9 +4736,84 @@ describe('lint AC_MISSING / AC_UNVERIFIABLE (WK-0197)', () => {
     expect(result.ok).toBe(true);
     if (result.ok) {
       const missing = result.data.diagnostics.filter(d => d.code === 'AC_MISSING');
-      expect(missing.length).toBe(1);
-      expect(missing[0].message).not.toMatch(/_criterion_/);
-      expect(missing[0].message).toMatch(/no checkbox-style criteria/i);
+      const unverifiable = result.data.diagnostics.filter(d => d.code === 'AC_UNVERIFIABLE');
+      expect(missing).toEqual([]);
+      expect(unverifiable.length).toBe(1);
+      expect(unverifiable[0].severity).toBe('warning');
+    }
+  });
+
+  it('AC_MISSING does not fire for an ordered-list criterion; AC_UNVERIFIABLE still checks each item (HO-0109)', async () => {
+    tmp = await createBootstrappedRepo();
+    installAcFixture(tmp, 'ordered-list-criteria.md', 'WK-9117');
+
+    const result = await lint({ dir: tmp.dir });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const missing = result.data.diagnostics.filter(d => d.code === 'AC_MISSING');
+      const unverifiable = result.data.diagnostics.filter(d => d.code === 'AC_UNVERIFIABLE');
+      expect(missing).toEqual([]);
+      expect(unverifiable.length).toBe(1);
+    }
+  });
+
+  it('AC_UNVERIFIABLE does not fire when a criterion\'s only verifiable detail is on an unindented continuation line (HO-0109, lazy continuation)', async () => {
+    tmp = await createBootstrappedRepo();
+    installAcFixture(tmp, 'continuation-line-unindented.md', 'WK-9114');
+
+    const result = await lint({ dir: tmp.dir });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const missing = result.data.diagnostics.filter(d => d.code === 'AC_MISSING');
+      const unverifiable = result.data.diagnostics.filter(d => d.code === 'AC_UNVERIFIABLE');
+      expect(missing).toEqual([]);
+      expect(unverifiable).toEqual([]);
+    }
+  });
+
+  it('AC_UNVERIFIABLE fires exactly once, not AC_MISSING, when the Acceptance criteria section is empty (HO-0109)', async () => {
+    tmp = await createBootstrappedRepo();
+    installAcFixture(tmp, 'empty-section.md', 'WK-9115');
+
+    const result = await lint({ dir: tmp.dir });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const missing = result.data.diagnostics.filter(d => d.code === 'AC_MISSING');
+      const unverifiable = result.data.diagnostics.filter(d => d.code === 'AC_UNVERIFIABLE');
+      expect(missing).toEqual([]);
+      expect(unverifiable.length).toBe(1);
+      expect(unverifiable[0].message).toMatch(/no list items/i);
+    }
+  });
+
+  it('AC_UNVERIFIABLE fires exactly once, not AC_MISSING, when the Acceptance criteria section holds prose but no list items (HO-0109)', async () => {
+    tmp = await createBootstrappedRepo();
+    installAcFixture(tmp, 'prose-only-section.md', 'WK-9116');
+
+    const result = await lint({ dir: tmp.dir });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const missing = result.data.diagnostics.filter(d => d.code === 'AC_MISSING');
+      const unverifiable = result.data.diagnostics.filter(d => d.code === 'AC_UNVERIFIABLE');
+      expect(missing).toEqual([]);
+      expect(unverifiable.length).toBe(1);
+      expect(unverifiable[0].message).toMatch(/no list items/i);
+    }
+  });
+
+  it('a malformed "## Acceptance criteria-ish" heading does not shadow a later valid section; the fixture lints clean on the AC rules (HO-0109 F4)', async () => {
+    tmp = await createBootstrappedRepo();
+    installAcFixture(tmp, 'heading-suffix-ish-then-valid.md', 'WK-9118');
+
+    const result = await lint({ dir: tmp.dir });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const acDiags = result.data.diagnostics.filter(
+        d =>
+          d.file === 'wiki/issues/WK-9118.md' &&
+          (d.code === 'AC_MISSING' || d.code === 'AC_UNVERIFIABLE'),
+      );
+      expect(acDiags).toEqual([]);
     }
   });
 
@@ -4778,6 +4853,59 @@ describe('lint AC_MISSING / AC_UNVERIFIABLE (WK-0197)', () => {
       }
 
       expect(unverifiable.length).toBe(mustFail.length);
+    }
+  });
+
+  it('AC_UNVERIFIABLE does not fire on any orchestrator-labeled verifiable bullet (HO-0109, real WK corpus + synthetic)', async () => {
+    tmp = await createBootstrappedRepo();
+    installAcFixture(tmp, 'labeled-verifiable-corpus.md', 'WK-9120');
+
+    const result = await lint({ dir: tmp.dir });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const missing = result.data.diagnostics.filter(d => d.code === 'AC_MISSING');
+      const unverifiable = result.data.diagnostics.filter(d => d.code === 'AC_UNVERIFIABLE');
+      expect(missing).toEqual([]);
+      expect(unverifiable).toEqual([]);
+    }
+  });
+
+  it('AC_UNVERIFIABLE fires on every orchestrator-labeled unverifiable bullet (HO-0109, real WK corpus + synthetic)', async () => {
+    tmp = await createBootstrappedRepo();
+    installAcFixture(tmp, 'labeled-unverifiable-corpus.md', 'WK-9121');
+
+    const result = await lint({ dir: tmp.dir });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const missing = result.data.diagnostics.filter(d => d.code === 'AC_MISSING');
+      const unverifiable = result.data.diagnostics.filter(d => d.code === 'AC_UNVERIFIABLE');
+      expect(missing).toEqual([]);
+
+      const unverifiableTexts = unverifiable.map(d => d.message);
+
+      // One substring per labeled N bullet (truncated to stay under the diagnostic
+      // message's 120-char slice where the verbatim bullet runs longer).
+      const mustFlag = [
+        'Feasibility question answered with an explicit verdict + boundary',
+        'Memory model + selective-write discipline recorded, grounded in catalog evidence',
+        'Follow-on WKs enumerated for operator triage',
+        'Legacy-field retirement path decided and recorded',
+        "kb-only strengths are recorded as protect-don't-regress",
+        'Operator confirms the one-pager is VP-handable',
+        'Operator confirms the doc-category valuation does not double-count design already in the code rate',
+        'Operator decision recorded: append-only vs general update vs still-not-needed.',
+        'Decision recorded on the PLN dashboard mode (retire vs keep for legacy plans)',
+        'A single placement recommendation with the runner-up named; sync cost moot under ephemeral clones (stated)',
+        'codex (HO-0081): blocked — codex-saas free-tier usage limit (resets 2026-10-18)',
+        'Discuss packages/wiki-core/src/lint.ts with the team',
+        'The vibe must pass',
+        'Discussion returns next week',
+      ];
+      for (const text of mustFlag) {
+        expect(unverifiableTexts.some(m => m.includes(text))).toBe(true);
+      }
+
+      expect(unverifiable.length).toBe(mustFlag.length);
     }
   });
 

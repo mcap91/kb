@@ -21,9 +21,10 @@ related: []
 
 ## Objective
 
-Fixture for HO-0107 F2's third AC_MISSING case: the section is present but holds no
-checkbox-style criteria at all — only plain (non-checkbox) bullets. This must not be
-reported as the "_criterion_" placeholder case, since no placeholder is present.
+Fixture for HO-0109 (correcting HO-0107's overreach): a plain (non-checkbox) bullet is
+a criterion exactly like a checkbox item, so AC_MISSING must not fire. The bullet text
+itself names no verifiable check, so it should still get one AC_UNVERIFIABLE warning —
+proving the item is being read as a criterion, not silently skipped.
 
 ## Scope
 
@@ -31,6 +32,6 @@ reported as the "_criterion_" placeholder case, since no placeholder is present.
 
 ## Acceptance criteria
 
-- Run npm test
+- This improves the overall experience
 
 ## Notes
