@@ -53,20 +53,6 @@ the initial retrieval pass.
 
 This document is the primary reference for any agent session working in the `kb` repository. Read it before making changes.
 
-## Rules register and failure corpus
-
-Two running wiki records apply to every agent session here, planning or execution. Read both before substantive work.
-
-- **`wiki/sources/SRC-0024.md` — rules register.** The rules the operator wants followed, each with its target
-  enforcement tier. When a rule decides a question, apply it; do not ask the operator.
-- **`wiki/sources/SRC-0025.md` — failure corpus.** Past planning and execution failures, what would have prevented
-  them, and the guard or tool that stops a repeat. If your next move matches a failure class there, apply its
-  prevention instead.
-
-When the operator corrects you, or you catch your own failure, append a SRC-0025 row (its schema is in the record) and
-name the rule or tool it feeds. Enforcement is deterministic first: gate, hook, script, template, skill; prose only to
-set posture or as a stated MVP stopgap (RD-1). Both records belong to IN-0011 (kb-autoshop).
-
 ## Project Summary
 
 `kb` is a TypeScript monorepo toolkit providing three subsystems:
