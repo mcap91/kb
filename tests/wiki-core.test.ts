@@ -4671,9 +4671,38 @@ describe('lint AC_MISSING / AC_UNVERIFIABLE (WK-0197)', () => {
     }
   });
 
-  it('neither rule fires for a blocked WK, even with a placeholder-only AC section', async () => {
+  it('AC_MISSING fires (error) on a blocked WK with no "## Acceptance criteria" section (HO-0107 F1)', async () => {
     tmp = await createBootstrappedRepo();
-    installAcFixture(tmp, 'blocked-exempt.md', 'WK-9108');
+    installAcFixture(tmp, 'no-ac-section-blocked.md', 'WK-9108');
+
+    const result = await lint({ dir: tmp.dir });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const diags = result.data.diagnostics.filter(d => d.code === 'AC_MISSING');
+      expect(diags.length).toBe(1);
+      expect(diags[0].severity).toBe('error');
+      expect(diags[0].file).toBe('wiki/issues/WK-9108.md');
+    }
+  });
+
+  it('AC_UNVERIFIABLE fires (warning) on a blocked WK with an unverifiable criterion (HO-0107 F1)', async () => {
+    tmp = await createBootstrappedRepo();
+    installAcFixture(tmp, 'blocked-unverifiable.md', 'WK-9109');
+
+    const result = await lint({ dir: tmp.dir });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const missing = result.data.diagnostics.filter(d => d.code === 'AC_MISSING');
+      const unverifiable = result.data.diagnostics.filter(d => d.code === 'AC_UNVERIFIABLE');
+      expect(missing).toEqual([]);
+      expect(unverifiable.length).toBe(1);
+      expect(unverifiable[0].severity).toBe('warning');
+    }
+  });
+
+  it('AC_UNVERIFIABLE does not fire when a criterion\'s only verifiable detail is on its indented continuation line (HO-0107 F2)', async () => {
+    tmp = await createBootstrappedRepo();
+    installAcFixture(tmp, 'continuation-line.md', 'WK-9110');
 
     const result = await lint({ dir: tmp.dir });
     expect(result.ok).toBe(true);
@@ -4682,6 +4711,73 @@ describe('lint AC_MISSING / AC_UNVERIFIABLE (WK-0197)', () => {
       const unverifiable = result.data.diagnostics.filter(d => d.code === 'AC_UNVERIFIABLE');
       expect(missing).toEqual([]);
       expect(unverifiable).toEqual([]);
+    }
+  });
+
+  it('AC_MISSING / AC_UNVERIFIABLE recognize a "## Acceptance criteria" heading with trailing text (WK-0183 shape)', async () => {
+    tmp = await createBootstrappedRepo();
+    installAcFixture(tmp, 'heading-suffix.md', 'WK-9111');
+
+    const result = await lint({ dir: tmp.dir });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const missing = result.data.diagnostics.filter(d => d.code === 'AC_MISSING');
+      const unverifiable = result.data.diagnostics.filter(d => d.code === 'AC_UNVERIFIABLE');
+      expect(missing).toEqual([]);
+      expect(unverifiable).toEqual([]);
+    }
+  });
+
+  it('AC_MISSING fires with a distinct "no checkbox criteria" message when the section holds only plain bullets (HO-0107 F2)', async () => {
+    tmp = await createBootstrappedRepo();
+    installAcFixture(tmp, 'plain-bullets-only.md', 'WK-9112');
+
+    const result = await lint({ dir: tmp.dir });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const missing = result.data.diagnostics.filter(d => d.code === 'AC_MISSING');
+      expect(missing.length).toBe(1);
+      expect(missing[0].message).not.toMatch(/_criterion_/);
+      expect(missing[0].message).toMatch(/no checkbox-style criteria/i);
+    }
+  });
+
+  it('AC_UNVERIFIABLE classifies the broadened heuristic\'s boundary cases correctly (HO-0107 F3)', async () => {
+    tmp = await createBootstrappedRepo();
+    installAcFixture(tmp, 'verifiability-boundary.md', 'WK-9113');
+
+    const result = await lint({ dir: tmp.dir });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const missing = result.data.diagnostics.filter(d => d.code === 'AC_MISSING');
+      const unverifiable = result.data.diagnostics.filter(d => d.code === 'AC_UNVERIFIABLE');
+      expect(missing).toEqual([]);
+
+      const unverifiableTexts = unverifiable.map(d => d.message);
+
+      const mustPass = [
+        'Invalid input is rejected and the named smoke test passes',
+        'README.md exists',
+        'vitest run succeeds',
+        'npm test passes',
+        'docs/ directory exists',
+        'p95 latency under 200 ms',
+      ];
+      for (const text of mustPass) {
+        expect(unverifiableTexts.some(m => m.includes(text))).toBe(false);
+      }
+
+      const mustFail = [
+        '`banana` improves vibes',
+        'The code is clean and well structured',
+        'Works as expected',
+        'Users are happy',
+      ];
+      for (const text of mustFail) {
+        expect(unverifiableTexts.some(m => m.includes(text))).toBe(true);
+      }
+
+      expect(unverifiable.length).toBe(mustFail.length);
     }
   });
 

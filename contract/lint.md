@@ -107,45 +107,80 @@ limitation: "stale" is relative to whichever record was most recently touched, n
 elapsed time — if nothing in the repo has been touched in months, a WK updated yesterday can
 still register as far from "stale" by this clock even though it is stale by the calendar.
 
-## Acceptance-Criteria Rules (WK-0197)
+## Acceptance-Criteria Rules (WK-0197, revised HO-0107)
 
-Both rules below are scoped to WK records whose `status` is `todo`, `in_progress`, or
-`review` — the spec's exact status list. `blocked` is not in that list and is exempt, as
-are `inbox`, `parked`, every closed status, and non-WK records.
+Both rules below are scoped to WK records whose `status` is `todo`, `in_progress`,
+`review`, or `blocked`. `inbox`, `parked`, every closed status, and non-WK records are
+exempt. (HO-0105 originally also exempted `blocked`; that was a transcription error
+against WK-0197's acceptance criterion, "closed/parked/inbox records exempt" — `blocked`
+is not on that exempt list, so it is in scope. Corrected under HO-0107.)
+
+**Heading match.** Both rules recognize a `## Acceptance criteria` heading even when it
+carries trailing text (e.g. `## Acceptance criteria (4 tiers, operator-ratified
+2026-09-29)`, as used by WK-0183) — any heading starting with `## Acceptance criteria`
+counts as the section start. This tolerance is local to these two rules only;
+`AC_COMPLETE_STATUS_OPEN` and `UNCHECKED_CHECKLIST` still require an exact
+`## Acceptance criteria` heading with no trailing text.
+
+**Criterion grouping.** Each criterion is a checkbox line (`- [ ] ...` / `- [x] ...`)
+together with any indented continuation lines that immediately follow it (no intervening
+blank line or new bullet) — their trimmed text is appended to the checkbox's own text
+before the verifiability heuristic runs. A plain (non-checkbox) bullet or bare prose line
+is not a criterion and does not extend one.
 
 ### AC_MISSING (error)
 
-An in-scope WK has no `## Acceptance criteria` section, or the section holds only the
-template placeholder `_criterion_` (see `contract/templates/issue.md`) with no real
-criterion. This is a presence check only: did anyone write acceptance criteria at all.
-Extended 2026-10-30 (operator ruling, WK-0197) from the rule's original warning-only
-design to an error for this presence check specifically; the verifiability shape check
-below (`AC_UNVERIFIABLE`) stays a warning.
+Three distinct cases, three distinct messages:
+
+1. **Section absent** — no `## Acceptance criteria` heading anywhere in the body.
+2. **No checkbox criteria** — the section is present but contains zero checkbox-style
+   criteria (only plain bullets and/or prose, or nothing at all). The message does not
+   claim a placeholder is present, since one may not be.
+3. **Placeholder only** — the section's only checkbox criterion/criteria is/are the
+   unfilled template placeholder `_criterion_` (see `contract/templates/issue.md`), with
+   no real criterion.
+
+This is a presence check only: did anyone write acceptance criteria at all. Extended
+2026-10-30 (operator ruling, WK-0197) from the rule's original warning-only design to an
+error for this presence check specifically; the verifiability shape check below
+(`AC_UNVERIFIABLE`) stays a warning.
 
 ### AC_UNVERIFIABLE (warning)
 
-One diagnostic per acceptance-criterion bullet, on an in-scope WK, whose text names no
-verifiable check — plus one per `_criterion_` placeholder bullet that sits beside real
-criteria (a placeholder-only section is `AC_MISSING` instead, not this rule). Does not
-run at all when `AC_MISSING` already fired for the record.
+One diagnostic per criterion (grouped per above), on an in-scope WK, whose combined text
+names no verifiable check — plus one per `_criterion_` placeholder bullet that sits
+beside real criteria (a placeholder-only section is `AC_MISSING` instead, not this rule).
+Does not run at all when `AC_MISSING` already fired for the record.
 
-**Detection heuristic.** A bullet's text counts as naming a verifiable check if it
-contains at least one of:
+**Detection heuristic.** A criterion's combined text counts as naming a verifiable check
+if it contains at least one of:
 
-- inline code (backticks): `` `...` ``
 - a repo-relative path: a slash-separated segment ending in a dotted extension (e.g.
-  `packages/wiki-core/src/lint.ts`)
+  `packages/wiki-core/src/lint.ts`, `out/report.json`)
 - an npm/CLI invocation: `npm`, `npx`, `tsx`, `node`, `git`, or `curl` followed by an
   argument
 - a number with a unit or comparison (`ms`, `s`, `sec`, `min`, `%`, `x`, `MB`, `GB`,
   `KB`, or a `<`/`>`/`<=`/`>=`/`==` comparison against a number)
-- an explicit observable-behavior verb phrase (`returns`, `throws`, `logs`, `prints`,
-  `outputs`, `produces`, `renders`, `emits`, `exit code`, `responds with`, `displays`)
+- an explicit observable-behavior/predicate verb (`returns`, `throws`, `logs`, `prints`,
+  `outputs`, `produces`, `renders`, `emits`, `exit code`, `exits`, `responds with`,
+  `displays`, `rejected`/`rejects`, `fires`/`fire`, `flags`)
+- a command-like token immediately followed by an outcome word — `passes`, `succeeds`,
+  `fails`, `exits [with code] 0` (and inflections such as `passed`/`succeeded`/`failed`).
+  This is a structural shape (any preceding word plus an outcome word), not an
+  enumerated tool vocabulary, so it covers named tests and commands beyond the fixed CLI
+  list above (e.g. "the named smoke test passes", "vitest run succeeds")
+- a filename or path — with or without a slash, a dotted extension, or a trailing `/` —
+  near an existence/content predicate (`exists`/`exist`, `contains`/`contain`,
+  `unchanged`, `is generated`), e.g. "README.md exists", "docs/ directory exists"
 
 This is a deterministic regex presence check, not a controlled vocabulary or semantic
 check — it looks for the *shape* of a verifiable claim, not whether the claim is true or
-meaningfully checkable. No obligation generation, no proof compilation, no coverage
-states (WK-0106 is the full-mechanism revisit, out of scope here).
+meaningfully checkable. Inline code (backticks) alone is **not** a signal: bare
+backticked text (e.g. `` `banana` improves vibes ``) does not pass on backticks by
+themselves — it passes only when the surrounding text also matches one of the shapes
+above (a path, a command, a verb, an outcome word, etc.), i.e. inside a check-like
+assertion. No obligation generation, no proof compilation, no coverage states (WK-0106
+is the full-mechanism revisit, out of scope here).
 
 ## Output Format
 
