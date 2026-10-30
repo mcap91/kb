@@ -107,6 +107,46 @@ limitation: "stale" is relative to whichever record was most recently touched, n
 elapsed time — if nothing in the repo has been touched in months, a WK updated yesterday can
 still register as far from "stale" by this clock even though it is stale by the calendar.
 
+## Acceptance-Criteria Rules (WK-0197)
+
+Both rules below are scoped to WK records whose `status` is `todo`, `in_progress`, or
+`review` — the spec's exact status list. `blocked` is not in that list and is exempt, as
+are `inbox`, `parked`, every closed status, and non-WK records.
+
+### AC_MISSING (error)
+
+An in-scope WK has no `## Acceptance criteria` section, or the section holds only the
+template placeholder `_criterion_` (see `contract/templates/issue.md`) with no real
+criterion. This is a presence check only: did anyone write acceptance criteria at all.
+Extended 2026-10-30 (operator ruling, WK-0197) from the rule's original warning-only
+design to an error for this presence check specifically; the verifiability shape check
+below (`AC_UNVERIFIABLE`) stays a warning.
+
+### AC_UNVERIFIABLE (warning)
+
+One diagnostic per acceptance-criterion bullet, on an in-scope WK, whose text names no
+verifiable check — plus one per `_criterion_` placeholder bullet that sits beside real
+criteria (a placeholder-only section is `AC_MISSING` instead, not this rule). Does not
+run at all when `AC_MISSING` already fired for the record.
+
+**Detection heuristic.** A bullet's text counts as naming a verifiable check if it
+contains at least one of:
+
+- inline code (backticks): `` `...` ``
+- a repo-relative path: a slash-separated segment ending in a dotted extension (e.g.
+  `packages/wiki-core/src/lint.ts`)
+- an npm/CLI invocation: `npm`, `npx`, `tsx`, `node`, `git`, or `curl` followed by an
+  argument
+- a number with a unit or comparison (`ms`, `s`, `sec`, `min`, `%`, `x`, `MB`, `GB`,
+  `KB`, or a `<`/`>`/`<=`/`>=`/`==` comparison against a number)
+- an explicit observable-behavior verb phrase (`returns`, `throws`, `logs`, `prints`,
+  `outputs`, `produces`, `renders`, `emits`, `exit code`, `responds with`, `displays`)
+
+This is a deterministic regex presence check, not a controlled vocabulary or semantic
+check — it looks for the *shape* of a verifiable claim, not whether the claim is true or
+meaningfully checkable. No obligation generation, no proof compilation, no coverage
+states (WK-0106 is the full-mechanism revisit, out of scope here).
+
 ## Output Format
 
 Lint results are reported as a list of diagnostics:

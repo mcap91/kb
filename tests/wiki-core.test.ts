@@ -4564,3 +4564,146 @@ describe('buildDependencyProjection (WK-0115)', () => {
     }
   });
 });
+
+describe('lint AC_MISSING / AC_UNVERIFIABLE (WK-0197)', () => {
+  let tmp: TmpRepo;
+
+  afterEach(() => {
+    tmp?.cleanup();
+  });
+
+  function installAcFixture(t: TmpRepo, fixtureName: string, wkId: string): void {
+    const raw = fs.readFileSync(
+      path.join(__dirname, 'fixtures/wk-ac-verifiability', fixtureName),
+      'utf-8',
+    );
+    fs.mkdirSync(path.join(t.dir, 'wiki/issues'), { recursive: true });
+    fs.writeFileSync(path.join(t.dir, `wiki/issues/${wkId}.md`), raw, 'utf-8');
+  }
+
+  it('AC_MISSING fires (error) on an open WK with no "## Acceptance criteria" section', async () => {
+    tmp = await createBootstrappedRepo();
+    installAcFixture(tmp, 'no-ac-section-open.md', 'WK-9100');
+
+    const result = await lint({ dir: tmp.dir });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const diags = result.data.diagnostics.filter(d => d.code === 'AC_MISSING');
+      expect(diags.length).toBe(1);
+      expect(diags[0].severity).toBe('error');
+      expect(diags[0].file).toBe('wiki/issues/WK-9100.md');
+    }
+  });
+
+  it.each([
+    ['no-ac-section-parked.md', 'WK-9101', 'parked'],
+    ['no-ac-section-done.md', 'WK-9102', 'done'],
+    ['no-ac-section-inbox.md', 'WK-9103', 'inbox'],
+  ])(
+    'AC_MISSING does not fire for a WK with no AC section when status is %s (%s, status=%s)',
+    async (fixtureName, wkId) => {
+      tmp = await createBootstrappedRepo();
+      installAcFixture(tmp, fixtureName, wkId);
+
+      const result = await lint({ dir: tmp.dir });
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        const diags = result.data.diagnostics.filter(d => d.code === 'AC_MISSING');
+        expect(diags).toEqual([]);
+      }
+    },
+  );
+
+  it('AC_MISSING fires when the AC section holds only the "_criterion_" placeholder (no AC_UNVERIFIABLE)', async () => {
+    tmp = await createBootstrappedRepo();
+    installAcFixture(tmp, 'placeholder-only.md', 'WK-9104');
+
+    const result = await lint({ dir: tmp.dir });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const missing = result.data.diagnostics.filter(d => d.code === 'AC_MISSING');
+      const unverifiable = result.data.diagnostics.filter(d => d.code === 'AC_UNVERIFIABLE');
+      expect(missing.length).toBe(1);
+      expect(missing[0].severity).toBe('error');
+      expect(unverifiable).toEqual([]);
+    }
+  });
+
+  it('AC_UNVERIFIABLE fires once for a "_criterion_" placeholder bullet sitting beside a real criterion (no AC_MISSING)', async () => {
+    tmp = await createBootstrappedRepo();
+    installAcFixture(tmp, 'placeholder-beside-real.md', 'WK-9105');
+
+    const result = await lint({ dir: tmp.dir });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const missing = result.data.diagnostics.filter(d => d.code === 'AC_MISSING');
+      const unverifiable = result.data.diagnostics.filter(d => d.code === 'AC_UNVERIFIABLE');
+      expect(missing).toEqual([]);
+      expect(unverifiable.length).toBe(1);
+      expect(unverifiable[0].severity).toBe('warning');
+    }
+  });
+
+  it('AC_UNVERIFIABLE does not fire when every AC bullet names a verifiable check', async () => {
+    tmp = await createBootstrappedRepo();
+    installAcFixture(tmp, 'all-verifiable.md', 'WK-9106');
+
+    const result = await lint({ dir: tmp.dir });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const diags = result.data.diagnostics.filter(d => d.code === 'AC_UNVERIFIABLE');
+      expect(diags).toEqual([]);
+    }
+  });
+
+  it('AC_UNVERIFIABLE fires once per failing bullet in a mix of verifiable and unverifiable criteria', async () => {
+    tmp = await createBootstrappedRepo();
+    installAcFixture(tmp, 'mixed.md', 'WK-9107');
+
+    const result = await lint({ dir: tmp.dir });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const missing = result.data.diagnostics.filter(d => d.code === 'AC_MISSING');
+      const unverifiable = result.data.diagnostics.filter(d => d.code === 'AC_UNVERIFIABLE');
+      expect(missing).toEqual([]);
+      expect(unverifiable.length).toBe(2);
+      expect(unverifiable.every(d => d.severity === 'warning')).toBe(true);
+    }
+  });
+
+  it('neither rule fires for a blocked WK, even with a placeholder-only AC section', async () => {
+    tmp = await createBootstrappedRepo();
+    installAcFixture(tmp, 'blocked-exempt.md', 'WK-9108');
+
+    const result = await lint({ dir: tmp.dir });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const missing = result.data.diagnostics.filter(d => d.code === 'AC_MISSING');
+      const unverifiable = result.data.diagnostics.filter(d => d.code === 'AC_UNVERIFIABLE');
+      expect(missing).toEqual([]);
+      expect(unverifiable).toEqual([]);
+    }
+  });
+
+  it('neither rule fires for a non-WK record (initiative) with no AC section', async () => {
+    tmp = await createBootstrappedRepo();
+    writeRecord(tmp.dir, 'wiki/initiatives/IN-0001.md', {
+      id: 'IN-0001',
+      title: 'Initiative with no Acceptance criteria section (N/A for IN)',
+      status: 'todo',
+      priority: 'medium',
+      owner: 'test',
+      created: '2025-01-01',
+      updated: '2025-01-01',
+    });
+
+    const result = await lint({ dir: tmp.dir });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const missing = result.data.diagnostics.filter(d => d.code === 'AC_MISSING');
+      const unverifiable = result.data.diagnostics.filter(d => d.code === 'AC_UNVERIFIABLE');
+      expect(missing).toEqual([]);
+      expect(unverifiable).toEqual([]);
+    }
+  });
+});
