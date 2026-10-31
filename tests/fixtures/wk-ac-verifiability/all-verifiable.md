@@ -1,6 +1,6 @@
 ---
 id: "WK-9106"
-title: "Fixture: open WK whose acceptance criteria are all verifiable"
+title: "Fixture: open WK with a passing Acceptance criteria section"
 type: task
 status: todo
 priority: medium
@@ -17,12 +17,12 @@ blocks: []
 related: []
 ---
 
-# WK-9106: Fixture: open WK whose acceptance criteria are all verifiable
+# WK-9106: Fixture: open WK with a passing Acceptance criteria section
 
 ## Objective
 
-Fixture for AC_UNVERIFIABLE clean pass: every bullet names a verifiable check — inline
-code, a repo-relative path, an npm command, a metric, and an observable-behavior verb.
+Fixture for AC_MISSING clean pass: the section holds several real (non-placeholder)
+checkbox items, so none of the three AC_MISSING cases apply.
 
 ## Scope
 

@@ -1,6 +1,6 @@
 ---
 id: "WK-9105"
-title: "Fixture: open WK with a placeholder bullet beside a real criterion"
+title: "Fixture: open WK with a placeholder checkbox beside a real checkbox criterion"
 type: task
 status: review
 priority: medium
@@ -17,13 +17,13 @@ blocks: []
 related: []
 ---
 
-# WK-9105: Fixture: open WK with a placeholder bullet beside a real criterion
+# WK-9105: Fixture: open WK with a placeholder checkbox beside a real checkbox criterion
 
 ## Objective
 
-Fixture for AC_UNVERIFIABLE: a leftover "_criterion_" placeholder bullet sits beside a
-real, verifiable criterion. AC_MISSING must not fire (real criteria exist), but the
-placeholder bullet itself should flag.
+Fixture for AC_MISSING case 3's boundary: a leftover "_criterion_" placeholder
+checkbox sits beside a real checkbox criterion. Not every checkbox item is the
+placeholder, so AC_MISSING must not fire.
 
 ## Scope
 

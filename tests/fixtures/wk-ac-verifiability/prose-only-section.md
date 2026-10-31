@@ -21,10 +21,8 @@ related: []
 
 ## Objective
 
-Fixture for HO-0109: the "## Acceptance criteria" section holds only a prose sentence,
-with no "-"/"*"/"+"/ordered list item anywhere — not AC_MISSING (the heading exists
-and is not placeholder-only), but exactly one AC_UNVERIFIABLE warning saying the
-section has no list items.
+Fixture for AC_MISSING case 2: the "## Acceptance criteria" section holds only a prose
+sentence, with no checkbox item anywhere — the "no checkbox item" case fires.
 
 ## Scope
 

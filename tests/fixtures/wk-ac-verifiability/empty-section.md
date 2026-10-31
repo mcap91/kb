@@ -21,9 +21,9 @@ related: []
 
 ## Objective
 
-Fixture for HO-0109: the "## Acceptance criteria" heading is present but the section
-holds nothing at all before the next heading — not AC_MISSING (the heading exists),
-but exactly one AC_UNVERIFIABLE warning saying the section has no list items.
+Fixture for AC_MISSING case 2: the "## Acceptance criteria" heading is present but the
+section holds nothing at all before the next heading — no checkbox item, so the
+"no checkbox item" case fires.
 
 ## Scope
 

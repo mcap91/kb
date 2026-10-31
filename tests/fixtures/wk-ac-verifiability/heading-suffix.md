@@ -22,8 +22,9 @@ related: []
 ## Objective
 
 Fixture for the heading-suffix tolerance (WK-0183's own heading shape): the
-"## Acceptance criteria" heading carries trailing text, and AC_MISSING /
-AC_UNVERIFIABLE must still read the section instead of treating it as absent.
+"## Acceptance criteria" heading carries trailing text, and AC_MISSING must still
+read the section instead of treating it as absent. The section has a real checkbox
+criterion, so this fixture passes.
 
 ## Scope
 

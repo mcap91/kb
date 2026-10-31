@@ -21,10 +21,9 @@ related: []
 
 ## Objective
 
-Fixture for HO-0109 (correcting HO-0107's overreach): a plain (non-checkbox) bullet is
-a criterion exactly like a checkbox item, so AC_MISSING must not fire. The bullet text
-itself names no verifiable check, so it should still get one AC_UNVERIFIABLE warning —
-proving the item is being read as a criterion, not silently skipped.
+Fixture for AC_MISSING case 2 (2026-10-30 operator ruling, presence check only): a
+plain (non-checkbox) bullet does not count as a criterion, so the section has no
+checkbox item and the "no checkbox item" case fires.
 
 ## Scope
 
