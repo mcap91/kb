@@ -5,7 +5,7 @@
     "outDir": "dist-tests",
     "rootDir": "."
   },
-  "include": ["tests/**/*.ts", "scripts/**/*.ts"],
+  "include": ["tests/**/*.ts", "scripts/**/*.ts", "evals/**/*.ts"],
   "exclude": ["tests/fixtures/sample-repo/**"],
   "references": [
     { "path": "packages/wiki-core" },
