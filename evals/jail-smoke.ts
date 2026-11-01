@@ -9,6 +9,8 @@
  * they are unit-testable without ever invoking real bwrap.
  */
 
+import { fail, ok, type EvalResult } from './result.js';
+
 export interface JailSmokeCheck {
   name: string;
   /** POSIX `sh` snippet; exit 0 means pass. */
@@ -20,34 +22,28 @@ export interface JailSmokeCheckOpts {
   operatorHome: string;
 }
 
+/** The six checks scope 17.3/18.1's acceptance criterion names, in the order they must be reported. */
+export const JAIL_SMOKE_CHECK_NAMES = [
+  'operator-home-unreadable',
+  'test-kb-claude-readable-when-present',
+  'kb-package-json-readable',
+  'kb-wiki-empty',
+  'home-eval-writable',
+  'kb-not-writable',
+] as const;
+
 /** The six checks scope 17.3/18.1's acceptance criterion names. */
 export function buildJailSmokeChecks(opts: JailSmokeCheckOpts): JailSmokeCheck[] {
-  return [
-    {
-      name: 'operator-home-unreadable',
-      script: `! ls "${opts.operatorHome}" >/dev/null 2>&1`,
-    },
-    {
-      name: 'test-kb-claude-readable-when-present',
-      script: '[ ! -d /home/eval/test_kb/.claude ] || ls /home/eval/test_kb/.claude >/dev/null 2>&1',
-    },
-    {
-      name: 'kb-package-json-readable',
-      script: 'cat /kb/package.json >/dev/null 2>&1',
-    },
-    {
-      name: 'kb-wiki-empty',
-      script: '[ -z "$(ls -A /kb/wiki 2>/dev/null)" ]',
-    },
-    {
-      name: 'home-eval-writable',
-      script: 'touch /home/eval/.smoke-write-test 2>/dev/null && rm -f /home/eval/.smoke-write-test',
-    },
-    {
-      name: 'kb-not-writable',
-      script: '! ( touch /kb/.smoke-write-test 2>/dev/null && rm -f /kb/.smoke-write-test )',
-    },
-  ];
+  const scripts: Record<(typeof JAIL_SMOKE_CHECK_NAMES)[number], string> = {
+    'operator-home-unreadable': `! ls "${opts.operatorHome}" >/dev/null 2>&1`,
+    'test-kb-claude-readable-when-present':
+      '[ ! -d /home/eval/test_kb/.claude ] || ls /home/eval/test_kb/.claude >/dev/null 2>&1',
+    'kb-package-json-readable': 'cat /kb/package.json >/dev/null 2>&1',
+    'kb-wiki-empty': '[ -z "$(ls -A /kb/wiki 2>/dev/null)" ]',
+    'home-eval-writable': 'touch /home/eval/.smoke-write-test 2>/dev/null && rm -f /home/eval/.smoke-write-test',
+    'kb-not-writable': '! ( touch /kb/.smoke-write-test 2>/dev/null && rm -f /kb/.smoke-write-test )',
+  };
+  return JAIL_SMOKE_CHECK_NAMES.map((name) => ({ name, script: scripts[name] }));
 }
 
 /** Renders the checks into one `/bin/sh` script printing `PASS <name>`/`FAIL <name>` per check. */
@@ -77,4 +73,31 @@ export function parseJailSmokeOutput(stdout: string): JailSmokeOutcome[] {
 /** True only when every check ran and passed — an empty result set is not a pass (the jail or the parse itself failed silently). */
 export function allPassed(outcomes: JailSmokeOutcome[]): boolean {
   return outcomes.length > 0 && outcomes.every((o) => o.passed);
+}
+
+/**
+ * Requires exactly one PASS line for each of the six named checks
+ * (`JAIL_SMOKE_CHECK_NAMES`) — not merely a nonempty all-PASS output, which a
+ * truncated or partial run could also produce. Fails naming the first check
+ * that is missing, duplicated, or reported FAIL; fails on empty output.
+ */
+export function checkJailSmokeComplete(outcomes: JailSmokeOutcome[]): EvalResult<void> {
+  if (outcomes.length === 0) {
+    return fail('EMPTY_OUTPUT', 'jail-smoke produced no PASS/FAIL lines');
+  }
+
+  for (const name of JAIL_SMOKE_CHECK_NAMES) {
+    const matches = outcomes.filter((o) => o.name === name);
+    if (matches.length === 0) {
+      return fail('MISSING_CHECK', `jail-smoke is missing required check: ${name}`);
+    }
+    if (matches.length > 1) {
+      return fail('DUPLICATE_CHECK', `jail-smoke reported required check more than once: ${name}`);
+    }
+    if (!matches[0].passed) {
+      return fail('CHECK_FAILED', `jail-smoke required check failed: ${name}`);
+    }
+  }
+
+  return ok(undefined);
 }

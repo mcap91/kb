@@ -13,7 +13,7 @@ import { SYSTEM_ROOTS } from '@kb/dispatch-core';
 
 import { buildClaudeArgv } from './claude-argv.js';
 import { checkInstalledExactly, installCommand, installSkill, resetTestKb } from './install.js';
-import { allPassed, buildJailSmokeChecks, buildJailSmokeScript, parseJailSmokeOutput } from './jail-smoke.js';
+import { buildJailSmokeChecks, buildJailSmokeScript, checkJailSmokeComplete, parseJailSmokeOutput } from './jail-smoke.js';
 import { buildEvalJailArgs, EVAL_CLI_PACKAGE_DIR, EVAL_HOME } from './jail.js';
 import { launch } from './launch.js';
 import type { McpKind } from './mcp-config.js';
@@ -75,7 +75,12 @@ async function runJailSmoke(): Promise<number> {
       console.log(`${outcome.passed ? 'PASS' : 'FAIL'} ${outcome.name}`);
     }
 
-    return allPassed(outcomes) ? 0 : 1;
+    const complete = checkJailSmokeComplete(outcomes);
+    if (!complete.ok) {
+      console.error(`jail-smoke: ${complete.message}`);
+      return 1;
+    }
+    return 0;
   } finally {
     rmSync(runDir, { recursive: true, force: true });
   }

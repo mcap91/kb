@@ -93,6 +93,53 @@ describe('checkInstalledExactly', () => {
     if (!result.ok) expect(result.message).toContain('extra.md');
   });
 
+  it('fails, naming the file, when one extra file is present in home/.claude/skills', () => {
+    const { homeCommandsDir, homeSkillsDir, testKbCommandsDir, testKbSkillsDir } = makeDirs();
+    mkdirSync(homeSkillsDir, { recursive: true });
+    writeFileSync(join(homeSkillsDir, 'extra.md'), 'x');
+
+    const result = checkInstalledExactly([
+      { dir: homeCommandsDir, expectedNames: ['planner.md'] },
+      { dir: homeSkillsDir, expectedNames: [] },
+      { dir: testKbCommandsDir, expectedNames: [] },
+      { dir: testKbSkillsDir, expectedNames: ['resolve'] },
+    ]);
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.message).toContain('extra.md');
+  });
+
+  it('fails, naming the file, when one extra file is present in test_kb/.claude/commands', () => {
+    const { homeCommandsDir, homeSkillsDir, testKbCommandsDir, testKbSkillsDir } = makeDirs();
+    mkdirSync(testKbCommandsDir, { recursive: true });
+    writeFileSync(join(testKbCommandsDir, 'extra.md'), 'x');
+
+    const result = checkInstalledExactly([
+      { dir: homeCommandsDir, expectedNames: ['planner.md'] },
+      { dir: homeSkillsDir, expectedNames: [] },
+      { dir: testKbCommandsDir, expectedNames: [] },
+      { dir: testKbSkillsDir, expectedNames: ['resolve'] },
+    ]);
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.message).toContain('extra.md');
+  });
+
+  it('fails, naming the file, when one extra file is present in test_kb/.claude/skills', () => {
+    const { homeCommandsDir, homeSkillsDir, testKbCommandsDir, testKbSkillsDir } = makeDirs();
+    writeFileSync(join(testKbSkillsDir, 'extra.md'), 'x');
+
+    const result = checkInstalledExactly([
+      { dir: homeCommandsDir, expectedNames: ['planner.md'] },
+      { dir: homeSkillsDir, expectedNames: [] },
+      { dir: testKbCommandsDir, expectedNames: [] },
+      { dir: testKbSkillsDir, expectedNames: ['resolve'] },
+    ]);
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.message).toContain('extra.md');
+  });
+
   it('fails when one installed file is missing', () => {
     const { homeSkillsDir, testKbCommandsDir, testKbSkillsDir } = makeDirs();
     const emptyCommandsDir = join(dir, 'home', '.claude', 'commands-missing');

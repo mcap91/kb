@@ -5,7 +5,14 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { allPassed, buildJailSmokeChecks, buildJailSmokeScript, parseJailSmokeOutput } from '../evals/jail-smoke.js';
+import {
+  allPassed,
+  buildJailSmokeChecks,
+  buildJailSmokeScript,
+  checkJailSmokeComplete,
+  JAIL_SMOKE_CHECK_NAMES,
+  parseJailSmokeOutput,
+} from '../evals/jail-smoke.js';
 
 describe('buildJailSmokeChecks', () => {
   it('builds the six named checks', () => {
@@ -48,5 +55,46 @@ describe('allPassed', () => {
     expect(allPassed([{ name: 'a', passed: true }])).toBe(true);
     expect(allPassed([{ name: 'a', passed: true }, { name: 'b', passed: false }])).toBe(false);
     expect(allPassed([])).toBe(false);
+  });
+});
+
+describe('checkJailSmokeComplete', () => {
+  const allSixPass = JAIL_SMOKE_CHECK_NAMES.map((name) => ({ name, passed: true }));
+
+  it('passes when all six named checks report exactly one PASS line', () => {
+    const result = checkJailSmokeComplete(allSixPass);
+    expect(result.ok).toBe(true);
+  });
+
+  it('fails, naming the check, when one of the six named checks is missing', () => {
+    const missing = allSixPass.filter((o) => o.name !== 'kb-wiki-empty');
+
+    const result = checkJailSmokeComplete(missing);
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.message).toContain('kb-wiki-empty');
+  });
+
+  it('fails, naming the check, when one of the six named checks reports FAIL', () => {
+    const oneFailed = allSixPass.map((o) => (o.name === 'kb-not-writable' ? { ...o, passed: false } : o));
+
+    const result = checkJailSmokeComplete(oneFailed);
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.message).toContain('kb-not-writable');
+  });
+
+  it('fails when one of the six named checks is duplicated', () => {
+    const duplicated = [...allSixPass, { name: 'home-eval-writable', passed: true }];
+
+    const result = checkJailSmokeComplete(duplicated);
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.message).toContain('home-eval-writable');
+  });
+
+  it('fails on empty output', () => {
+    const result = checkJailSmokeComplete([]);
+    expect(result.ok).toBe(false);
   });
 });
