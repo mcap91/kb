@@ -24,7 +24,8 @@ export type ErrorCode =
   | 'ARCHIVE_ERROR'
   | 'SYNC_ERROR'
   | 'MCP_CONFIG_PARSE_ERROR'
-  | 'GIT_UNAVAILABLE';
+  | 'GIT_UNAVAILABLE'
+  | 'BLOCK_BUDGET_EXCEEDED';
 
 /**
  * Discriminated union result type for wiki-core operations.

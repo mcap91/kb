@@ -124,11 +124,19 @@ export {
   getBootstrapTemplates,
   getRecordTemplates,
   getTemplate,
-  getAgentInstructionsTemplate,
+  getAgentInstructionsSections,
 } from './contract.js';
+export type { AgentInstructionsSection } from './contract.js';
 
 // Agent instructions (managed block)
-export { writeManagedBlock } from './agent-instructions.js';
+export {
+  writeManagedBlock,
+  BLOCK_WORD_BUDGET,
+  dispatchInstalled,
+  assembleBlockBody,
+  countBlockWords,
+  checkBlockBudget,
+} from './agent-instructions.js';
 
 // MCP config (.mcp.json)
 export { writeMcpConfig } from './mcp-config.js';

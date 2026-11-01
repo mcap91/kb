@@ -19,9 +19,15 @@ import {
   loadManifest,
   getBootstrapTemplates,
   getRecordTemplates,
-  getAgentInstructionsTemplate,
+  getAgentInstructionsSections,
+  type AgentInstructionsSection,
 } from './contract.js';
-import { writeManagedBlock } from './agent-instructions.js';
+import {
+  writeManagedBlock,
+  assembleBlockBody,
+  checkBlockBudget,
+  dispatchInstalled,
+} from './agent-instructions.js';
 import { writeMcpConfig } from './mcp-config.js';
 import { ensureGitignoreEntries } from './gitignore.js';
 import { debug, setVerbose } from './debug.js';
@@ -281,6 +287,17 @@ export async function bootstrap(
   }
   const manifest = manifestResult.data;
 
+  // Refuse before any write when the managed block would exceed the budget (WK-0229 ruling 16).
+  const agentInstructions = opts.agentInstructions ?? true;
+  let agentInstructionsSections: AgentInstructionsSection[] | undefined;
+  if (agentInstructions) {
+    const sectionsResult = getAgentInstructionsSections();
+    if (!sectionsResult.ok) return sectionsResult;
+    const budgetResult = checkBlockBudget(sectionsResult.data);
+    if (!budgetResult.ok) return budgetResult;
+    agentInstructionsSections = sectionsResult.data;
+  }
+
   const created: string[] = [];
   const skipped: string[] = [];
 
@@ -348,16 +365,15 @@ export async function bootstrap(
   const updated: string[] = [];
   const instructions: string[] = [];
 
-  const agentInstructions = opts.agentInstructions ?? true;
-  if (agentInstructions) {
-    const templateResult = getAgentInstructionsTemplate();
-    if (templateResult.ok) {
-      const blockResult = writeManagedBlock(targetDir, templateResult.data, { dryRun });
-      if (blockResult.ok) {
-        for (const entry of blockResult.data) {
-          if (entry.action !== 'unchanged') {
-            updated.push(entry.file);
-          }
+  const dispatch = dispatchInstalled(targetDir);
+
+  if (agentInstructionsSections) {
+    const blockBody = assembleBlockBody(agentInstructionsSections, { dispatch });
+    const blockResult = writeManagedBlock(targetDir, blockBody, { dryRun });
+    if (blockResult.ok) {
+      for (const entry of blockResult.data) {
+        if (entry.action !== 'unchanged') {
+          updated.push(entry.file);
         }
       }
     }
@@ -365,7 +381,7 @@ export async function bootstrap(
 
   // 6. Write .mcp.json
   const mcpClient = opts.mcpClient ?? 'claude';
-  const mcpResult = writeMcpConfig(targetDir, { client: mcpClient, dryRun });
+  const mcpResult = writeMcpConfig(targetDir, { client: mcpClient, dispatch, dryRun });
   if (mcpResult.ok) {
     const mcpData = mcpResult.data;
     if (mcpData.action === 'created' || mcpData.action === 'updated') {

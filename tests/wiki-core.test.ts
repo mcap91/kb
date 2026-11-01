@@ -344,9 +344,10 @@ describe('bootstrap', () => {
     const agents = readText(tmp.dir, 'AGENTS.md');
     expect(agents).toContain('<!-- BEGIN kb-managed -->');
     expect(agents).toContain('<!-- END kb-managed -->');
-    // AGENTS.md carries the full template body
-    expect(agents).toContain('## kb integration');
-    expect(agents).toContain('### Operating rules');
+    // AGENTS.md carries the full template body.
+    // WK-0229 ruling 14: the single "## kb integration" heading is replaced by per-tool sections.
+    expect(agents).toContain('## kb — wiki');
+    expect(agents).toContain('### Wiki rules');
     // No @AGENTS.md self-reference inside AGENTS.md
     expect(agents).not.toContain('@AGENTS.md');
 
@@ -360,7 +361,7 @@ describe('bootstrap', () => {
     expect(pointerIdx).toBeGreaterThan(beginIdx);
     expect(pointerIdx).toBeLessThan(endIdx);
     // CLAUDE.md does not duplicate the full template body
-    expect(claude).not.toContain('### Operating rules');
+    expect(claude).not.toContain('### Wiki rules');
   });
 });
 

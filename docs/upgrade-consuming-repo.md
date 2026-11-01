@@ -24,6 +24,20 @@ npm run wiki -- generate --dir /path/to/consuming-repo
 After that, the consuming repo can use newly added wiki surfaces such as `PLN-*`. If the repo also uses
 dispatch, see "Dispatch Config Tables" below.
 
+## Rules: what the block carries, what the repo owns
+
+The managed block carries the kb-wiki section always. The kb-dispatch section appears on the next sync
+after `init-dispatch` has created `wiki/.dispatch/` — removing that directory removes the section (and the
+`.mcp.json` `kb-dispatch` entry) on the next sync. The 65 ratified engineering guidelines are carried inline
+in the block, not as a separate reference.
+
+The block has a 4,000-word budget (WK-0229 ruling 16), measured between the `<!-- BEGIN kb-managed -->` /
+`<!-- END kb-managed -->` markers. `sync-contract` and `bootstrap` refuse — and write nothing — when the
+assembled block would exceed it.
+
+The repo's own rules, its environment registry, and its where-code-goes map live outside the markers, in
+the repo's own `AGENTS.md`/`CLAUDE.md` content. kb never reads or writes that text.
+
 ## What `sync-contract` Upgrades
 
 `sync-contract` now handles repo-local contract drift that is safe to update automatically:
@@ -35,7 +49,8 @@ dispatch, see "Dispatch Config Tables" below.
 - updates `wiki/.wiki-contract.json` with the current contract version and `lastSyncedAt`
 - reports drift in consumer-owned bootstrap docs without overwriting them
 - refreshes the managed block in `AGENTS.md` and `CLAUDE.md` (between `<!-- BEGIN kb-managed -->` / `<!-- END kb-managed -->` markers; content outside the markers is never touched)
-- merges `kb-wiki` and `kb-dispatch` entries into `.mcp.json` (Claude), preserving existing servers
+- merges `kb-wiki` into `.mcp.json` (Claude) always, preserving existing servers; merges `kb-dispatch` only
+  when `wiki/.dispatch/` exists, and removes it if that directory is absent
 
 Note: `wiki/conventions.md` stays consumer-owned (not rewritten by sync), but the `AGENTS.md`/`CLAUDE.md` managed block is now authoritative for retrieval instructions.
 
@@ -132,7 +147,7 @@ For strict stdio clients, use direct `node --import ... server.ts` registrations
 
 - Pulling `kb` is not enough; run `sync-contract` for each consuming repo.
 - Do not run `bootstrap` as the normal upgrade step.
-- `sync-contract` now refreshes the managed block in `AGENTS.md`/`CLAUDE.md` and merges `.mcp.json`. Content outside the `<!-- BEGIN kb-managed -->` / `<!-- END kb-managed -->` markers is never touched.
+- `sync-contract` now refreshes the managed block in `AGENTS.md`/`CLAUDE.md` and merges `.mcp.json`. Content outside the `<!-- BEGIN kb-managed -->` / `<!-- END kb-managed -->` markers is never touched. `kb-dispatch` (block section and `.mcp.json` entry) only appears once `wiki/.dispatch/` exists.
 - `wiki create` does not create `HO-*`; handoffs remain dispatch-owned.
 - If `sync-contract --check` reports `wiki/.id-state.json`, it means a new prefix will be merged in
   normal mode without resetting existing allocations.

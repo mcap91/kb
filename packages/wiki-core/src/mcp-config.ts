@@ -15,6 +15,7 @@ interface McpConfigResult {
 
 interface WriteMcpConfigOpts {
   client: McpClient;
+  dispatch: boolean;
   dryRun?: boolean;
 }
 
@@ -44,7 +45,7 @@ export function writeMcpConfig(
   targetDir: string,
   opts: WriteMcpConfigOpts,
 ): Result<McpConfigResult> {
-  const { client, dryRun = false } = opts;
+  const { client, dispatch, dryRun = false } = opts;
 
   if (client === 'none') {
     debug('mcp config: skipped (client=none)');
@@ -54,10 +55,10 @@ export function writeMcpConfig(
   const { loaderUrl, wikiServer, dispatchServer } = resolveKbPaths();
 
   if (client === 'codex') {
-    const commands = [
-      `codex mcp add kb-wiki -- node --import ${loaderUrl} ${wikiServer}`,
-      `codex mcp add kb-dispatch -- node --import ${loaderUrl} ${dispatchServer}`,
-    ];
+    const commands = [`codex mcp add kb-wiki -- node --import ${loaderUrl} ${wikiServer}`];
+    if (dispatch) {
+      commands.push(`codex mcp add kb-dispatch -- node --import ${loaderUrl} ${dispatchServer}`);
+    }
     debug('mcp config: codex commands generated');
     return ok({ action: 'skipped', commands });
   }
@@ -86,7 +87,12 @@ export function writeMcpConfig(
 
   const servers = config.mcpServers as Record<string, unknown>;
   servers['kb-wiki'] = wikiEntry;
-  servers['kb-dispatch'] = dispatchEntry;
+  // DECISION: kb owns kb-* keys; removing the tool removes its entry (rulings 1, 4).
+  if (dispatch) {
+    servers['kb-dispatch'] = dispatchEntry;
+  } else {
+    delete servers['kb-dispatch'];
+  }
 
   const newContent = JSON.stringify(config, null, 2) + '\n';
 

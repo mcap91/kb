@@ -2,10 +2,60 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { ok, fail, type Result } from './errors.js';
 import { debug } from './debug.js';
+import type { AgentInstructionsSection } from './contract.js';
 
 const BEGIN_MARKER = '<!-- BEGIN kb-managed -->';
 const END_MARKER = '<!-- END kb-managed -->';
 const MANAGED_COMMENT = 'Managed by kb — edits inside this block are overwritten by `kb bootstrap` / `kb sync-contract`; edit outside the markers.';
+
+// WK-0229 ruling 16: words between the markers; raise only by operator ruling recorded in WK-0229.
+export const BLOCK_WORD_BUDGET = 4000;
+
+/** Whether `wiki/.dispatch/` has been scaffolded for the target repo (WK-0229 ruling 4). */
+export function dispatchInstalled(targetDir: string): boolean {
+  return fs.existsSync(path.join(targetDir, 'wiki', '.dispatch'));
+}
+
+/** Assemble the managed-block body from sections, dropping dispatch-gated ones when absent. */
+export function assembleBlockBody(
+  sections: AgentInstructionsSection[],
+  opts: { dispatch: boolean },
+): string {
+  return sections
+    .filter(section => section.requires !== 'dispatch' || opts.dispatch)
+    .map(section => section.body)
+    .join('\n\n');
+}
+
+/** Count words strictly between the BEGIN/END markers (markers excluded, managed comment included). */
+export function countBlockWords(body: string): number {
+  const wrapped = buildWrappedBlock(body);
+  const beginIdx = wrapped.indexOf(BEGIN_MARKER);
+  const endIdx = wrapped.indexOf(END_MARKER);
+  const between = wrapped.slice(beginIdx + BEGIN_MARKER.length, endIdx);
+  return between.split(/\s+/).filter(Boolean).length;
+}
+
+/**
+ * Check the managed block against the WK-0229 ruling 16 budget, assembled with every
+ * section present (the largest block sync can emit) so a repo without dispatch never
+ * hides an overflow.
+ */
+export function checkBlockBudget(
+  sections: AgentInstructionsSection[],
+): Result<{ words: number; budget: number }> {
+  const body = assembleBlockBody(sections, { dispatch: true });
+  const words = countBlockWords(body);
+
+  if (words > BLOCK_WORD_BUDGET) {
+    return fail(
+      'BLOCK_BUDGET_EXCEEDED',
+      `Managed block is ${words} words; budget is ${BLOCK_WORD_BUDGET} (WK-0229 ruling 16). Raise the budget by operator ruling or trim the contract text.`,
+    );
+  }
+
+  return ok({ words, budget: BLOCK_WORD_BUDGET });
+}
 
 const TARGET_FILES = ['AGENTS.md', 'CLAUDE.md'];
 

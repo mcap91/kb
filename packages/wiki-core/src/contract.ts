@@ -143,22 +143,47 @@ export function getRecordTemplates(): Result<string[]> {
 }
 
 /**
- * Read the agent-instructions template from contract/agent-instructions.md.
+ * A per-tool section of the managed agent-instructions block (WK-0229 ruling 14).
+ * `requires: 'dispatch'` means the section is dropped when `wiki/.dispatch/` is absent.
  */
-export function getAgentInstructionsTemplate(): Result<string> {
-  const tp = path.join(findKbRoot(), 'contract', 'agent-instructions.md');
-  debug(`reading agent instructions template from ${tp}`);
+export interface AgentInstructionsSection {
+  id: 'wiki' | 'dispatch' | 'guidelines' | 'footer';
+  requires?: 'dispatch';
+  body: string;
+}
 
-  if (!fs.existsSync(tp)) {
-    return fail('FILE_NOT_FOUND', `Agent instructions template not found at ${tp}`);
+/** Fixed emission order for managed-block sections (WK-0229 ruling 14). */
+const AGENT_INSTRUCTIONS_SECTION_ORDER: Array<Pick<AgentInstructionsSection, 'id' | 'requires'>> = [
+  { id: 'wiki' },
+  { id: 'dispatch', requires: 'dispatch' },
+  { id: 'guidelines' },
+  { id: 'footer' },
+];
+
+/**
+ * Read the per-tool agent-instructions sections from contract/agent-instructions/.
+ */
+export function getAgentInstructionsSections(): Result<AgentInstructionsSection[]> {
+  const dir = path.join(findKbRoot(), 'contract', 'agent-instructions');
+  const sections: AgentInstructionsSection[] = [];
+
+  for (const { id, requires } of AGENT_INSTRUCTIONS_SECTION_ORDER) {
+    const tp = path.join(dir, `${id}.md`);
+    debug(`reading agent instructions section from ${tp}`);
+
+    if (!fs.existsSync(tp)) {
+      return fail('FILE_NOT_FOUND', `Agent instructions section not found at ${tp}`);
+    }
+
+    try {
+      const content = fs.readFileSync(tp, 'utf-8').replace(/\n$/, '');
+      sections.push({ id, requires, body: content });
+    } catch (err) {
+      return fail('FILE_NOT_FOUND', `Failed to read agent instructions section ${id}: ${String(err)}`, err);
+    }
   }
 
-  try {
-    const content = fs.readFileSync(tp, 'utf-8');
-    return ok(content);
-  } catch (err) {
-    return fail('FILE_NOT_FOUND', `Failed to read agent instructions template: ${String(err)}`, err);
-  }
+  return ok(sections);
 }
 
 /**

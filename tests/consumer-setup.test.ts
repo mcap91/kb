@@ -17,9 +17,14 @@ import {
   ensureGitignoreEntries,
 } from '../packages/wiki-core/src/index.js';
 
-import { writeManagedBlock } from '../packages/wiki-core/src/agent-instructions.js';
+import {
+  writeManagedBlock,
+  assembleBlockBody,
+  checkBlockBudget,
+  dispatchInstalled,
+} from '../packages/wiki-core/src/agent-instructions.js';
 import { writeMcpConfig } from '../packages/wiki-core/src/mcp-config.js';
-import { getAgentInstructionsTemplate } from '../packages/wiki-core/src/contract.js';
+import { getAgentInstructionsSections } from '../packages/wiki-core/src/contract.js';
 
 import type { IdState } from '../packages/wiki-core/src/index.js';
 
@@ -56,13 +61,14 @@ describe('managed block', () => {
       expect(beginCount, `${file} should have exactly one BEGIN marker`).toBe(1);
       expect(endCount, `${file} should have exactly one END marker`).toBe(1);
     }
-    // AGENTS.md carries the full template; CLAUDE.md is a thin redirect
+    // AGENTS.md carries the full template; CLAUDE.md is a thin redirect.
+    // WK-0229 ruling 14: the single "kb integration" heading is replaced by per-tool sections.
     const agents = readText(tmp.dir, 'AGENTS.md');
-    expect(agents).toContain('kb integration');
+    expect(agents).toContain('## kb — wiki');
     expect(agents).toContain('Retrieval');
     const claude = readText(tmp.dir, 'CLAUDE.md');
     expect(claude).toContain('@AGENTS.md');
-    expect(claude).not.toContain('kb integration');
+    expect(claude).not.toContain('## kb — wiki');
   });
 
   it('bootstrap into a repo with existing AGENTS.md (leading H1 + consumer content) inserts block and preserves consumer content', async () => {
@@ -266,7 +272,7 @@ describe('.mcp.json', () => {
     tmp?.cleanup();
   });
 
-  it('bootstrap creates .mcp.json with kb-wiki + kb-dispatch pointing at resolved kb paths', async () => {
+  it('bootstrap creates .mcp.json with kb-wiki but no kb-dispatch when wiki/.dispatch/ is absent (ruling 4)', async () => {
     tmp = createTmpDir();
     const result = await bootstrap({ dir: tmp.dir, repo: 'test/repo' });
     expect(result.ok).toBe(true);
@@ -274,12 +280,23 @@ describe('.mcp.json', () => {
     expect(fileExists(tmp.dir, '.mcp.json')).toBe(true);
     const config = readJson<{ mcpServers: Record<string, unknown> }>(tmp.dir, '.mcp.json');
     expect(config.mcpServers['kb-wiki']).toBeDefined();
-    expect(config.mcpServers['kb-dispatch']).toBeDefined();
+    expect(config.mcpServers['kb-dispatch']).toBeUndefined();
 
     const kbRoot = findKbRoot();
     const wikiEntry = config.mcpServers['kb-wiki'] as { command: string; args: string[] };
     expect(wikiEntry.command).toBe('node');
     expect(wikiEntry.args.some((a: string) => a.includes(kbRoot.replace(/\\/g, '/')))).toBe(true);
+  });
+
+  it('bootstrap creates .mcp.json with kb-dispatch when wiki/.dispatch/ exists', async () => {
+    tmp = createTmpDir();
+    fs.mkdirSync(path.join(tmp.dir, 'wiki', '.dispatch'), { recursive: true });
+    const result = await bootstrap({ dir: tmp.dir, repo: 'test/repo' });
+    expect(result.ok).toBe(true);
+
+    const config = readJson<{ mcpServers: Record<string, unknown> }>(tmp.dir, '.mcp.json');
+    expect(config.mcpServers['kb-wiki']).toBeDefined();
+    expect(config.mcpServers['kb-dispatch']).toBeDefined();
   });
 
   it('bootstrap merges into existing .mcp.json preserving other servers', async () => {
@@ -300,7 +317,7 @@ describe('.mcp.json', () => {
     const config = readJson<{ mcpServers: Record<string, unknown> }>(tmp.dir, '.mcp.json');
     expect(config.mcpServers['my-server']).toBeDefined();
     expect(config.mcpServers['kb-wiki']).toBeDefined();
-    expect(config.mcpServers['kb-dispatch']).toBeDefined();
+    expect(config.mcpServers['kb-dispatch']).toBeUndefined();
   });
 
   it('second bootstrap is idempotent (file byte-identical)', async () => {
@@ -314,7 +331,7 @@ describe('.mcp.json', () => {
     expect(second).toBe(first);
   });
 
-  it('client codex writes no .mcp.json and returns codex mcp add commands', async () => {
+  it('client codex writes no .mcp.json and returns a kb-wiki-only command when wiki/.dispatch/ is absent', async () => {
     tmp = createTmpDir();
     const result = await bootstrap({ dir: tmp.dir, repo: 'test/repo', mcpClient: 'codex' });
     expect(result.ok).toBe(true);
@@ -322,8 +339,8 @@ describe('.mcp.json', () => {
     expect(fs.existsSync(path.join(tmp.dir, '.mcp.json'))).toBe(false);
     if (result.ok) {
       expect(result.data.instructions).toBeDefined();
-      expect(result.data.instructions!.length).toBeGreaterThan(0);
-      expect(result.data.instructions!.some(i => i.includes('codex mcp add'))).toBe(true);
+      expect(result.data.instructions!.some(i => i.includes('codex mcp add kb-wiki'))).toBe(true);
+      expect(result.data.instructions!.some(i => i.includes('codex mcp add kb-dispatch'))).toBe(false);
     }
   });
 
@@ -331,7 +348,7 @@ describe('.mcp.json', () => {
     tmp = createTmpDir();
     fs.writeFileSync(path.join(tmp.dir, '.mcp.json'), '{ not valid json', 'utf-8');
 
-    const result = writeMcpConfig(tmp.dir, { client: 'claude' });
+    const result = writeMcpConfig(tmp.dir, { client: 'claude', dispatch: false });
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error).toBe('MCP_CONFIG_PARSE_ERROR');
@@ -363,30 +380,35 @@ describe('writeMcpConfig', () => {
 
   it('creates new .mcp.json when absent', () => {
     tmp = createTmpDir();
-    const result = writeMcpConfig(tmp.dir, { client: 'claude' });
+    const result = writeMcpConfig(tmp.dir, { client: 'claude', dispatch: false });
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.data.action).toBe('created');
     }
   });
 
-  it('codex returns commands without writing a file', () => {
+  it('codex returns a kb-dispatch command only when dispatch is true', () => {
     tmp = createTmpDir();
-    const result = writeMcpConfig(tmp.dir, { client: 'codex' });
-    expect(result.ok).toBe(true);
-    if (result.ok) {
-      expect(result.data.action).toBe('skipped');
-      expect(result.data.commands).toBeDefined();
-      expect(result.data.commands!.length).toBe(2);
-      expect(result.data.commands![0]).toContain('codex mcp add kb-wiki');
-      expect(result.data.commands![1]).toContain('codex mcp add kb-dispatch');
+    const withoutDispatch = writeMcpConfig(tmp.dir, { client: 'codex', dispatch: false });
+    expect(withoutDispatch.ok).toBe(true);
+    if (withoutDispatch.ok) {
+      expect(withoutDispatch.data.commands).toBeDefined();
+      expect(withoutDispatch.data.commands!.length).toBe(1);
+      expect(withoutDispatch.data.commands![0]).toContain('codex mcp add kb-wiki');
+    }
+
+    const withDispatch = writeMcpConfig(tmp.dir, { client: 'codex', dispatch: true });
+    expect(withDispatch.ok).toBe(true);
+    if (withDispatch.ok) {
+      expect(withDispatch.data.commands!.length).toBe(2);
+      expect(withDispatch.data.commands![1]).toContain('codex mcp add kb-dispatch');
     }
     expect(fs.existsSync(path.join(tmp.dir, '.mcp.json'))).toBe(false);
   });
 
   it('none returns skipped', () => {
     tmp = createTmpDir();
-    const result = writeMcpConfig(tmp.dir, { client: 'none' });
+    const result = writeMcpConfig(tmp.dir, { client: 'none', dispatch: false });
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.data.action).toBe('skipped');
@@ -395,12 +417,24 @@ describe('writeMcpConfig', () => {
 
   it('dryRun does not write', () => {
     tmp = createTmpDir();
-    const result = writeMcpConfig(tmp.dir, { client: 'claude', dryRun: true });
+    const result = writeMcpConfig(tmp.dir, { client: 'claude', dispatch: false, dryRun: true });
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.data.action).toBe('created');
     }
     expect(fs.existsSync(path.join(tmp.dir, '.mcp.json'))).toBe(false);
+  });
+
+  it('dispatch: true sets kb-dispatch; dispatch: false removes an existing kb-dispatch entry', () => {
+    tmp = createTmpDir();
+    writeMcpConfig(tmp.dir, { client: 'claude', dispatch: true });
+    let config = readJson<{ mcpServers: Record<string, unknown> }>(tmp.dir, '.mcp.json');
+    expect(config.mcpServers['kb-dispatch']).toBeDefined();
+
+    writeMcpConfig(tmp.dir, { client: 'claude', dispatch: false });
+    config = readJson<{ mcpServers: Record<string, unknown> }>(tmp.dir, '.mcp.json');
+    expect(config.mcpServers['kb-dispatch']).toBeUndefined();
+    expect(config.mcpServers['kb-wiki']).toBeDefined();
   });
 });
 
@@ -579,16 +613,156 @@ describe('ensureGitignoreEntries', () => {
 });
 
 // ---------------------------------------------------------------------------
-// getAgentInstructionsTemplate
+// getAgentInstructionsSections
 // ---------------------------------------------------------------------------
 
-describe('getAgentInstructionsTemplate', () => {
-  it('returns the template content from contract/agent-instructions.md', () => {
-    const result = getAgentInstructionsTemplate();
+describe('getAgentInstructionsSections', () => {
+  it('returns the four sections in order wiki, dispatch, guidelines, footer, with only dispatch requiring dispatch', () => {
+    const result = getAgentInstructionsSections();
     expect(result.ok).toBe(true);
     if (result.ok) {
-      expect(result.data).toContain('kb integration');
-      expect(result.data).toContain('Retrieval');
+      expect(result.data.map(s => s.id)).toEqual(['wiki', 'dispatch', 'guidelines', 'footer']);
+      for (const section of result.data) {
+        if (section.id === 'dispatch') {
+          expect(section.requires).toBe('dispatch');
+        } else {
+          expect(section.requires).toBeUndefined();
+        }
+        expect(section.body.length).toBeGreaterThan(0);
+      }
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Per-tool fixture diff (WK-0229 ruling 4, ruling 14)
+// ---------------------------------------------------------------------------
+
+describe('per-tool section gating', () => {
+  let tmp: TmpRepo;
+
+  afterEach(() => {
+    tmp?.cleanup();
+  });
+
+  it('dispatch section and .mcp.json kb-dispatch entry appear only while wiki/.dispatch/ exists', async () => {
+    tmp = await createBootstrappedRepo();
+
+    // No wiki/.dispatch/ yet — sync emits neither.
+    await sync({ dir: tmp.dir });
+    let agents = readText(tmp.dir, 'AGENTS.md');
+    let mcp = readJson<{ mcpServers: Record<string, unknown> }>(tmp.dir, '.mcp.json');
+    expect(agents).not.toContain('## kb — dispatch');
+    expect(mcp.mcpServers['kb-dispatch']).toBeUndefined();
+
+    // Create wiki/.dispatch/ and sync again — both appear.
+    fs.mkdirSync(path.join(tmp.dir, 'wiki', '.dispatch'), { recursive: true });
+    await sync({ dir: tmp.dir });
+    agents = readText(tmp.dir, 'AGENTS.md');
+    mcp = readJson<{ mcpServers: Record<string, unknown> }>(tmp.dir, '.mcp.json');
+    expect(agents).toContain('## kb — dispatch');
+    expect(mcp.mcpServers['kb-dispatch']).toBeDefined();
+
+    // Remove wiki/.dispatch/ and sync — both are gone.
+    fs.rmSync(path.join(tmp.dir, 'wiki', '.dispatch'), { recursive: true, force: true });
+    await sync({ dir: tmp.dir });
+    agents = readText(tmp.dir, 'AGENTS.md');
+    mcp = readJson<{ mcpServers: Record<string, unknown> }>(tmp.dir, '.mcp.json');
+    expect(agents).not.toContain('## kb — dispatch');
+    expect(mcp.mcpServers['kb-dispatch']).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Outside-marker survival (WK-0229 acceptance criteria)
+// ---------------------------------------------------------------------------
+
+describe('outside-marker survival', () => {
+  let tmp: TmpRepo;
+
+  afterEach(() => {
+    tmp?.cleanup();
+  });
+
+  it('text before and after the markers survives bootstrap and sync byte-for-byte; a hand edit inside is restored', async () => {
+    tmp = createTmpDir();
+    const before = '# Repo Agents\n\nBefore-marker content, repo-owned.\n\n';
+    const after = '\n## Repo Rules\n\nAfter-marker content, repo-owned.\n';
+    const seed =
+      before + '<!-- BEGIN kb-managed -->\nplaceholder\n<!-- END kb-managed -->' + after;
+    fs.writeFileSync(path.join(tmp.dir, 'AGENTS.md'), seed, 'utf-8');
+
+    await bootstrap({ dir: tmp.dir, repo: 'test/repo' });
+
+    const afterBootstrap = readText(tmp.dir, 'AGENTS.md');
+    const beginIdx1 = afterBootstrap.indexOf('<!-- BEGIN kb-managed -->');
+    const endIdx1 = afterBootstrap.indexOf('<!-- END kb-managed -->') + '<!-- END kb-managed -->'.length;
+    expect(afterBootstrap.slice(0, beginIdx1)).toBe(before);
+    expect(afterBootstrap.slice(endIdx1)).toBe(after);
+
+    // Hand-edit inside the markers.
+    const handEdited =
+      afterBootstrap.slice(0, beginIdx1) +
+      '<!-- BEGIN kb-managed -->\nHand-edited content.\n<!-- END kb-managed -->' +
+      afterBootstrap.slice(endIdx1);
+    fs.writeFileSync(path.join(tmp.dir, 'AGENTS.md'), handEdited, 'utf-8');
+
+    await sync({ dir: tmp.dir });
+
+    const afterSync = readText(tmp.dir, 'AGENTS.md');
+    const beginIdx2 = afterSync.indexOf('<!-- BEGIN kb-managed -->');
+    const endIdx2 = afterSync.indexOf('<!-- END kb-managed -->') + '<!-- END kb-managed -->'.length;
+    expect(afterSync.slice(0, beginIdx2)).toBe(before);
+    expect(afterSync.slice(endIdx2)).toBe(after);
+    expect(afterSync).not.toContain('Hand-edited content.');
+    expect(afterSync).toContain('## kb — wiki');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Shipped-text checks (WK-0229 rulings 9, 14, 15, 16)
+// ---------------------------------------------------------------------------
+
+describe('dispatchInstalled', () => {
+  let tmp: TmpRepo;
+
+  afterEach(() => {
+    tmp?.cleanup();
+  });
+
+  it('is false when wiki/.dispatch/ is absent and true once created', () => {
+    tmp = createTmpDir();
+    expect(dispatchInstalled(tmp.dir)).toBe(false);
+    fs.mkdirSync(path.join(tmp.dir, 'wiki', '.dispatch'), { recursive: true });
+    expect(dispatchInstalled(tmp.dir)).toBe(true);
+  });
+});
+
+describe('shipped block text', () => {
+  it('checkBlockBudget is ok with words in the range 2,000-4,000', () => {
+    const sectionsResult = getAgentInstructionsSections();
+    expect(sectionsResult.ok).toBe(true);
+    if (sectionsResult.ok) {
+      const budgetResult = checkBlockBudget(sectionsResult.data);
+      expect(budgetResult.ok).toBe(true);
+      if (budgetResult.ok) {
+        expect(budgetResult.data.words).toBeGreaterThanOrEqual(2000);
+        expect(budgetResult.data.words).toBeLessThanOrEqual(4000);
+      }
+    }
+  });
+
+  it('the emitted block carries the approved text with no resolution, escalation, or ledger-code language', () => {
+    const sectionsResult = getAgentInstructionsSections();
+    expect(sectionsResult.ok).toBe(true);
+    if (!sectionsResult.ok) return;
+
+    const emitted = assembleBlockBody(sectionsResult.data, { dispatch: true });
+    expect(emitted).toContain('65. **Keep one source of truth per fact.**');
+    expect(emitted).toContain('## kb — wiki');
+    expect(emitted).not.toContain('/resolve');
+    expect(emitted.toLowerCase()).not.toMatch(/escalat/);
+    expect(emitted).not.toMatch(/\bRD-\d+\b/);
+    expect(emitted).not.toMatch(/Dashboard/);
   });
 });
