@@ -164,7 +164,7 @@ export { execBash } from './exec-direct.js';
 // buildBwrapPlan and it remains independently unit-tested
 // (tests/dispatch-v2-jail.test.ts).
 export type { JailOpts, JailArgs } from './jail.js';
-export { buildJailArgs } from './jail.js';
+export { buildJailArgs, SYSTEM_ROOTS } from './jail.js';
 
 // Ephemeral clone management (§8)
 export type { CloneOpts, CloneResult } from './clone.js';
