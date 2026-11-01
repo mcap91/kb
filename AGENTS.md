@@ -397,6 +397,24 @@ Both must pass. The gate must be green on Linux (WSL2 ext4).
 - **Do not modify files under `scratch_space/`.** That directory is for planning and reference only.
 - **Do not use git worktrees.** Multiple agents share this checkout. Worktrees cause branch switches, stash collisions, and lost work. Work on one branch at a time; if branches diverge, rebase and merge — never create parallel worktrees.
 
+## kb-autoshop Design Item Discipline (IN-0011)
+
+These rules bind kb's own planning sessions on design items under IN-0011 (kb-autoshop and the planning contract).
+They are the kb-specific forms of generic rules the planner role ships to every consuming repo; the generic forms
+live in `contract/roles/planner.md`.
+
+- **Reference systems.** Every design item for kb-autoshop cites each of the three standing references below, or
+  states "none found" for it, and says whether the item mirrors or diverges from it, and why (see IN-0011
+  "Standing references"):
+  - the kb-autoshop prototype — SRC-0020 (hashed manifest), SRC-0021 (run 1 evidence), `docs/scratch_space/auto-shop/`
+  - AgentChassis — SRC-0022
+  - the bioinfo catalog — SRC-0023
+- **Full-source reads.** A sweep over the bioinfo catalog (or any other catalog-shaped source) reads each candidate
+  card's body; a conclusion drawn from frontmatter or a summary alone is not evidence.
+- **Needs.** Every IN-0011 addition — a new rule, role change, or piece of machinery — cites a need from IN-0011's
+  Needs register (N1–N10) or a ledger failure (`wiki/sources/SRC-0024.md` Intake); an addition that cites neither
+  does not belong in IN-0011.
+
 ## Interaction Contract
 
 - Do not stop at findings. If you identify a problem, propose a concrete fix in the same response.
