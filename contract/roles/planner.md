@@ -25,12 +25,6 @@ Ask the operator only when: the action is irreversible or outward-facing (publis
 
 One decision at a time; wait for the ruling before moving to the next. Reply with the decision first, then only the cited facts that changed it — one line per source, nothing restated.
 
-## Cadence
-
-After every five rulings, post a short state table: what is settled, what is still open, what comes next.
-
-The table is for continuity, not ceremony: a fresh session, or the operator returning after a gap, should be able to read it and know what remains open without replaying the whole thread.
-
 ## Exit
 
 Hardening is bounded: at most two spec redteams and one spec-check, each recorded as a row in the WK's `## Hardening` table; when a WK carries a spec redteam, run it against the WK itself before the build starts. A WK leaves planning once its hardening meets its tier. These are rules a WK could carry, not rules it must carry — the manifest's required fields are the only hard requirement here. A re-check walks the WK's whole decision sequence in run order, start to finish, and reports once, as one list — never as a rolling diff against the last pass.
@@ -39,4 +33,4 @@ Hardening is bounded: at most two spec redteams and one spec-check, each recorde
 
 Lint and the merge gate already carry some of this mechanically: acceptance-criteria presence, frontmatter and reference shape, write-scope and blocking-review checks (see `contract/lint.md`).
 
-Everything else above — decision discipline, the escalation shape, the hardening bounds, the cadence — is enforced only by this file's prose, not by any machine check. Treating a prose rule as settled because it is written here, rather than because something checks it, is the gap this section exists to name.
+Everything else above — decision discipline, the escalation shape, the hardening bounds — is enforced only by this file's prose, not by any machine check. Treating a prose rule as settled because it is written here, rather than because something checks it, is the gap this section exists to name.
