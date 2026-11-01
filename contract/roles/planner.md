@@ -33,7 +33,7 @@ The table is for continuity, not ceremony: a fresh session, or the operator retu
 
 ## Exit
 
-Hardening is bounded: at most two spec redteams and one spec-check, each recorded as a row in the WK's `## Hardening` table; run one spec redteam against the WK itself before the build starts. A WK leaves planning once its hardening meets its tier. These are rules a WK could carry, not rules it must carry — the manifest's required fields are the only hard requirement here. A re-check walks the WK's whole decision sequence in run order, start to finish, and reports once, as one list — never as a rolling diff against the last pass.
+Hardening is bounded: at most two spec redteams and one spec-check, each recorded as a row in the WK's `## Hardening` table; when a WK carries a spec redteam, run it against the WK itself before the build starts. A WK leaves planning once its hardening meets its tier. These are rules a WK could carry, not rules it must carry — the manifest's required fields are the only hard requirement here. A re-check walks the WK's whole decision sequence in run order, start to finish, and reports once, as one list — never as a rolling diff against the last pass.
 
 ## Enforced elsewhere
 
