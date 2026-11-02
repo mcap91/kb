@@ -91,6 +91,7 @@ function baseOpts(overrides: Partial<RunScenarioOnceOpts>): RunScenarioOnceOpts 
     systemRoots: [],
     cliVersion: '2.1.281 (Claude Code)',
     judgePromptTemplate: JUDGE_TEMPLATE,
+    harnessTree: overrides.harnessTree ?? 'd'.repeat(64),
     launch: overrides.launch as RunScenarioOnceOpts['launch'],
   };
 }

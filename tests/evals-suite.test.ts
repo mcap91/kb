@@ -194,10 +194,29 @@ const VALID_STREAM = (modelId = 'claude-opus-5-5'): string =>
     JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result: 'ok', total_cost_usd: 0.01, usage: {} }),
   ].join('\n');
 
+/**
+ * A minimal kb checkout: a git repo with one committed `evals/` file, used as
+ * the default `kbRoot` for tests that don't exercise `install_command` /
+ * `install_skills` -- preflight's `HARNESS_DIRTY` check and `hashHarnessTree`
+ * (WK-0237 2026-11-02 result-set id defect) now run git against `kbRoot` on
+ * every `runSuite` preflight, so every test reaching that point needs a real,
+ * clean git repo here, not just a plain directory.
+ */
+function setUpDefaultKbRoot(workDir: string): string {
+  const kbRoot = join(workDir, 'kb-root-default');
+  gitInit(kbRoot);
+  mkdirSync(join(kbRoot, 'evals'), { recursive: true });
+  writeFileSync(join(kbRoot, 'evals', 'placeholder.ts'), 'export {};\n');
+  gitCommitAll(kbRoot, 'init kb-root');
+  return kbRoot;
+}
+
 let workDir: string;
+let defaultKbRoot: string;
 
 beforeEach(() => {
   workDir = mkdtempSync(join(tmpdir(), 'kb-eval-suite-'));
+  defaultKbRoot = setUpDefaultKbRoot(workDir);
 });
 
 afterEach(() => {
@@ -211,7 +230,7 @@ function baseOpts(overrides: Partial<RunSuiteOpts>): RunSuiteOpts {
     scenarioIds: overrides.scenarioIds,
     resume: overrides.resume,
     testKb: overrides.testKb as string,
-    kbRoot: overrides.kbRoot ?? join(workDir, 'kb-root-unused'),
+    kbRoot: overrides.kbRoot ?? defaultKbRoot,
     credentialsFile: '/does/not/matter/.credentials.json',
     cliPackageDir: '/does/not/matter/claude-code',
     cliBinaryRelPath: 'bin/claude',
@@ -426,6 +445,7 @@ describe('computeResultSetId', () => {
     model: 'claude-sonnet-5',
     cliVersion: '2.1.281 (Claude Code)',
     selectedScenarioIdsSorted: ['s1'],
+    harnessTree: 'e'.repeat(64),
   };
 
   it('is stable for identical pins', () => {
@@ -439,6 +459,13 @@ describe('computeResultSetId', () => {
 
   it('changes when the judge prompt hash changes', () => {
     const changed = computeResultSetId({ ...basePins, judgePromptSha256: 'different' });
+    expect(changed).not.toBe(computeResultSetId(basePins));
+  });
+
+  // WK-0237 2026-11-02 resolve-control: a harness code change (outside evals/scenarios/) must start a new
+  // result set, so a re-run after a fix never mixes pre- and post-fix runs under one id.
+  it('changes when only harnessTree differs', () => {
+    const changed = computeResultSetId({ ...basePins, harnessTree: 'different' });
     expect(changed).not.toBe(computeResultSetId(basePins));
   });
 });
@@ -498,5 +525,127 @@ describe('runSuite -- result set dir and --resume', () => {
 
     const table = formatSuiteTable(result.data.summary);
     expect(table).toContain('gate: n/a');
+  });
+});
+
+describe('runSuite -- preflight: HARNESS_DIRTY (WK-0237 2026-11-02 result-set id defect)', () => {
+  // An uncommitted harness change would otherwise be scored under HEAD's pin, silently mixing
+  // pre- and post-fix runs under the same result-set id.
+  it('refuses with HARNESS_DIRTY when evals/ (outside evals/scenarios/) has an uncommitted change, and launches nothing', async () => {
+    const { testKb, baselineSha } = setUpTestKb(workDir);
+    const suiteDir = join(workDir, 'suite');
+    writeScenarioDir(suiteDir, { id: 's1', target_wk: 'WK-9801' });
+    writeSuiteJson(suiteDir, { baseline_sha: baselineSha });
+
+    const kbRoot = join(workDir, 'kb-root-dirty');
+    gitInit(kbRoot);
+    mkdirSync(join(kbRoot, 'evals'), { recursive: true });
+    writeFileSync(join(kbRoot, 'evals', 'citations.ts'), 'export const original = true;\n');
+    gitCommitAll(kbRoot, 'init');
+    writeFileSync(join(kbRoot, 'evals', 'citations.ts'), 'export const original = false;\n');
+
+    const { launch, calls } = neverLaunch();
+    const result = await runSuite(baseOpts({ suiteDir, testKb, kbRoot, launch }));
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.code).toBe('HARNESS_DIRTY');
+    expect(calls.length).toBe(0);
+  });
+
+  it('does not refuse for an uncommitted change only under evals/scenarios/', async () => {
+    const { testKb, baselineSha } = setUpTestKb(workDir);
+    const suiteDir = join(workDir, 'suite');
+    writeScenarioDir(suiteDir, { id: 's1', target_wk: 'WK-9802' });
+    writeSuiteJson(suiteDir, { baseline_sha: baselineSha });
+
+    const kbRoot = join(workDir, 'kb-root-scenarios-dirty');
+    gitInit(kbRoot);
+    mkdirSync(join(kbRoot, 'evals', 'scenarios'), { recursive: true });
+    writeFileSync(join(kbRoot, 'evals', 'scenarios', 'placeholder.json'), '{}\n');
+    gitCommitAll(kbRoot, 'init');
+    writeFileSync(join(kbRoot, 'evals', 'scenarios', 'placeholder.json'), '{"changed": true}\n');
+
+    const { launch, calls } = makeLaunch([{ stream: VALID_STREAM(), exitCode: 0 }]);
+    const result = await runSuite(baseOpts({ suiteDir, testKb, kbRoot, launch }));
+
+    expect(result.ok).toBe(true);
+    expect(calls.length).toBe(1);
+  });
+
+  it('does not refuse for an uncommitted change outside evals/', async () => {
+    const { testKb, baselineSha } = setUpTestKb(workDir);
+    const suiteDir = join(workDir, 'suite');
+    writeScenarioDir(suiteDir, { id: 's1', target_wk: 'WK-9803' });
+    writeSuiteJson(suiteDir, { baseline_sha: baselineSha });
+
+    const kbRoot = join(workDir, 'kb-root-outside-dirty');
+    gitInit(kbRoot);
+    mkdirSync(join(kbRoot, 'evals'), { recursive: true });
+    writeFileSync(join(kbRoot, 'evals', 'citations.ts'), 'export const original = true;\n');
+    writeFileSync(join(kbRoot, 'README.md'), 'placeholder');
+    gitCommitAll(kbRoot, 'init');
+    writeFileSync(join(kbRoot, 'README.md'), 'changed outside evals/');
+
+    const { launch, calls } = makeLaunch([{ stream: VALID_STREAM(), exitCode: 0 }]);
+    const result = await runSuite(baseOpts({ suiteDir, testKb, kbRoot, launch }));
+
+    expect(result.ok).toBe(true);
+    expect(calls.length).toBe(1);
+  });
+});
+
+describe('runSuite -- harness_tree pin (WK-0237 2026-11-02 result-set id defect)', () => {
+  it('writes the same harness_tree into summary.json pins and every run metrics.json pins', async () => {
+    const { testKb, baselineSha } = setUpTestKb(workDir);
+    const suiteDir = join(workDir, 'suite');
+    writeScenarioDir(suiteDir, { id: 's1', target_wk: 'WK-9901' });
+    writeSuiteJson(suiteDir, { baseline_sha: baselineSha });
+
+    const { launch } = makeLaunch([{ stream: VALID_STREAM(), exitCode: 0 }]);
+    const result = await runSuite(baseOpts({ suiteDir, testKb, launch }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(typeof result.data.summary.pins.harnessTree).toBe('string');
+    expect(result.data.summary.pins.harnessTree.length).toBeGreaterThan(0);
+
+    const metrics = JSON.parse(
+      readFileSync(join(result.data.resultSetDir, 's1', 'no-install-r1', 'metrics.json'), 'utf8'),
+    );
+    expect(metrics.harness_tree).toBe(result.data.summary.pins.harnessTree);
+  });
+
+  // Re-running after a harness code change must start a new result set (scope 15.4), not reuse or mix with the old one.
+  it('changes the result set id when the kb checkout evals/ content changes', async () => {
+    const { testKb, baselineSha } = setUpTestKb(workDir);
+    const suiteDir = join(workDir, 'suite');
+    writeScenarioDir(suiteDir, { id: 's1', target_wk: 'WK-9902' });
+    writeSuiteJson(suiteDir, { baseline_sha: baselineSha });
+
+    const kbRootA = join(workDir, 'kb-root-a');
+    gitInit(kbRootA);
+    mkdirSync(join(kbRootA, 'evals'), { recursive: true });
+    writeFileSync(join(kbRootA, 'evals', 'citations.ts'), 'export const v = 1;\n');
+    gitCommitAll(kbRootA, 'init a');
+
+    const kbRootB = join(workDir, 'kb-root-b');
+    gitInit(kbRootB);
+    mkdirSync(join(kbRootB, 'evals'), { recursive: true });
+    writeFileSync(join(kbRootB, 'evals', 'citations.ts'), 'export const v = 2;\n');
+    gitCommitAll(kbRootB, 'init b');
+
+    const { launch: launchA } = makeLaunch([{ stream: VALID_STREAM(), exitCode: 0 }]);
+    const resultA = await runSuite(baseOpts({ suiteDir, testKb, kbRoot: kbRootA, launch: launchA }));
+    expect(resultA.ok).toBe(true);
+    if (!resultA.ok) return;
+
+    const { launch: launchB } = makeLaunch([{ stream: VALID_STREAM(), exitCode: 0 }]);
+    const resultB = await runSuite(baseOpts({ suiteDir, testKb, kbRoot: kbRootB, launch: launchB }));
+    expect(resultB.ok).toBe(true);
+    if (!resultB.ok) return;
+
+    expect(resultB.data.resultSetId).not.toBe(resultA.data.resultSetId);
   });
 });
