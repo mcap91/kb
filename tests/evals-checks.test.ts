@@ -151,66 +151,73 @@ describe('checkNoWriteOutsideWiki', () => {
 });
 
 describe('checkWikiEditOnlyResolutions', () => {
-  const scenario = makeScenario({ target_wk: 'WK-0901' });
+  const RESOLUTIONS_HEADER = '| # | date | seat | question | searched | evidence | options | choice | reason | cold check |';
+  const RESOLUTIONS_SEPARATOR = '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |';
+  const ROW_1 = '| 1 | 2026-11-01 | planner | q1 | s1 | e1 | o1 | c1 | r1 | pass |';
+  const ROW_2 = '| 2 | 2026-11-02 | planner | q2 | s2 | e2 | o2 | c2 | r2 | pass |';
+  const ROW_1_EDITED = '| 1 | 2026-11-01 | planner | q1-edited | s1 | e1 | o1 | c1 | r1 | pass |';
 
-  it('passes when the only change is an added Resolutions row', () => {
-    const diff = [
-      'diff --git a/wiki/issues/WK-0901.md b/wiki/issues/WK-0901.md',
-      'index abc..def 100644',
-      '--- a/wiki/issues/WK-0901.md',
-      '+++ b/wiki/issues/WK-0901.md',
-      '@@ -20,2 +20,3 @@',
-      ' ## Resolutions',
-      ' ',
-      '+| 1 | 2026-11-01 | planner | q | s | e | o | c | r | pass |',
-    ].join('\n');
-    expect(checkWikiEditOnlyResolutions(diff, scenario).passed).toBe(true);
+  function wkBody(opts: { notes?: string; resolutionsRows?: string[]; extraSection?: string }): string {
+    const lines = [
+      '# WK-0901: Title',
+      '',
+      '## Notes',
+      '',
+      opts.notes ?? 'Some notes.',
+      '',
+      '## Resolutions',
+      '',
+      RESOLUTIONS_HEADER,
+      RESOLUTIONS_SEPARATOR,
+      ...(opts.resolutionsRows ?? [ROW_1]),
+      '',
+    ];
+    if (opts.extraSection) {
+      lines.push(opts.extraSection, '');
+    }
+    return lines.join('\n');
+  }
+
+  const BEFORE = wkBody({});
+
+  it('passes when a row is appended to the target WK Resolutions table', () => {
+    const after = wkBody({ resolutionsRows: [ROW_1, ROW_2] });
+    expect(checkWikiEditOnlyResolutions(BEFORE, after, []).passed).toBe(true);
   });
 
-  it('fails when another file under wiki/ also changed', () => {
-    const diff = [
-      'diff --git a/wiki/issues/WK-0901.md b/wiki/issues/WK-0901.md',
-      'index abc..def 100644',
-      '--- a/wiki/issues/WK-0901.md',
-      '+++ b/wiki/issues/WK-0901.md',
-      '@@ -20,2 +20,3 @@',
-      ' ## Resolutions',
-      '+| 1 | 2026-11-01 | planner | q | s | e | o | c | r | pass |',
-      'diff --git a/wiki/issues/WK-0902.md b/wiki/issues/WK-0902.md',
-      'index abc..def 100644',
-      '--- a/wiki/issues/WK-0902.md',
-      '+++ b/wiki/issues/WK-0902.md',
-      '@@ -1,1 +1,2 @@',
-      ' title',
-      '+unrelated edit',
-    ].join('\n');
-    expect(checkWikiEditOnlyResolutions(diff, scenario).passed).toBe(false);
+  it('fails when a table row is added under ## Notes instead of ## Resolutions', () => {
+    const after = wkBody({ notes: `Some notes.\n\n${ROW_2}` });
+    expect(checkWikiEditOnlyResolutions(BEFORE, after, []).passed).toBe(false);
   });
 
-  it('fails when the target WK file has a removed line', () => {
-    const diff = [
-      'diff --git a/wiki/issues/WK-0901.md b/wiki/issues/WK-0901.md',
-      'index abc..def 100644',
-      '--- a/wiki/issues/WK-0901.md',
-      '+++ b/wiki/issues/WK-0901.md',
-      '@@ -20,2 +20,2 @@',
-      '-| old | row |',
-      '+| 1 | 2026-11-01 | planner | q | s | e | o | c | r | pass |',
-    ].join('\n');
-    expect(checkWikiEditOnlyResolutions(diff, scenario).passed).toBe(false);
+  it('fails when a new section containing a table is added', () => {
+    const after = wkBody({ extraSection: `## Extra\n\n${RESOLUTIONS_HEADER}\n${RESOLUTIONS_SEPARATOR}\n${ROW_2}` });
+    expect(checkWikiEditOnlyResolutions(BEFORE, after, []).passed).toBe(false);
   });
 
-  it('fails when an added line is not table-row shaped', () => {
-    const diff = [
-      'diff --git a/wiki/issues/WK-0901.md b/wiki/issues/WK-0901.md',
-      'index abc..def 100644',
-      '--- a/wiki/issues/WK-0901.md',
-      '+++ b/wiki/issues/WK-0901.md',
-      '@@ -20,1 +20,2 @@',
-      ' ## Resolutions',
-      '+prose, not a table row',
-    ].join('\n');
-    expect(checkWikiEditOnlyResolutions(diff, scenario).passed).toBe(false);
+  it('fails when an existing Resolutions row is edited', () => {
+    const after = wkBody({ resolutionsRows: [ROW_1_EDITED] });
+    expect(checkWikiEditOnlyResolutions(BEFORE, after, []).passed).toBe(false);
+  });
+
+  it('fails when an existing Resolutions row is deleted', () => {
+    const after = wkBody({ resolutionsRows: [] });
+    expect(checkWikiEditOnlyResolutions(BEFORE, after, []).passed).toBe(false);
+  });
+
+  it('fails on any other edit to the WK body', () => {
+    const after = wkBody({ notes: 'Some other notes entirely.' });
+    expect(checkWikiEditOnlyResolutions(BEFORE, after, []).passed).toBe(false);
+  });
+
+  it('fails when another wiki file also changed', () => {
+    const after = wkBody({ resolutionsRows: [ROW_1, ROW_2] });
+    expect(checkWikiEditOnlyResolutions(BEFORE, after, ['wiki/issues/WK-0902.md']).passed).toBe(false);
+  });
+
+  it('passes when the only other change is the rebuilt search index', () => {
+    const after = wkBody({ resolutionsRows: [ROW_1, ROW_2] });
+    expect(checkWikiEditOnlyResolutions(BEFORE, after, ['wiki/.search-index.json']).passed).toBe(true);
   });
 });
 
@@ -248,7 +255,14 @@ describe('runCheck dispatch', () => {
       'no-denied-tool',
       'no-kb-wiki-call',
     ] as const) {
-      const result = runCheck(kind, { log: EMPTY_LOG, diffText: '', scenario });
+      const result = runCheck(kind, {
+        log: EMPTY_LOG,
+        diffText: '',
+        scenario,
+        wkTextBefore: '',
+        wkTextAfter: '',
+        otherChangedWikiPaths: [],
+      });
       expect(result.ok).toBe(true);
     }
   });
