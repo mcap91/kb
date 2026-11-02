@@ -2,7 +2,7 @@
  * WK-0237 slice B1b -- row citation parsing/resolution and the prose
  * presence check (Resolutions 12 riders 1-2; HO-0151 Constraints/Acceptance).
  */
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 
@@ -161,6 +161,44 @@ describe('resolveCitations', () => {
         { id: 'services/billing/caller.ts', absolutePath: join(root, 'services/billing/caller.ts') },
       ]);
     }
+  });
+  it('fails outside-citation, naming it, when a cited path is a symlink resolving outside testKbRoot', () => {
+    const root = makeTestKbRoot();
+    const secretRoot = makeTestKbRoot();
+    writeFile(secretRoot, 'secret.md', 'top secret');
+    symlinkSync(join(secretRoot, 'secret.md'), join(root, 'escape.md'));
+    const outcome = resolveCitations({ recordIds: [], paths: ['escape.md'], urls: [] }, root, MANIFEST);
+    expect(outcome).toEqual({ passed: false, reason: 'outside-citation', identifier: 'escape.md' });
+  });
+
+  it('fails outside-citation, naming it, when a cited record id resolves to a symlink pointing outside testKbRoot', () => {
+    const root = makeTestKbRoot();
+    const secretRoot = makeTestKbRoot();
+    writeFile(secretRoot, 'secret.md', 'top secret');
+    mkdirSync(join(root, 'wiki/decisions'), { recursive: true });
+    symlinkSync(join(secretRoot, 'secret.md'), join(root, 'wiki/decisions/DEC-0901.md'));
+    const outcome = resolveCitations({ recordIds: ['DEC-0901'], paths: [], urls: [] }, root, MANIFEST);
+    expect(outcome).toEqual({ passed: false, reason: 'outside-citation', identifier: 'DEC-0901' });
+  });
+
+  it('passes when a cited path is a symlink that resolves to a file still inside testKbRoot', () => {
+    const root = makeTestKbRoot();
+    writeFile(root, 'services/billing/caller.ts', 'export {};');
+    symlinkSync(join(root, 'services/billing/caller.ts'), join(root, 'services/billing/alias.ts'));
+    const outcome = resolveCitations({ recordIds: [], paths: ['services/billing/alias.ts'], urls: [] }, root, MANIFEST);
+    expect(outcome.passed).toBe(true);
+    if (outcome.passed) {
+      expect(outcome.resolved).toEqual([
+        { id: 'services/billing/alias.ts', absolutePath: realpathSync(join(root, 'services/billing/caller.ts')) },
+      ]);
+    }
+  });
+
+  it('fails unresolved-citation, naming it, when a cited path is a dangling symlink', () => {
+    const root = makeTestKbRoot();
+    symlinkSync(join(root, 'does-not-exist.md'), join(root, 'dangling.md'));
+    const outcome = resolveCitations({ recordIds: [], paths: ['dangling.md'], urls: [] }, root, MANIFEST);
+    expect(outcome).toEqual({ passed: false, reason: 'unresolved-citation', identifier: 'dangling.md' });
   });
 });
 
