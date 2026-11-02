@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "suite": "test-suite",
+  "baseline_sha": "0000000000000000000000000000000000000000",
+  "agents_block": { "kb_commit": "0000000", "words": 10 },
+  "model": "claude-sonnet-5",
+  "budget_usd": 1,
+  "timeout_sec": 60,
+  "mcp": "none",
+  "repeats": 1,
+  "gated_condition": null,
+  "conditions": [
+    { "name": "no-install", "install_command": null, "install_skills": [] }
+  ]
+}
