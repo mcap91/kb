@@ -77,7 +77,8 @@ Copy the header exactly; kb lint rejects any other spelling.
 
 - `#`: the next integer after the last row (first row is 1). Never renumber or edit old rows.
 - `date`: `YYYY-MM-DD`.
-- `seat`: your session id — run `echo $CLAUDE_CODE_SESSION_ID`. If it is empty, leave the cell empty.
+- `seat`: your session id, only if it already appears in your context (your prompt or a message from
+  the launcher). Do not run a command to find it. If it does not appear, leave the cell empty.
   Never guess a role or seat.
 - `searched`: where you searched, with citations.
 - `cold check`: `pass`, `amended`, or `fail`. Use `n/a` only when `choice` is `unresolved`

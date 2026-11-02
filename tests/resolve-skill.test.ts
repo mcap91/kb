@@ -60,6 +60,16 @@ describe('contract/skills/resolve/SKILL.md', () => {
   it('contains no ledger codes (RD/F/DEC/WK/SRC)', () => {
     expect(skillText).not.toMatch(ledgerCodePattern);
   });
+
+  it('seat bullet needs no Bash call: no CLAUDE_CODE_SESSION_ID, echo $, or printenv (WK-0240 ruling 2026-11-02: a headless seat denies that call)', () => {
+    expect(skillText).not.toContain('CLAUDE_CODE_SESSION_ID');
+    expect(skillText).not.toContain('echo $');
+    expect(skillText).not.toContain('printenv');
+  });
+
+  it('seat bullet tells the agent not to run a command to find its session id (WK-0240 ruling 2026-11-02, option (a))', () => {
+    expect(skillText).toContain('Do not run a command to find it');
+  });
 });
 
 describe('contract/roles/planner.md', () => {
