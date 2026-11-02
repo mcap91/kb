@@ -48,4 +48,19 @@ describe('buildClaudeArgv', () => {
     const argv = buildClaudeArgv({ prompt: 'x', budgetUsd: 5, mcpConfigPath: '/home/eval/mcp-config.json' });
     expect(argv[argv.indexOf('--max-budget-usd') + 1]).toBe('5');
   });
+
+  it('defaults --allowedTools to EVAL_ALLOWED_TOOLS when no override is given', () => {
+    const argv = buildClaudeArgv({ prompt: 'x', mcpConfigPath: '/home/eval/mcp-config.json' });
+    expect(argv[argv.indexOf('--allowedTools') + 1]).toBe(EVAL_ALLOWED_TOOLS.join(','));
+  });
+
+  it('honors an allowedTools override (WK-0237 slice B1c judge run: no allowed tools)', () => {
+    const argv = buildClaudeArgv({ prompt: 'x', mcpConfigPath: '/home/eval/mcp-config.json', allowedTools: [] });
+    expect(argv[argv.indexOf('--allowedTools') + 1]).toBe('');
+  });
+
+  it('honors a non-empty allowedTools override', () => {
+    const argv = buildClaudeArgv({ prompt: 'x', mcpConfigPath: '/home/eval/mcp-config.json', allowedTools: ['Read', 'Grep'] });
+    expect(argv[argv.indexOf('--allowedTools') + 1]).toBe('Read,Grep');
+  });
 });

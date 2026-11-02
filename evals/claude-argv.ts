@@ -32,6 +32,8 @@ export interface ClaudeArgvOpts {
   budgetUsd?: number;
   /** Jail-side path to the per-run MCP config (mcp-config.ts). */
   mcpConfigPath: string;
+  /** Overrides `EVAL_ALLOWED_TOOLS` (WK-0237 scope 15.5's judge run: a separate jail call with no allowed tools). Omitted entirely keeps the default list. */
+  allowedTools?: readonly string[];
 }
 
 /** Builds the `claude -p` argv (excluding the binary itself). */
@@ -43,7 +45,7 @@ export function buildClaudeArgv(opts: ClaudeArgvOpts): string[] {
   argv.push('--output-format', 'stream-json');
   argv.push('--verbose');
   argv.push('--max-budget-usd', String(opts.budgetUsd ?? DEFAULT_BUDGET_USD));
-  argv.push('--allowedTools', EVAL_ALLOWED_TOOLS.join(','));
+  argv.push('--allowedTools', (opts.allowedTools ?? EVAL_ALLOWED_TOOLS).join(','));
   argv.push('--disallowedTools', EVAL_DISALLOWED_TOOLS);
   argv.push('--mcp-config', opts.mcpConfigPath);
   argv.push('--strict-mcp-config');
