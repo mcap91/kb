@@ -18,6 +18,7 @@
  * re-run exactly once into `<condition>-r<repeat>-rerun/`, which replaces it
  * in the summary; a second invalid leaves the repeat invalid.
  */
+import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -63,6 +64,7 @@ export interface SuiteSummaryRecord extends SuiteSummary {
     agentsBlock: { kb_commit: string; words: number };
     model: string;
     resultSetId: string;
+    harnessTree: string;
   };
   startedAt: string;
   endedAt: string;
@@ -86,6 +88,8 @@ export interface ResultSetPinInput {
   cliVersion: string;
   /** Must already be sorted by the caller — the hash is sensitive to order. */
   selectedScenarioIdsSorted: string[];
+  /** `hashHarnessTree`'s output -- a changed harness tree starts a new result set (WK-0237 scope 15.4). */
+  harnessTree: string;
 }
 
 /**
@@ -107,6 +111,7 @@ export function computeResultSetId(input: ResultSetPinInput): string {
     model: input.model,
     cliVersion: input.cliVersion,
     selectedScenarioIds: input.selectedScenarioIdsSorted,
+    harnessTree: input.harnessTree,
   });
   return createHash('sha256').update(canonical).digest('hex').slice(0, 16);
 }
@@ -126,6 +131,33 @@ interface Preflighted {
   allScenarios: Scenario[];
   selected: Scenario[];
   roleTextBlobsByCondition: Map<string, string>;
+  harnessTree: string;
+}
+
+function describeError(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+function runGit(args: string[], cwd: string): EvalResult<string> {
+  try {
+    return ok(execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }));
+  } catch (err) {
+    return fail('GIT_FAILED', `git ${args.join(' ')} in ${cwd} failed: ${describeError(err)}`);
+  }
+}
+
+/**
+ * sha256 over `git ls-tree HEAD evals/`'s output in `kbRoot`, with the
+ * `evals/scenarios` entry removed and the remaining lines kept in git's own
+ * emitted order (WK-0237 scope 15.4; Context's "harness tree pin"). Scenario
+ * content is pinned separately via `scenarioDirHashes`, so `evals/scenarios`
+ * is excluded here rather than double-pinned.
+ */
+export function hashHarnessTree(kbRoot: string): EvalResult<string> {
+  const lsTreeResult = runGit(['ls-tree', 'HEAD', 'evals/'], kbRoot);
+  if (!lsTreeResult.ok) return lsTreeResult;
+  const lines = lsTreeResult.data.split('\n').filter((line) => line.length > 0 && !line.endsWith('\tevals/scenarios'));
+  return ok(createHash('sha256').update(lines.join('\n')).digest('hex'));
 }
 
 async function preflight(opts: RunSuiteOpts): Promise<EvalResult<Preflighted>> {
@@ -169,11 +201,20 @@ async function preflight(opts: RunSuiteOpts): Promise<EvalResult<Preflighted>> {
     roleTextBlobsByCondition.set(condition.name, resolved.data.roleTextBlob);
   }
 
-  return ok({ suite, allScenarios, selected, roleTextBlobsByCondition });
-}
+  // An uncommitted harness change would otherwise be scored under HEAD's pin (WK-0237 2026-11-02 Notes).
+  const statusResult = runGit(['status', '--porcelain', '--', 'evals', ':!evals/scenarios'], opts.kbRoot);
+  if (!statusResult.ok) return statusResult;
+  if (statusResult.data.trim().length > 0) {
+    return fail(
+      'HARNESS_DIRTY',
+      `evals/ (outside evals/scenarios/) has uncommitted changes in ${opts.kbRoot}:\n${statusResult.data}`,
+    );
+  }
 
-function describeError(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
+  const harnessTreeResult = hashHarnessTree(opts.kbRoot);
+  if (!harnessTreeResult.ok) return harnessTreeResult;
+
+  return ok({ suite, allScenarios, selected, roleTextBlobsByCondition, harnessTree: harnessTreeResult.data });
 }
 
 function runDirFor(resultSetDir: string, scenarioId: string, condition: SuiteCondition, repeat: number): string {
@@ -210,7 +251,7 @@ async function runOrResume(
 export async function runSuite(opts: RunSuiteOpts): Promise<EvalResult<RunSuiteResult>> {
   const preflighted = await preflight(opts);
   if (!preflighted.ok) return preflighted;
-  const { suite, allScenarios, selected, roleTextBlobsByCondition } = preflighted.data;
+  const { suite, allScenarios, selected, roleTextBlobsByCondition, harnessTree } = preflighted.data;
 
   const scenarioDirHashes: string[] = [];
   for (const scenario of selected) {
@@ -232,6 +273,7 @@ export async function runSuite(opts: RunSuiteOpts): Promise<EvalResult<RunSuiteR
     model: suite.model,
     cliVersion: opts.cliVersion,
     selectedScenarioIdsSorted: [...selected.map((s) => s.id)].sort(),
+    harnessTree,
   });
 
   const resultSetDir = join(opts.resultsRoot, suite.suite, resultSetId);
@@ -265,6 +307,7 @@ export async function runSuite(opts: RunSuiteOpts): Promise<EvalResult<RunSuiteR
             systemRoots: opts.systemRoots,
             cliVersion: opts.cliVersion,
             judgePromptTemplate: opts.judgePromptTemplate,
+            harnessTree,
             launch: opts.launch,
           }),
         );
@@ -290,6 +333,7 @@ export async function runSuite(opts: RunSuiteOpts): Promise<EvalResult<RunSuiteR
               systemRoots: opts.systemRoots,
               cliVersion: opts.cliVersion,
               judgePromptTemplate: opts.judgePromptTemplate,
+              harnessTree,
               launch: opts.launch,
             }),
           );
@@ -330,6 +374,7 @@ export async function runSuite(opts: RunSuiteOpts): Promise<EvalResult<RunSuiteR
       agentsBlock: suite.agents_block,
       model: suite.model,
       resultSetId,
+      harnessTree,
     },
     startedAt,
     endedAt,

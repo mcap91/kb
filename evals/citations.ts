@@ -26,6 +26,11 @@ function stripTrailingPunctuation(token: string): string {
   return token.replace(/[),.;:'"\]]+$/, '');
 }
 
+/** Strips a leading run of `(`, `[`, `{`, `'`, `"` -- e.g. the open-paren in `(wiki/plans/PLN-0001/execution/tracker.md);` (WK-0237 2026-11-02 resolve-t3 false fail). */
+function stripLeadingDelimiters(token: string): string {
+  return token.replace(/^[([{'"]+/, '');
+}
+
 function hasFileExtension(token: string): boolean {
   const lastSlash = token.lastIndexOf('/');
   const lastDot = token.lastIndexOf('.');
@@ -43,13 +48,15 @@ function hasFileExtension(token: string): boolean {
 export function parseCitations(row: Pick<ResolutionRow, 'searched' | 'evidence'>): CitationIdentifiers {
   const text = `${row.searched} ${row.evidence}`;
 
-  const urls = Array.from(new Set((text.match(URL_RE) ?? []).map(stripTrailingPunctuation)));
+  const urls = Array.from(
+    new Set((text.match(URL_RE) ?? []).map((u) => stripLeadingDelimiters(stripTrailingPunctuation(u)))),
+  );
   const recordIds = Array.from(new Set(text.match(RECORD_ID_RE) ?? []));
 
   const textWithoutUrls = text.replace(URL_RE, ' ');
   const paths: string[] = [];
   for (const rawToken of textWithoutUrls.split(/\s+/)) {
-    const token = stripTrailingPunctuation(rawToken);
+    const token = stripLeadingDelimiters(stripTrailingPunctuation(rawToken));
     if (token.length === 0 || !token.includes('/')) continue;
     if (hasFileExtension(token)) paths.push(token);
   }

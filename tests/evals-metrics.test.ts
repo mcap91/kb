@@ -82,6 +82,7 @@ describe('buildRunMetrics', () => {
         judgePromptSha256: 'b'.repeat(64),
         testKbBaselineSha: '2f968e9',
         agentsBlock: { kbCommit: '401b20b', words: 2440 },
+        harnessTree: 'c'.repeat(64),
       },
       ...overrides,
     };
@@ -98,6 +99,8 @@ describe('buildRunMetrics', () => {
     expect(metrics.judge_prompt_sha256).toBe('b'.repeat(64));
     expect(metrics.test_kb_baseline_sha).toBe('2f968e9');
     expect(metrics.agents_block).toEqual({ kb_commit: '401b20b', words: 2440 });
+    // WK-0237 2026-11-02 result-set id defect: harness_tree must reach metrics.json's pins.
+    expect(metrics.harness_tree).toBe('c'.repeat(64));
   });
 
   it('carries the non-pin per-run fields', () => {

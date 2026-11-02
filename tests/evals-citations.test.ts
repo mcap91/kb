@@ -9,7 +9,7 @@ import { join, relative } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { checkRowProse, parseCitations, resolveCitations } from '../evals/citations.js';
-import type { WikiManifest } from '@kb/wiki-core';
+import { readResolutions, type WikiManifest } from '@kb/wiki-core';
 
 const MANIFEST = JSON.parse(
   readFileSync(join(__dirname, '..', 'contract', 'manifest.json'), 'utf8'),
@@ -199,6 +199,56 @@ describe('resolveCitations', () => {
     symlinkSync(join(root, 'does-not-exist.md'), join(root, 'dangling.md'));
     const outcome = resolveCitations({ recordIds: [], paths: ['dangling.md'], urls: [] }, root, MANIFEST);
     expect(outcome).toEqual({ passed: false, reason: 'unresolved-citation', identifier: 'dangling.md' });
+  });
+});
+
+describe('parseCitations: leading-delimiter strip (WK-0237 2026-11-02 resolve-t3 false fail)', () => {
+  it('strips the open-paren around a cited path and resolves the golden fixture row', () => {
+    const fixtureLine = readFileSync(
+      join(__dirname, 'fixtures', 'evals', 'citation-row-t3-storage-r3.txt'),
+      'utf8',
+    ).trimEnd();
+    const header = '| # | date | seat | question | searched | evidence | options | choice | reason | cold check |';
+    const separator = '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |';
+    const wkBody = ['## Resolutions', '', header, separator, fixtureLine, ''].join('\n');
+
+    const rowsResult = readResolutions(wkBody);
+    expect(rowsResult.ok).toBe(true);
+    if (!rowsResult.ok) return;
+    expect(rowsResult.data.length).toBe(1);
+    const row = rowsResult.data[0];
+
+    const ids = parseCitations(row);
+    expect([...ids.paths].sort()).toEqual([
+      'wiki/decisions/DEC-0921.md',
+      'wiki/initiatives/IN-0921.md',
+      'wiki/issues/WK-0923.md',
+      'wiki/plans/PLN-0001/execution/tracker.md',
+    ]);
+    expect(ids.recordIds).toContain('DEC-0921');
+    expect(ids.recordIds).toContain('WK-0923');
+    expect(ids.recordIds).toContain('IN-0921');
+    expect(ids.recordIds).toContain('PLN-0001');
+
+    const root = makeTestKbRoot();
+    writeFile(root, 'wiki/decisions/DEC-0921.md', '# DEC-0921');
+    writeFile(root, 'wiki/issues/WK-0923.md', '# WK-0923');
+    writeFile(root, 'wiki/initiatives/IN-0921.md', '# IN-0921');
+    writeFile(root, 'wiki/plans/PLN-0001/execution/tracker.md', '# tracker');
+    writeFile(root, 'wiki/plans/PLN-0001.md', '# PLN-0001');
+
+    const outcome = resolveCitations(ids, root, MANIFEST);
+    expect(outcome.passed).toBe(true);
+  });
+
+  it('still parses a slash-joined pair as one path token and fails unresolved-citation (overseer ruling A, strict rider 1)', () => {
+    const row = { searched: 'checked AGENTS.md/CLAUDE.md for guidance', evidence: 'nothing else cited' };
+    const ids = parseCitations(row);
+    expect(ids.paths).toEqual(['AGENTS.md/CLAUDE.md']);
+
+    const root = makeTestKbRoot();
+    const outcome = resolveCitations(ids, root, MANIFEST);
+    expect(outcome).toEqual({ passed: false, reason: 'unresolved-citation', identifier: 'AGENTS.md/CLAUDE.md' });
   });
 });
 

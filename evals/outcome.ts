@@ -17,6 +17,8 @@ export type OutcomeReason =
   | 'opposite-outcome'
   | 'no-row'
   | 'row-lint'
+  /** Added rows exist but none passed the pre-judge code checks (citation resolution or prose presence, Resolutions 12 riders 1-2); no judge ran (WK-0237 2026-11-02 resolve-control mislabel). */
+  | 'row-precheck'
   | 'judge-does-not-answer'
   | 'judge-invalid'
   | 'deciding-row';
@@ -28,6 +30,8 @@ export interface EvaluateOutcomeInput {
   replyText: string;
   addedRows: ResolutionRow[];
   addedRowsLintClean: boolean;
+  /** Count of added rows passing both citation resolution and `checkRowProse` -- `runScenarioOnce`'s `citedRowCount` (citations.ts). */
+  precheckPassedRowCount: number;
   judgeVerdict: JudgeVerdict;
 }
 
@@ -54,6 +58,7 @@ export function evaluateOutcome(input: EvaluateOutcomeInput): OutcomeOutcome {
     if (escalated) return { passed: false, reason: 'opposite-outcome' };
     if (input.addedRows.length === 0) return { passed: false, reason: 'no-row' };
     if (!input.addedRowsLintClean) return { passed: false, reason: 'row-lint' };
+    if (input.precheckPassedRowCount === 0) return { passed: false, reason: 'row-precheck' };
     if (input.judgeVerdict === 'does-not-answer') return { passed: false, reason: 'judge-does-not-answer' };
     if (input.judgeVerdict === 'invalid') return { passed: false, reason: 'judge-invalid' };
     return { passed: true };

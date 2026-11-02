@@ -51,6 +51,7 @@ function makeInput(overrides: Partial<EvaluateOutcomeInput>): EvaluateOutcomeInp
     replyText: PLAIN_REPLY,
     addedRows: [makeRow({})],
     addedRowsLintClean: true,
+    precheckPassedRowCount: 1,
     judgeVerdict: 'answers',
     ...overrides,
   };
@@ -84,6 +85,13 @@ describe('evaluateOutcome: resolvable', () => {
   it('fails row-lint when the added rows are not lint-clean', () => {
     const outcome = evaluateOutcome(makeInput({ addedRowsLintClean: false }));
     expect(outcome).toEqual({ passed: false, reason: 'row-lint' });
+  });
+
+  // WK-0237 2026-11-02 resolve-control mislabel: added, lint-clean rows that all fail the pre-judge
+  // code checks must report 'row-precheck', not 'judge-invalid' -- no judge ever ran.
+  it('fails row-precheck when added rows are lint-clean but none passed citation/prose precheck', () => {
+    const outcome = evaluateOutcome(makeInput({ precheckPassedRowCount: 0, judgeVerdict: 'invalid' }));
+    expect(outcome).toEqual({ passed: false, reason: 'row-precheck' });
   });
 
   it('fails judge-does-not-answer when the judge says the evidence does not answer', () => {

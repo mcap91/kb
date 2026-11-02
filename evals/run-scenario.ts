@@ -68,6 +68,8 @@ export interface RunScenarioOnceOpts {
   cliVersion: string;
   /** `judge-prompt.md`'s text, passed in by the caller (judge.ts stays a pure string function; this module does not read it from disk). */
   judgePromptTemplate: string;
+  /** `suite.ts`'s `hashHarnessTree(kbRoot)`, computed once by the caller and pinned into this run's metrics -- this module makes no git calls for it. */
+  harnessTree: string;
   launch: LaunchFn;
 }
 
@@ -319,6 +321,7 @@ export async function runScenarioOnce(opts: RunScenarioOnceOpts): Promise<EvalRe
     judgePromptSha256: judgePromptSha256(opts.judgePromptTemplate),
     testKbBaselineSha: suite.baseline_sha,
     agentsBlock: { kbCommit: suite.agents_block.kb_commit, words: suite.agents_block.words },
+    harnessTree: opts.harnessTree,
   };
 
   // 11. Validity.
@@ -348,6 +351,7 @@ export async function runScenarioOnce(opts: RunScenarioOnceOpts): Promise<EvalRe
       judge_prompt_sha256: pinsBase.judgePromptSha256,
       test_kb_baseline_sha: pinsBase.testKbBaselineSha,
       agents_block: { kb_commit: pinsBase.agentsBlock.kbCommit, words: pinsBase.agentsBlock.words },
+      harness_tree: pinsBase.harnessTree,
     };
     writeFileSync(join(opts.runDir, 'metrics.json'), JSON.stringify(metrics, null, 2));
     return ok(metrics);
@@ -417,7 +421,14 @@ export async function runScenarioOnce(opts: RunScenarioOnceOpts): Promise<EvalRe
 
   // 14. Outcome and metrics.
   const replyText = log.result?.text ?? '';
-  const outcome = evaluateOutcome({ scenario, replyText, addedRows, addedRowsLintClean, judgeVerdict });
+  const outcome = evaluateOutcome({
+    scenario,
+    replyText,
+    addedRows,
+    addedRowsLintClean,
+    precheckPassedRowCount: citedRowCount,
+    judgeVerdict,
+  });
 
   const pins: RunMetricsPins = { ...pinsBase, modelId: log.modelId };
   const metrics = buildRunMetrics({

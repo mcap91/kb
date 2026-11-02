@@ -28,6 +28,8 @@ export interface RunMetricsPins {
   judgePromptSha256: string;
   testKbBaselineSha: string;
   agentsBlock: { kbCommit: string; words: number };
+  /** `suite.ts`'s `hashHarnessTree(kbRoot)` -- a changed harness tree starts a new result set (WK-0237 scope 15.4). */
+  harnessTree: string;
 }
 
 export interface CheckKindOutcome {
@@ -72,6 +74,7 @@ export interface RunMetrics {
   judge_prompt_sha256: string;
   test_kb_baseline_sha: string;
   agents_block: { kb_commit: string; words: number };
+  harness_tree: string;
 }
 
 /** The 15.5/scope-9 metrics the run pipeline (slice B1c) must write as one JSON-serialisable record per run. */
@@ -108,6 +111,7 @@ export function buildRunMetrics(input: BuildRunMetricsInput): RunMetrics {
     judge_prompt_sha256: input.pins.judgePromptSha256,
     test_kb_baseline_sha: input.pins.testKbBaselineSha,
     agents_block: { kb_commit: input.pins.agentsBlock.kbCommit, words: input.pins.agentsBlock.words },
+    harness_tree: input.pins.harnessTree,
   };
 }
 
