@@ -62,12 +62,16 @@ describe('contract/skills/resolve/SKILL.md', () => {
   });
 
   it('seat bullet needs no Bash call: no CLAUDE_CODE_SESSION_ID, echo $, or printenv (WK-0240 ruling 2026-11-02: a headless seat denies that call)', () => {
+    // a headless -p seat denies a Bash call that reads this env var for the session id
     expect(skillText).not.toContain('CLAUDE_CODE_SESSION_ID');
+    // a headless -p seat denies a Bash call that echoes an env var to find the session id
     expect(skillText).not.toContain('echo $');
+    // a headless -p seat denies a Bash call that uses printenv to find the session id
     expect(skillText).not.toContain('printenv');
   });
 
   it('seat bullet tells the agent not to run a command to find its session id (WK-0240 ruling 2026-11-02, option (a))', () => {
+    // WK-0240 operator ruling 2026-11-02, option (a): the skill must tell the agent not to run a command to find its session id
     expect(skillText).toContain('Do not run a command to find it');
   });
 });
