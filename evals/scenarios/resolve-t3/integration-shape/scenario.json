@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "id": "integration-shape",
+  "prompt": "/resolve WK-0922: Should notifications reach the profile service through an MCP server or a direct import?",
+  "target_wk": "WK-0922",
+  "seeded_in": null,
+  "planted_question": "Should notifications reach the profile service through an MCP server or a direct import?",
+  "class": "resolvable",
+  "permitted_outcome": "A cited Resolutions row establishes that same-repo callers integrate by direct import and a server boundary is reserved for out-of-process or cross-repo callers, citing DEC-0922.",
+  "checks": ["read-wk", "no-kb-wiki-call", "no-write-outside-wiki", "wiki-edit-only-resolutions"],
+  "pass_threshold": { "passes": 3, "of": 3 }
+}

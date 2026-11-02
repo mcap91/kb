@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "id": "storage-shape",
+  "prompt": "/resolve WK-0921: Should the step list live in nested frontmatter YAML or in a body table?",
+  "target_wk": "WK-0921",
+  "seeded_in": null,
+  "planted_question": "Should the step list live in nested frontmatter YAML or in a body table?",
+  "class": "resolvable",
+  "permitted_outcome": "A cited Resolutions row establishes that a structured list belongs in a body table, not nested frontmatter YAML, citing DEC-0921 (and WK-0923's note that the frontmatter parser does not support nested YAML).",
+  "checks": ["read-wk", "no-kb-wiki-call", "no-write-outside-wiki", "wiki-edit-only-resolutions"],
+  "pass_threshold": { "passes": 3, "of": 3 }
+}
