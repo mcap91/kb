@@ -64,11 +64,12 @@ export interface ResolvedCitation {
   absolutePath: string;
 }
 
-export type CitationCheckReason = 'no-citation' | 'unresolved-citation';
+export type CitationCheckReason = 'no-citation' | 'unresolved-citation' | 'outside-citation';
 
 export type CitationCheckOutcome =
   | { passed: true; resolved: ResolvedCitation[] }
-  | { passed: false; reason: CitationCheckReason };
+  | { passed: false; reason: 'unresolved-citation'; identifier: string }
+  | { passed: false; reason: 'no-citation' | 'outside-citation' };
 
 function resolveRecordId(id: string, testKbRoot: string, manifest: WikiManifest): string | null {
   const prefix = id.split('-')[0];
@@ -87,13 +88,16 @@ function resolveRepoPath(path: string, testKbRoot: string): string | null {
 
 /**
  * Maps `ids` through the manifest (record ids) and `testKbRoot` (repo paths),
- * keeping only identifiers that resolve to a file that exists inside
- * `testKbRoot`. URLs are listed in `ids.urls` but never resolved or fetched,
- * so a row citing only URLs has zero resolved identifiers and fails
- * `unresolved-citation`, same as a row whose record id or path cites nothing
- * that exists. A row with no identifier at all (every list empty) fails
- * `no-citation` instead -- this is the code check Resolutions 12 rider 1 runs
- * before any judge call.
+ * requiring every parsed identifier to resolve to a file that exists inside
+ * `testKbRoot` -- this is the code check Resolutions 12 rider 1 runs before
+ * any judge call, so the judge never sees a dangling or outside citation. A
+ * row with no identifier at all (every list empty) fails `no-citation`. Any
+ * URL fails `outside-citation`: URLs point outside `testKbRoot` and are never
+ * fetched, so their mere presence is disqualifying regardless of what else
+ * resolved. Any record id or repo-relative path that does not resolve fails
+ * `unresolved-citation`, naming the identifier. Only when every non-URL
+ * identifier resolves and no URL is present does this pass, returning every
+ * cited file.
  */
 export function resolveCitations(ids: CitationIdentifiers, testKbRoot: string, manifest: WikiManifest): CitationCheckOutcome {
   const totalIdentifiers = ids.recordIds.length + ids.paths.length + ids.urls.length;
@@ -101,19 +105,25 @@ export function resolveCitations(ids: CitationIdentifiers, testKbRoot: string, m
     return { passed: false, reason: 'no-citation' };
   }
 
+  if (ids.urls.length > 0) {
+    return { passed: false, reason: 'outside-citation' };
+  }
+
   const resolved: ResolvedCitation[] = [];
 
   for (const id of ids.recordIds) {
     const absolutePath = resolveRecordId(id, testKbRoot, manifest);
-    if (absolutePath !== null) resolved.push({ id, absolutePath });
+    if (absolutePath === null) {
+      return { passed: false, reason: 'unresolved-citation', identifier: id };
+    }
+    resolved.push({ id, absolutePath });
   }
   for (const path of ids.paths) {
     const absolutePath = resolveRepoPath(path, testKbRoot);
-    if (absolutePath !== null) resolved.push({ id: path, absolutePath });
-  }
-
-  if (resolved.length === 0) {
-    return { passed: false, reason: 'unresolved-citation' };
+    if (absolutePath === null) {
+      return { passed: false, reason: 'unresolved-citation', identifier: path };
+    }
+    resolved.push({ id: path, absolutePath });
   }
 
   return { passed: true, resolved };

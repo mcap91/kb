@@ -92,22 +92,22 @@ describe('resolveCitations', () => {
     expect(outcome).toEqual({ passed: false, reason: 'no-citation' });
   });
 
-  it('fails unresolved-citation for a URL-only row -- URLs are listed but never fetched', () => {
+  it('fails outside-citation for a URL-only row -- URLs are listed but never fetched', () => {
     const root = makeTestKbRoot();
     const outcome = resolveCitations({ recordIds: [], paths: [], urls: ['https://example.com/spec'] }, root, MANIFEST);
-    expect(outcome).toEqual({ passed: false, reason: 'unresolved-citation' });
+    expect(outcome).toEqual({ passed: false, reason: 'outside-citation' });
   });
 
-  it('fails unresolved-citation when a cited record id has no file on disk', () => {
+  it('fails unresolved-citation, naming it, when a cited record id has no file on disk', () => {
     const root = makeTestKbRoot();
     const outcome = resolveCitations({ recordIds: ['DEC-9999'], paths: [], urls: [] }, root, MANIFEST);
-    expect(outcome).toEqual({ passed: false, reason: 'unresolved-citation' });
+    expect(outcome).toEqual({ passed: false, reason: 'unresolved-citation', identifier: 'DEC-9999' });
   });
 
-  it('fails unresolved-citation when a cited path does not exist under testKbRoot', () => {
+  it('fails unresolved-citation, naming it, when a cited path does not exist under testKbRoot', () => {
     const root = makeTestKbRoot();
     const outcome = resolveCitations({ recordIds: [], paths: ['services/missing.ts'], urls: [] }, root, MANIFEST);
-    expect(outcome).toEqual({ passed: false, reason: 'unresolved-citation' });
+    expect(outcome).toEqual({ passed: false, reason: 'unresolved-citation', identifier: 'services/missing.ts' });
   });
 
   it('fails unresolved-citation when a cited path escapes testKbRoot, even if the target exists', () => {
@@ -116,21 +116,50 @@ describe('resolveCitations', () => {
     writeFile(secretRoot, 'secret.md', 'top secret');
     const escapingPath = relative(root, join(secretRoot, 'secret.md'));
     const outcome = resolveCitations({ recordIds: [], paths: [escapingPath], urls: [] }, root, MANIFEST);
-    expect(outcome).toEqual({ passed: false, reason: 'unresolved-citation' });
+    expect(outcome).toEqual({ passed: false, reason: 'unresolved-citation', identifier: escapingPath });
   });
 
-  it('passes when at least one of several identifiers resolves', () => {
+  it('fails unresolved-citation, naming the missing id, when one id among several resolved identifiers does not resolve', () => {
     const root = makeTestKbRoot();
     writeFile(root, 'wiki/decisions/DEC-0901.md', '# DEC-0901');
+    writeFile(root, 'services/billing/caller.ts', 'export {};');
     const outcome = resolveCitations(
-      { recordIds: ['DEC-0901', 'DEC-9999'], paths: ['services/missing.ts'], urls: ['https://example.com'] },
+      { recordIds: ['DEC-0901', 'DEC-9999'], paths: ['services/billing/caller.ts'], urls: [] },
+      root,
+      MANIFEST,
+    );
+    expect(outcome).toEqual({ passed: false, reason: 'unresolved-citation', identifier: 'DEC-9999' });
+  });
+
+  it('fails outside-citation when a URL is cited alongside otherwise-resolved files', () => {
+    const root = makeTestKbRoot();
+    writeFile(root, 'wiki/decisions/DEC-0901.md', '# DEC-0901');
+    writeFile(root, 'services/billing/caller.ts', 'export {};');
+    const outcome = resolveCitations(
+      { recordIds: ['DEC-0901'], paths: ['services/billing/caller.ts'], urls: ['https://example.com'] },
+      root,
+      MANIFEST,
+    );
+    expect(outcome).toEqual({ passed: false, reason: 'outside-citation' });
+  });
+
+  it('passes and returns every cited file when every identifier resolves', () => {
+    const root = makeTestKbRoot();
+    writeFile(root, 'wiki/decisions/DEC-0901.md', '# DEC-0901');
+    writeFile(root, 'services/billing/caller.ts', 'export {};');
+    writeFile(root, 'docs/plan.md', '# plan');
+    const outcome = resolveCitations(
+      { recordIds: ['DEC-0901'], paths: ['services/billing/caller.ts', 'docs/plan.md'], urls: [] },
       root,
       MANIFEST,
     );
     expect(outcome.passed).toBe(true);
     if (outcome.passed) {
-      expect(outcome.resolved).toHaveLength(1);
-      expect(outcome.resolved[0].id).toBe('DEC-0901');
+      expect([...outcome.resolved].sort((a, b) => a.id.localeCompare(b.id))).toEqual([
+        { id: 'DEC-0901', absolutePath: join(root, 'wiki/decisions/DEC-0901.md') },
+        { id: 'docs/plan.md', absolutePath: join(root, 'docs/plan.md') },
+        { id: 'services/billing/caller.ts', absolutePath: join(root, 'services/billing/caller.ts') },
+      ]);
     }
   });
 });
