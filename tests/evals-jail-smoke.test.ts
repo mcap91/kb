@@ -1,9 +1,14 @@
 /**
  * WK-0237 slice A — jail-smoke.ts's pure helpers. Never runs real bwrap:
  * `--jail-smoke` itself is a host-only operator action
- * (`npm run eval -- --jail-smoke`), out of scope for this test file.
+ * (`npm run eval -- --jail-smoke`), out of scope for this test file, except
+ * for the stderr-forwarding regression test below, which mocks
+ * `node:child_process`'s `spawnSync` rather than spawning a real bwrap
+ * (HO-0163 F1: `cli.ts`'s `--jail-smoke` must forward bwrap's stderr exactly
+ * as it did before HO-0161's refactor moved orchestration into
+ * `performJailSmoke`).
  */
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   allPassed,
@@ -115,5 +120,32 @@ describe('checkJailSmokeComplete', () => {
   it('fails on empty output', () => {
     const result = checkJailSmokeComplete([]);
     expect(result.ok).toBe(false);
+  });
+});
+
+describe('--jail-smoke CLI path forwards bwrap stderr', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.doUnmock('node:child_process');
+    vi.resetModules();
+  });
+
+  it('writes bwrap stderr to process.stderr when the bwrap result carries it but the spawn itself did not error', async () => {
+    const allPassStdout = `${JAIL_SMOKE_CHECK_NAMES.map((name) => `PASS ${name}`).join('\n')}\n`;
+    vi.doMock('node:child_process', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('node:child_process')>();
+      return {
+        ...actual,
+        spawnSync: vi.fn(() => ({ error: undefined, stdout: allPassStdout, stderr: 'bwrap: synthetic diagnostic\n' })),
+      };
+    });
+
+    const writeSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const { run } = await import('../evals/cli.js');
+
+    const code = await run(['--jail-smoke']);
+
+    expect(code).toBe(0);
+    expect(writeSpy).toHaveBeenCalledWith('bwrap: synthetic diagnostic\n');
   });
 });

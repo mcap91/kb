@@ -226,14 +226,14 @@ function baseOpts(overrides: Partial<RunSuiteOpts>): RunSuiteOpts {
 
 describe('runSuite -- preflight', () => {
   it('refuses on a failing jail smoke and launches nothing', async () => {
-    const { calls } = neverLaunch();
+    const { launch, calls } = neverLaunch();
     const failingSmoke: RunJailSmokeFn = async () => fail('CHECK_FAILED', 'jail-smoke required check failed: kb-wiki-empty');
 
     const result = await runSuite(
       baseOpts({
         suiteDir: FIXTURE_SUITE_DIR,
         testKb: join(workDir, 'unused-test-kb'),
-        launch: neverLaunch().launch,
+        launch,
         runJailSmoke: failingSmoke,
       }),
     );

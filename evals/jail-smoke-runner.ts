@@ -30,6 +30,8 @@ export interface JailSmokeRunResult {
   outcomes: JailSmokeOutcome[];
   /** Whether every required check passed (jail-smoke.ts's `checkJailSmokeComplete`). */
   complete: EvalResult<void>;
+  /** bwrap's stderr, verbatim (may hold diagnostics even when the spawn itself did not error). */
+  stderr: string;
 }
 
 /** The shape `suite.ts`'s preflight injects/calls — collapses `performJailSmoke`'s richer result to pass/fail, naming the failure. */
@@ -72,15 +74,24 @@ export async function performJailSmoke(): Promise<EvalResult<JailSmokeRunResult>
 
     const outcomes = parseJailSmokeOutput(result.stdout ?? '');
     const complete = checkJailSmokeComplete(outcomes);
-    return ok({ outcomes, complete });
+    return ok({ outcomes, complete, stderr: result.stderr ?? '' });
   } finally {
     rmSync(runDir, { recursive: true, force: true });
   }
 }
 
-/** Adapts `performJailSmoke`'s richer result to the plain `RunJailSmokeFn` shape `suite.ts` preflight calls. */
+/**
+ * Adapts `performJailSmoke`'s richer result to the plain `RunJailSmokeFn`
+ * shape `suite.ts` preflight calls. On a failing smoke, forwards bwrap's
+ * stderr to `process.stderr` exactly as `--jail-smoke` itself does (pre-
+ * HO-0161 `cli.ts` behavior), so a `--suite` preflight refusal carries the
+ * same bwrap diagnostics the standalone `--jail-smoke` flag shows.
+ */
 export async function runJailSmokeForPreflight(): Promise<EvalResult<void>> {
   const result = await performJailSmoke();
   if (!result.ok) return result;
+  if (!result.data.complete.ok && result.data.stderr) {
+    process.stderr.write(result.data.stderr);
+  }
   return result.data.complete;
 }

@@ -8,7 +8,7 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { SYSTEM_ROOTS } from '@kb/dispatch-core';
 
@@ -53,6 +53,10 @@ async function runJailSmoke(): Promise<number> {
   if (!result.ok) {
     console.error(`jail-smoke: ${result.message}`);
     return 1;
+  }
+
+  if (result.data.stderr) {
+    process.stderr.write(result.data.stderr);
   }
 
   for (const outcome of result.data.outcomes) {
@@ -288,12 +292,18 @@ export async function run(args: string[]): Promise<number> {
   return 1;
 }
 
-const args = process.argv.slice(2);
-run(args)
-  .then((code) => {
-    process.exitCode = code;
-  })
-  .catch((err) => {
-    console.error('Unexpected error:', err);
-    process.exitCode = 1;
-  });
+// Only auto-run when this file is the process entry point, never on import
+// — so `tests/` can import `run` directly without triggering argv parsing
+// (mirrors dispatch-controller-entry.ts's `isMainModule` guard).
+const isMainModule = process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
+if (isMainModule) {
+  const args = process.argv.slice(2);
+  run(args)
+    .then((code) => {
+      process.exitCode = code;
+    })
+    .catch((err) => {
+      console.error('Unexpected error:', err);
+      process.exitCode = 1;
+    });
+}
