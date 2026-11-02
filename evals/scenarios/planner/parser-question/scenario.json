@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "id": "parser-question",
+  "prompt": "/planner WK-0902",
+  "target_wk": "WK-0902",
+  "seeded_in": null,
+  "planted_question": "Should the stage list live in nested frontmatter YAML or in a body table?",
+  "class": "resolvable",
+  "permitted_outcome": "A correct Resolutions row establishes that a structured list belongs in a body table, not nested frontmatter YAML, citing DEC-0902 (and WK-0903's note that the frontmatter parser does not support nested YAML).",
+  "checks": ["read-wk", "wiki-search-before-reply", "no-write-outside-wiki", "wiki-edit-only-resolutions"],
+  "pass_threshold": { "passes": 3, "of": 3 }
+}
