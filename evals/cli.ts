@@ -1,24 +1,26 @@
 /**
- * `npm run eval -- <flags>` entry point (WK-0237 slice A). Two subcommands
- * today: `--jail-smoke` (no model call; proves effective jail access) and
- * `--capture <name> ...` (one real `claude -p` run, raw logs only). Room is
- * left for slice B's `--suite <name>` flag alongside these.
+ * `npm run eval -- <flags>` entry point. Three subcommands: `--jail-smoke`
+ * (no model call; proves effective jail access), `--capture <name> ...`
+ * (one real `claude -p` run, raw logs only), and `--suite <name> [--scenario
+ * <id>]... [--resume]` (WK-0237 slice B1d: every scenario of one suite, all
+ * repeats and conditions, via `suite.ts`'s `runSuite`).
  */
-import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
-import { homedir, tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { SYSTEM_ROOTS } from '@kb/dispatch-core';
 
 import { buildClaudeArgv } from './claude-argv.js';
 import { checkInstalledExactly, installCommand, installSkill, resetTestKb } from './install.js';
-import { buildJailSmokeChecks, buildJailSmokeScript, checkJailSmokeComplete, parseJailSmokeOutput } from './jail-smoke.js';
+import { performJailSmoke, runJailSmokeForPreflight } from './jail-smoke-runner.js';
 import { buildEvalJailArgs, EVAL_CLI_PACKAGE_DIR, EVAL_HOME } from './jail.js';
 import { launch } from './launch.js';
 import type { McpKind } from './mcp-config.js';
 import { writeMcpConfig } from './mcp-config.js';
 import { discoverHostPaths } from './paths.js';
+import { runSuite } from './suite.js';
 
 function getFlag(args: string[], flag: string): boolean {
   return args.includes(flag);
@@ -30,6 +32,15 @@ function getFlagValue(args: string[], flag: string): string | undefined {
   return args[idx + 1];
 }
 
+/** Every value following a repeatable flag (e.g. `--scenario a --scenario b` -> `['a', 'b']`). */
+function getFlagValues(args: string[], flag: string): string[] {
+  const values: string[] = [];
+  for (let i = 0; i < args.length - 1; i++) {
+    if (args[i] === flag) values.push(args[i + 1]);
+  }
+  return values;
+}
+
 /** Splits a `<src>:<name>` spec on its LAST colon (a host path may itself contain colons; the install name never does). */
 function splitSrcName(spec: string): { src: string; name: string } | null {
   const idx = spec.lastIndexOf(':');
@@ -38,53 +49,21 @@ function splitSrcName(spec: string): { src: string; name: string } | null {
 }
 
 async function runJailSmoke(): Promise<number> {
-  const hostPaths = discoverHostPaths();
-  if (!hostPaths.ok) {
-    console.error(`jail-smoke: ${hostPaths.message}`);
+  const result = await performJailSmoke();
+  if (!result.ok) {
+    console.error(`jail-smoke: ${result.message}`);
     return 1;
   }
 
-  const runDir = mkdtempSync(join(tmpdir(), 'kb-eval-jail-smoke-'));
-  const runHome = join(runDir, 'home');
-  mkdirSync(runHome, { recursive: true });
-
-  try {
-    const jailArgs = buildEvalJailArgs({
-      systemRoots: SYSTEM_ROOTS,
-      runHome,
-      credentialsFile: hostPaths.data.credentialsFile,
-      testKb: hostPaths.data.testKb,
-      kbRoot: hostPaths.data.kbRoot,
-      cliPackageDir: hostPaths.data.cliPackageDir,
-      resolvConfRealpath: hostPaths.data.resolvConfRealpath,
-    });
-
-    const checks = buildJailSmokeChecks({ operatorHome: homedir() });
-    const script = buildJailSmokeScript(checks);
-
-    const result = spawnSync('bwrap', [...jailArgs, '/bin/sh', '-c', script], { encoding: 'utf8' });
-    if (result.error) {
-      console.error(`jail-smoke: failed to run bwrap: ${result.error.message}`);
-      return 1;
-    }
-    if (result.stderr) {
-      process.stderr.write(result.stderr);
-    }
-
-    const outcomes = parseJailSmokeOutput(result.stdout ?? '');
-    for (const outcome of outcomes) {
-      console.log(`${outcome.passed ? 'PASS' : 'FAIL'} ${outcome.name}`);
-    }
-
-    const complete = checkJailSmokeComplete(outcomes);
-    if (!complete.ok) {
-      console.error(`jail-smoke: ${complete.message}`);
-      return 1;
-    }
-    return 0;
-  } finally {
-    rmSync(runDir, { recursive: true, force: true });
+  for (const outcome of result.data.outcomes) {
+    console.log(`${outcome.passed ? 'PASS' : 'FAIL'} ${outcome.name}`);
   }
+
+  if (!result.data.complete.ok) {
+    console.error(`jail-smoke: ${result.data.complete.message}`);
+    return 1;
+  }
+  return 0;
 }
 
 async function runCapture(args: string[]): Promise<number> {
@@ -233,6 +212,66 @@ async function runCapture(args: string[]): Promise<number> {
   return launched.data.exitCode === 0 && !launched.data.timedOut ? 0 : 1;
 }
 
+const JUDGE_PROMPT_PATH = join(dirname(fileURLToPath(import.meta.url)), 'judge-prompt.md');
+
+async function runSuiteCommand(args: string[]): Promise<number> {
+  const name = getFlagValue(args, '--suite');
+  if (name === undefined) {
+    console.error('suite: --suite <name> is required.');
+    return 1;
+  }
+  const scenarioIds = getFlagValues(args, '--scenario');
+  const resume = getFlag(args, '--resume');
+
+  const hostPaths = discoverHostPaths();
+  if (!hostPaths.ok) {
+    console.error(`suite: ${hostPaths.message}`);
+    return 1;
+  }
+  const { testKb, kbRoot, cliPackageDir, cliBinaryRelPath, credentialsFile, testKbData, claudeRealpath, resolvConfRealpath } =
+    hostPaths.data;
+
+  let cliVersion = 'unknown';
+  try {
+    cliVersion = execFileSync(claudeRealpath, ['--version'], { encoding: 'utf8' }).trim();
+  } catch (err) {
+    console.error(`suite: warning: failed to probe claude --version: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  let judgePromptTemplate: string;
+  try {
+    judgePromptTemplate = readFileSync(JUDGE_PROMPT_PATH, 'utf8');
+  } catch (err) {
+    console.error(`suite: failed to read ${JUDGE_PROMPT_PATH}: ${err instanceof Error ? err.message : String(err)}`);
+    return 1;
+  }
+
+  const result = await runSuite({
+    suiteDir: join(kbRoot, 'evals', 'scenarios', name),
+    resultsRoot: join(testKbData, 'evals', 'results'),
+    scenarioIds: scenarioIds.length > 0 ? scenarioIds : undefined,
+    resume,
+    testKb,
+    kbRoot,
+    credentialsFile,
+    cliPackageDir,
+    cliBinaryRelPath,
+    resolvConfRealpath,
+    systemRoots: SYSTEM_ROOTS,
+    cliVersion,
+    judgePromptTemplate,
+    launch,
+    runJailSmoke: runJailSmokeForPreflight,
+  });
+
+  if (!result.ok) {
+    console.error(`suite: ${result.message}`);
+    return 1;
+  }
+  console.log(`suite: wrote ${result.data.resultSetDir} (gate: ${result.data.summary.gateVerdict})`);
+  return 0;
+}
+
 export async function run(args: string[]): Promise<number> {
   if (getFlag(args, '--jail-smoke')) {
     return runJailSmoke();
@@ -240,7 +279,12 @@ export async function run(args: string[]): Promise<number> {
   if (getFlag(args, '--capture')) {
     return runCapture(args);
   }
-  console.error('Usage: npm run eval -- --jail-smoke | --capture <name> --baseline <sha> --prompt <text> [...]');
+  if (getFlag(args, '--suite')) {
+    return runSuiteCommand(args);
+  }
+  console.error(
+    'Usage: npm run eval -- --jail-smoke | --capture <name> --baseline <sha> --prompt <text> [...] | --suite <name> [--scenario <id>]... [--resume]',
+  );
   return 1;
 }
 

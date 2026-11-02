@@ -95,6 +95,39 @@ function readFileOrFail(path: string, code: string): EvalResult<string> {
   }
 }
 
+export interface ResolvedRoleText {
+  roleTextBlob: string;
+  /** The command body text to install — set only when `condition.install_command` is not null. */
+  commandBody: string | null;
+}
+
+/**
+ * Resolves a condition's role-text blob id (`install_command`: the git blob
+ * id of `<git_ref>:<path>`, plus the body text to install; `install_skills`:
+ * the comma-joined `git hash-object` ids of each skill's `SKILL.md` in the
+ * kb working tree). Shared by `runScenarioOnce` step 6 and the `--suite`
+ * runner's preflight/result-set pins (WK-0237 slice B1d) — the same git
+ * calls serve as both the "install source missing" check and the blob-id
+ * pin, so neither caller reimplements the other's git calls.
+ */
+export function resolveRoleText(condition: SuiteCondition, kbRoot: string): EvalResult<ResolvedRoleText> {
+  if (condition.install_command !== null) {
+    const { git_ref, path } = condition.install_command;
+    const showResult = runGit(['show', `${git_ref}:${path}`], kbRoot);
+    if (!showResult.ok) return showResult;
+    const blobResult = runGit(['rev-parse', `${git_ref}:${path}`], kbRoot);
+    if (!blobResult.ok) return blobResult;
+    return ok({ roleTextBlob: blobResult.data.trim(), commandBody: showResult.data });
+  }
+  const blobs: string[] = [];
+  for (const skill of condition.install_skills) {
+    const hashResult = runGit(['hash-object', join(skill.path, 'SKILL.md')], kbRoot);
+    if (!hashResult.ok) return hashResult;
+    blobs.push(hashResult.data.trim());
+  }
+  return ok({ roleTextBlob: blobs.join(','), commandBody: null });
+}
+
 /**
  * Scans a stream for its `system`/`init` event's `model`, tolerating lines
  * that fail to parse (unlike `parseStreamLog`'s strict, fail-fast parse) —
@@ -188,26 +221,13 @@ export async function runScenarioOnce(opts: RunScenarioOnceOpts): Promise<EvalRe
   writeFileSync(join(opts.runDir, 'wk-before.md'), wkTextBefore);
 
   // 6. Install the condition.
-  let roleTextBlob: string;
+  const roleTextResolved = resolveRoleText(condition, kbRoot);
+  if (!roleTextResolved.ok) return roleTextResolved;
+  const roleTextBlob = roleTextResolved.data.roleTextBlob;
   if (condition.install_command !== null) {
-    const { name, git_ref, path } = condition.install_command;
-    const showResult = runGit(['show', `${git_ref}:${path}`], kbRoot);
-    if (!showResult.ok) return showResult;
     const commandsDir = join(runHome, '.claude', 'commands');
     mkdirSync(commandsDir, { recursive: true });
-    writeFileSync(join(commandsDir, `${name}.md`), showResult.data);
-
-    const blobResult = runGit(['rev-parse', `${git_ref}:${path}`], kbRoot);
-    if (!blobResult.ok) return blobResult;
-    roleTextBlob = blobResult.data.trim();
-  } else {
-    const blobs: string[] = [];
-    for (const skill of condition.install_skills) {
-      const hashResult = runGit(['hash-object', join(skill.path, 'SKILL.md')], kbRoot);
-      if (!hashResult.ok) return hashResult;
-      blobs.push(hashResult.data.trim());
-    }
-    roleTextBlob = blobs.join(',');
+    writeFileSync(join(commandsDir, `${condition.install_command.name}.md`), roleTextResolved.data.commandBody ?? '');
   }
 
   for (const skill of condition.install_skills) {
