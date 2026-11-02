@@ -759,6 +759,9 @@ describe('shipped block text', () => {
 
     const emitted = assembleBlockBody(sectionsResult.data, { dispatch: true });
     expect(emitted).toContain('65. **Keep one source of truth per fact.**');
+    expect(emitted).toContain('66. **Mark every shortcut.**');
+    expect(emitted).toContain('67. **Every deferral carries a written re-open trigger,**');
+    expect(emitted).not.toMatch(/^68\. /m);
     expect(emitted).toContain('## kb — wiki');
     expect(emitted).not.toContain('/resolve');
     expect(emitted.toLowerCase()).not.toMatch(/escalat/);

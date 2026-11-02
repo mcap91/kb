@@ -91,3 +91,5 @@ The question behind all of it: how can I improve this so that a future agent doe
 63. **Every change names the parts of the repo it touches;** a core-surface change states why.
 64. **Keep end-user docs current.** A shipped capability keeps clean, intuitive docs for its users; a behavior change updates the docs in the same change.
 65. **Keep one source of truth per fact.** A second copy is derived and regenerated, never hand-maintained; where a copy must exist, fingerprint it against its source so drift is detected, not remembered. A hand-maintained duplicate is ad hoc only.
+66. **Mark every shortcut.** Label it `shortcut: <the limit>, <when to upgrade>`; a shortcut with no upgrade trigger is rot.
+67. **Every deferral carries a written re-open trigger,** checked at every gate.
