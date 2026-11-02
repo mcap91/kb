@@ -13,7 +13,13 @@ export interface ScanFinding {
 }
 
 const HOME_PATH_RE = /\/home\/([^/\s"'\\]+)/g;
-const EMAIL_RE = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
+/**
+ * `.md` is excluded as a TLD: a `@<Name>.md`-style project-file import (e.g.
+ * `@AGENTS.md`) false-positives as an email once JSON-escaped (the `\n`
+ * before `@` contributes a stray `n` local-part character — WK-0237 Notes
+ * 2026-11-01 normal-2 fact 6). No real capture needs `.md` as a TLD.
+ */
+const EMAIL_RE = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.(?!md\b)[A-Za-z]{2,}/gi;
 const ANTHROPIC_KEY_RE = /sk-ant-[A-Za-z0-9_-]+/g;
 const BEARER_RE = /Bearer\s+\S+/g;
 const TOKEN_KEY_RE = /\b(accessToken|refreshToken)\b["']?\s*[:=]/g;
