@@ -108,16 +108,49 @@ function parseResponseDocFrontmatter(content: string): ResponseDocEvidence {
 }
 
 /**
- * Scan `wiki/handoffs/` for a `code_review` HO whose `base_ref` equals
- * `branchName`, then read its response doc's frontmatter evidence fields
- * (WK-0166 — no markdown re-parsing). Fails closed on: no matching review
- * HO, no response doc, a response doc that predates frontmatter-based
- * evidence (all three fields absent), an empty report
- * (`worker_report_chars === 0`), or a structured block reporting a
- * non-passing outcome. A missing/invalid block backed by real review
- * content (`worker_report_chars > 0`) returns `verdict: 'advisory'` instead
- * of failing (DEC-0037 — the block is optional metadata, never a gate, for
- * code_review/redteam).
+ * Numeric id parsed from a handoff id like `HO-0142` — the ordering key
+ * `selectLatestReview` uses. Returns `null` when the id doesn't match the
+ * 4-digit `HO-(\d{4})` shape.
+ */
+function parseHandoffNumericId(id: string): number | null {
+  const match = id.match(/^HO-(\d{4})$/);
+  if (!match) return null;
+  return Number.parseInt(match[1]!, 10);
+}
+
+/**
+ * WK-0207: among a set of `code_review` HOs that all match the same delivery
+ * branch, the newest matching review wins — never the first one encountered
+ * in readdir order. Pure (no I/O); selects by the numeric id parsed from the
+ * HO id, never by readdir order or file mtime. Returns `null` for an empty
+ * candidate list.
+ */
+export function selectLatestReview(candidates: Handoff[]): Handoff | null {
+  let latest: Handoff | null = null;
+  let latestNumericId = -Infinity;
+  for (const candidate of candidates) {
+    const numericId = parseHandoffNumericId(candidate.id);
+    if (numericId === null) continue;
+    if (latest === null || numericId > latestNumericId) {
+      latest = candidate;
+      latestNumericId = numericId;
+    }
+  }
+  return latest;
+}
+
+/**
+ * Scan `wiki/handoffs/` for all `code_review` HOs whose `base_ref` equals
+ * `branchName`, select the newest via `selectLatestReview` (WK-0207 — the
+ * newest matching review wins, never the first readdir match), then read its
+ * response doc's frontmatter evidence fields (WK-0166 — no markdown
+ * re-parsing). Fails closed on: no matching review HO, no response doc, a
+ * response doc that predates frontmatter-based evidence (all three fields
+ * absent), an empty report (`worker_report_chars === 0`), or a structured
+ * block reporting a non-passing outcome. A missing/invalid block backed by
+ * real review content (`worker_report_chars > 0`) returns
+ * `verdict: 'advisory'` instead of failing (DEC-0037 — the block is optional
+ * metadata, never a gate, for code_review/redteam).
  */
 async function checkReviewEvidence(
   dir: string,
@@ -134,7 +167,7 @@ async function checkReviewEvidence(
 
   const hoFiles = files.filter((f) => /^HO-\d{4}\.md$/.test(f));
 
-  let reviewHandoff: Handoff | null = null;
+  const candidates: Handoff[] = [];
   for (const file of hoFiles) {
     let content: string;
     try {
@@ -145,10 +178,11 @@ async function checkReviewEvidence(
     const parsed = parseHandoffContent(content, file);
     if (!parsed.ok) continue;
     if (parsed.data.mode === 'code_review' && parsed.data.base_ref === branchName) {
-      reviewHandoff = parsed.data;
-      break;
+      candidates.push(parsed.data);
     }
   }
+
+  const reviewHandoff = selectLatestReview(candidates);
 
   if (!reviewHandoff) {
     return fail('ADMISSION_FAILED', `No code_review HO found with base_ref: ${branchName}`);

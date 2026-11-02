@@ -14,7 +14,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 
-import { mergeDelivery } from '../packages/dispatch-core/src/merge-delivery.js';
+import { mergeDelivery, selectLatestReview } from '../packages/dispatch-core/src/merge-delivery.js';
+import type { Handoff } from '../packages/dispatch-core/src/ho.js';
 
 const execFile = promisify(execFileCallback);
 
@@ -339,6 +340,27 @@ function makeReviewResponseWithHeadingInBody(subject: string): string {
   ].join('\n');
 }
 
+/** Minimal `Handoff` fixture for `selectLatestReview` unit tests — only `id` matters to selection. */
+function makeHandoffFixture(id: string): Handoff {
+  return {
+    id,
+    title: `Code review ${id}`,
+    mode: 'code_review',
+    write_scope: [],
+    base_ref: 'dispatch/HO-0001',
+    web: false,
+    credentials: [],
+    data_mounts: [],
+    export_mounts: [],
+    runtime_envs: [],
+    read_first: [],
+    vars: [],
+    acceptance: [],
+    validation: [],
+    status: 'draft',
+  };
+}
+
 let repoDir: string;
 
 beforeEach(async () => {
@@ -655,5 +677,99 @@ describe('mergeDelivery (WK-0132 Slice 3)', () => {
     expect(result.error).toBe('ADMISSION_FAILED');
     expect(result.message).toContain('predates frontmatter-based evidence');
     expect(await branchExists(repoDir, 'dispatch/HO-0022')).toBe(true);
+  });
+
+  // -- WK-0207: newest matching review wins, not the first readdir match --
+
+  describe('selectLatestReview (WK-0207)', () => {
+    const ids = ['HO-0012', 'HO-0105', 'HO-0003', 'HO-0098'];
+    const expectedWinner = 'HO-0105';
+
+    it('picks the highest numeric id when candidates are given in id order', () => {
+      const sorted = [...ids].sort();
+      const candidates = sorted.map(makeHandoffFixture);
+      expect(selectLatestReview(candidates)?.id).toBe(expectedWinner);
+    });
+
+    it('picks the highest numeric id when candidates are given in reversed order', () => {
+      const reversed = [...ids].sort().reverse();
+      const candidates = reversed.map(makeHandoffFixture);
+      expect(selectLatestReview(candidates)?.id).toBe(expectedWinner);
+    });
+
+    it('picks the highest numeric id when candidates are given in a fixed shuffled order', () => {
+      const shuffled = ['HO-0098', 'HO-0003', 'HO-0105', 'HO-0012'];
+      const candidates = shuffled.map(makeHandoffFixture);
+      expect(selectLatestReview(candidates)?.id).toBe(expectedWinner);
+    });
+  });
+
+  it('merges and reports the newer reviewId when an older review was changes_requested and a newer review passes (WK-0207)', async () => {
+    await writeAndCommit(
+      repoDir,
+      {
+        'wiki/handoffs/HO-0024.md': makeImplementHO('HO-0024', 'Implement re-reviewed thing', 'WK-0207'),
+        'wiki/handoffs/HO-0025.md': makeReviewHO('HO-0025', 'Code review: Implement re-reviewed thing', 'dispatch/HO-0024', 'WK-0207'),
+        'wiki/handoffs/HO-0025.response.md': makeReviewResponse('changes_requested', 'HO-0024', true),
+        'wiki/handoffs/HO-0026.md': makeReviewHO('HO-0026', 'Code review: Implement re-reviewed thing (re-review)', 'dispatch/HO-0024', 'WK-0207'),
+        'wiki/handoffs/HO-0026.response.md': makeReviewResponse('no_findings', 'HO-0024', false),
+      },
+      'add implement HO + older failing review + newer passing re-review',
+    );
+    await createDeliveryBranch(repoDir, 'HO-0024');
+
+    const result = await mergeDelivery({ dir: repoDir, handoff_id: 'HO-0024' });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(`expected ok, got: ${result.error}: ${result.message}`);
+    expect(result.data.reviewId).toBe('HO-0026');
+    expect(result.data.reviewOutcome).toBe('no_findings');
+    expect(await branchExists(repoDir, 'dispatch/HO-0024')).toBe(false);
+  });
+
+  it('refuses the merge, naming the newer review id, when an older review passed and a newer review is changes_requested (WK-0207)', async () => {
+    await writeAndCommit(
+      repoDir,
+      {
+        'wiki/handoffs/HO-0027.md': makeImplementHO('HO-0027', 'Implement regressed thing', 'WK-0207'),
+        'wiki/handoffs/HO-0028.md': makeReviewHO('HO-0028', 'Code review: Implement regressed thing', 'dispatch/HO-0027', 'WK-0207'),
+        'wiki/handoffs/HO-0028.response.md': makeReviewResponse('no_findings', 'HO-0027', false),
+        'wiki/handoffs/HO-0029.md': makeReviewHO('HO-0029', 'Code review: Implement regressed thing (re-review)', 'dispatch/HO-0027', 'WK-0207'),
+        'wiki/handoffs/HO-0029.response.md': makeReviewResponse('changes_requested', 'HO-0027', true),
+      },
+      'add implement HO + older passing review + newer failing re-review',
+    );
+    await createDeliveryBranch(repoDir, 'HO-0027');
+
+    const result = await mergeDelivery({ dir: repoDir, handoff_id: 'HO-0027' });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('expected refusal, got ok');
+    expect(result.error).toBe('ADMISSION_FAILED');
+    expect(result.message).toContain('HO-0029');
+    expect(await branchExists(repoDir, 'dispatch/HO-0027')).toBe(true);
+  });
+
+  it('refuses the merge, naming the newer review id with no fallback, when the newer review has no response doc (WK-0207)', async () => {
+    await writeAndCommit(
+      repoDir,
+      {
+        'wiki/handoffs/HO-0030.md': makeImplementHO('HO-0030', 'Implement missing-response thing', 'WK-0207'),
+        'wiki/handoffs/HO-0031.md': makeReviewHO('HO-0031', 'Code review: Implement missing-response thing', 'dispatch/HO-0030', 'WK-0207'),
+        'wiki/handoffs/HO-0031.response.md': makeReviewResponse('no_findings', 'HO-0030', false),
+        'wiki/handoffs/HO-0032.md': makeReviewHO('HO-0032', 'Code review: Implement missing-response thing (re-review)', 'dispatch/HO-0030', 'WK-0207'),
+        // Deliberately no HO-0032.response.md.
+      },
+      'add implement HO + older passing review + newer review with no response doc',
+    );
+    await createDeliveryBranch(repoDir, 'HO-0030');
+
+    const result = await mergeDelivery({ dir: repoDir, handoff_id: 'HO-0030' });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('expected refusal, got ok');
+    expect(result.error).toBe('ADMISSION_FAILED');
+    expect(result.message).toContain('HO-0032');
+    expect(await branchExists(repoDir, 'dispatch/HO-0030')).toBe(true);
   });
 });
