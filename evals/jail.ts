@@ -9,6 +9,13 @@
  *
  * Fixed jail layout (scope 5, 17.3, Resolutions 9):
  *   - every `systemRoots` entry: --ro-bind-try (absent roots skipped, not fatal)
+ *   - if `resolvConfRealpath` is given and lies outside every `systemRoots`
+ *     entry: --ro-bind at its own path, right after the system roots
+ *     (WK-0237 slice A.1 — on WSL2 /etc/resolv.conf's realpath is
+ *     /mnt/wsl/resolv.conf, outside the /etc system-root bind, so the
+ *     dangling symlink breaks DNS unless the real target is bound too;
+ *     paths.ts's discoverHostPaths refuses a realpath under the operator's
+ *     home before it ever reaches here)
  *   - /proc, /dev, writable /tmp
  *   - --die-with-parent, --unshare-pid, --unshare-ipc, --new-session
  *   - --clearenv, then HOME=/home/eval, USER=eval,
@@ -52,6 +59,8 @@ export interface EvalJailOpts {
   kbRoot: string;
   /** Host path to the Claude CLI's npm package directory, bound read-only at /tools/claude-code. */
   cliPackageDir: string;
+  /** Host realpath of /etc/resolv.conf (paths.ts's discoverHostPaths), or null/omitted when there is nothing to bind. Bound at its own path, read-only, when it lies outside every `systemRoots` entry. */
+  resolvConfRealpath?: string | null;
 }
 
 /** Build the eval harness's bwrap argv. Ends in `--chdir /home/eval/test_kb --`; the caller appends the worker command (claude-argv.ts's `buildClaudeArgv`, prefixed with the in-jail CLI binary path). */
@@ -60,6 +69,13 @@ export function buildEvalJailArgs(opts: EvalJailOpts): string[] {
 
   for (const root of opts.systemRoots) {
     argv.push('--ro-bind-try', root, root);
+  }
+
+  if (
+    opts.resolvConfRealpath != null &&
+    !opts.systemRoots.some((root) => opts.resolvConfRealpath === root || opts.resolvConfRealpath!.startsWith(`${root}/`))
+  ) {
+    argv.push('--ro-bind', opts.resolvConfRealpath, opts.resolvConfRealpath);
   }
 
   argv.push('--proc', '/proc');

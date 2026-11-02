@@ -56,6 +56,7 @@ async function runJailSmoke(): Promise<number> {
       testKb: hostPaths.data.testKb,
       kbRoot: hostPaths.data.kbRoot,
       cliPackageDir: hostPaths.data.cliPackageDir,
+      resolvConfRealpath: hostPaths.data.resolvConfRealpath,
     });
 
     const checks = buildJailSmokeChecks({ operatorHome: homedir() });
@@ -112,7 +113,7 @@ async function runCapture(args: string[]): Promise<number> {
     console.error(`capture: ${hostPaths.message}`);
     return 1;
   }
-  const { testKb, kbRoot, cliPackageDir, cliBinaryRelPath, credentialsFile, testKbData, claudeRealpath } =
+  const { testKb, kbRoot, cliPackageDir, cliBinaryRelPath, credentialsFile, testKbData, claudeRealpath, resolvConfRealpath } =
     hostPaths.data;
 
   const captureDir = join(testKbData, 'evals', 'captures', name);
@@ -195,6 +196,7 @@ async function runCapture(args: string[]): Promise<number> {
     testKb,
     kbRoot,
     cliPackageDir,
+    resolvConfRealpath,
   });
 
   const claudeArgv = buildClaudeArgv({

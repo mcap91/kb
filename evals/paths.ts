@@ -10,6 +10,10 @@
  *   - the Claude CLI package dir: the realpath of `claude` resolved off
  *     `process.env.PATH`, with its own `bin/<binary>` leaf stripped off
  *     (host fact, 2026-11-01: realpath ends `.../claude-code/bin/claude.exe`).
+ *   - resolv.conf realpath: the realpath of `/etc/resolv.conf` (WK-0237 slice
+ *     A.1 — on WSL2 this resolves outside every SYSTEM_ROOTS entry, e.g.
+ *     `/mnt/wsl/resolv.conf`, which is why jail.ts needs it as an explicit
+ *     bind input rather than relying on the `/etc` system-root bind).
  */
 import { existsSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -56,6 +60,45 @@ export function findOnPath(
   return null;
 }
 
+export const RESOLV_CONF_PATH = '/etc/resolv.conf';
+
+/**
+ * Resolve `/etc/resolv.conf`'s realpath, when the file exists. Returns null
+ * when it does not exist — jail.ts's `buildEvalJailArgs` treats null as
+ * "nothing to bind", same as the host simply having no resolver config.
+ */
+export function resolveResolvConfRealpath(
+  exists: (path: string) => boolean = existsSync,
+  realpath: (path: string) => string = realpathSync,
+): string | null {
+  if (!exists(RESOLV_CONF_PATH)) return null;
+  return realpath(RESOLV_CONF_PATH);
+}
+
+/** True when `path` is `home` itself or nested under it. */
+export function isUnderHome(path: string, home: string): boolean {
+  return path === home || path.startsWith(`${home}/`);
+}
+
+/**
+ * Refuses a resolv.conf realpath that lives under the operator's home
+ * directory — that path must never be bound into the jail. Passing `null`
+ * through unchanged lets callers chain this with `resolveResolvConfRealpath`
+ * regardless of whether resolv.conf exists.
+ */
+export function checkResolvConfRealpath(
+  resolvConfRealpath: string | null,
+  home: string,
+): EvalResult<string | null> {
+  if (resolvConfRealpath !== null && isUnderHome(resolvConfRealpath, home)) {
+    return fail(
+      'RESOLV_CONF_UNDER_HOME',
+      `refusing to bind /etc/resolv.conf's realpath ${resolvConfRealpath}: it is under the operator's home directory.`,
+    );
+  }
+  return ok(resolvConfRealpath);
+}
+
 /**
  * Strip the CLI binary's own leaf path (e.g. `bin/claude.exe`) off its
  * realpath to get the npm package directory it ships from.
@@ -79,6 +122,8 @@ export interface HostPaths {
   cliBinaryRelPath: string;
   /** Host realpath of the `claude` binary itself — e.g. for a host-side `claude --version` probe. */
   claudeRealpath: string;
+  /** Host realpath of `/etc/resolv.conf`, or null when it does not exist. Never under the operator's home — `discoverHostPaths` fails first. */
+  resolvConfRealpath: string | null;
 }
 
 /**
@@ -111,5 +156,20 @@ export function discoverHostPaths(): EvalResult<HostPaths> {
   const cliPackageDir = deriveCliPackageDir(claudeRealpath);
   const cliBinaryRelPath = deriveCliBinaryRelPath(claudeRealpath, cliPackageDir);
 
-  return ok({ kbRoot, testKb, testKbData, credentialsFile, cliPackageDir, cliBinaryRelPath, claudeRealpath });
+  const resolvConfCheck = checkResolvConfRealpath(resolveResolvConfRealpath(), homedir());
+  if (!resolvConfCheck.ok) {
+    return resolvConfCheck;
+  }
+  const resolvConfRealpath = resolvConfCheck.data;
+
+  return ok({
+    kbRoot,
+    testKb,
+    testKbData,
+    credentialsFile,
+    cliPackageDir,
+    cliBinaryRelPath,
+    claudeRealpath,
+    resolvConfRealpath,
+  });
 }

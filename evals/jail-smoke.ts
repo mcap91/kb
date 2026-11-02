@@ -22,7 +22,7 @@ export interface JailSmokeCheckOpts {
   operatorHome: string;
 }
 
-/** The six checks scope 17.3/18.1's acceptance criterion names, in the order they must be reported. */
+/** The seven checks scope 17.3/18.1's acceptance criterion names, in the order they must be reported. */
 export const JAIL_SMOKE_CHECK_NAMES = [
   'operator-home-unreadable',
   'test-kb-claude-readable-when-present',
@@ -30,9 +30,10 @@ export const JAIL_SMOKE_CHECK_NAMES = [
   'kb-wiki-empty',
   'home-eval-writable',
   'kb-not-writable',
+  'dns-resolves',
 ] as const;
 
-/** The six checks scope 17.3/18.1's acceptance criterion names. */
+/** The seven checks scope 17.3/18.1's acceptance criterion names. */
 export function buildJailSmokeChecks(opts: JailSmokeCheckOpts): JailSmokeCheck[] {
   const scripts: Record<(typeof JAIL_SMOKE_CHECK_NAMES)[number], string> = {
     'operator-home-unreadable': `! ls "${opts.operatorHome}" >/dev/null 2>&1`,
@@ -42,6 +43,7 @@ export function buildJailSmokeChecks(opts: JailSmokeCheckOpts): JailSmokeCheck[]
     'kb-wiki-empty': '[ -z "$(ls -A /kb/wiki 2>/dev/null)" ]',
     'home-eval-writable': 'touch /home/eval/.smoke-write-test 2>/dev/null && rm -f /home/eval/.smoke-write-test',
     'kb-not-writable': '! ( touch /kb/.smoke-write-test 2>/dev/null && rm -f /kb/.smoke-write-test )',
+    'dns-resolves': 'getent hosts api.anthropic.com >/dev/null 2>&1',
   };
   return JAIL_SMOKE_CHECK_NAMES.map((name) => ({ name, script: scripts[name] }));
 }
@@ -76,7 +78,7 @@ export function allPassed(outcomes: JailSmokeOutcome[]): boolean {
 }
 
 /**
- * Requires exactly one PASS line for each of the six named checks
+ * Requires exactly one PASS line for each of the seven named checks
  * (`JAIL_SMOKE_CHECK_NAMES`) — not merely a nonempty all-PASS output, which a
  * truncated or partial run could also produce. Fails naming the first check
  * that is missing, duplicated, or reported FAIL; fails on empty output.

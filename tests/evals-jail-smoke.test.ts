@@ -15,7 +15,7 @@ import {
 } from '../evals/jail-smoke.js';
 
 describe('buildJailSmokeChecks', () => {
-  it('builds the six named checks', () => {
+  it('builds the seven named checks', () => {
     const checks = buildJailSmokeChecks({ operatorHome: '/synthetic/home/alice' });
     expect(checks.map((c) => c.name)).toEqual([
       'operator-home-unreadable',
@@ -24,6 +24,7 @@ describe('buildJailSmokeChecks', () => {
       'kb-wiki-empty',
       'home-eval-writable',
       'kb-not-writable',
+      'dns-resolves',
     ]);
   });
 });
@@ -59,15 +60,15 @@ describe('allPassed', () => {
 });
 
 describe('checkJailSmokeComplete', () => {
-  const allSixPass = JAIL_SMOKE_CHECK_NAMES.map((name) => ({ name, passed: true }));
+  const allSevenPass = JAIL_SMOKE_CHECK_NAMES.map((name) => ({ name, passed: true }));
 
-  it('passes when all six named checks report exactly one PASS line', () => {
-    const result = checkJailSmokeComplete(allSixPass);
+  it('passes when all seven named checks report exactly one PASS line', () => {
+    const result = checkJailSmokeComplete(allSevenPass);
     expect(result.ok).toBe(true);
   });
 
-  it('fails, naming the check, when one of the six named checks is missing', () => {
-    const missing = allSixPass.filter((o) => o.name !== 'kb-wiki-empty');
+  it('fails, naming the check, when one of the seven named checks is missing', () => {
+    const missing = allSevenPass.filter((o) => o.name !== 'kb-wiki-empty');
 
     const result = checkJailSmokeComplete(missing);
 
@@ -75,8 +76,8 @@ describe('checkJailSmokeComplete', () => {
     if (!result.ok) expect(result.message).toContain('kb-wiki-empty');
   });
 
-  it('fails, naming the check, when one of the six named checks reports FAIL', () => {
-    const oneFailed = allSixPass.map((o) => (o.name === 'kb-not-writable' ? { ...o, passed: false } : o));
+  it('fails, naming the check, when one of the seven named checks reports FAIL', () => {
+    const oneFailed = allSevenPass.map((o) => (o.name === 'kb-not-writable' ? { ...o, passed: false } : o));
 
     const result = checkJailSmokeComplete(oneFailed);
 
@@ -84,8 +85,26 @@ describe('checkJailSmokeComplete', () => {
     if (!result.ok) expect(result.message).toContain('kb-not-writable');
   });
 
-  it('fails when one of the six named checks is duplicated', () => {
-    const duplicated = [...allSixPass, { name: 'home-eval-writable', passed: true }];
+  it('fails, naming the check, when dns-resolves is missing', () => {
+    const missing = allSevenPass.filter((o) => o.name !== 'dns-resolves');
+
+    const result = checkJailSmokeComplete(missing);
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.message).toContain('dns-resolves');
+  });
+
+  it('fails, naming the check, when dns-resolves reports FAIL', () => {
+    const oneFailed = allSevenPass.map((o) => (o.name === 'dns-resolves' ? { ...o, passed: false } : o));
+
+    const result = checkJailSmokeComplete(oneFailed);
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.message).toContain('dns-resolves');
+  });
+
+  it('fails when one of the seven named checks is duplicated', () => {
+    const duplicated = [...allSevenPass, { name: 'home-eval-writable', passed: true }];
 
     const result = checkJailSmokeComplete(duplicated);
 

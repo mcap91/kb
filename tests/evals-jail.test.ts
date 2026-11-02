@@ -95,3 +95,58 @@ describe('buildEvalJailArgs', () => {
     expect(argv.slice(-3)).toEqual(['--chdir', EVAL_TEST_KB_PATH, '--']);
   });
 });
+
+describe('buildEvalJailArgs resolvConfRealpath', () => {
+  it('adds a --ro-bind for the realpath, after the system-root binds, when it lies outside every SYSTEM_ROOTS entry', () => {
+    const resolvConfRealpath = '/mnt/x/resolv.conf';
+    const argv = buildEvalJailArgs({
+      systemRoots: SYSTEM_ROOTS,
+      runHome,
+      credentialsFile,
+      testKb,
+      kbRoot,
+      cliPackageDir,
+      resolvConfRealpath,
+    });
+
+    const systemRootBindsEndIdx = expectedSystemRootArgs().length;
+    expect(argv.slice(0, systemRootBindsEndIdx)).toEqual(expectedSystemRootArgs());
+    expect(argv.slice(systemRootBindsEndIdx, systemRootBindsEndIdx + 3)).toEqual([
+      '--ro-bind', resolvConfRealpath, resolvConfRealpath,
+    ]);
+  });
+
+  it('adds nothing when the realpath lies inside a SYSTEM_ROOTS entry (e.g. under /etc)', () => {
+    const argvWithResolvConf = buildEvalJailArgs({
+      systemRoots: SYSTEM_ROOTS,
+      runHome,
+      credentialsFile,
+      testKb,
+      kbRoot,
+      cliPackageDir,
+      resolvConfRealpath: '/etc/resolv.conf',
+    });
+
+    expect(argvWithResolvConf).toEqual(buildArgv());
+  });
+
+  it("adds nothing when the realpath is null (today's pinned argv is unchanged)", () => {
+    const argvWithNull = buildEvalJailArgs({
+      systemRoots: SYSTEM_ROOTS,
+      runHome,
+      credentialsFile,
+      testKb,
+      kbRoot,
+      cliPackageDir,
+      resolvConfRealpath: null,
+    });
+
+    expect(argvWithNull).toEqual(buildArgv());
+  });
+
+  it("adds nothing when resolvConfRealpath is omitted (today's pinned argv is unchanged)", () => {
+    expect(buildArgv()).toEqual(
+      buildEvalJailArgs({ systemRoots: SYSTEM_ROOTS, runHome, credentialsFile, testKb, kbRoot, cliPackageDir }),
+    );
+  });
+});

@@ -6,12 +6,15 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  checkResolvConfRealpath,
   deriveCliBinaryRelPath,
   deriveCliPackageDir,
   findOnPath,
   getCredentialsFile,
   getTestKbDataRoot,
   getTestKbRoot,
+  isUnderHome,
+  resolveResolvConfRealpath,
 } from '../evals/paths.js';
 
 describe('getTestKbRoot / getTestKbDataRoot', () => {
@@ -38,6 +41,54 @@ describe('deriveCliPackageDir / deriveCliBinaryRelPath', () => {
     const packageDir = '/synthetic/npm-global/lib/node_modules/@anthropic-ai/claude-code';
     const realpath = `${packageDir}/bin/claude.exe`;
     expect(deriveCliBinaryRelPath(realpath, packageDir)).toBe('bin/claude.exe');
+  });
+});
+
+describe('resolveResolvConfRealpath', () => {
+  it('returns the realpath when /etc/resolv.conf exists', () => {
+    const result = resolveResolvConfRealpath(
+      (p) => p === '/etc/resolv.conf',
+      () => '/mnt/wsl/resolv.conf',
+    );
+    expect(result).toBe('/mnt/wsl/resolv.conf');
+  });
+
+  it('returns null when /etc/resolv.conf does not exist', () => {
+    const result = resolveResolvConfRealpath(() => false, () => '/mnt/wsl/resolv.conf');
+    expect(result).toBeNull();
+  });
+});
+
+describe('isUnderHome', () => {
+  it('is true for the home dir itself and for nested paths', () => {
+    expect(isUnderHome('/synthetic/home/alice', '/synthetic/home/alice')).toBe(true);
+    expect(isUnderHome('/synthetic/home/alice/.claude/resolv.conf', '/synthetic/home/alice')).toBe(true);
+  });
+
+  it('is false for unrelated or sibling-prefixed paths', () => {
+    expect(isUnderHome('/synthetic/home/alice-other', '/synthetic/home/alice')).toBe(false);
+    expect(isUnderHome('/etc/resolv.conf', '/synthetic/home/alice')).toBe(false);
+  });
+});
+
+describe('checkResolvConfRealpath', () => {
+  it('returns ok with the realpath when it is outside the home directory', () => {
+    const result = checkResolvConfRealpath('/mnt/wsl/resolv.conf', '/synthetic/home/alice');
+    expect(result).toEqual({ ok: true, data: '/mnt/wsl/resolv.conf' });
+  });
+
+  it('returns ok with null unchanged when there is no resolv.conf', () => {
+    const result = checkResolvConfRealpath(null, '/synthetic/home/alice');
+    expect(result).toEqual({ ok: true, data: null });
+  });
+
+  it('returns a failure Result, with no path carried forward, when the realpath is under the home directory', () => {
+    const result = checkResolvConfRealpath('/synthetic/home/alice/.claude/resolv.conf', '/synthetic/home/alice');
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.code).toBe('RESOLV_CONF_UNDER_HOME');
+      expect(result.message).toContain('/synthetic/home/alice/.claude/resolv.conf');
+    }
   });
 });
 
