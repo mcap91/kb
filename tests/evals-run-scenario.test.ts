@@ -137,7 +137,52 @@ describe('runScenarioOnce — invalid run (budget fixture)', () => {
     expect(existsSync(join(runDir, 'metrics.json'))).toBe(true);
     const written = JSON.parse(readFileSync(join(runDir, 'metrics.json'), 'utf8'));
     expect(written.validity).toEqual({ valid: false, reason: 'budget-stop' });
+    expect(written.model_id).toBe('claude-opus-5-5');
+    expect(result.data.model_id).toBe('claude-opus-5-5');
     expect(existsSync(join(runDir, 'judge-1'))).toBe(false);
+  });
+
+  it('keeps model_id null when the stream has no parseable init event', async () => {
+    const testKb = join(workDir, 'test_kb');
+    gitInit(testKb);
+    mkdirSync(join(testKb, 'wiki', 'issues'), { recursive: true });
+    writeFileSync(join(testKb, 'wiki', 'issues', '.gitkeep'), '');
+    const baselineSha = gitCommitAll(testKb, 'baseline');
+
+    const suiteResult = loadSuite(FIXTURE_SUITE_DIR);
+    expect(suiteResult.ok).toBe(true);
+    if (!suiteResult.ok) return;
+    const suite: Suite = { ...suiteResult.data, baseline_sha: baselineSha };
+
+    const scenarioDir = join(FIXTURE_SUITE_DIR, 'demo-scenario');
+    const scenarioResult = loadScenario(scenarioDir);
+    expect(scenarioResult.ok).toBe(true);
+    if (!scenarioResult.ok) return;
+
+    const runDir = join(workDir, 'run');
+    const noInitStream = 'not valid json\n{"type":"result","subtype":"error_max_budget_usd","is_error":true}\n';
+    const { launch, calls } = makeLaunch([{ stream: noInitStream, exitCode: 1 }]);
+
+    const result = await runScenarioOnce(
+      baseOpts({
+        suite,
+        scenario: scenarioResult.data,
+        scenarioDir,
+        condition: suite.conditions[0],
+        runDir,
+        testKb,
+        launch,
+      }),
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.validity).toEqual({ valid: false, reason: 'budget-stop' });
+    expect(calls.length).toBe(1);
+    expect(result.data.model_id).toBeNull();
+
+    const written = JSON.parse(readFileSync(join(runDir, 'metrics.json'), 'utf8'));
+    expect(written.model_id).toBeNull();
   });
 });
 

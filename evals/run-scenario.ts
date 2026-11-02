@@ -95,6 +95,30 @@ function readFileOrFail(path: string, code: string): EvalResult<string> {
   }
 }
 
+/**
+ * Scans a stream for its `system`/`init` event's `model`, tolerating lines
+ * that fail to parse (unlike `parseStreamLog`'s strict, fail-fast parse) —
+ * the invalid-run path's streams (budget-stop, timeout, API error) may be
+ * partial or malformed. Returns null when no init event with a model is
+ * found, e.g. an API error or a timeout with no captured output at all.
+ */
+function extractInitModelId(streamLines: string[]): string | null {
+  for (const raw of streamLines) {
+    const trimmed = raw.trim();
+    if (trimmed.length === 0) continue;
+    let event: Record<string, unknown>;
+    try {
+      event = JSON.parse(trimmed) as Record<string, unknown>;
+    } catch {
+      continue;
+    }
+    if (event.type === 'system' && event.subtype === 'init' && typeof event.model === 'string') {
+      return event.model;
+    }
+  }
+  return null;
+}
+
 /** The raw last stream line's `total_cost_usd`, defaulting to 0 (a timed-out or malformed run never meters cost). */
 function extractTotalCostUsd(streamLines: string[]): number {
   const nonEmpty = streamLines.filter((l) => l.trim().length > 0);
@@ -289,7 +313,7 @@ export async function runScenarioOnce(opts: RunScenarioOnceOpts): Promise<EvalRe
       cited_rows: 0,
       outcome: { passed: false, reason: `run invalid: ${validity.reason}` },
       reply_words: 0,
-      model_id: null,
+      model_id: extractInitModelId(streamLines),
       total_cost_usd: extractTotalCostUsd(streamLines),
       usage: undefined,
       validity,
