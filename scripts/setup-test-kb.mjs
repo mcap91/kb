@@ -5,15 +5,23 @@
 //
 // Encodes the exact commands verified by hand when test_kb was first created.
 // If ../test_kb already exists, this is a no-op.
+//
+// The GitHub owner/repo slug is a parameter, not a constant: pass it as the first CLI
+// arg or via TEST_KB_REPO, e.g. `node scripts/setup-test-kb.mjs you/test_kb` or
+// `TEST_KB_REPO=you/test_kb npm run setup:test-kb`. With neither set, it defaults to
+// `<current OS user>/test_kb` so a no-argument run keeps working per-host without a
+// hardcoded owner baked into this file (WK-0254 — that was the exact defect: one host's
+// identity committed into shared code).
 
 import { execSync } from 'node:child_process';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { userInfo } from 'node:os';
 
 const KB = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const TEST_KB = resolve(KB, '..', 'test_kb');
-const REPO = 'mcap91/test_kb';
+const REPO = process.argv[2] || process.env.TEST_KB_REPO || `${userInfo().username}/test_kb`;
 const SURFACES = ['issues', 'initiatives', 'decisions', 'sources', 'areas', 'plans', 'handoffs'];
 
 function sh(cmd, opts = {}) {

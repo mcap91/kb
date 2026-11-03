@@ -43,7 +43,7 @@ This creates:
 - `wiki/schema.md`, `wiki/conventions.md`, `wiki/index.md` -- bootstrap surfaces (created if absent, never overwritten)
 - Record templates copied into wiki directories
 - `AGENTS.md` and `CLAUDE.md` -- managed block with MCP-first retrieval and operating rules (between `<!-- BEGIN kb-managed -->` / `<!-- END kb-managed -->` markers; consumer content outside the markers is preserved)
-- `.mcp.json` -- Claude MCP client config with `kb-wiki` and `kb-dispatch` servers pointing at resolved kb paths (merged with existing entries if present)
+- `.mcp.json` -- Claude MCP client config with `kb-wiki` and `kb-dispatch` servers pointing at resolved kb paths (merged with existing entries if present). `.mcp.json` is host-local -- it holds absolute paths to the kb checkout on whichever host wrote it, so it is never committed. Bootstrap and sync-contract add it to `.gitignore` for you; `lint` reports a loud `MCP_CONFIG_TRACKED` error (fix: `git rm --cached .mcp.json`) if it is already tracked.
 
 Use `--dry-run` to preview without writing:
 

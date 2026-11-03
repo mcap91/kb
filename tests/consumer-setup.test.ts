@@ -9,12 +9,15 @@ import { describe, it, expect, afterEach } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
+import { execFileSync } from 'node:child_process';
+
 import {
   bootstrap,
   sync,
   create,
   findKbRoot,
   ensureGitignoreEntries,
+  lint,
 } from '../packages/wiki-core/src/index.js';
 
 import {
@@ -565,6 +568,97 @@ describe('.gitignore', () => {
     await bootstrap({ dir: tmp.dir, repo: 'test/repo', dryRun: true });
     expect(fs.existsSync(path.join(tmp.dir, '.gitignore'))).toBe(false);
   });
+
+  it('bootstrap writes .mcp.json to .gitignore; a re-run is idempotent (no duplicate line)', async () => {
+    tmp = createTmpDir();
+    const result = await bootstrap({ dir: tmp.dir, repo: 'test/repo' });
+    expect(result.ok).toBe(true);
+
+    const content = readText(tmp.dir, '.gitignore');
+    expect(content).toContain('.mcp.json');
+
+    await bootstrap({ dir: tmp.dir, repo: 'test/repo' });
+    const after = readText(tmp.dir, '.gitignore');
+    const count = (after.match(/^\.mcp\.json$/gm) || []).length;
+    expect(count).toBe(1);
+  });
+
+  it('sync-contract adds .mcp.json to .gitignore in an already-bootstrapped repo', async () => {
+    tmp = await createBootstrappedRepo();
+    // Remove the entry that bootstrap just added.
+    const gitignorePath = path.join(tmp.dir, '.gitignore');
+    const content = fs.readFileSync(gitignorePath, 'utf-8');
+    fs.writeFileSync(gitignorePath, content.replace('.mcp.json\n', ''), 'utf-8');
+    expect(readText(tmp.dir, '.gitignore')).not.toContain('.mcp.json');
+
+    const result = await sync({ dir: tmp.dir });
+    expect(result.ok).toBe(true);
+
+    expect(readText(tmp.dir, '.gitignore')).toContain('.mcp.json');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// MCP_CONFIG_TRACKED lint rule (WK-0254)
+// ---------------------------------------------------------------------------
+
+describe('lint: MCP_CONFIG_TRACKED', () => {
+  let tmp: TmpRepo;
+
+  afterEach(() => {
+    tmp?.cleanup();
+  });
+
+  function git(cwd: string, ...args: string[]): void {
+    execFileSync('git', args, { cwd, stdio: ['pipe', 'pipe', 'pipe'] });
+  }
+
+  it('reports the named error when .mcp.json is tracked in a git repo', async () => {
+    tmp = await createBootstrappedRepo();
+    git(tmp.dir, 'init', '-q');
+    git(tmp.dir, 'config', 'user.email', 'test@example.com');
+    git(tmp.dir, 'config', 'user.name', 'Test');
+    // -f: .mcp.json is now gitignored by default, but a repo that tracked it before
+    // that gitignore entry existed (the exact WK-0254 defect) still has it tracked.
+    git(tmp.dir, 'add', '-f', '.mcp.json');
+    git(tmp.dir, 'commit', '-q', '-m', 'track .mcp.json');
+
+    const result = await lint({ dir: tmp.dir });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const diag = result.data.diagnostics.find(d => d.code === 'MCP_CONFIG_TRACKED');
+    expect(diag).toBeDefined();
+    expect(diag?.severity).toBe('error');
+    expect(diag?.message).toContain('git rm --cached .mcp.json');
+  });
+
+  it('reports no MCP_CONFIG_TRACKED error when .mcp.json is untracked', async () => {
+    tmp = await createBootstrappedRepo();
+    git(tmp.dir, 'init', '-q');
+    git(tmp.dir, 'config', 'user.email', 'test@example.com');
+    git(tmp.dir, 'config', 'user.name', 'Test');
+    // Deliberately do not add/commit .mcp.json — it stays untracked.
+
+    const result = await lint({ dir: tmp.dir });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const diag = result.data.diagnostics.find(d => d.code === 'MCP_CONFIG_TRACKED');
+    expect(diag).toBeUndefined();
+  });
+
+  it('reports no MCP_CONFIG_TRACKED error when the target is not a git repo', async () => {
+    tmp = await createBootstrappedRepo();
+    // No `git init` — tmp.dir is not a git repo at all.
+
+    const result = await lint({ dir: tmp.dir });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const diag = result.data.diagnostics.find(d => d.code === 'MCP_CONFIG_TRACKED');
+    expect(diag).toBeUndefined();
+  });
 });
 
 describe('ensureGitignoreEntries', () => {
@@ -578,7 +672,7 @@ describe('ensureGitignoreEntries', () => {
     tmp = createTmpDir();
     const result = ensureGitignoreEntries(tmp.dir);
     expect(result.action).toBe('created');
-    expect(readText(tmp.dir, '.gitignore')).toBe('.agent-runs/\n');
+    expect(readText(tmp.dir, '.gitignore')).toBe('.agent-runs/\n.mcp.json\n');
   });
 
   it('appends missing entry to existing file', () => {
@@ -586,7 +680,7 @@ describe('ensureGitignoreEntries', () => {
     fs.writeFileSync(path.join(tmp.dir, '.gitignore'), 'node_modules/\n', 'utf-8');
     const result = ensureGitignoreEntries(tmp.dir);
     expect(result.action).toBe('updated');
-    expect(readText(tmp.dir, '.gitignore')).toBe('node_modules/\n.agent-runs/\n');
+    expect(readText(tmp.dir, '.gitignore')).toBe('node_modules/\n.agent-runs/\n.mcp.json\n');
   });
 
   it('appends newline before entry when file lacks trailing newline', () => {
@@ -594,12 +688,12 @@ describe('ensureGitignoreEntries', () => {
     fs.writeFileSync(path.join(tmp.dir, '.gitignore'), 'node_modules/', 'utf-8');
     const result = ensureGitignoreEntries(tmp.dir);
     expect(result.action).toBe('updated');
-    expect(readText(tmp.dir, '.gitignore')).toBe('node_modules/\n.agent-runs/\n');
+    expect(readText(tmp.dir, '.gitignore')).toBe('node_modules/\n.agent-runs/\n.mcp.json\n');
   });
 
   it('returns unchanged when entry already present', () => {
     tmp = createTmpDir();
-    fs.writeFileSync(path.join(tmp.dir, '.gitignore'), '.agent-runs/\n', 'utf-8');
+    fs.writeFileSync(path.join(tmp.dir, '.gitignore'), '.agent-runs/\n.mcp.json\n', 'utf-8');
     const result = ensureGitignoreEntries(tmp.dir);
     expect(result.action).toBe('unchanged');
   });

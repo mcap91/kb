@@ -86,10 +86,17 @@
  *                                     distinct cases, three distinct messages. Plain
  *                                     (non-checkbox) bullets and ordered list items do
  *                                     not count as criteria
+ *   - MCP_CONFIG_TRACKED            — (error, repo-wide, WK-0254) the target is a git
+ *                                     repo and `.mcp.json` is tracked (`git ls-files`).
+ *                                     `.mcp.json` holds absolute paths to one host's kb
+ *                                     checkout, so a tracked copy is wrong on every other
+ *                                     host. Reports only — never runs `git rm` or
+ *                                     otherwise untracks the file.
  */
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { ok, fail, type Result } from './errors.js';
 import type {
   LintOpts,
@@ -242,6 +249,30 @@ function findNestedFrontmatterLines(yamlBlock: string): string[] {
     }
   }
   return violations;
+}
+
+// ---------------------------------------------------------------------------
+// MCP_CONFIG_TRACKED (WK-0254)
+// ---------------------------------------------------------------------------
+
+/**
+ * True if `targetDir` is a git repo and `.mcp.json` is tracked in it
+ * (`git ls-files .mcp.json` lists it). `.mcp.json` holds absolute paths to this
+ * host's kb checkout (written by mcp-config.ts), so a tracked copy is wrong on
+ * every other host. False for a non-git directory or an untracked/absent file —
+ * execFileSync avoids Windows shell pipe-parsing issues (mirrors value-report.ts).
+ */
+function isMcpConfigTracked(targetDir: string): boolean {
+  try {
+    const out = execFileSync('git', ['ls-files', '.mcp.json'], {
+      cwd: targetDir,
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    return out.trim().length > 0;
+  } catch {
+    return false;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1280,6 +1311,18 @@ export async function lint(opts: LintOpts): Promise<Result<LintResult>> {
         }
       }
     }
+  }
+
+  // Rule: MCP_CONFIG_TRACKED — repo-wide (WK-0254). Report only; never untracks the file.
+  if (isMcpConfigTracked(targetDir)) {
+    diagnostics.push({
+      file: '.mcp.json',
+      code: 'MCP_CONFIG_TRACKED',
+      message:
+        '.mcp.json is tracked in git but holds absolute paths to this host\'s kb checkout — ' +
+        'untrack it with `git rm --cached .mcp.json` and commit the removal.',
+      severity: 'error',
+    });
   }
 
   // 4. Build result

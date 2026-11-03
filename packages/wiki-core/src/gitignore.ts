@@ -2,7 +2,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { debug } from './debug.js';
 
-const REQUIRED_ENTRIES = ['.agent-runs/'];
+const REQUIRED_ENTRIES = ['.agent-runs/', '.mcp.json'];
 
 export function ensureGitignoreEntries(
   targetDir: string,
