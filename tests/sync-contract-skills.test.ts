@@ -13,7 +13,8 @@ import * as path from 'node:path';
 
 import { bootstrap } from '../packages/wiki-core/src/bootstrap.js';
 import { sync } from '../packages/wiki-core/src/sync.js';
-import { getSkillSources } from '../packages/wiki-core/src/contract.js';
+import { getSkillSources, getAgentInstructionsSections } from '../packages/wiki-core/src/contract.js';
+import { assembleBlockBody } from '../packages/wiki-core/src/agent-instructions.js';
 import type { SyncResult } from '../packages/wiki-core/src/types.js';
 import { createTmpDir, createBootstrappedRepo, type TmpRepo } from './helpers/tmp-repo.js';
 
@@ -384,6 +385,20 @@ describe('wiki-mcp sync-contract tool: warnings pass-through', () => {
 
     expect(result.ok).toBe(true);
     expect(result.data?.warnings.length).toBeGreaterThan(0);
+  });
+});
+
+describe('shipped block text: footer clause (WK-0240 stage 2 fix-up, overseer ruling (ii))', () => {
+  it('the emitted block carries the nameless footer clause', () => {
+    const sectionsResult = getAgentInstructionsSections();
+    expect(sectionsResult.ok).toBe(true);
+    if (!sectionsResult.ok) return;
+
+    const emitted = assembleBlockBody(sectionsResult.data, { dispatch: true });
+    // Ruling (ii): the clause names no skill, so it stays correct once a second skill ships.
+    expect(emitted).toContain(
+      'Skills arrive in this repo by `sync-contract`, never user-global.',
+    );
   });
 });
 
