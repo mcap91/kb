@@ -322,8 +322,6 @@ npm run typecheck                                      Typecheck entire monorepo
 
 Use the repo-local wiki and docs as the canonical work-and-knowledge model for this repository.
 
-Repository-context retrieval is a wiki/docs retrieval problem first, not a broad filesystem search problem first.
-
 Do not treat generated views, launcher runtime artifacts, or `scratch_space/` material as canonical state.
 
 ### Canonical Layers
@@ -382,16 +380,12 @@ The six manifest-driven record types:
 
 ### HO-\* Ownership
 
-`HO-*` handoff records are **dispatch-owned**, not manifest-driven wiki records:
-
 - `HO` is listed in `manifest.json` under `excludedPrefixes`
 - `wiki create` rejects the `HO` prefix with `INVALID_PREFIX`
 - Handoff template (`contract/templates/handoff.md`) is synced as a shared template surface
-- HO-\* files live in `wiki/handoffs/` and are created by dispatch tooling or authored manually
+- HO-\* files are created by dispatch tooling or authored manually
 
 ### Handoffs Exclusion Rules
-
-`wiki/handoffs/` is excluded from all wiki scanning operations:
 
 - `lint` does not scan `wiki/handoffs/`
 - `generate` does not include handoffs in generated views
@@ -485,8 +479,7 @@ Both must pass. The gate must be green on Linux (WSL2 ext4).
 
 ## What Not To Do
 
-- **Do not add HO to the manifest.** HO-\* is dispatch-owned, not manifest-driven.
-- **Do not include `wiki/handoffs/` in wiki operations.** Lint, generate, search, and graph all exclude it.
+- **Do not add HO to the manifest.**
 - **Do not add semantic or heuristic graph features.** Graph is deterministic, code-first, file/module level only.
 - **Do not modify `contract/manifest.json` to add new record types without a design decision.** The seven types (WK, IN, DEC, SRC, AREA, PLN, VAL) are the current set.
 - **Do not throw from public API functions.** Use the Result type pattern.

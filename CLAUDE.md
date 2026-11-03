@@ -19,16 +19,13 @@ npm run typecheck && npm test
 ### Key Commands
 
 ```
-npm run wiki -- <command> --dir <path>     Wiki operations
-npm run dispatch -- <command>              Dispatch operations
-npm run graph -- --dir <path>              Graph extraction
 npm test                                   All tests
 npm run typecheck                          Type checking
 ```
 
 ### Key Invariants
 
-- `HO-*` is dispatch-owned, not a wiki record type. `wiki create` rejects `HO`.
+- `wiki create` rejects `HO`.
 - `wiki/handoffs/` is excluded from lint, generate, search, and graph.
 - Graph is deterministic and file/module level only. No semantic inference.
 - All public functions return Result types. Do not throw.
@@ -49,7 +46,6 @@ Subagents default to Sonnet via `CLAUDE_CODE_SUBAGENT_MODEL` in `.claude/setting
 
 - Modify files under `scratch_space/`
 - Add HO to the manifest
-- Include `wiki/handoffs/` in wiki scanning operations
 - Add semantic/heuristic graph features
 - Throw from public API functions
 - Import across subsystem boundaries (sole exception: the DEC-0007 one-way dispatch-core→wiki-core record-primitive import)
