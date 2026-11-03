@@ -25,8 +25,6 @@ npm run typecheck                          Type checking
 
 ### Key Invariants
 
-- `wiki create` rejects `HO`.
-- `wiki/handoffs/` is excluded from lint, generate, search, and graph.
 - Graph is deterministic and file/module level only. No semantic inference.
 - All public functions return Result types. Do not throw.
 - Agent processes spawn with `cwd = agent-visible` inside the reviewed run bundle. The agent never controls its working directory.
