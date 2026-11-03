@@ -29,9 +29,11 @@ One sentence. Then one line: what changes in the work depending on the answer.
 
 ### 2. Check the operator-only cases first
 
-If the question is one of the four cases under "What still goes to the operator", do not
-resolve it: go straight to that section. Your reply opens with the escalation template's
-first line, and no Resolutions row decides the question.
+Decide first whether the question is one of the four cases under "What still goes to the
+operator". If it is, or if you cannot tell which it is, stop here: do not choose an answer,
+and do not write a Resolutions row whose `choice` is anything but `unresolved`. Search only
+to fill the template's "what was searched, and what was found" line. Reply with the
+escalation template; its first line is the first line of your reply.
 
 ### 3. Search
 
@@ -48,9 +50,11 @@ Search until the answer is clear. The order is your choice; skip what cannot hel
 - **Web** — only when the answer depends on external facts (library behavior, versions,
   APIs).
 
-Every claim carries a citation: `file:line`, a record id, or a URL. Subagent prompts state
-the question, the output fields you need, and "cite every claim". Subagents are read-only.
-Budget: at most four search subagents.
+Every claim carries a citation: `file:line`, a record id, or a URL. Each citation names one
+file that exists; write two files as two citations. A slash-joined pair such as
+`AGENTS.md/CLAUDE.md` and a glob such as `wiki/**/*.md` are not citations. Subagent prompts
+state the question, the output fields you need, and "cite every claim". Subagents are
+read-only. Budget: at most four search subagents.
 
 ### 4. Choose
 
@@ -84,6 +88,8 @@ Copy the header exactly; kb lint rejects any other spelling.
 - `cold check`: `pass`, `amended`, or `fail`. Use `n/a` only when `choice` is `unresolved`
   (no evidence found). A choice that failed two checks is `fail`; say "escalated" in `reason`.
   Write `cold check` values and `unresolved` bare, without backticks.
+- A row for an operator-only question has `choice` `unresolved` and says "escalated" in
+  `reason`.
 - Write a literal `|` inside a cell as `\|`.
 
 If your role may edit the work item, append the row to its `## Resolutions` section. If the
@@ -103,7 +109,10 @@ Only these:
 
 For each, write the statement in `wiki/templates/escalation.md`, the only form for a
 question to the operator. Its first line opens `Operator action needed: yes`, and it is the
-first line of your reply. Do not add a Resolutions row that decides the question.
+first line of your reply. Write the line as plain text, with no markdown emphasis (`**`,
+`_`), heading, backticks, or quote marker around it or any part of it, and put no text
+before it (no preamble, no heading, no summary). Do not add a Resolutions row that decides
+the question.
 
 Resolve everything else in the same turn and keep working.
 
