@@ -1,28 +1,37 @@
 #!/usr/bin/env node
 // Idempotent setup for the test_kb mock consuming-repo fixture.
-// Run from the kb repo root: `npm run setup:test-kb`
+// Run from the kb repo root: `npm run setup:test-kb -- <owner>/test_kb`
 // Scaffolds a mock consuming repo at ../test_kb for integration testing.
 //
 // Encodes the exact commands verified by hand when test_kb was first created.
 // If ../test_kb already exists, this is a no-op.
 //
-// The GitHub owner/repo slug is a parameter, not a constant: pass it as the first CLI
-// arg or via TEST_KB_REPO, e.g. `node scripts/setup-test-kb.mjs you/test_kb` or
-// `TEST_KB_REPO=you/test_kb npm run setup:test-kb`. With neither set, it defaults to
-// `<current OS user>/test_kb` so a no-argument run keeps working per-host without a
-// hardcoded owner baked into this file (WK-0254 — that was the exact defect: one host's
-// identity committed into shared code).
+// The GitHub owner/repo slug is a required parameter, not a constant and not a guessed
+// default: pass it as the first CLI arg or via TEST_KB_REPO, e.g.
+// `node scripts/setup-test-kb.mjs you/test_kb` or
+// `TEST_KB_REPO=you/test_kb npm run setup:test-kb`. With neither set, this exits
+// non-zero before touching the filesystem or git (WK-0254 — the defect was one host's
+// identity committed into shared code; a guessed default repeats that defect under a
+// different name, per the overseer ruling in WK-0254 Notes).
 
 import { execSync } from 'node:child_process';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { userInfo } from 'node:os';
 
 const KB = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const TEST_KB = resolve(KB, '..', 'test_kb');
-const REPO = process.argv[2] || process.env.TEST_KB_REPO || `${userInfo().username}/test_kb`;
+const REPO = process.argv[2] || process.env.TEST_KB_REPO;
 const SURFACES = ['issues', 'initiatives', 'decisions', 'sources', 'areas', 'plans', 'handoffs'];
+
+if (!REPO) {
+  console.error(
+    'setup-test-kb.mjs: missing repo slug. Pass it as the first CLI argument ' +
+      '(`npm run setup:test-kb -- <owner>/test_kb`) or set TEST_KB_REPO ' +
+      '(`TEST_KB_REPO=<owner>/test_kb npm run setup:test-kb`).',
+  );
+  process.exit(1);
+}
 
 function sh(cmd, opts = {}) {
   execSync(cmd, { stdio: 'inherit', ...opts });

@@ -686,7 +686,7 @@ This repo uses a dual-commit model because the code (`kb`) and the wiki (`kb-wik
 
 The `/close_up` Claude Code skill automates this entire flow: it runs typecheck, lint, regenerates wiki views, then commits and pushes both repos. Use it at the end of any session that touched code or wiki files.
 
-To test consumer-repo workflows (bootstrap, dispatch, handoffs, PLN) against a real target, run `npm run setup:test-kb` to scaffold a mock consuming repo as a sibling directory. All kb commands can then target it with `--dir ../test_kb`.
+To test consumer-repo workflows (bootstrap, dispatch, handoffs, PLN) against a real target, run `npm run setup:test-kb -- <owner>/test_kb` (or set `TEST_KB_REPO=<owner>/test_kb`) to scaffold a mock consuming repo as a sibling directory. All kb commands can then target it with `--dir ../test_kb`.
 
 **Note:** `git clean -fdx` (single `-f`) is safe — git protects the nested `wiki/` repo. Never use `git clean -ffdx` (double `-f`), which overrides that protection and deletes `wiki/`.
 

@@ -92,6 +92,12 @@
  *                                     checkout, so a tracked copy is wrong on every other
  *                                     host. Reports only — never runs `git rm` or
  *                                     otherwise untracks the file.
+ *   - MCP_CONFIG_TRACKED_CHECK_FAILED — (error, repo-wide, WK-0254/HO-0190 F1) the git
+ *                                     check backing MCP_CONFIG_TRACKED failed for a
+ *                                     reason other than "not a git repository" (git
+ *                                     missing, a corrupt index, a `safe.directory`
+ *                                     rejection, ...). Never silently treated as
+ *                                     untracked.
  */
 
 import * as fs from 'node:fs';
@@ -255,23 +261,45 @@ function findNestedFrontmatterLines(yamlBlock: string): string[] {
 // MCP_CONFIG_TRACKED (WK-0254)
 // ---------------------------------------------------------------------------
 
+/** Result of checking whether `.mcp.json` is tracked in `targetDir` (see below). */
+type McpConfigTrackedStatus =
+  | { kind: 'not_a_repo' }
+  | { kind: 'tracked' }
+  | { kind: 'untracked' }
+  | { kind: 'error'; cause: string };
+
 /**
- * True if `targetDir` is a git repo and `.mcp.json` is tracked in it
- * (`git ls-files .mcp.json` lists it). `.mcp.json` holds absolute paths to this
- * host's kb checkout (written by mcp-config.ts), so a tracked copy is wrong on
- * every other host. False for a non-git directory or an untracked/absent file —
+ * Checks whether `.mcp.json` is tracked in `targetDir` (`git ls-files .mcp.json`
+ * lists it). `.mcp.json` holds absolute paths to this host's kb checkout (written
+ * by mcp-config.ts), so a tracked copy is wrong on every other host.
  * execFileSync avoids Windows shell pipe-parsing issues (mirrors value-report.ts).
+ *
+ * `targetDir` not being inside a git work tree is `not_a_repo`, not an error —
+ * most lint() targets are plain directories. Any other git failure (git missing
+ * from PATH, a corrupt `.git/index`, a `safe.directory` rejection, ...) is
+ * `error` with its cause and must never be read as `untracked` (rule 24) — the
+ * previous bare `catch { return false; }` here did exactly that (HO-0190 F1).
+ * Classification relies on git's own "not a git repository" fatal message in
+ * stderr; any other failure (no stderr match, e.g. a spawn ENOENT) is `error`.
  */
-function isMcpConfigTracked(targetDir: string): boolean {
+function checkMcpConfigTracked(targetDir: string): McpConfigTrackedStatus {
   try {
     const out = execFileSync('git', ['ls-files', '.mcp.json'], {
       cwd: targetDir,
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
     });
-    return out.trim().length > 0;
-  } catch {
-    return false;
+    return { kind: out.trim().length > 0 ? 'tracked' : 'untracked' };
+  } catch (err) {
+    const stderr =
+      err && typeof err === 'object' && 'stderr' in err
+        ? String((err as { stderr?: Buffer | string }).stderr ?? '')
+        : '';
+    if (/not a git repository/i.test(stderr)) {
+      return { kind: 'not_a_repo' };
+    }
+    const cause = stderr.trim() || (err instanceof Error ? err.message : String(err));
+    return { kind: 'error', cause };
   }
 }
 
@@ -1313,16 +1341,28 @@ export async function lint(opts: LintOpts): Promise<Result<LintResult>> {
     }
   }
 
-  // Rule: MCP_CONFIG_TRACKED — repo-wide (WK-0254). Report only; never untracks the file.
-  if (isMcpConfigTracked(targetDir)) {
-    diagnostics.push({
-      file: '.mcp.json',
-      code: 'MCP_CONFIG_TRACKED',
-      message:
-        '.mcp.json is tracked in git but holds absolute paths to this host\'s kb checkout — ' +
-        'untrack it with `git rm --cached .mcp.json` and commit the removal.',
-      severity: 'error',
-    });
+  // Rule: MCP_CONFIG_TRACKED — repo-wide (WK-0254). Report only; never untracks the
+  // file. A git failure other than "not a git repo" is its own diagnostic (rule 24)
+  // rather than being silently read as untracked.
+  {
+    const mcpStatus = checkMcpConfigTracked(targetDir);
+    if (mcpStatus.kind === 'tracked') {
+      diagnostics.push({
+        file: '.mcp.json',
+        code: 'MCP_CONFIG_TRACKED',
+        message:
+          '.mcp.json is tracked in git but holds absolute paths to this host\'s kb checkout — ' +
+          'untrack it with `git rm --cached .mcp.json` and commit the removal.',
+        severity: 'error',
+      });
+    } else if (mcpStatus.kind === 'error') {
+      diagnostics.push({
+        file: '.mcp.json',
+        code: 'MCP_CONFIG_TRACKED_CHECK_FAILED',
+        message: `Could not determine whether ".mcp.json" is tracked in git: ${mcpStatus.cause}`,
+        severity: 'error',
+      });
+    }
   }
 
   // 4. Build result

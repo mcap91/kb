@@ -473,7 +473,7 @@ Both must pass. The gate must be green on Linux (WSL2 ext4).
 
 ## Test Consuming Repo
 
-`/home/mcap91/projects/test_kb` is the test consuming repo and the only fixture repo. Use it for smoke tests (dispatch, bootstrap, sync-contract, any feature that targets a consuming repo via `--dir`) and for agent evals (the IN-0011 eval harness, WK-0237). It can be cleared and re-bootstrapped at any time; recreate it with `npm run setup:test-kb`. Do not treat its contents as durable.
+`/home/mcap91/projects/test_kb` is the test consuming repo and the only fixture repo. Use it for smoke tests (dispatch, bootstrap, sync-contract, any feature that targets a consuming repo via `--dir`) and for agent evals (the IN-0011 eval harness, WK-0237). It can be cleared and re-bootstrapped at any time; recreate it with `npm run setup:test-kb -- <owner>/test_kb` (or `TEST_KB_REPO=<owner>/test_kb`). Do not treat its contents as durable.
 
 `/home/mcap91/projects/test_kb_data` is its sister dir and the durable file store: keep anything that must survive a test_kb reset there (eval logs and metrics, run artifacts). See `docs/verify-dispatch.md` for the generic live smoke-test runbook (scratch-repo setup, golden fixture, review chain, Pi fixture, redteam, mount traversal).
 

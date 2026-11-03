@@ -9,7 +9,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 
 import {
   bootstrap,
@@ -659,6 +659,40 @@ describe('lint: MCP_CONFIG_TRACKED', () => {
     const diag = result.data.diagnostics.find(d => d.code === 'MCP_CONFIG_TRACKED');
     expect(diag).toBeUndefined();
   });
+
+  it('reports MCP_CONFIG_TRACKED_CHECK_FAILED with its cause when the git check itself fails, inside a real repo', async () => {
+    tmp = await createBootstrappedRepo();
+    git(tmp.dir, 'init', '-q');
+    git(tmp.dir, 'config', 'user.email', 'test@example.com');
+    git(tmp.dir, 'config', 'user.name', 'Test');
+    git(tmp.dir, 'add', '-A');
+    git(tmp.dir, 'commit', '-q', '-m', 'seed');
+
+    // Seam: PATH without git, independent of host git state. The repo is real
+    // and would otherwise be a clean "untracked" result — the failure must be
+    // read as an error, never as "untracked" (rule 24, HO-0190 F1).
+    const originalPath = process.env.PATH;
+    process.env.PATH = '';
+    let result: Awaited<ReturnType<typeof lint>>;
+    try {
+      result = await lint({ dir: tmp.dir });
+    } finally {
+      process.env.PATH = originalPath;
+    }
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const tracked = result.data.diagnostics.find(d => d.code === 'MCP_CONFIG_TRACKED');
+    expect(tracked).toBeUndefined();
+
+    const failed = result.data.diagnostics.find(d => d.code === 'MCP_CONFIG_TRACKED_CHECK_FAILED');
+    expect(failed).toBeDefined();
+    expect(failed?.severity).toBe('error');
+    expect(failed?.file).toBe('.mcp.json');
+    expect(failed?.message).toContain('.mcp.json');
+    expect(failed?.message).toMatch(/ENOENT|git/i);
+  });
 });
 
 describe('ensureGitignoreEntries', () => {
@@ -861,5 +895,34 @@ describe('shipped block text', () => {
     expect(emitted.toLowerCase()).not.toMatch(/escalat/);
     expect(emitted).not.toMatch(/\bRD-\d+\b/);
     expect(emitted).not.toMatch(/Dashboard/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// scripts/setup-test-kb.mjs: required slug, no guessed default (WK-0254, HO-0190 F1)
+// ---------------------------------------------------------------------------
+
+describe('setup-test-kb.mjs', () => {
+  it('exits non-zero, names both slug forms, and creates nothing when no slug is given', () => {
+    const kbRoot = process.cwd();
+    const scriptPath = path.resolve(kbRoot, 'scripts/setup-test-kb.mjs');
+    const siblingTestKb = path.resolve(kbRoot, '..', 'test_kb');
+    expect(fs.existsSync(siblingTestKb)).toBe(false);
+
+    const env = { ...process.env };
+    delete env.TEST_KB_REPO;
+
+    try {
+      const result = spawnSync('node', [scriptPath], { cwd: kbRoot, env, encoding: 'utf-8' });
+
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain('npm run setup:test-kb -- <owner>/test_kb');
+      expect(result.stderr).toContain('TEST_KB_REPO');
+      expect(fs.existsSync(siblingTestKb)).toBe(false);
+    } finally {
+      if (fs.existsSync(siblingTestKb)) {
+        fs.rmSync(siblingTestKb, { recursive: true, force: true });
+      }
+    }
   });
 });
