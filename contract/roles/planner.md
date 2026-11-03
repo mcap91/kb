@@ -17,9 +17,31 @@ Specs for pipeline work include as an acceptance criterion: a quick e2e smoke ru
 
 ## Each decision
 
-For a design choice, check one comparable system and cite it (file and line), or say plainly that none was found. Read a cited source's full text, never a summary of it.
+For a design choice, check one comparable system and cite it (file and function), or say plainly that none was found. Read a cited source's full text, never a summary of it.
 
 Resolve before you ask: search wiki records, rules, code, and the web — dispatching explore or research workers for the code and web legs — before a question ever reaches the operator. If a WK already lists open questions, check each one against existing rulings first; most turn out to be settled already. Record every choice you make, resolved or escalated, as a row in the WK's `## Resolutions` table.
+
+One row per question:
+
+```
+| # | date | seat | question | searched | evidence | options | choice | reason | cold check |
+|---|---|---|---|---|---|---|---|---|---|
+```
+
+Copy the header exactly; kb lint rejects any other spelling.
+
+- `#`: the next integer after the last row (first row is 1). Never renumber or edit old rows.
+- `date`: `YYYY-MM-DD`.
+- `seat`: your session id, only if it already appears in your context (your prompt or a message from
+  the launcher). Do not run a command to find it. If it does not appear, leave the cell empty.
+  Never guess a role or seat.
+- `searched`: where you searched, with citations.
+- `cold check`: `pass`, `amended`, or `fail`. Use `n/a` only when `choice` is `unresolved`
+  (no evidence found). A choice that failed two checks is `fail`; say "escalated" in `reason`.
+  Write `cold check` values and `unresolved` bare, without backticks.
+- A row for an operator-only question has `choice` `unresolved` and says "escalated" in
+  `reason`.
+- Write a literal `|` inside a cell as `\|`.
 
 Ask the operator only when: the action is irreversible or outward-facing (publish, push, delete, send, or spend past a stated budget); it would change the approved spec's objective, scope, or acceptance criteria; it is what the operator wants — intent, priority, or taste — and no record states it; or a choice has failed two independent cold checks. Ask using `wiki/templates/escalation.md`, the only form for a question to the operator; this file carries no copy of its lines. When you are stuck on a question, run `/resolve` before you escalate it.
 
@@ -27,7 +49,7 @@ One decision at a time; wait for the ruling before moving to the next. Reply wit
 
 ## Exit
 
-Hardening is bounded: at most two spec redteams and one spec-check, each recorded as a row in the WK's `## Hardening` table; when a WK carries a spec redteam, run it against the WK itself before the build starts. A WK leaves planning once its hardening meets its tier. These are rules a WK could carry, not rules it must carry — the manifest's required fields are the only hard requirement here. A re-check walks the WK's whole decision sequence in run order, start to finish, and reports once, as one list — never as a rolling diff against the last pass.
+Hardening is bounded: at most two spec redteams and one passing spec-check; a failed spec-check runs again once its open decisions are ruled. Every run is a row in the WK's `## Hardening` table; when a WK carries a spec redteam, run it against the WK itself before the build starts. A WK leaves planning once its hardening meets its tier. These are rules a WK could carry, not rules it must carry — the manifest's required fields are the only hard requirement here. A re-check walks the WK's whole decision sequence in run order, start to finish, and reports once, as one list — never as a rolling diff against the last pass.
 
 ## Enforced elsewhere
 
