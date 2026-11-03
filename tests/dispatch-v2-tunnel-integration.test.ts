@@ -116,6 +116,7 @@ import { join } from 'node:path';
 import { buildTunnelBashLines, buildTunnelScripts, TUNNEL_RELAY_PORT, type TunnelConfig } from '../packages/dispatch-core/src/tunnel.js';
 import { buildPiBaseUrl, runDispatch } from '../packages/dispatch-core/src/pipeline.js';
 import * as spawnIsolatedModule from '../packages/dispatch-core/src/spawn-isolated.js';
+import { setUpHostConfig } from './host-config-test-helper.js';
 
 function readFixtureFile(name: string): string {
   return readFileSync(join(__dirname, 'fixtures', name), 'utf8');
@@ -655,7 +656,7 @@ mocked below, so this body is never read by a real worker.
     await mkdir(join(repoRoot, 'wiki', '.dispatch'), { recursive: true });
     const models = { deepseek: { available_on: ['openrouter'], model_id: 'deepseek/deepseek-v4-flash-0731' } };
     const backends = {
-      openrouter: { family: 'pi', base_url: 'https://openrouter.ai/api/v1', api_key_env: 'OPENROUTER_API_KEY', secrets_file: null },
+      openrouter: { family: 'pi', base_url: 'https://openrouter.ai/api/v1', api_key_env: 'OPENROUTER_API_KEY',},
     };
     const profiles = { schema_version: 1 };
     await writeFile(join(repoRoot, 'wiki', '.dispatch', 'models.json'), JSON.stringify(models, null, 2), 'utf8');
@@ -679,6 +680,9 @@ mocked below, so this body is never read by a real worker.
   }
 
   it('captures the real workerEnv the pipeline builds and asserts NO_PROXY/no_proxy = 127.0.0.1,localhost', async () => {
+    // DEC-0046 / WK-0252 slice a: runDispatch now requires a host config
+    // covering the resolved backend.
+    const hostConfigTeardown = await setUpHostConfig({ backends: { openrouter: { reachable: true, secrets_file: null } } });
     const repoRoot = await setupEnvWiringRepo();
     let capturedEnv: Record<string, string> | undefined;
     vi.spyOn(spawnIsolatedModule, 'spawnIsolated').mockImplementation(async (plan, opts) => {
@@ -711,6 +715,7 @@ mocked below, so this body is never read by a real worker.
       expect(capturedEnv!.HTTP_PROXY).toBe(`http://127.0.0.1:${TUNNEL_RELAY_PORT}`);
       expect(capturedEnv!.https_proxy).toBe(`http://127.0.0.1:${TUNNEL_RELAY_PORT}`);
     } finally {
+      await hostConfigTeardown();
       await rm(repoRoot, { recursive: true, force: true });
     }
   });

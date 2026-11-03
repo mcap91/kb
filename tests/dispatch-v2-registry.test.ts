@@ -29,6 +29,31 @@ import {
 } from '../packages/dispatch-core/src/model-registry.js';
 import { loadModelsTable } from '../packages/dispatch-core/src/repo-config.js';
 import { buildModelsJson } from '../packages/dispatch-core/src/adapters/pi.js';
+import { setUpHostConfig } from './host-config-test-helper.js';
+
+// DEC-0046 / WK-0252 slice a: resolveModelFromConfig now requires a host
+// config covering the resolved backend (reachable: true, + its secrets
+// file). One file-level host config covers every backend name this file's
+// resolveModelFromConfig/resolveModelByMode/resolveModelInferBackend tests
+// use — isolated under a temp XDG_CONFIG_HOME, never the real operator
+// config.
+let hostConfigTeardown: () => Promise<void>;
+
+beforeEach(async () => {
+  hostConfigTeardown = await setUpHostConfig({
+    backends: {
+      openrouter: { reachable: true, secrets_file: '/home/operator/.config/kb-dispatch/secrets.env' },
+      ollama: { reachable: true, secrets_file: null },
+      'claude-saas': { reachable: true, secrets_file: null },
+      'codex-saas': { reachable: true, secrets_file: null },
+      'vllm-ec2': { reachable: true, secrets_file: null },
+    },
+  });
+});
+
+afterEach(async () => {
+  await hostConfigTeardown();
+});
 
 async function createTempDir(prefix: string): Promise<string> {
   return mkdtemp(join(tmpdir(), prefix));
@@ -88,9 +113,9 @@ describe('model-registry.ts — resolveModelFromConfig', () => {
           family: 'pi',
           base_url: 'https://openrouter.ai/api/v1',
           api_key_env: 'OPENROUTER_API_KEY',
-          secrets_file: '/home/operator/.config/kb-dispatch/secrets.env',
+
         },
-        ollama: { family: 'pi', base_url: 'http://localhost:11434/v1', api_key_env: null, secrets_file: null },
+        ollama: { family: 'pi', base_url: 'http://localhost:11434/v1', api_key_env: null,},
       }),
     );
   }
@@ -129,7 +154,7 @@ describe('model-registry.ts — resolveModelFromConfig', () => {
           family: 'pi',
           base_url: 'https://openrouter.ai/api/v1',
           api_key_env: 'OPENROUTER_API_KEY',
-          secrets_file: '/home/operator/.config/kb-dispatch/secrets.env',
+
           request_params: { provider: { only: ['DeepInfra'], data_collection: 'deny' } },
         },
       }),
@@ -181,7 +206,7 @@ describe('model-registry.ts — resolveModelFromConfig', () => {
     await writeDispatchConfig(
       dir,
       'backends.json',
-      JSON.stringify({ ollama: { family: 'pi', base_url: 'http://localhost:11434/v1', api_key_env: null, secrets_file: null } }),
+      JSON.stringify({ ollama: { family: 'pi', base_url: 'http://localhost:11434/v1', api_key_env: null,} }),
     );
 
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -230,7 +255,7 @@ describe('model-registry.ts — resolveModelFromConfig', () => {
           family: 'pi',
           base_url: 'https://openrouter.ai/api/v1',
           api_key_env: 'OPENROUTER_API_KEY',
-          secrets_file: null,
+
         },
       }),
     );
@@ -255,7 +280,7 @@ describe('model-registry.ts — resolveModelFromConfig', () => {
           family: 'pi',
           base_url: 'https://openrouter.ai/api/v1',
           api_key_env: 'OPENROUTER_API_KEY',
-          secrets_file: null,
+
         },
       }),
     );
@@ -334,7 +359,7 @@ describe('model-registry.ts — resolveModelFromConfig', () => {
           family: 'pi',
           base_url: 'https://openrouter.ai/api/v1',
           api_key_env: 'OPENROUTER_API_KEY',
-          secrets_file: null,
+
         },
       }),
     );
@@ -361,7 +386,7 @@ describe('model-registry.ts — resolveModelFromConfig', () => {
           family: 'pi',
           base_url: 'https://openrouter.ai/api/v1',
           api_key_env: 'OPENROUTER_API_KEY',
-          secrets_file: null,
+
         },
       }),
     );
@@ -372,6 +397,82 @@ describe('model-registry.ts — resolveModelFromConfig', () => {
     expect(result.error).toBe('BAD_RECORD');
     expect(result.message).toContain('max_tokens');
     expect((result.detail as { maxTokens: number; contextWindow: number }).maxTokens).toBe(200000);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resolveModelFromConfig — host-config gates (DEC-0046 / WK-0252 slice a)
+// ---------------------------------------------------------------------------
+
+describe('model-registry.ts — resolveModelFromConfig host-config gates', () => {
+  let dir: string;
+
+  beforeEach(async () => {
+    dir = await createTempDir('kb-model-registry-hostcfg-');
+    await writeDispatchConfig(
+      dir,
+      'models.json',
+      JSON.stringify({ deepseek: { available_on: ['openrouter'], model_id: 'deepseek/deepseek-v4-flash-0731' } }),
+    );
+    await writeDispatchConfig(
+      dir,
+      'backends.json',
+      JSON.stringify({ openrouter: { family: 'pi', base_url: 'https://openrouter.ai/api/v1', api_key_env: 'OPENROUTER_API_KEY' } }),
+    );
+  });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('refuses BACKEND_NOT_CONFIGURED naming the host config path when the backend is absent from it', async () => {
+    const innerTeardown = await setUpHostConfig({ backends: {} });
+    try {
+      const result = await resolveModelFromConfig(dir, 'deepseek', 'openrouter');
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error).toBe('BACKEND_NOT_CONFIGURED');
+      expect(result.message).toContain('openrouter');
+      expect(result.message.toLowerCase()).toContain('host config');
+    } finally {
+      await innerTeardown();
+    }
+  });
+
+  it('refuses BACKEND_NOT_CONFIGURED naming the host config path when the backend is marked unreachable', async () => {
+    const innerTeardown = await setUpHostConfig({ backends: { openrouter: { reachable: false, secrets_file: null } } });
+    try {
+      const result = await resolveModelFromConfig(dir, 'deepseek', 'openrouter');
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error).toBe('BACKEND_NOT_CONFIGURED');
+      expect(result.message).toContain('openrouter');
+      expect(result.message.toLowerCase()).toContain('unreachable');
+    } finally {
+      await innerTeardown();
+    }
+  });
+
+  it('refuses HOST_CONFIG_NOT_FOUND naming the host config path when the host config file is missing entirely', async () => {
+    // Undo the outer beforeEach's host config for just this one test.
+    await hostConfigTeardown();
+    const root = await mkdtemp(join(tmpdir(), 'kb-host-config-absent-'));
+    const previousXdg = process.env['XDG_CONFIG_HOME'];
+    process.env['XDG_CONFIG_HOME'] = root;
+    try {
+      const result = await resolveModelFromConfig(dir, 'deepseek', 'openrouter');
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error).toBe('HOST_CONFIG_NOT_FOUND');
+      expect(result.message.toLowerCase()).toContain('host config');
+    } finally {
+      if (previousXdg === undefined) delete process.env['XDG_CONFIG_HOME'];
+      else process.env['XDG_CONFIG_HOME'] = previousXdg;
+      await rm(root, { recursive: true, force: true });
+      // Restore the outer beforeEach's host config so its own afterEach
+      // (which calls hostConfigTeardown unconditionally) tears down cleanly.
+      hostConfigTeardown = await setUpHostConfig({ backends: { openrouter: { reachable: true, secrets_file: null } } });
+    }
   });
 });
 
@@ -396,8 +497,8 @@ describe('model-registry.ts — resolveModelByMode', () => {
       'gpt-5.6': { available_on: ['codex-saas'], model_id: 'gpt-5.6-terra', use_for: ['code_review'] },
     }));
     await writeDispatchConfig(dir, 'backends.json', JSON.stringify({
-      openrouter: { family: 'pi', base_url: 'https://openrouter.ai/api/v1', api_key_env: 'OPENROUTER_API_KEY', secrets_file: null },
-      'codex-saas': { family: 'codex', base_url: null, api_key_env: null, secrets_file: null },
+      openrouter: { family: 'pi', base_url: 'https://openrouter.ai/api/v1', api_key_env: 'OPENROUTER_API_KEY',},
+      'codex-saas': { family: 'codex', base_url: null, api_key_env: null,},
     }));
 
     const result = await resolveModelByMode(dir, 'implement');
@@ -412,7 +513,7 @@ describe('model-registry.ts — resolveModelByMode', () => {
       'gpt-5.6': { available_on: ['codex-saas'], model_id: 'gpt-5.6-terra', use_for: ['code_review'] },
     }));
     await writeDispatchConfig(dir, 'backends.json', JSON.stringify({
-      'codex-saas': { family: 'codex', base_url: null, api_key_env: null, secrets_file: null },
+      'codex-saas': { family: 'codex', base_url: null, api_key_env: null,},
     }));
 
     const result = await resolveModelByMode(dir, 'implement');
@@ -428,8 +529,8 @@ describe('model-registry.ts — resolveModelByMode', () => {
       qwen: { available_on: ['ollama'], model_id: 'qwen3:8b', use_for: ['implement'] },
     }));
     await writeDispatchConfig(dir, 'backends.json', JSON.stringify({
-      openrouter: { family: 'pi', base_url: 'https://openrouter.ai/api/v1', api_key_env: 'OPENROUTER_API_KEY', secrets_file: null },
-      ollama: { family: 'pi', base_url: 'http://localhost:11434/v1', api_key_env: null, secrets_file: null },
+      openrouter: { family: 'pi', base_url: 'https://openrouter.ai/api/v1', api_key_env: 'OPENROUTER_API_KEY',},
+      ollama: { family: 'pi', base_url: 'http://localhost:11434/v1', api_key_env: null,},
     }));
 
     const result = await resolveModelByMode(dir, 'implement');
@@ -443,7 +544,7 @@ describe('model-registry.ts — resolveModelByMode', () => {
       deepseek: { available_on: ['openrouter'], model_id: 'deepseek/deepseek-v4-flash-0731', use_for: ['implement'] },
     }));
     await writeDispatchConfig(dir, 'backends.json', JSON.stringify({
-      ollama: { family: 'pi', base_url: 'http://localhost:11434/v1', api_key_env: null, secrets_file: null },
+      ollama: { family: 'pi', base_url: 'http://localhost:11434/v1', api_key_env: null,},
     }));
 
     const result = await resolveModelByMode(dir, 'implement');
@@ -457,8 +558,8 @@ describe('model-registry.ts — resolveModelByMode', () => {
       deepseek: { available_on: ['openrouter', 'ollama'], model_id: 'deepseek/deepseek-v4-flash-0731', use_for: ['implement'] },
     }));
     await writeDispatchConfig(dir, 'backends.json', JSON.stringify({
-      openrouter: { family: 'pi', base_url: 'https://openrouter.ai/api/v1', api_key_env: 'OPENROUTER_API_KEY', secrets_file: null },
-      ollama: { family: 'pi', base_url: 'http://localhost:11434/v1', api_key_env: null, secrets_file: null },
+      openrouter: { family: 'pi', base_url: 'https://openrouter.ai/api/v1', api_key_env: 'OPENROUTER_API_KEY',},
+      ollama: { family: 'pi', base_url: 'http://localhost:11434/v1', api_key_env: null,},
     }));
 
     const result = await resolveModelByMode(dir, 'implement');
@@ -473,8 +574,8 @@ describe('model-registry.ts — resolveModelByMode', () => {
       deepseek: { available_on: ['openrouter'], model_id: 'deepseek/deepseek-v4-flash-0731', use_for: ['implement'] },
     }));
     await writeDispatchConfig(dir, 'backends.json', JSON.stringify({
-      'claude-saas': { family: 'claude', base_url: null, api_key_env: null, secrets_file: null },
-      openrouter: { family: 'pi', base_url: 'https://openrouter.ai/api/v1', api_key_env: 'OPENROUTER_API_KEY', secrets_file: null },
+      'claude-saas': { family: 'claude', base_url: null, api_key_env: null,},
+      openrouter: { family: 'pi', base_url: 'https://openrouter.ai/api/v1', api_key_env: 'OPENROUTER_API_KEY',},
     }));
 
     const result = await resolveModelByMode(dir, 'implement');
@@ -504,7 +605,7 @@ describe('model-registry.ts — resolveModelInferBackend', () => {
       deepseek: { available_on: ['openrouter'], model_id: 'deepseek/deepseek-v4-flash-0731' },
     }));
     await writeDispatchConfig(dir, 'backends.json', JSON.stringify({
-      openrouter: { family: 'pi', base_url: 'https://openrouter.ai/api/v1', api_key_env: 'OPENROUTER_API_KEY', secrets_file: null },
+      openrouter: { family: 'pi', base_url: 'https://openrouter.ai/api/v1', api_key_env: 'OPENROUTER_API_KEY',},
     }));
 
     const result = await resolveModelInferBackend(dir, 'deepseek');
@@ -519,8 +620,8 @@ describe('model-registry.ts — resolveModelInferBackend', () => {
       deepseek: { available_on: ['openrouter', 'vllm-ec2'], model_id: 'deepseek/deepseek-v4-flash-0731' },
     }));
     await writeDispatchConfig(dir, 'backends.json', JSON.stringify({
-      openrouter: { family: 'pi', base_url: 'https://openrouter.ai/api/v1', api_key_env: 'OPENROUTER_API_KEY', secrets_file: null },
-      'vllm-ec2': { family: 'pi', base_url: 'http://ec2-host:8000/v1', api_key_env: null, secrets_file: null },
+      openrouter: { family: 'pi', base_url: 'https://openrouter.ai/api/v1', api_key_env: 'OPENROUTER_API_KEY',},
+      'vllm-ec2': { family: 'pi', base_url: 'http://ec2-host:8000/v1', api_key_env: null,},
     }));
 
     const result = await resolveModelInferBackend(dir, 'deepseek');
@@ -535,7 +636,7 @@ describe('model-registry.ts — resolveModelInferBackend', () => {
       deepseek: { available_on: ['openrouter'], model_id: 'deepseek/deepseek-v4-flash-0731' },
     }));
     await writeDispatchConfig(dir, 'backends.json', JSON.stringify({
-      openrouter: { family: 'pi', base_url: 'https://openrouter.ai/api/v1', api_key_env: 'OPENROUTER_API_KEY', secrets_file: null },
+      openrouter: { family: 'pi', base_url: 'https://openrouter.ai/api/v1', api_key_env: 'OPENROUTER_API_KEY',},
     }));
 
     const result = await resolveModelInferBackend(dir, 'nonexistent');

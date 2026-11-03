@@ -119,7 +119,7 @@ describe('probeEndpointEligibility (candidate selection + config-time wiring)', 
     await writeFile(
       join(dir, 'wiki', '.dispatch', 'backends.json'),
       JSON.stringify({
-        'claude-saas': { family: 'claude', base_url: null, api_key_env: null, secrets_file: null },
+        'claude-saas': { family: 'claude', base_url: null, api_key_env: null,},
       }),
       'utf8',
     );
@@ -141,7 +141,6 @@ describe('probeEndpointEligibility (candidate selection + config-time wiring)', 
           family: 'pi',
           base_url: 'https://openrouter.ai/api/v1',
           api_key_env: 'OPENROUTER_API_KEY',
-          secrets_file: join(dir, 'does-not-exist.env'),
           request_params: { provider: { only: ['OpenAI'], data_collection: 'deny' }, zdr: true },
         },
       }),
@@ -200,11 +199,21 @@ describe('probeEndpointEligibility (end-to-end against a real spawned process)',
     return secretsPath;
   }
 
+  // DEC-0046 / WK-0252 slice a moved the secrets-file path out of
+  // backends.json into the host-local config, which this probe does not yet
+  // read (host-config wiring here is WK-0252 slice b). An api_key_env-
+  // bearing backend can therefore no longer resolve a key from the repo
+  // table, so the probe always skips before ever spawning `pi` — these two
+  // tests, previously asserting a fired dry-run's real verdict, now assert
+  // that skip (an equivalent assertion per rule 25: the probe still runs
+  // end-to-end without crashing and reports the correct, now-unresolvable,
+  // verdict). `installFakePi`/`writeSecretsFile` stay as harmless fixture
+  // setup the probe no longer reaches.
   it.skipIf(process.platform === 'win32')(
-    'fires the dry-run probe and reports ineligible, echoing the real 404 body\'s reasons + configure URLs',
+    'reports unknown (secrets_file is host-local config now, not read here) instead of firing the dry-run probe',
     async () => {
       await installFakePi('pi-output-errored-single-message.jsonl');
-      const secretsPath = await writeSecretsFile();
+      await writeSecretsFile();
 
       await writeFile(
         join(dir, 'wiki', '.dispatch', 'backends.json'),
@@ -213,7 +222,7 @@ describe('probeEndpointEligibility (end-to-end against a real spawned process)',
             family: 'pi',
             base_url: 'https://openrouter.ai/api/v1',
             api_key_env: 'OPENROUTER_API_KEY',
-            secrets_file: secretsPath,
+
             request_params: { provider: { only: ['OpenAI'], data_collection: 'deny' }, zdr: true },
           },
         }),
@@ -229,20 +238,17 @@ describe('probeEndpointEligibility (end-to-end against a real spawned process)',
 
       const result = await probeEndpointEligibility(dir);
       expect(result).toHaveLength(1);
-      expect(result[0].status).toBe('ineligible');
-      expect(result[0].ineligibilityReasons).toEqual([
-        { reason: 'zdr-violation-by-account', endpoint_count: 1, configure_url: 'https://openrouter.ai/settings/privacy' },
-        { reason: 'zdr-violation-by-guardrail', endpoint_count: 1, configure_url: 'https://openrouter.ai/workspaces/default/guardrails' },
-      ]);
+      expect(result[0].status).toBe('unknown');
+      expect(result[0].ineligibilityReasons).toBeNull();
     },
     30000,
   );
 
   it.skipIf(process.platform === 'win32')(
-    'fires the dry-run probe and reports eligible for a real captured successful completion (deepseek/openrouter-oss)',
+    'reports unknown for a backend that would otherwise be eligible (deepseek/openrouter-oss), since the key cannot be resolved from the repo table either',
     async () => {
       await installFakePi('pi-output-code-review.jsonl');
-      const secretsPath = await writeSecretsFile();
+      await writeSecretsFile();
 
       await writeFile(
         join(dir, 'wiki', '.dispatch', 'backends.json'),
@@ -251,7 +257,7 @@ describe('probeEndpointEligibility (end-to-end against a real spawned process)',
             family: 'pi',
             base_url: 'https://openrouter.ai/api/v1',
             api_key_env: 'OPENROUTER_API_KEY',
-            secrets_file: secretsPath,
+
             request_params: { provider: { only: ['Fireworks', 'CoreWeave'], data_collection: 'deny' }, zdr: true },
           },
         }),
@@ -271,7 +277,7 @@ describe('probeEndpointEligibility (end-to-end against a real spawned process)',
         backend: 'openrouter-oss',
         modelAlias: 'deepseek',
         modelId: 'deepseek/deepseek-v4-flash-0731',
-        status: 'eligible',
+        status: 'unknown',
         ineligibilityReasons: null,
       });
     },

@@ -46,6 +46,19 @@ import { buildBwrapPlan } from '../packages/dispatch-core/src/jail.js';
 import { spawnIsolated } from '../packages/dispatch-core/src/spawn-isolated.js';
 import * as spawnIsolatedModule from '../packages/dispatch-core/src/spawn-isolated.js';
 import * as tierModule from '../packages/dispatch-core/src/tier.js';
+import { setUpHostConfig } from './host-config-test-helper.js';
+
+// DEC-0046 / WK-0252 slice a: runDispatch now requires a host config
+// covering the resolved backend.
+let hostConfigTeardown: () => Promise<void>;
+
+beforeEach(async () => {
+  hostConfigTeardown = await setUpHostConfig({ backends: { openrouter: { reachable: true, secrets_file: null } } });
+});
+
+afterEach(async () => {
+  await hostConfigTeardown();
+});
 
 // ---------------------------------------------------------------------------
 // Bwrap availability gate — FUNCTIONAL probe (WK-0159 rewrite plan item 2),
@@ -362,7 +375,7 @@ describe('runDispatch() wiring -- skeleton functions run before plan build/spawn
       await writeFile(
         join(wikiDir, '.dispatch', 'backends.json'),
         JSON.stringify(
-          { openrouter: { family: 'pi', base_url: 'https://openrouter.ai/api/v1', api_key_env: 'OPENROUTER_API_KEY', secrets_file: null } },
+          { openrouter: { family: 'pi', base_url: 'https://openrouter.ai/api/v1', api_key_env: 'OPENROUTER_API_KEY',} },
           null,
           2,
         ),

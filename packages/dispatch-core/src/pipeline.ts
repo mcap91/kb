@@ -79,6 +79,7 @@ import { commitArtifacts } from './commit-artifacts.js';
 import { runPreflight } from './preflight.js';
 import { getRunDir } from './paths.js';
 import { loadProfilesConfig, loadBackendsTable, type BackendFamily, type EffortMapping } from './repo-config.js';
+import { loadHostConfig } from './host-config.js';
 import {
   resolveCredentials,
   checkCredentialPolicy,
@@ -780,11 +781,15 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
     if (handoff.credentials.length > 0) return profilesResult;
   }
   const profilesConfig = profilesResult.ok ? profilesResult.data : { schemaVersion: 1 as const, profiles: {} };
-  const credResult = resolveCredentials(handoff, profilesConfig, {
-    family: model.family,
-    base_url: model.baseUrl,
+  // Re-load the host config here for the profiles map credential resolution
+  // needs — resolveModelFromConfig above already proved it parses and covers
+  // this backend, so this call cannot newly fail (same re-load pattern as
+  // backendsForBilling above).
+  const hostConfigResult = await loadHostConfig();
+  if (!hostConfigResult.ok) return hostConfigResult;
+  const credResult = resolveCredentials(handoff, profilesConfig, hostConfigResult.data, {
     api_key_env: model.apiKeyEnv,
-    secrets_file: model.secretsFile,
+    secretsFile: model.secretsFile,
   });
   if (!credResult.ok) return credResult;
 

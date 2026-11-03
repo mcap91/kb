@@ -68,6 +68,27 @@ import * as preflightModule from '../packages/dispatch-core/src/preflight.js';
 import * as tierModule from '../packages/dispatch-core/src/tier.js';
 import * as spawnIsolatedModule from '../packages/dispatch-core/src/spawn-isolated.js';
 import { runDispatch } from '../packages/dispatch-core/src/pipeline.js';
+import { setUpHostConfig } from './host-config-test-helper.js';
+
+// DEC-0046 / WK-0252 slice a: runDispatch now requires a host config
+// covering the resolved backend. One file-level host config (temp
+// XDG_CONFIG_HOME) covers every backend name this file's runDispatch()
+// calls use (openrouter, claude-saas, codex-saas).
+let hostConfigTeardown: () => Promise<void>;
+
+beforeEach(async () => {
+  hostConfigTeardown = await setUpHostConfig({
+    backends: {
+      openrouter: { reachable: true, secrets_file: null },
+      'claude-saas': { reachable: true, secrets_file: null },
+      'codex-saas': { reachable: true, secrets_file: null },
+    },
+  });
+});
+
+afterEach(async () => {
+  await hostConfigTeardown();
+});
 
 function readFixtureFile(name: string): string {
   return readFileSync(join(__dirname, 'fixtures', name), 'utf8');
@@ -694,7 +715,7 @@ clone/jail/worker step runs, so this body is never read by a worker.
     deepseek: { available_on: ['openrouter'], model_id: 'deepseek/deepseek-v4-flash-0731' },
   };
   const backends = opts.backends ?? {
-    openrouter: { family: 'pi', base_url: 'https://openrouter.ai/api/v1', api_key_env: 'OPENROUTER_API_KEY', secrets_file: null },
+    openrouter: { family: 'pi', base_url: 'https://openrouter.ai/api/v1', api_key_env: 'OPENROUTER_API_KEY',},
   };
   const profiles = opts.profiles ?? { schema_version: 1 };
   await writeFile(join(repoRoot, 'wiki', '.dispatch', 'models.json'), JSON.stringify(models, null, 2), 'utf8');
@@ -731,7 +752,11 @@ describe('dispatch v2 e2e (fake-tier) — S3 wave 3 refusal gates (real runDispa
     const repoRoot = await setupS3Repo({
       credentials: ['hf'],
       web: true,
-      profiles: { schema_version: 1, hf: { inject: { HF_TOKEN: '/home/operator/.secrets/hf-token.env' } } },
+      profiles: { schema_version: 1, hf: { inject: ['HF_TOKEN'] } },
+    });
+    const innerHostConfigTeardown = await setUpHostConfig({
+      backends: { openrouter: { reachable: true, secrets_file: null } },
+      profiles: { hf: { HF_TOKEN: '/home/operator/.secrets/hf-token.env' } },
     });
     try {
       const result = await runDispatch({
@@ -745,6 +770,7 @@ describe('dispatch v2 e2e (fake-tier) — S3 wave 3 refusal gates (real runDispa
       if (result.ok) return;
       expect(result.error).toBe('CREDENTIALS_WITH_WEB');
     } finally {
+      await innerHostConfigTeardown();
       await rm(repoRoot, { recursive: true, force: true });
     }
   });
@@ -764,6 +790,80 @@ describe('dispatch v2 e2e (fake-tier) — S3 wave 3 refusal gates (real runDispa
       expect(result.error).toBe('UNKNOWN_PROFILE');
       expect(result.message).toContain('nonexistent');
     } finally {
+      await rm(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  // DEC-0046 / WK-0252 slice a.
+  it('refuses PROFILE_NOT_CONFIGURED naming the host config path and the profile when a granted profile is absent from the host config', async () => {
+    const repoRoot = await setupS3Repo({
+      credentials: ['hf'],
+      profiles: { schema_version: 1, hf: { inject: ['HF_TOKEN'] } },
+    });
+    try {
+      const result = await runDispatch({
+        dir: repoRoot,
+        handoff: 'wiki/handoffs/HO-S3TEST.md',
+        model: 'deepseek',
+        backend: 'openrouter',
+        preflight: false,
+      });
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error).toBe('PROFILE_NOT_CONFIGURED');
+      expect(result.message).toContain('hf');
+      expect(result.message.toLowerCase()).toContain('host config');
+    } finally {
+      await rm(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  // DEC-0046 / WK-0252 slice a — the acceptance-criterion end-to-end proof:
+  // repo tables hold no paths at all (profiles.json only names HF_TOKEN; the
+  // backend's secrets_file is absent from backends.json too); the worker env
+  // the pipeline builds carries HF_TOKEN read from the file the host config
+  // (under a temp XDG_CONFIG_HOME) names.
+  it('resolves a granted credential end to end: the worker env carries the value from the file the host config names, with no path anywhere in the repo tables', async () => {
+    const repoRoot = await setupS3Repo({
+      credentials: ['hf'],
+      profiles: { schema_version: 1, hf: { inject: ['HF_TOKEN'] } },
+    });
+    const secretsDir = await createTempDir('kb-e2e-hf-secrets-');
+    const secretsFilePath = join(secretsDir, 'hf.env');
+    await writeFile(secretsFilePath, 'HF_TOKEN=hf_e2e_example_placeholder_only\n', 'utf8');
+    const innerHostConfigTeardown = await setUpHostConfig({
+      backends: { openrouter: { reachable: true, secrets_file: null } },
+      profiles: { hf: { HF_TOKEN: secretsFilePath } },
+    });
+
+    let capturedEnv: Record<string, string> | undefined;
+    vi.spyOn(spawnIsolatedModule, 'spawnIsolated').mockImplementation(async (plan, opts) => {
+      capturedEnv = plan.env;
+      if (opts?.stdoutLogPath) {
+        await writeFile(opts.stdoutLogPath, readFixtureFile('pi-output-vllm-qwen25.jsonl'), 'utf8');
+      }
+      return {
+        ok: true,
+        data: { stdout: '', stderr: '', exitCode: 0, signal: null, truncated: false, timedOut: false, streamDrainTimedOut: false },
+      };
+    });
+
+    try {
+      const result = await runDispatch({
+        dir: repoRoot,
+        handoff: 'wiki/handoffs/HO-S3TEST.md',
+        model: 'deepseek',
+        backend: 'openrouter',
+        preflight: false,
+      });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(capturedEnv).toBeDefined();
+      expect(capturedEnv!.HF_TOKEN).toBe('hf_e2e_example_placeholder_only');
+    } finally {
+      vi.restoreAllMocks();
+      await innerHostConfigTeardown();
+      await rm(secretsDir, { recursive: true, force: true });
       await rm(repoRoot, { recursive: true, force: true });
     }
   });
@@ -916,7 +1016,7 @@ describe('dispatch v2 e2e (fake-tier) — WK-0122 effort passthrough (mocked spa
           family: 'claude',
           base_url: null,
           api_key_env: null,
-          secrets_file: null,
+
           effort_mapping: { flag: '--effort', style: 'flag_value' },
         },
       },
@@ -964,7 +1064,7 @@ describe('dispatch v2 e2e (fake-tier) — WK-0122 effort passthrough (mocked spa
           family: 'codex',
           base_url: null,
           api_key_env: null,
-          secrets_file: null,
+
           effort_mapping: { flag: '-c', style: 'key_equals_value', key: 'model_reasoning_effort' },
         },
       },
@@ -1005,7 +1105,7 @@ describe('dispatch v2 e2e (fake-tier) — WK-0122 effort passthrough (mocked spa
           family: 'claude',
           base_url: null,
           api_key_env: null,
-          secrets_file: null,
+
           effort_mapping: { flag: '--effort', style: 'flag_value' },
         },
       },
@@ -1126,7 +1226,7 @@ describe('dispatch v2 e2e (fake-tier) — WK-0156 relay cleanup (mocked spawnIso
   it('claude family (multi-line execLines): worker line is backgrounded + trap-cleaned, not exec\'d', async () => {
     const repoRoot = await setupS3Repo({
       backends: {
-        'claude-saas': { family: 'claude', base_url: null, api_key_env: null, secrets_file: null },
+        'claude-saas': { family: 'claude', base_url: null, api_key_env: null,},
       },
       models: {
         'claude-sonnet-5': { available_on: ['claude-saas'], model_id: 'claude-sonnet-5' },
@@ -1173,7 +1273,7 @@ describe('dispatch v2 e2e (fake-tier) — WK-0156 relay cleanup (mocked spawnIso
   it('codex family (multi-line execLines, different flag shape): worker line is backgrounded + trap-cleaned, not exec\'d', async () => {
     const repoRoot = await setupS3Repo({
       backends: {
-        'codex-saas': { family: 'codex', base_url: null, api_key_env: null, secrets_file: null },
+        'codex-saas': { family: 'codex', base_url: null, api_key_env: null,},
       },
       models: {
         'gpt-5.5': { available_on: ['codex-saas'], model_id: 'gpt-5.5' },
@@ -1396,13 +1496,13 @@ describe('dispatch v2 e2e (fake-tier) — WK-0125 implement-mode constrained dec
   }
 
   const CLAUDE_BACKENDS = {
-    'claude-saas': { family: 'claude', base_url: null, api_key_env: null, secrets_file: null },
+    'claude-saas': { family: 'claude', base_url: null, api_key_env: null,},
   };
   const CLAUDE_MODELS = {
     'claude-sonnet-5': { available_on: ['claude-saas'], model_id: 'claude-sonnet-5' },
   };
   const CODEX_BACKENDS = {
-    'codex-saas': { family: 'codex', base_url: null, api_key_env: null, secrets_file: null },
+    'codex-saas': { family: 'codex', base_url: null, api_key_env: null,},
   };
   const CODEX_MODELS = {
     'gpt-5.5': { available_on: ['codex-saas'], model_id: 'gpt-5.5' },

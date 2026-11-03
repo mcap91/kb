@@ -48,6 +48,9 @@ describe('errors.ts — V2_REFUSAL_CODES', () => {
       'CREDENTIALS_WITH_WEB',
       'UNKNOWN_PROFILE',
       'CREDENTIAL_NOT_CONFIGURED',
+      'HOST_CONFIG_NOT_FOUND',
+      'BACKEND_NOT_CONFIGURED',
+      'PROFILE_NOT_CONFIGURED',
       'ENVELOPE_EXCEEDS_MODE',
       'STALE_WRITE_SCOPE',
       'WRITE_SCOPE_UNCAPTURABLE',
@@ -260,13 +263,13 @@ describe('repo-config.ts — wiki/.dispatch/ table loaders', () => {
             family: 'pi',
             base_url: 'https://openrouter.ai/api/v1',
             api_key_env: 'OPENROUTER_API_KEY',
-            secrets_file: '/home/operator/.config/kb-dispatch/secrets.env',
+
           },
           ollama: {
             family: 'pi',
             base_url: 'http://localhost:11434/v1',
             api_key_env: null,
-            secrets_file: null,
+
             notes: 'no secret needed',
           },
         }),
@@ -279,13 +282,13 @@ describe('repo-config.ts — wiki/.dispatch/ table loaders', () => {
         family: 'pi',
         base_url: 'https://openrouter.ai/api/v1',
         api_key_env: 'OPENROUTER_API_KEY',
-        secrets_file: '/home/operator/.config/kb-dispatch/secrets.env',
+
       });
       expect(result.data.ollama).toEqual({
         family: 'pi',
         base_url: 'http://localhost:11434/v1',
         api_key_env: null,
-        secrets_file: null,
+
         notes: 'no secret needed',
       });
     });
@@ -300,8 +303,29 @@ describe('repo-config.ts — wiki/.dispatch/ table loaders', () => {
       expect(result.message).toContain('backends.json');
     });
 
+    // DEC-0046 / WK-0252 slice a: secrets_file left the repo-table schema —
+    // a host fact now resolved from the host-local config (host-config.ts).
+    it('refuses a backend entry carrying "secrets_file", naming the file and the field, whatever the value (including null)', async () => {
+      for (const value of ['/home/op/.secrets/dispatch.env', null]) {
+        await writeDispatchConfig(
+          dir,
+          'backends.json',
+          JSON.stringify({
+            openrouter: { family: 'pi', base_url: 'https://openrouter.ai/api/v1', api_key_env: 'OPENROUTER_API_KEY', secrets_file: value },
+          }),
+        );
+
+        const result = await loadBackendsTable(dir);
+        expect(result.ok).toBe(false);
+        if (result.ok) return;
+        expect(result.error).toBe('BAD_RECORD');
+        expect(result.message).toContain('backends.json');
+        expect(result.message).toContain('secrets_file');
+      }
+    });
+
     it('refuses an entry missing the required base_url field', async () => {
-      await writeDispatchConfig(dir, 'backends.json', JSON.stringify({ openrouter: { family: 'pi', api_key_env: null, secrets_file: null } }));
+      await writeDispatchConfig(dir, 'backends.json', JSON.stringify({ openrouter: { family: 'pi', api_key_env: null,} }));
 
       const result = await loadBackendsTable(dir);
       expect(result.ok).toBe(false);
@@ -315,7 +339,7 @@ describe('repo-config.ts — wiki/.dispatch/ table loaders', () => {
       await writeDispatchConfig(
         dir,
         'backends.json',
-        JSON.stringify({ openrouter: { family: 'pi', base_url: 'https://openrouter.ai/api/v1', api_key_env: 42, secrets_file: null } }),
+        JSON.stringify({ openrouter: { family: 'pi', base_url: 'https://openrouter.ai/api/v1', api_key_env: 42,} }),
       );
 
       const result = await loadBackendsTable(dir);
@@ -338,7 +362,7 @@ describe('repo-config.ts — wiki/.dispatch/ table loaders', () => {
             family: 'claude',
             base_url: null,
             api_key_env: null,
-            secrets_file: null,
+
             effort_mapping: { flag: '--effort', style: 'flag_value' },
           },
         }),
@@ -359,7 +383,7 @@ describe('repo-config.ts — wiki/.dispatch/ table loaders', () => {
             family: 'codex',
             base_url: null,
             api_key_env: null,
-            secrets_file: null,
+
             effort_mapping: { flag: '-c', style: 'key_equals_value', key: 'model_reasoning_effort' },
           },
         }),
@@ -379,7 +403,7 @@ describe('repo-config.ts — wiki/.dispatch/ table loaders', () => {
       await writeDispatchConfig(
         dir,
         'backends.json',
-        JSON.stringify({ openrouter: { family: 'pi', base_url: 'https://openrouter.ai/api/v1', api_key_env: null, secrets_file: null } }),
+        JSON.stringify({ openrouter: { family: 'pi', base_url: 'https://openrouter.ai/api/v1', api_key_env: null,} }),
       );
 
       const result = await loadBackendsTable(dir);
@@ -397,7 +421,7 @@ describe('repo-config.ts — wiki/.dispatch/ table loaders', () => {
             family: 'claude',
             base_url: null,
             api_key_env: null,
-            secrets_file: null,
+
             effort_mapping: { flag: '--effort', style: 'bogus_style' },
           },
         }),
@@ -419,7 +443,7 @@ describe('repo-config.ts — wiki/.dispatch/ table loaders', () => {
             family: 'codex',
             base_url: null,
             api_key_env: null,
-            secrets_file: null,
+
             effort_mapping: { flag: '-c', style: 'key_equals_value' },
           },
         }),
@@ -441,7 +465,7 @@ describe('repo-config.ts — wiki/.dispatch/ table loaders', () => {
             family: 'pi',
             base_url: 'https://openrouter.ai/api/v1',
             api_key_env: 'OPENROUTER_API_KEY',
-            secrets_file: '/home/operator/.config/kb-dispatch/secrets.env',
+
             request_params: { provider: { only: ['DeepInfra'], data_collection: 'deny' } },
           },
         }),
@@ -464,7 +488,7 @@ describe('repo-config.ts — wiki/.dispatch/ table loaders', () => {
             family: 'pi',
             base_url: 'https://openrouter.ai/api/v1',
             api_key_env: null,
-            secrets_file: null,
+
             request_params: 'not-an-object',
           },
         }),
@@ -482,7 +506,7 @@ describe('repo-config.ts — wiki/.dispatch/ table loaders', () => {
         dir,
         'backends.json',
         JSON.stringify({
-          openrouter: { family: 'pi', base_url: 'https://openrouter.ai/api/v1', api_key_env: null, secrets_file: null },
+          openrouter: { family: 'pi', base_url: 'https://openrouter.ai/api/v1', api_key_env: null,},
         }),
       );
 
@@ -501,7 +525,7 @@ describe('repo-config.ts — wiki/.dispatch/ table loaders', () => {
             family: 'claude',
             base_url: null,
             api_key_env: null,
-            secrets_file: null,
+
             effort_mapping: { style: 'flag_value' },
           },
         }),
@@ -539,7 +563,7 @@ describe('repo-config.ts — wiki/.dispatch/ table loaders', () => {
         'profiles.json',
         JSON.stringify({
           schema_version: 1,
-          hf: { inject: { HF_TOKEN: '/home/operator/.secrets/hf-token.env' } },
+          hf: { inject: ['HF_TOKEN'] },
         }),
       );
 
@@ -548,7 +572,7 @@ describe('repo-config.ts — wiki/.dispatch/ table loaders', () => {
       if (!result.ok) return;
       expect(result.data).toEqual({
         schemaVersion: 1,
-        profiles: { hf: { inject: { HF_TOKEN: '/home/operator/.secrets/hf-token.env' } } },
+        profiles: { hf: { inject: ['HF_TOKEN'] } },
       });
     });
 
@@ -559,7 +583,7 @@ describe('repo-config.ts — wiki/.dispatch/ table loaders', () => {
         JSON.stringify({
           schema_version: 1,
           aws: {
-            inject: { AWS_ACCESS_KEY_ID: '/home/operator/.secrets/aws.env' },
+            inject: ['AWS_ACCESS_KEY_ID'],
             endpoints: ['*.amazonaws.com', '*.aws.amazon.com'],
           },
         }),
@@ -572,7 +596,7 @@ describe('repo-config.ts — wiki/.dispatch/ table loaders', () => {
         schemaVersion: 1,
         profiles: {
           aws: {
-            inject: { AWS_ACCESS_KEY_ID: '/home/operator/.secrets/aws.env' },
+            inject: ['AWS_ACCESS_KEY_ID'],
             endpoints: ['*.amazonaws.com', '*.aws.amazon.com'],
           },
         },
@@ -585,7 +609,7 @@ describe('repo-config.ts — wiki/.dispatch/ table loaders', () => {
         'profiles.json',
         JSON.stringify({
           schema_version: 1,
-          hf: { inject: { HF_TOKEN: '/home/operator/.secrets/hf-token.env' } },
+          hf: { inject: ['HF_TOKEN'] },
         }),
       );
 
@@ -601,7 +625,7 @@ describe('repo-config.ts — wiki/.dispatch/ table loaders', () => {
         'profiles.json',
         JSON.stringify({
           schema_version: 1,
-          aws: { inject: {}, endpoints: 'not-an-array' },
+          aws: { inject: [], endpoints: 'not-an-array' },
         }),
       );
 
@@ -619,7 +643,7 @@ describe('repo-config.ts — wiki/.dispatch/ table loaders', () => {
         'profiles.json',
         JSON.stringify({
           schema_version: 1,
-          aws: { inject: {}, endpoints: ['*.amazonaws.com', 42] },
+          aws: { inject: [], endpoints: ['*.amazonaws.com', 42] },
         }),
       );
 
@@ -636,7 +660,7 @@ describe('repo-config.ts — wiki/.dispatch/ table loaders', () => {
         'profiles.json',
         JSON.stringify({
           schema_version: 1,
-          hf: { inject: { HF_TOKEN: '/path' }, mounts: ['/data'] },
+          hf: { inject: ['HF_TOKEN'], mounts: ['/data'] },
         }),
       );
 
@@ -646,6 +670,27 @@ describe('repo-config.ts — wiki/.dispatch/ table loaders', () => {
       expect(result.error).toBe('BAD_RECORD');
       expect(result.message).toContain('mounts');
       expect(result.message).toContain('hf');
+    });
+
+    // DEC-0046 / WK-0252 slice a: inject used to map VAR_NAME -> file path;
+    // the path half left the repo-table schema (host-config.ts now holds
+    // it). The repo table keeps only the variable names.
+    it('refuses a path-valued inject (old shape: VAR_NAME -> file path), naming the file and the field', async () => {
+      await writeDispatchConfig(
+        dir,
+        'profiles.json',
+        JSON.stringify({
+          schema_version: 1,
+          hf: { inject: { HF_TOKEN: '/home/operator/.secrets/hf-token.env' } },
+        }),
+      );
+
+      const result = await loadProfilesConfig(dir);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error).toBe('BAD_RECORD');
+      expect(result.message).toContain('profiles.json');
+      expect(result.message).toContain('inject');
     });
 
     it('refuses a schema_version other than 1', async () => {
@@ -678,14 +723,60 @@ describe('repo-config.ts — wiki/.dispatch/ table loaders', () => {
       expect(result.message).toContain('inject');
     });
 
-    it('refuses a profile whose inject value is not a string', async () => {
-      await writeDispatchConfig(dir, 'profiles.json', JSON.stringify({ schema_version: 1, hf: { inject: { HF_TOKEN: 123 } } }));
+    it('refuses a profile whose inject array contains a non-string entry', async () => {
+      await writeDispatchConfig(dir, 'profiles.json', JSON.stringify({ schema_version: 1, hf: { inject: ['HF_TOKEN', 123] } }));
 
       const result = await loadProfilesConfig(dir);
       expect(result.ok).toBe(false);
       if (result.ok) return;
       expect(result.error).toBe('BAD_RECORD');
-      expect(result.message).toContain('HF_TOKEN');
+      expect(result.message).toContain('inject');
+    });
+
+    // Table validation (DEC-0046, rule 28 — proven to bite below): any
+    // absolute or home path anywhere in a wiki/.dispatch/*.json table
+    // refuses, not just in the known secrets_file/inject fields.
+    it('refuses an absolute path anywhere in profiles.json (e.g. a stray notes field)', async () => {
+      await writeDispatchConfig(
+        dir,
+        'profiles.json',
+        JSON.stringify({ schema_version: 1, hf: { inject: ['HF_TOKEN'], notes: '/home/operator/.secrets/hf-token.env' } }),
+      );
+
+      const result = await loadProfilesConfig(dir);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error).toBe('BAD_RECORD');
+      expect(result.message).toContain('profiles.json');
+    });
+
+    it('refuses a home-relative (~) path anywhere in backends.json, but not a base_url (a URL, not a path)', async () => {
+      await writeDispatchConfig(
+        dir,
+        'backends.json',
+        JSON.stringify({
+          openrouter: { family: 'pi', base_url: 'https://openrouter.ai/api/v1', api_key_env: 'OPENROUTER_API_KEY', notes: '~/.secrets/dispatch.env' },
+        }),
+      );
+
+      const result = await loadBackendsTable(dir);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error).toBe('BAD_RECORD');
+      expect(result.message).toContain('backends.json');
+    });
+
+    it('accepts a backends.json entry whose only path-shaped-looking string is base_url', async () => {
+      await writeDispatchConfig(
+        dir,
+        'backends.json',
+        JSON.stringify({
+          openrouter: { family: 'pi', base_url: 'https://openrouter.ai/api/v1', api_key_env: 'OPENROUTER_API_KEY' },
+        }),
+      );
+
+      const result = await loadBackendsTable(dir);
+      expect(result.ok).toBe(true);
     });
   });
 });

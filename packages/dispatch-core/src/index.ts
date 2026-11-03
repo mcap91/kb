@@ -209,6 +209,15 @@ export type { BackendEntry, BackendFamily, ModelTableEntry, ProfileEntry, Profil
 export { loadModelsTable, loadBackendsTable, loadProfilesConfig } from './repo-config.js';
 
 // ---------------------------------------------------------------------------
+// V2 host-local config (DEC-0046 / WK-0252 slice a) — the operator config-dir
+// file carrying backend reachability + secrets paths (host facts the repo
+// tables above must never carry)
+// ---------------------------------------------------------------------------
+
+export type { HostConfig, HostBackendEntry, HostConfigCoverage } from './host-config.js';
+export { HOST_CONFIG_FILENAME, getHostConfigPath, expandHomePath, loadHostConfig, computeHostConfigCoverage } from './host-config.js';
+
+// ---------------------------------------------------------------------------
 // V2 credential resolution (S3)
 // ---------------------------------------------------------------------------
 

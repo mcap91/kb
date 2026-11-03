@@ -15,6 +15,7 @@ import type { DispatchResult } from './errors.js';
 import { fail, ok } from './errors.js';
 import type { BackendFamily, EffortMapping } from './repo-config.js';
 import { loadModelsTable, loadBackendsTable } from './repo-config.js';
+import { loadHostConfig, getHostConfigPath } from './host-config.js';
 
 // ---------------------------------------------------------------------------
 // S0 seed registry — DEPRECATED, superseded by resolveModelFromConfig below.
@@ -194,6 +195,29 @@ export async function resolveModelFromConfig(
     );
   }
 
+  // DEC-0046 Decision 2/4: which backends this host can reach, and the
+  // secrets file holding each backend's key, are host facts resolved from
+  // the host-local config — never the repo table. A missing host config, a
+  // backend it doesn't list, or a backend it marks unreachable all refuse,
+  // naming the host config path.
+  const hostConfigResult = await loadHostConfig();
+  if (!hostConfigResult.ok) return hostConfigResult;
+  const hostBackend = hostConfigResult.data.backends[backend];
+  if (!hostBackend) {
+    return fail(
+      'BACKEND_NOT_CONFIGURED',
+      `Backend "${backend}" is absent from host config ${getHostConfigPath()}.`,
+      { backend },
+    );
+  }
+  if (!hostBackend.reachable) {
+    return fail(
+      'BACKEND_NOT_CONFIGURED',
+      `Backend "${backend}" is marked unreachable in host config ${getHostConfigPath()}.`,
+      { backend },
+    );
+  }
+
   // A null base_url means the family's own CLI reaches its SaaS provider
   // directly (codex/claude — repo-config.ts's BackendEntry doc comment).
   // Only the "pi" pipeline requires a real endpoint (buildPiBaseUrl in
@@ -233,7 +257,7 @@ export async function resolveModelFromConfig(
     modelId: modelEntry.model_id,
     baseUrl: backendEntry.base_url,
     apiKeyEnv: backendEntry.api_key_env,
-    secretsFile: backendEntry.secrets_file,
+    secretsFile: hostBackend.secrets_file,
     availableOn: modelEntry.available_on,
     effortMapping: backendEntry.effort_mapping,
     contextWindow,

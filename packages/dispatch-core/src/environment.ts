@@ -462,23 +462,6 @@ export function deriveEndpointEligibility(
   };
 }
 
-/** `grep -m1 '^VAR=' file | cut -d= -f2-` equivalent, Node-side (credentials.ts's script-side-only rule is about the generated DISPATCH script; this probe is a direct, operator-initiated host-side process, same trust boundary as the `pi` CLI it spawns). Returns null when the file or the var line is absent. */
-async function resolveSecretValue(secretsFile: string, varName: string): Promise<string | null> {
-  let content: string;
-  try {
-    content = await readFile(secretsFile, 'utf8');
-  } catch {
-    return null;
-  }
-  for (const line of content.split('\n')) {
-    const trimmed = line.trim();
-    if (trimmed.startsWith(`${varName}=`)) {
-      return trimmed.slice(varName.length + 1);
-    }
-  }
-  return null;
-}
-
 /** Candidate pairs: pi-family backends whose `request_params` carries `provider` or `zdr`, crossed with every model whose `available_on` names that backend. */
 function selectEligibilityCandidates(
   backends: Record<string, BackendEntry>,
@@ -512,14 +495,17 @@ async function probeOneEndpointEligibility(
     return { ...base, status: 'unknown', detail: `Backend "${backendName}" has no base_url; cannot fire a dry-run completion.`, ineligibilityReasons: null };
   }
 
-  const apiKeyValue = backend.api_key_env && backend.secrets_file
-    ? await resolveSecretValue(backend.secrets_file, backend.api_key_env)
-    : null;
-  if (backend.api_key_env !== null && apiKeyValue === null) {
+  // secrets_file left the repo backends.json schema (DEC-0046 / WK-0252 slice
+  // a) — the secrets path is now a host fact in the host-local config, which
+  // this probe does not read (host-config wiring for check-environment is
+  // WK-0252 slice b). An api_key_env-bearing backend therefore always skips
+  // the dry-run probe here, same as the old "no secrets_file configured" case.
+  const apiKeyValue: string | null = null;
+  if (backend.api_key_env !== null) {
     return {
       ...base,
       status: 'unknown',
-      detail: `Could not resolve "${backend.api_key_env}" from ${backend.secrets_file ?? '(no secrets_file configured)'}; skipped the dry-run probe for "${modelEntry.model_id}" on "${backendName}".`,
+      detail: `Could not resolve "${backend.api_key_env}" (its secrets file is host-local config, not read here; see WK-0252 slice b); skipped the dry-run probe for "${modelEntry.model_id}" on "${backendName}".`,
       ineligibilityReasons: null,
     };
   }

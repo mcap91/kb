@@ -22,6 +22,22 @@ import { parseHandoff, parseHandoffContent, type Handoff } from '../packages/dis
 import { runDispatch } from '../packages/dispatch-core/src/pipeline.js';
 import type { CreateHandoffOpts } from '../packages/dispatch-core/src/types.js';
 import { probeWikiSource } from '../packages/dispatch-core/src/wiki-source.js';
+import { setUpHostConfig } from './host-config-test-helper.js';
+
+// DEC-0046 / WK-0252 slice a: runDispatch now requires a host config
+// covering the resolved backend. One file-level host config (temp
+// XDG_CONFIG_HOME) covers the one backend this file's runDispatch() calls use.
+let hostConfigTeardown: () => Promise<void>;
+
+beforeEach(async () => {
+  hostConfigTeardown = await setUpHostConfig({
+    backends: { openrouter: { reachable: true, secrets_file: null } },
+  });
+});
+
+afterEach(async () => {
+  await hostConfigTeardown();
+});
 
 function git(cwd: string, ...args: string[]): string {
   return execFileSync('git', args, { cwd }).toString().trim();
@@ -492,7 +508,7 @@ describe('runDispatch — base drift end to end (WK-0152)', () => {
     await writeFile(
       join(repo, 'wiki', '.dispatch', 'backends.json'),
       JSON.stringify(
-        { openrouter: { family: 'pi', base_url: 'https://openrouter.ai/api/v1', api_key_env: 'OPENROUTER_API_KEY', secrets_file: null } },
+        { openrouter: { family: 'pi', base_url: 'https://openrouter.ai/api/v1', api_key_env: 'OPENROUTER_API_KEY',} },
         null,
         2,
       ),

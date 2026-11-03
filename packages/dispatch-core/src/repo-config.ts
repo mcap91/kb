@@ -38,7 +38,6 @@ export interface BackendEntry {
   /** Custom endpoint URL; null when the family's own CLI reaches its SaaS provider directly (no operator-configured endpoint). */
   base_url: string | null;
   api_key_env: string | null;
-  secrets_file: string | null;
   notes?: string;
   serving?: {
     context_window?: number;
@@ -69,8 +68,8 @@ export interface ModelTableEntry {
 }
 
 export interface ProfileEntry {
-  /** VAR_NAME -> file path holding that var's value (read Linux-side only; S3 wave 2). */
-  inject: Record<string, string>;
+  /** Variable names this profile injects (DEC-0046: the secrets file for each is a host fact, resolved from host-config.ts's HostConfig, never this repo table). */
+  inject: string[];
   /** Endpoint hostnames this credential grants access to (exact + *.suffix wildcards).
    *  Appended to the forwarder's allowed destinations when this profile is granted
    *  (DEC-0011/WK-0104). */
@@ -127,7 +126,7 @@ function warnUnknownKeys(entry: Record<string, unknown>, knownKeys: ReadonlySet<
   }
 }
 
-const BACKEND_ENTRY_KNOWN_KEYS = new Set(['family', 'base_url', 'api_key_env', 'secrets_file', 'notes', 'serving', 'effort_mapping', 'request_params', 'billing']);
+const BACKEND_ENTRY_KNOWN_KEYS = new Set(['family', 'base_url', 'api_key_env', 'notes', 'serving', 'effort_mapping', 'request_params', 'billing']);
 
 const EFFORT_MAPPING_STYLES: readonly EffortMapping['style'][] = ['flag_value', 'key_equals_value'];
 
@@ -138,6 +137,17 @@ const BILLING_KINDS: readonly NonNullable<BackendEntry['billing']>[] = ['seat', 
 function validateBackendEntry(name: string, raw: unknown): DispatchResult<BackendEntry> {
   if (!isPlainObject(raw)) {
     return fail('BAD_RECORD', `Backend "${name}" in backends.json must be an object.`);
+  }
+
+  // DEC-0046 Decision 1: secrets_file left the repo-table schema and now
+  // lives in the host-local config (host-config.ts). A table that still
+  // carries it refuses loudly, regardless of value (including null) — no
+  // silent fallback, no dual read (rule 57).
+  if ('secrets_file' in raw) {
+    return fail(
+      'BAD_RECORD',
+      `Backend "${name}" in backends.json carries "secrets_file"; that field left the repo-table schema (DEC-0046) — move the path into the host-local config instead.`,
+    );
   }
 
   warnUnknownKeys(raw, BACKEND_ENTRY_KNOWN_KEYS, `backend "${name}" in backends.json`);
@@ -153,9 +163,6 @@ function validateBackendEntry(name: string, raw: unknown): DispatchResult<Backen
   }
   if (raw.api_key_env !== null && typeof raw.api_key_env !== 'string') {
     return fail('BAD_RECORD', `Backend "${name}" in backends.json must have "api_key_env" as a string or null.`);
-  }
-  if (raw.secrets_file !== null && typeof raw.secrets_file !== 'string') {
-    return fail('BAD_RECORD', `Backend "${name}" in backends.json must have "secrets_file" as a string or null.`);
   }
 
   if (raw.serving !== undefined) {
@@ -209,7 +216,6 @@ function validateBackendEntry(name: string, raw: unknown): DispatchResult<Backen
     family: raw.family as BackendFamily,
     base_url: raw.base_url as string | null,
     api_key_env: raw.api_key_env as string | null,
-    secrets_file: raw.secrets_file as string | null,
   };
   if (typeof raw.notes === 'string') entry.notes = raw.notes;
   if (isPlainObject(raw.serving)) {
@@ -286,16 +292,24 @@ function validateProfileEntry(name: string, raw: unknown): DispatchResult<Profil
     }
   }
 
-  if (!isPlainObject(raw.inject)) {
-    return fail('BAD_RECORD', `Profile "${name}" in profiles.json must have an "inject" object.`);
+  // DEC-0046 Decision 1: inject used to map VAR_NAME -> file path; the path
+  // half of that is a host fact and left the repo-table schema (host-config.ts
+  // now holds it). The repo table keeps only the variable names a profile
+  // injects, so an object-valued (old-shape) "inject" refuses loudly rather
+  // than silently reinterpreting it.
+  if (!Array.isArray(raw.inject)) {
+    return fail(
+      'BAD_RECORD',
+      `Profile "${name}" in profiles.json must have "inject" as an array of variable names; a variable -> path mapping left the repo-table schema (DEC-0046) — move paths into the host-local config instead.`,
+    );
   }
 
-  const inject: Record<string, string> = {};
-  for (const [varName, value] of Object.entries(raw.inject)) {
-    if (typeof value !== 'string') {
-      return fail('BAD_RECORD', `Profile "${name}" in profiles.json: inject["${varName}"] must be a string file path.`);
+  const inject: string[] = [];
+  for (const varName of raw.inject) {
+    if (typeof varName !== 'string') {
+      return fail('BAD_RECORD', `Profile "${name}" in profiles.json: "inject" must be an array of string variable names.`);
     }
-    inject[varName] = value;
+    inject.push(varName);
   }
 
   const profileEntry: ProfileEntry = { inject };
@@ -308,6 +322,52 @@ function validateProfileEntry(name: string, raw: unknown): DispatchResult<Profil
   }
 
   return ok(profileEntry);
+}
+
+/**
+ * Absolute (`/...`, or a Windows drive path like `C:\...`) or home (`~...`,
+ * `$HOME`) path shape. Table validation (DEC-0046 / WK-0252) rejects any
+ * string value matching this anywhere in a `wiki/.dispatch/*.json` table —
+ * host facts belong in the host-local config (host-config.ts), never a
+ * repo-tracked table. `base_url` is skipped (a URL, not a path).
+ */
+const ABSOLUTE_OR_HOME_PATH_RE = /^(\/|[A-Za-z]:[\\/]|~|\$HOME)/;
+
+const PATH_SCAN_SKIP_KEYS = new Set(['base_url']);
+
+/** Recursively find the first string value shaped like an absolute or home path, skipping `base_url` keys at any depth. */
+function findPathLikeValue(value: unknown): string | null {
+  if (typeof value === 'string') {
+    return ABSOLUTE_OR_HOME_PATH_RE.test(value) ? value : null;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const hit = findPathLikeValue(item);
+      if (hit !== null) return hit;
+    }
+    return null;
+  }
+  if (isPlainObject(value)) {
+    for (const [key, v] of Object.entries(value)) {
+      if (PATH_SCAN_SKIP_KEYS.has(key)) continue;
+      const hit = findPathLikeValue(v);
+      if (hit !== null) return hit;
+    }
+    return null;
+  }
+  return null;
+}
+
+/** Table validation (rule 28-provable): refuse a loaded table that carries an absolute or home path anywhere (DEC-0046). */
+function rejectPathLikeStrings(raw: unknown, filename: string): DispatchResult<void> {
+  const hit = findPathLikeValue(raw);
+  if (hit !== null) {
+    return fail(
+      'BAD_RECORD',
+      `${filename} contains an absolute or home path ("${hit}"); host facts such as secrets paths belong in the host-local config, not a repo-tracked table (DEC-0046).`,
+    );
+  }
+  return ok(undefined);
 }
 
 /**
@@ -329,11 +389,19 @@ export async function loadModelsTable(dir: string): Promise<DispatchResult<Recor
     if (!validated.ok) return validated;
     table[slug] = validated.data;
   }
+
+  // Generic defense-in-depth, run after the field-specific checks above (so a
+  // known field like secrets_file/inject still gets its own named message):
+  // reject any absolute/home path anywhere else in the raw table (DEC-0046).
+  const pathCheck = rejectPathLikeStrings(loaded.data, 'models.json');
+  if (!pathCheck.ok) return pathCheck;
+
   return ok(table);
 }
 
 /**
- * Load `wiki/.dispatch/backends.json` (name -> family/base_url/api_key_env/secrets_file/notes).
+ * Load `wiki/.dispatch/backends.json` (name -> family/base_url/api_key_env/notes). A
+ * `secrets_file` key refuses (DEC-0046: that path moved to the host-local config).
  * Absent file = valid empty table.
  */
 export async function loadBackendsTable(dir: string): Promise<DispatchResult<Record<string, BackendEntry>>> {
@@ -351,6 +419,14 @@ export async function loadBackendsTable(dir: string): Promise<DispatchResult<Rec
     if (!validated.ok) return validated;
     table[name] = validated.data;
   }
+
+  // Generic defense-in-depth, run after the field-specific checks above (so
+  // secrets_file still gets its own named message): reject any absolute/home
+  // path anywhere else in the raw table (DEC-0046). base_url is a URL, not a
+  // path, and is skipped.
+  const pathCheck = rejectPathLikeStrings(loaded.data, 'backends.json');
+  if (!pathCheck.ok) return pathCheck;
+
   return ok(table);
 }
 
@@ -378,6 +454,12 @@ export async function loadProfilesConfig(dir: string): Promise<DispatchResult<Pr
     if (!validated.ok) return validated;
     profiles[name] = validated.data;
   }
+
+  // Generic defense-in-depth, run after the field-specific checks above (so
+  // a path-valued inject still gets its own named message): reject any
+  // absolute/home path anywhere else in the raw table (DEC-0046).
+  const pathCheck = rejectPathLikeStrings(loaded.data, 'profiles.json');
+  if (!pathCheck.ok) return pathCheck;
 
   return ok({ schemaVersion: 1, profiles });
 }

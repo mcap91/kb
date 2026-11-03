@@ -23,7 +23,9 @@
 import type { DispatchResult } from './errors.js';
 import { fail, ok } from './errors.js';
 import type { Handoff } from './ho.js';
-import type { ProfilesConfig, ProfileEntry, BackendEntry } from './repo-config.js';
+import type { ProfilesConfig, ProfileEntry } from './repo-config.js';
+import type { HostConfig } from './host-config.js';
+import { getHostConfigPath } from './host-config.js';
 
 export interface CredentialResolution {
   /** Profile names that were granted (names only, never values). */
@@ -61,20 +63,25 @@ function parseVarEntry(entry: string): { key: string; value: string } | null {
 }
 
 /**
- * Resolve each HO `credentials:` profile name against `profilesConfig`,
- * failing closed on the first name not present there (`UNKNOWN_PROFILE`).
- * Pure/sync: whether an `inject` file actually exists/holds its var is a
+ * Resolve each HO `credentials:` profile name against `profilesConfig`
+ * (repo-table variable names) and `hostConfig` (host-local secrets file per
+ * variable; host-config.ts), failing closed on the first name not present in
+ * either (`UNKNOWN_PROFILE` for the repo table, `PROFILE_NOT_CONFIGURED` for
+ * the host config — DEC-0046 Decision 4, naming the host config path).
+ * Pure/sync: whether an injected file actually exists/holds its var is a
  * script-side check (`buildInjectionScript`'s `existenceCheckLines`), not
  * verified here — this function only collects what a valid profile
- * reference implies. The backend's `api_key_env`/`secrets_file` pass straight
- * through for script-side injection alongside the granted profiles — model
- * keys are backend-owned infrastructure, never gated by `credentials:`
- * (s3-rulings.md ruling 2).
+ * reference implies. The backend's `api_key_env`/`secretsFile` (the latter
+ * already host-resolved by `resolveModelFromConfig`, model-registry.ts) pass
+ * straight through for script-side injection alongside the granted profiles
+ * — model keys are backend-owned infrastructure, never gated by
+ * `credentials:` (s3-rulings.md ruling 2).
  */
 export function resolveCredentials(
   handoff: Handoff,
   profilesConfig: ProfilesConfig,
-  backend: BackendEntry,
+  hostConfig: HostConfig,
+  backend: { api_key_env: string | null; secretsFile: string | null },
 ): DispatchResult<CredentialResolution> {
   const granted: string[] = [];
   const injections: CredentialResolution['injections'] = [];
@@ -89,8 +96,23 @@ export function resolveCredentials(
       );
     }
 
+    const hostProfile = hostConfig.profiles[profileName];
+    if (!hostProfile) {
+      return fail(
+        'PROFILE_NOT_CONFIGURED',
+        `Handoff ${handoff.id}'s credential profile "${profileName}" is not covered by host config ${getHostConfigPath()}.`,
+      );
+    }
+
     granted.push(profileName);
-    for (const [varName, filePath] of Object.entries(profile.inject)) {
+    for (const varName of profile.inject) {
+      const filePath = hostProfile[varName];
+      if (filePath === undefined) {
+        return fail(
+          'PROFILE_NOT_CONFIGURED',
+          `Handoff ${handoff.id}'s credential profile "${profileName}" variable "${varName}" is not covered by host config ${getHostConfigPath()}.`,
+        );
+      }
       injections.push({ profileName, varName, filePath });
     }
     if (profile.endpoints) {
@@ -102,7 +124,7 @@ export function resolveCredentials(
     granted,
     injections,
     backendApiKeyEnv: backend.api_key_env,
-    backendSecretsFile: backend.secrets_file,
+    backendSecretsFile: backend.secretsFile,
     credentialEndpoints,
   });
 }

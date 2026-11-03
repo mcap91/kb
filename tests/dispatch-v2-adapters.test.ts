@@ -38,6 +38,7 @@ import { join } from 'node:path';
 import { parseCodexOutput, buildInvocation as buildCodexInvocation } from '../packages/dispatch-core/src/adapters/codex.js';
 import { parseClaudeOutput, buildInvocation as buildClaudeInvocation } from '../packages/dispatch-core/src/adapters/claude.js';
 import { resolveModelFromConfig, type ResolvedModel } from '../packages/dispatch-core/src/model-registry.js';
+import { setUpHostConfig } from './host-config-test-helper.js';
 
 async function createTempDir(prefix: string): Promise<string> {
   return mkdtemp(join(tmpdir(), prefix));
@@ -322,6 +323,7 @@ describe('adapters/claude.ts — buildInvocation', () => {
 describe('model-registry.ts — resolveModelFromConfig threads codex family through (T33)', () => {
   it('resolves a codex-family backend with a null base_url', async () => {
     const dir = await createTempDir('kb-model-registry-codex-');
+    const hostConfigTeardown = await setUpHostConfig({ backends: { codex: { reachable: true, secrets_file: null } } });
     try {
       const configDir = join(dir, 'wiki', '.dispatch');
       await mkdir(configDir, { recursive: true });
@@ -332,7 +334,7 @@ describe('model-registry.ts — resolveModelFromConfig threads codex family thro
       );
       await writeFile(
         join(configDir, 'backends.json'),
-        JSON.stringify({ codex: { family: 'codex', base_url: null, api_key_env: null, secrets_file: null } }),
+        JSON.stringify({ codex: { family: 'codex', base_url: null, api_key_env: null,} }),
         'utf8',
       );
 
@@ -342,6 +344,7 @@ describe('model-registry.ts — resolveModelFromConfig threads codex family thro
       expect(result.data.family).toBe('codex');
       expect(result.data.baseUrl).toBeNull();
     } finally {
+      await hostConfigTeardown();
       await rm(dir, { recursive: true, force: true });
     }
   });

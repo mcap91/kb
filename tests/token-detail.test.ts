@@ -313,9 +313,9 @@ describe('repo-config.ts — BackendEntry.billing (WK-0123)', () => {
       await writeFile(
         join(dir, 'wiki', '.dispatch', 'backends.json'),
         JSON.stringify({
-          'seat-backend': { family: 'claude', base_url: null, api_key_env: null, secrets_file: null, billing: 'seat' },
-          'api-backend': { family: 'claude', base_url: null, api_key_env: null, secrets_file: null, billing: 'api' },
-          'unset-backend': { family: 'claude', base_url: null, api_key_env: null, secrets_file: null },
+          'seat-backend': { family: 'claude', base_url: null, api_key_env: null, billing: 'seat' },
+          'api-backend': { family: 'claude', base_url: null, api_key_env: null, billing: 'api' },
+          'unset-backend': { family: 'claude', base_url: null, api_key_env: null,},
         }),
         'utf8',
       );
@@ -332,7 +332,7 @@ describe('repo-config.ts — BackendEntry.billing (WK-0123)', () => {
       await writeFile(
         join(dir, 'wiki', '.dispatch', 'backends.json'),
         JSON.stringify({
-          'bad-backend': { family: 'claude', base_url: null, api_key_env: null, secrets_file: null, billing: 'enterprise' },
+          'bad-backend': { family: 'claude', base_url: null, api_key_env: null, billing: 'enterprise' },
         }),
         'utf8',
       );
