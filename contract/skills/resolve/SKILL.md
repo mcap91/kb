@@ -30,10 +30,10 @@ One sentence. Then one line: what changes in the work depending on the answer.
 ### 2. Check the operator-only cases first
 
 Decide first whether the question is one of the four cases under "What still goes to the
-operator". If it is, or if you cannot tell which it is, stop here: do not search for an
-answer, do not choose, and do not write a Resolutions row whose `choice` is anything but
-`unresolved`. Reply with the escalation template; its first line is the first line of your
-reply.
+operator". If it is, or if you cannot tell which it is, stop here: do not choose an answer,
+and do not write a Resolutions row whose `choice` is anything but `unresolved`. Search only
+to fill the template's "what was searched, and what was found" line. Reply with the
+escalation template; its first line is the first line of your reply.
 
 ### 3. Search
 
