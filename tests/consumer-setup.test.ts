@@ -903,26 +903,33 @@ describe('shipped block text', () => {
 // ---------------------------------------------------------------------------
 
 describe('setup-test-kb.mjs', () => {
+  let tmp: TmpRepo;
+
+  afterEach(() => {
+    tmp?.cleanup();
+  });
+
   it('exits non-zero, names both slug forms, and creates nothing when no slug is given', () => {
-    const kbRoot = process.cwd();
-    const scriptPath = path.resolve(kbRoot, 'scripts/setup-test-kb.mjs');
-    const siblingTestKb = path.resolve(kbRoot, '..', 'test_kb');
-    expect(fs.existsSync(siblingTestKb)).toBe(false);
+    tmp = createTmpDir();
+
+    // Place a copy of the script at <tmp>/kb/scripts/setup-test-kb.mjs so the
+    // script's own path resolution (KB = scriptDir/.., TEST_KB = KB/../test_kb)
+    // lands entirely inside the temp root — never the real sibling ../test_kb.
+    const kbRoot = path.join(tmp.dir, 'kb');
+    const scriptDir = path.join(kbRoot, 'scripts');
+    fs.mkdirSync(scriptDir, { recursive: true });
+    const scriptPath = path.join(scriptDir, 'setup-test-kb.mjs');
+    fs.copyFileSync(path.resolve(process.cwd(), 'scripts/setup-test-kb.mjs'), scriptPath);
+    const testKb = path.join(tmp.dir, 'test_kb');
 
     const env = { ...process.env };
     delete env.TEST_KB_REPO;
 
-    try {
-      const result = spawnSync('node', [scriptPath], { cwd: kbRoot, env, encoding: 'utf-8' });
+    const result = spawnSync('node', [scriptPath], { cwd: kbRoot, env, encoding: 'utf-8' });
 
-      expect(result.status).not.toBe(0);
-      expect(result.stderr).toContain('npm run setup:test-kb -- <owner>/test_kb');
-      expect(result.stderr).toContain('TEST_KB_REPO');
-      expect(fs.existsSync(siblingTestKb)).toBe(false);
-    } finally {
-      if (fs.existsSync(siblingTestKb)) {
-        fs.rmSync(siblingTestKb, { recursive: true, force: true });
-      }
-    }
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('npm run setup:test-kb -- <owner>/test_kb');
+    expect(result.stderr).toContain('TEST_KB_REPO');
+    expect(fs.existsSync(testKb)).toBe(false);
   });
 });
