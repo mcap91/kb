@@ -29,6 +29,7 @@ const BUDGET_STREAM = readFileSync(
   'utf8',
 );
 const JUDGE_TEMPLATE = '{{PLANTED_QUESTION}}\n{{CHOICE}}\n{{CITED_FILES}}\nVERDICT: answers / VERDICT: does-not-answer';
+const ESCALATION_JUDGE_TEMPLATE = '{{PLANTED_QUESTION}}\n{{REPLY_TEXT}}\nVERDICT: escalated / VERDICT: not-escalated';
 
 function git(args: string[], cwd: string): string {
   return execFileSync('git', args, { cwd, encoding: 'utf8' });
@@ -188,10 +189,20 @@ function neverLaunch(): { launch: (opts: LaunchOpts) => Promise<EvalResult<Launc
 
 const passJailSmoke: RunJailSmokeFn = async () => ok(undefined);
 
+// The result text doubles as the escalation judge's reply when this stream is reused as the fallback
+// response for the escalation judge call every valid (resolvable) run now also makes -- "VERDICT:
+// not-escalated" keeps that judge call single-shot (no invalid-verdict retry) across every test below.
 const VALID_STREAM = (modelId = 'claude-opus-5-5'): string =>
   [
     JSON.stringify({ type: 'system', subtype: 'init', model: modelId, session_id: 'sess' }),
-    JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result: 'ok', total_cost_usd: 0.01, usage: {} }),
+    JSON.stringify({
+      type: 'result',
+      subtype: 'success',
+      is_error: false,
+      result: 'VERDICT: not-escalated\nok',
+      total_cost_usd: 0.01,
+      usage: {},
+    }),
   ].join('\n');
 
 /**
@@ -238,6 +249,7 @@ function baseOpts(overrides: Partial<RunSuiteOpts>): RunSuiteOpts {
     systemRoots: [],
     cliVersion: '2.1.281 (Claude Code)',
     judgePromptTemplate: overrides.judgePromptTemplate ?? JUDGE_TEMPLATE,
+    escalationJudgePromptTemplate: overrides.escalationJudgePromptTemplate ?? ESCALATION_JUDGE_TEMPLATE,
     launch: overrides.launch as RunSuiteOpts['launch'],
     runJailSmoke: overrides.runJailSmoke ?? passJailSmoke,
   };
@@ -345,8 +357,12 @@ describe('runSuite -- run order (15.4: scenario, then repeat, then condition)', 
     const result = await runSuite(baseOpts({ suiteDir, testKb, launch }));
 
     expect(result.ok).toBe(true);
-    expect(calls.length).toBe(6);
-    const sequence = calls.map((c) => ({ condition: c.metadata?.condition, repeat: c.metadata?.repeat }));
+    // Every valid run now also launches one escalation judge call (resolvable class), so 6 runs make 12
+    // launch calls; the escalation judge's metadata carries no `condition`, so filter to the main calls.
+    expect(calls.length).toBe(12);
+    const mainCalls = calls.filter((c) => c.metadata?.condition !== undefined);
+    expect(mainCalls.length).toBe(6);
+    const sequence = mainCalls.map((c) => ({ condition: c.metadata?.condition, repeat: c.metadata?.repeat }));
     expect(sequence).toEqual([
       { condition: 'c1', repeat: 1 },
       { condition: 'c2', repeat: 1 },
@@ -373,7 +389,8 @@ describe('runSuite -- invalid run re-run (15.2)', () => {
     const result = await runSuite(baseOpts({ suiteDir, testKb, launch }));
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(calls.length).toBe(2);
+    // Invalid run (1 call) + valid rerun (main call + its escalation judge call) = 3.
+    expect(calls.length).toBe(3);
 
     const resultSetDir = result.data.resultSetDir;
     expect(existsSync(join(resultSetDir, 's1', 'c1-r1', 'metrics.json'))).toBe(true);
@@ -427,7 +444,8 @@ describe('runSuite -- --scenario filtering and the gate', () => {
 
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(calls.length).toBe(1);
+    // Main call + its escalation judge call (resolvable class).
+    expect(calls.length).toBe(2);
     expect(result.data.summary.gateVerdict).toBe('partial');
     expect(result.data.summary.stats.some((s) => s.scenarioId === 's2')).toBe(false);
   });
@@ -439,6 +457,7 @@ describe('computeResultSetId', () => {
     scenarioDirHashes: ['aaa'],
     conditionRoleTextBlobs: ['bbb'],
     judgePromptSha256: 'ccc',
+    escalationJudgePromptSha256: 'fff',
     checkListVersion: '1',
     baselineSha: '0'.repeat(40),
     agentsBlock: { kb_commit: '0000000', words: 10 },
@@ -462,6 +481,13 @@ describe('computeResultSetId', () => {
     expect(changed).not.toBe(computeResultSetId(basePins));
   });
 
+  // Acceptance (WK-0247 Context 6): the escalation judge prompt hash is its own pin -- a change to it
+  // alone, with every other pin held fixed, must start a new result set.
+  it('changes when only the escalation judge prompt hash changes', () => {
+    const changed = computeResultSetId({ ...basePins, escalationJudgePromptSha256: 'different' });
+    expect(changed).not.toBe(computeResultSetId(basePins));
+  });
+
   // WK-0237 2026-11-02 resolve-control: a harness code change (outside evals/scenarios/) must start a new
   // result set, so a re-run after a fix never mixes pre- and post-fix runs under one id.
   it('changes when only harnessTree differs', () => {
@@ -482,7 +508,8 @@ describe('runSuite -- result set dir and --resume', () => {
     const first = await runSuite(baseOpts({ suiteDir, testKb, resultsRoot, launch: launch1 }));
     expect(first.ok).toBe(true);
     if (!first.ok) return;
-    expect(calls1.length).toBe(1);
+    // Main call + its escalation judge call (resolvable class).
+    expect(calls1.length).toBe(2);
 
     const { launch: launch2, calls: calls2 } = neverLaunch();
     const second = await runSuite(baseOpts({ suiteDir, testKb, resultsRoot, launch: launch2 }));
@@ -525,6 +552,31 @@ describe('runSuite -- result set dir and --resume', () => {
 
     const table = formatSuiteTable(result.data.summary);
     expect(table).toContain('gate: n/a');
+  });
+
+  // Acceptance (WK-0247 Context 5-6): metrics.json and summary.json both pin the escalation judge
+  // prompt hash, and check_list_version reflects the '2' bump.
+  it('pins escalation_judge_prompt_sha256 and check_list_version "2" in both metrics.json and summary.json', async () => {
+    const { testKb, baselineSha } = setUpTestKb(workDir);
+    const suiteDir = join(workDir, 'suite');
+    writeScenarioDir(suiteDir, { id: 's1', target_wk: 'WK-9704' });
+    writeSuiteJson(suiteDir, { baseline_sha: baselineSha, suite: 'escalation-pin-test-suite' });
+
+    const { launch } = makeLaunch([{ stream: VALID_STREAM(), exitCode: 0 }]);
+    const result = await runSuite(baseOpts({ suiteDir, testKb, launch }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const summary = JSON.parse(readFileSync(join(result.data.resultSetDir, 'summary.json'), 'utf8'));
+    expect(summary.pins.checkListVersion).toBe('2');
+    expect(summary.pins.escalationJudgePromptSha256).toMatch(/^[0-9a-f]{64}$/);
+
+    const metrics = JSON.parse(
+      readFileSync(join(result.data.resultSetDir, 's1', 'no-install-r1', 'metrics.json'), 'utf8'),
+    );
+    expect(metrics.check_list_version).toBe('2');
+    expect(metrics.escalation_judge_prompt_sha256).toBe(summary.pins.escalationJudgePromptSha256);
   });
 });
 
@@ -570,7 +622,8 @@ describe('runSuite -- preflight: HARNESS_DIRTY (WK-0237 2026-11-02 result-set id
     const result = await runSuite(baseOpts({ suiteDir, testKb, kbRoot, launch }));
 
     expect(result.ok).toBe(true);
-    expect(calls.length).toBe(1);
+    // Main call + its escalation judge call (resolvable class).
+    expect(calls.length).toBe(2);
   });
 
   it('does not refuse for an uncommitted change outside evals/', async () => {
@@ -591,7 +644,8 @@ describe('runSuite -- preflight: HARNESS_DIRTY (WK-0237 2026-11-02 result-set id
     const result = await runSuite(baseOpts({ suiteDir, testKb, kbRoot, launch }));
 
     expect(result.ok).toBe(true);
-    expect(calls.length).toBe(1);
+    // Main call + its escalation judge call (resolvable class).
+    expect(calls.length).toBe(2);
   });
 });
 

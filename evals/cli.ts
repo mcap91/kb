@@ -217,6 +217,7 @@ async function runCapture(args: string[]): Promise<number> {
 }
 
 const JUDGE_PROMPT_PATH = join(dirname(fileURLToPath(import.meta.url)), 'judge-prompt.md');
+const ESCALATION_JUDGE_PROMPT_PATH = join(dirname(fileURLToPath(import.meta.url)), 'escalation-judge-prompt.md');
 
 async function runSuiteCommand(args: string[]): Promise<number> {
   const name = getFlagValue(args, '--suite');
@@ -250,6 +251,16 @@ async function runSuiteCommand(args: string[]): Promise<number> {
     return 1;
   }
 
+  let escalationJudgePromptTemplate: string;
+  try {
+    escalationJudgePromptTemplate = readFileSync(ESCALATION_JUDGE_PROMPT_PATH, 'utf8');
+  } catch (err) {
+    console.error(
+      `suite: failed to read ${ESCALATION_JUDGE_PROMPT_PATH}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return 1;
+  }
+
   const result = await runSuite({
     suiteDir: join(kbRoot, 'evals', 'scenarios', name),
     resultsRoot: join(testKbData, 'evals', 'results'),
@@ -264,6 +275,7 @@ async function runSuiteCommand(args: string[]): Promise<number> {
     systemRoots: SYSTEM_ROOTS,
     cliVersion,
     judgePromptTemplate,
+    escalationJudgePromptTemplate,
     launch,
     runJailSmoke: runJailSmokeForPreflight,
   });

@@ -53,6 +53,7 @@ function makeInput(overrides: Partial<EvaluateOutcomeInput>): EvaluateOutcomeInp
     addedRowsLintClean: true,
     precheckPassedRowCount: 1,
     judgeVerdict: 'answers',
+    escalationVerdict: 'not-escalated',
     ...overrides,
   };
 }
@@ -72,9 +73,27 @@ describe('evaluateOutcome: resolvable', () => {
     expect(evaluateOutcome(makeInput({})).passed).toBe(true);
   });
 
-  it('fails opposite-outcome when the reply escalates', () => {
-    const outcome = evaluateOutcome(makeInput({ replyText: ESCALATED_REPLY }));
+  // WK-0247 Context 4: pinned the old first-line rule for the resolvable branch; now the escalation
+  // judge's verdict alone decides opposite-outcome, even when the reply has no template line at all.
+  it('fails opposite-outcome when the escalation judge says the reply escalates, even with no template line', () => {
+    const outcome = evaluateOutcome(
+      makeInput({ replyText: 'A prose approval ask with no template line.', escalationVerdict: 'escalated' }),
+    );
     expect(outcome).toEqual({ passed: false, reason: 'opposite-outcome' });
+  });
+
+  // The judge, not the pattern, decides: a template-form first line with a "not-escalated" verdict proceeds
+  // to the row branches instead of failing opposite-outcome.
+  it('proceeds past opposite-outcome when the escalation judge says not-escalated, even with the template first line', () => {
+    const outcome = evaluateOutcome(
+      makeInput({ replyText: ESCALATED_REPLY, escalationVerdict: 'not-escalated' }),
+    );
+    expect(outcome.passed).toBe(true);
+  });
+
+  it('fails escalation-judge-invalid when the escalation judge verdict could not be parsed', () => {
+    const outcome = evaluateOutcome(makeInput({ escalationVerdict: 'invalid' }));
+    expect(outcome).toEqual({ passed: false, reason: 'escalation-judge-invalid' });
   });
 
   it('fails no-row when there is no added row', () => {

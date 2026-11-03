@@ -19,6 +19,8 @@
  *   home/                                — the main run's jail-bound home
  *   judge-<n>/                           — one per judged added row (max 3):
  *     prompt.txt, stream.jsonl, stderr.log, run.json, home/
+ *   escalation-judge/                     — one per resolvable run (WK-0247 Context 3):
+ *     prompt.txt, stream.jsonl, stderr.log, run.json, home/
  */
 import { execFileSync } from 'node:child_process';
 import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -28,6 +30,7 @@ import { buildSearchIndex, lint, loadManifest, readResolutions, type ResolutionR
 
 import { runCheck, type CheckContext } from './checks.js';
 import { buildClaudeArgv } from './claude-argv.js';
+import { buildEscalationJudgePrompt, parseEscalationVerdict, type EscalationVerdict } from './escalation-judge.js';
 import { type CitedFile, buildJudgePrompt, type JudgeVerdict, judgePromptSha256, parseJudgeVerdict } from './judge.js';
 import { checkRowProse, parseCitations, resolveCitations } from './citations.js';
 import { isUnderWiki, parseGitDiff } from './diff.js';
@@ -68,6 +71,8 @@ export interface RunScenarioOnceOpts {
   cliVersion: string;
   /** `judge-prompt.md`'s text, passed in by the caller (judge.ts stays a pure string function; this module does not read it from disk). */
   judgePromptTemplate: string;
+  /** `escalation-judge-prompt.md`'s text, passed in by the caller (escalation-judge.ts stays a pure string function; this module does not read it from disk). */
+  escalationJudgePromptTemplate: string;
   /** `suite.ts`'s `hashHarnessTree(kbRoot)`, computed once by the caller and pinned into this run's metrics -- this module makes no git calls for it. */
   harnessTree: string;
   launch: LaunchFn;
@@ -319,6 +324,7 @@ export async function runScenarioOnce(opts: RunScenarioOnceOpts): Promise<EvalRe
     scenarioDirSha256: scenarioDirShaResult.data,
     judgeModel: JUDGE_MODEL,
     judgePromptSha256: judgePromptSha256(opts.judgePromptTemplate),
+    escalationJudgePromptSha256: judgePromptSha256(opts.escalationJudgePromptTemplate),
     testKbBaselineSha: suite.baseline_sha,
     agentsBlock: { kbCommit: suite.agents_block.kb_commit, words: suite.agents_block.words },
     harnessTree: opts.harnessTree,
@@ -334,6 +340,7 @@ export async function runScenarioOnce(opts: RunScenarioOnceOpts): Promise<EvalRe
       resolvable_escalated: 0,
       plan_compliance: { passed: 0, total: 0, failed: [] },
       cited_rows: 0,
+      escalation_verdict: 'n/a',
       outcome: { passed: false, reason: `run invalid: ${validity.reason}` },
       reply_words: 0,
       model_id: extractInitModelId(streamLines),
@@ -349,6 +356,7 @@ export async function runScenarioOnce(opts: RunScenarioOnceOpts): Promise<EvalRe
       check_list_version: CHECK_LIST_VERSION,
       judge_model: pinsBase.judgeModel,
       judge_prompt_sha256: pinsBase.judgePromptSha256,
+      escalation_judge_prompt_sha256: pinsBase.escalationJudgePromptSha256,
       test_kb_baseline_sha: pinsBase.testKbBaselineSha,
       agents_block: { kb_commit: pinsBase.agentsBlock.kbCommit, words: pinsBase.agentsBlock.words },
       harness_tree: pinsBase.harnessTree,
@@ -387,6 +395,7 @@ export async function runScenarioOnce(opts: RunScenarioOnceOpts): Promise<EvalRe
     prose: checkRowProse(row),
   }));
   const citedRowCount = rowEvals.filter((r) => r.citation.passed && r.prose.passed).length;
+  const replyText = log.result?.text ?? '';
 
   // 13. Judge: resolvable class, eligible added rows only (max 3), each in a separate jail run.
   let judgeVerdict: JudgeVerdict = 'invalid';
@@ -407,10 +416,10 @@ export async function runScenarioOnce(opts: RunScenarioOnceOpts): Promise<EvalRe
       mkdirSync(judgeDir, { recursive: true });
       writeFileSync(join(judgeDir, 'prompt.txt'), prompt);
 
-      let verdictResult = await runJudgeOnce(prompt, judgeDir, opts, suite, testKb, kbRoot);
+      let verdictResult = await runJudgeOnce(prompt, judgeDir, opts, suite, testKb, kbRoot, parseJudgeVerdict);
       if (!verdictResult.ok) return verdictResult;
       if (verdictResult.data === 'invalid') {
-        verdictResult = await runJudgeOnce(prompt, judgeDir, opts, suite, testKb, kbRoot);
+        verdictResult = await runJudgeOnce(prompt, judgeDir, opts, suite, testKb, kbRoot, parseJudgeVerdict);
         if (!verdictResult.ok) return verdictResult;
       }
       if (verdictResult.data === 'answers') anyAnswers = true;
@@ -419,8 +428,28 @@ export async function runScenarioOnce(opts: RunScenarioOnceOpts): Promise<EvalRe
     judgeVerdict = anyAnswers ? 'answers' : allInvalid ? 'invalid' : 'does-not-answer';
   }
 
+  // 13b. Escalation judge: resolvable class only, one call on the reply text and the planted question
+  // (WK-0247 Context 2-3). operator-only scenarios run no escalation judge; the verdict stays 'n/a'.
+  let escalationVerdict: EscalationVerdict | 'n/a' = 'n/a';
+  if (scenario.class === 'resolvable') {
+    const prompt = buildEscalationJudgePrompt(opts.escalationJudgePromptTemplate, {
+      plantedQuestion: scenario.planted_question,
+      replyText,
+    });
+    const judgeDir = join(opts.runDir, 'escalation-judge');
+    mkdirSync(judgeDir, { recursive: true });
+    writeFileSync(join(judgeDir, 'prompt.txt'), prompt);
+
+    let verdictResult = await runJudgeOnce(prompt, judgeDir, opts, suite, testKb, kbRoot, parseEscalationVerdict);
+    if (!verdictResult.ok) return verdictResult;
+    if (verdictResult.data === 'invalid') {
+      verdictResult = await runJudgeOnce(prompt, judgeDir, opts, suite, testKb, kbRoot, parseEscalationVerdict);
+      if (!verdictResult.ok) return verdictResult;
+    }
+    escalationVerdict = verdictResult.data;
+  }
+
   // 14. Outcome and metrics.
-  const replyText = log.result?.text ?? '';
   const outcome = evaluateOutcome({
     scenario,
     replyText,
@@ -428,6 +457,7 @@ export async function runScenarioOnce(opts: RunScenarioOnceOpts): Promise<EvalRe
     addedRowsLintClean,
     precheckPassedRowCount: citedRowCount,
     judgeVerdict,
+    escalationVerdict,
   });
 
   const pins: RunMetricsPins = { ...pinsBase, modelId: log.modelId };
@@ -436,6 +466,7 @@ export async function runScenarioOnce(opts: RunScenarioOnceOpts): Promise<EvalRe
     replyText,
     checkOutcomes,
     citedRowCount,
+    escalationVerdict,
     outcome,
     modelId: log.modelId,
     totalCostUsd: extractTotalCostUsd(streamLines),
@@ -458,15 +489,16 @@ function resetTestKbStep(testKb: string, baselineSha: string): EvalResult<void> 
   return ok(undefined);
 }
 
-/** One judge jail call: fresh run home, MCP none, claude-sonnet-5, $2 budget, no allowed tools. */
-async function runJudgeOnce(
+/** One judge jail call: fresh run home, MCP none, claude-sonnet-5, $2 budget, no allowed tools. `parseVerdict` distinguishes the citation judge (`parseJudgeVerdict`) from the escalation judge (`parseEscalationVerdict`); both parse an empty reply as `'invalid'`, reused here for the read-failure and parse-failure paths. */
+async function runJudgeOnce<V extends string>(
   prompt: string,
   judgeDir: string,
   opts: RunScenarioOnceOpts,
   suite: Suite,
   testKb: string,
   kbRoot: string,
-): Promise<EvalResult<JudgeVerdict>> {
+  parseVerdict: (text: string) => V,
+): Promise<EvalResult<V>> {
   const judgeHome = join(judgeDir, 'home');
   mkdirSync(judgeHome, { recursive: true });
 
@@ -504,9 +536,9 @@ async function runJudgeOnce(
   try {
     streamRaw = readFileSync(join(judgeDir, 'stream.jsonl'), 'utf8');
   } catch {
-    return ok('invalid');
+    return ok(parseVerdict(''));
   }
   const logResult = parseStreamLog(streamRaw.split('\n'));
-  if (!logResult.ok) return ok('invalid');
-  return ok(parseJudgeVerdict(logResult.data.result?.text ?? ''));
+  if (!logResult.ok) return ok(parseVerdict(''));
+  return ok(parseVerdict(logResult.data.result?.text ?? ''));
 }

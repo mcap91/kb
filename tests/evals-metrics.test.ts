@@ -66,6 +66,7 @@ describe('buildRunMetrics', () => {
         { kind: 'wiki-search-before-reply', outcome: { passed: false, reason: 'no search' } },
       ],
       citedRowCount: 1,
+      escalationVerdict: 'not-escalated',
       outcome: { passed: true },
       modelId: 'claude-opus-5-5',
       totalCostUsd: 0.343,
@@ -80,6 +81,7 @@ describe('buildRunMetrics', () => {
         scenarioDirSha256: 'a'.repeat(64),
         judgeModel: 'claude-sonnet-5',
         judgePromptSha256: 'b'.repeat(64),
+        escalationJudgePromptSha256: 'd'.repeat(64),
         testKbBaselineSha: '2f968e9',
         agentsBlock: { kbCommit: '401b20b', words: 2440 },
         harnessTree: 'c'.repeat(64),
@@ -97,6 +99,8 @@ describe('buildRunMetrics', () => {
     expect(metrics.check_list_version).toBe(CHECK_LIST_VERSION);
     expect(metrics.judge_model).toBe('claude-sonnet-5');
     expect(metrics.judge_prompt_sha256).toBe('b'.repeat(64));
+    // WK-0247 Context 5: the escalation judge prompt hash must reach metrics.json's pins too.
+    expect(metrics.escalation_judge_prompt_sha256).toBe('d'.repeat(64));
     expect(metrics.test_kb_baseline_sha).toBe('2f968e9');
     expect(metrics.agents_block).toEqual({ kb_commit: '401b20b', words: 2440 });
     // WK-0237 2026-11-02 result-set id defect: harness_tree must reach metrics.json's pins.
@@ -112,6 +116,8 @@ describe('buildRunMetrics', () => {
     expect(metrics.repeat).toBe(1);
     expect(metrics.scenario_id).toBe('fixture');
     expect(metrics.cited_rows).toBe(1);
+    // WK-0247 Context 5: the escalation verdict rides along as its own metrics field, independent of the column.
+    expect(metrics.escalation_verdict).toBe('not-escalated');
     expect(metrics.outcome).toEqual({ passed: true });
     expect(metrics.reply_words).toBe(replyWords('A decision was recorded.'));
   });
@@ -126,18 +132,34 @@ describe('buildRunMetrics', () => {
     expect(metrics.resolvable_escalated).toBe(0);
   });
 
-  it('resolvable_escalated is 1 for a resolvable scenario whose reply escalates', () => {
+  // WK-0247 Context 5: pinned the old first-line rule for the metric; now the escalation judge verdict
+  // alone decides the column, even when the reply text carries no template line at all.
+  it('resolvable_escalated is 1 for a resolvable scenario whose escalation verdict is "escalated"', () => {
     const metrics = buildRunMetrics(
-      makeInput({ replyText: 'Operator action needed: yes -- should we ship this?' }),
+      makeInput({ replyText: 'A prose approval ask with no template line.', escalationVerdict: 'escalated' }),
     );
     expect(metrics.resolvable_escalated).toBe(1);
   });
 
-  it('resolvable_escalated is 0 for an operator-only scenario even when it escalates', () => {
+  // The judge, not the pattern, decides: a template-form first line with a "not-escalated" verdict scores 0.
+  it('resolvable_escalated is 0 for a resolvable scenario whose escalation verdict is "not-escalated", even with the template first line', () => {
+    const metrics = buildRunMetrics(
+      makeInput({ replyText: 'Operator action needed: yes -- should we ship this?', escalationVerdict: 'not-escalated' }),
+    );
+    expect(metrics.resolvable_escalated).toBe(0);
+  });
+
+  it('resolvable_escalated is 0 for a resolvable scenario whose escalation verdict is "invalid"', () => {
+    const metrics = buildRunMetrics(makeInput({ escalationVerdict: 'invalid' }));
+    expect(metrics.resolvable_escalated).toBe(0);
+  });
+
+  it('resolvable_escalated is 0 for an operator-only scenario even when its escalation verdict would be "escalated" (n/a, since no judge ever runs for operator-only)', () => {
     const metrics = buildRunMetrics(
       makeInput({
         scenario: makeScenario({ class: 'operator-only' }),
         replyText: 'Operator action needed: yes -- should we ship this?',
+        escalationVerdict: 'n/a',
       }),
     );
     expect(metrics.resolvable_escalated).toBe(0);

@@ -49,6 +49,7 @@ export interface RunSuiteOpts {
   systemRoots: readonly string[];
   cliVersion: string;
   judgePromptTemplate: string;
+  escalationJudgePromptTemplate: string;
   launch: LaunchFn;
   /** Preflight step 1 — refuses the whole run on any failure, naming it. Injected so tests never spawn a real bwrap. */
   runJailSmoke: RunJailSmokeFn;
@@ -59,6 +60,7 @@ export interface SuiteSummaryRecord extends SuiteSummary {
     suite: string;
     cliVersion: string;
     judgePromptSha256: string;
+    escalationJudgePromptSha256: string;
     checkListVersion: string;
     baselineSha: string;
     agentsBlock: { kb_commit: string; words: number };
@@ -81,6 +83,7 @@ export interface ResultSetPinInput {
   scenarioDirHashes: string[];
   conditionRoleTextBlobs: string[];
   judgePromptSha256: string;
+  escalationJudgePromptSha256: string;
   checkListVersion: string;
   baselineSha: string;
   agentsBlock: { kb_commit: string; words: number };
@@ -105,6 +108,7 @@ export function computeResultSetId(input: ResultSetPinInput): string {
     scenarioDirHashes: input.scenarioDirHashes,
     conditionRoleTextBlobs: input.conditionRoleTextBlobs,
     judgePromptSha256: input.judgePromptSha256,
+    escalationJudgePromptSha256: input.escalationJudgePromptSha256,
     checkListVersion: input.checkListVersion,
     baselineSha: input.baselineSha,
     agentsBlock: { kb_commit: input.agentsBlock.kb_commit, words: input.agentsBlock.words },
@@ -261,12 +265,14 @@ export async function runSuite(opts: RunSuiteOpts): Promise<EvalResult<RunSuiteR
   }
 
   const judgePromptSha = judgePromptSha256(opts.judgePromptTemplate);
+  const escalationJudgePromptSha = judgePromptSha256(opts.escalationJudgePromptTemplate);
 
   const resultSetId = computeResultSetId({
     suite: suite.suite,
     scenarioDirHashes,
     conditionRoleTextBlobs: suite.conditions.map((c) => roleTextBlobsByCondition.get(c.name) as string),
     judgePromptSha256: judgePromptSha,
+    escalationJudgePromptSha256: escalationJudgePromptSha,
     checkListVersion: CHECK_LIST_VERSION,
     baselineSha: suite.baseline_sha,
     agentsBlock: suite.agents_block,
@@ -307,6 +313,7 @@ export async function runSuite(opts: RunSuiteOpts): Promise<EvalResult<RunSuiteR
             systemRoots: opts.systemRoots,
             cliVersion: opts.cliVersion,
             judgePromptTemplate: opts.judgePromptTemplate,
+            escalationJudgePromptTemplate: opts.escalationJudgePromptTemplate,
             harnessTree,
             launch: opts.launch,
           }),
@@ -333,6 +340,7 @@ export async function runSuite(opts: RunSuiteOpts): Promise<EvalResult<RunSuiteR
               systemRoots: opts.systemRoots,
               cliVersion: opts.cliVersion,
               judgePromptTemplate: opts.judgePromptTemplate,
+              escalationJudgePromptTemplate: opts.escalationJudgePromptTemplate,
               harnessTree,
               launch: opts.launch,
             }),
@@ -369,6 +377,7 @@ export async function runSuite(opts: RunSuiteOpts): Promise<EvalResult<RunSuiteR
       suite: suite.suite,
       cliVersion: opts.cliVersion,
       judgePromptSha256: judgePromptSha,
+      escalationJudgePromptSha256: escalationJudgePromptSha,
       checkListVersion: CHECK_LIST_VERSION,
       baselineSha: suite.baseline_sha,
       agentsBlock: suite.agents_block,
