@@ -5,12 +5,13 @@
  */
 import type { CheckKind } from './scenario-schema.js';
 import type { CheckOutcome } from './checks.js';
+import type { EscalationVerdict } from './escalation-judge.js';
 import type { OutcomeOutcome } from './outcome.js';
 import type { Scenario } from './scenario-schema.js';
 import type { ValidityOutcome } from './validity.js';
 
-/** This slice's check-list version pin (WK-0237 scope 15.4: "check-list version"). Bump when a check kind's pass/fail semantics change. */
-export const CHECK_LIST_VERSION = '1';
+/** This slice's check-list version pin (WK-0237 scope 15.4: "check-list version"). Bump when a check kind's pass/fail semantics change. WK-0247 bumped '1' -> '2': `resolvable_escalated` now scores from the escalation judge verdict, not the first-line pattern. */
+export const CHECK_LIST_VERSION = '2';
 
 /** Fenced code blocks removed, then whitespace-separated words counted (WK-0237 scope 9, same rule as `~/.claude/hooks/reply-length.py`). */
 export function replyWords(text: string): number {
@@ -26,6 +27,8 @@ export interface RunMetricsPins {
   scenarioDirSha256: string;
   judgeModel: string;
   judgePromptSha256: string;
+  /** sha256 of `escalation-judge-prompt.md`'s text, pinned per run (WK-0247 Context 5). A changed hash starts a new result set. */
+  escalationJudgePromptSha256: string;
   testKbBaselineSha: string;
   agentsBlock: { kbCommit: string; words: number };
   /** `suite.ts`'s `hashHarnessTree(kbRoot)` -- a changed harness tree starts a new result set (WK-0237 scope 15.4). */
@@ -43,6 +46,8 @@ export interface BuildRunMetricsInput {
   checkOutcomes: CheckKindOutcome[];
   /** Count of added `## Resolutions` rows passing both citation resolution and `checkRowProse` (citations.ts). */
   citedRowCount: number;
+  /** The escalation judge's verdict (WK-0247 Context 2-3); `'n/a'` for an `operator-only` scenario, which runs no escalation judge. */
+  escalationVerdict: EscalationVerdict | 'n/a';
   outcome: OutcomeOutcome;
   modelId: string | null;
   totalCostUsd: number;
@@ -57,6 +62,8 @@ export interface RunMetrics {
   resolvable_escalated: 0 | 1;
   plan_compliance: { passed: number; total: number; failed: CheckKind[] };
   cited_rows: number;
+  // DECISION: an invalid verdict scores the column 0 and records `invalid` here; the outcome already fails it.
+  escalation_verdict: 'escalated' | 'not-escalated' | 'invalid' | 'n/a';
   outcome: { passed: boolean; reason?: string };
   reply_words: number;
   model_id: string | null;
@@ -72,6 +79,7 @@ export interface RunMetrics {
   check_list_version: string;
   judge_model: string;
   judge_prompt_sha256: string;
+  escalation_judge_prompt_sha256: string;
   test_kb_baseline_sha: string;
   agents_block: { kb_commit: string; words: number };
   harness_tree: string;
@@ -82,9 +90,8 @@ export function buildRunMetrics(input: BuildRunMetricsInput): RunMetrics {
   const failed = input.checkOutcomes.filter((c) => !c.outcome.passed);
   const passedCount = input.checkOutcomes.length - failed.length;
 
-  const firstLine = input.replyText.split('\n').find((l) => l.trim().length > 0) ?? '';
   const resolvableEscalated: 0 | 1 =
-    input.scenario.class === 'resolvable' && firstLine.startsWith('Operator action needed: yes') ? 1 : 0;
+    input.scenario.class === 'resolvable' && input.escalationVerdict === 'escalated' ? 1 : 0;
 
   return {
     resolvable_escalated: resolvableEscalated,
@@ -94,6 +101,7 @@ export function buildRunMetrics(input: BuildRunMetricsInput): RunMetrics {
       failed: failed.map((c) => c.kind),
     },
     cited_rows: input.citedRowCount,
+    escalation_verdict: input.escalationVerdict,
     outcome: input.outcome.passed ? { passed: true } : { passed: false, reason: input.outcome.reason },
     reply_words: replyWords(input.replyText),
     model_id: input.modelId,
@@ -109,6 +117,7 @@ export function buildRunMetrics(input: BuildRunMetricsInput): RunMetrics {
     check_list_version: CHECK_LIST_VERSION,
     judge_model: input.pins.judgeModel,
     judge_prompt_sha256: input.pins.judgePromptSha256,
+    escalation_judge_prompt_sha256: input.pins.escalationJudgePromptSha256,
     test_kb_baseline_sha: input.pins.testKbBaselineSha,
     agents_block: { kb_commit: input.pins.agentsBlock.kbCommit, words: input.pins.agentsBlock.words },
     harness_tree: input.pins.harnessTree,

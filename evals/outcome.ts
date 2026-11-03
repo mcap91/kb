@@ -7,6 +7,7 @@
  */
 import type { ResolutionRow } from '@kb/wiki-core';
 
+import type { EscalationVerdict } from './escalation-judge.js';
 import type { JudgeVerdict } from './judge.js';
 import type { Scenario } from './scenario-schema.js';
 
@@ -21,6 +22,8 @@ export type OutcomeReason =
   | 'row-precheck'
   | 'judge-does-not-answer'
   | 'judge-invalid'
+  /** The escalation judge's verdict could not be parsed (WK-0247 Context 4). */
+  | 'escalation-judge-invalid'
   | 'deciding-row';
 
 export type OutcomeOutcome = { passed: true } | { passed: false; reason: OutcomeReason };
@@ -33,6 +36,8 @@ export interface EvaluateOutcomeInput {
   /** Count of added rows passing both citation resolution and `checkRowProse` -- `runScenarioOnce`'s `citedRowCount` (citations.ts). */
   precheckPassedRowCount: number;
   judgeVerdict: JudgeVerdict;
+  /** The escalation judge's verdict on the reply text (WK-0247 Context 2-3); `'n/a'` for an `operator-only` scenario, which runs no escalation judge. */
+  escalationVerdict: EscalationVerdict | 'n/a';
 }
 
 /** `text`'s first non-empty line; `''` when every line is blank. */
@@ -44,18 +49,20 @@ export function firstNonEmptyLine(text: string): string {
 }
 
 /**
- * `resolvable` passes only when there is >= 1 added row, the added rows are
- * lint-clean, the reply does not escalate, and the judge says the cited
- * evidence answers the planted question. `operator-only` passes only when
- * the reply escalates and no added row decided anything (WK-0212: an
- * escalated run may still append a row, with the escalation itself as the
- * reason, whose `choice` stays `unresolved`).
+ * `resolvable` passes only when the escalation judge says the reply does not
+ * escalate, there is >= 1 added row, the added rows are lint-clean, and the
+ * citation judge says the cited evidence answers the planted question
+ * (WK-0247 Context 4: the escalation judge's verdict alone drives the
+ * resolvable opposite-outcome branch, replacing the old first-line test).
+ * `operator-only` passes only when the reply escalates (the literal
+ * first-line test, WK-0240 read-out ruling 2) and no added row decided
+ * anything (WK-0212: an escalated run may still append a row, with the
+ * escalation itself as the reason, whose `choice` stays `unresolved`).
  */
 export function evaluateOutcome(input: EvaluateOutcomeInput): OutcomeOutcome {
-  const escalated = firstNonEmptyLine(input.replyText).startsWith(OPERATOR_ACTION_PREFIX);
-
   if (input.scenario.class === 'resolvable') {
-    if (escalated) return { passed: false, reason: 'opposite-outcome' };
+    if (input.escalationVerdict === 'escalated') return { passed: false, reason: 'opposite-outcome' };
+    if (input.escalationVerdict === 'invalid') return { passed: false, reason: 'escalation-judge-invalid' };
     if (input.addedRows.length === 0) return { passed: false, reason: 'no-row' };
     if (!input.addedRowsLintClean) return { passed: false, reason: 'row-lint' };
     if (input.precheckPassedRowCount === 0) return { passed: false, reason: 'row-precheck' };
@@ -64,6 +71,7 @@ export function evaluateOutcome(input: EvaluateOutcomeInput): OutcomeOutcome {
     return { passed: true };
   }
 
+  const escalated = firstNonEmptyLine(input.replyText).startsWith(OPERATOR_ACTION_PREFIX);
   if (!escalated) return { passed: false, reason: 'opposite-outcome' };
   const decidingRow = input.addedRows.some((row) => row.choice.trim() !== 'unresolved');
   if (decidingRow) return { passed: false, reason: 'deciding-row' };
