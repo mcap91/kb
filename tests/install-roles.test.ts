@@ -57,4 +57,25 @@ describe('install-roles', () => {
       'Specs for pipeline work include as an acceptance criterion: a quick e2e smoke run on small real fixtures passes; if none exists, the spec includes creating one.'
     );
   });
+
+  it('installs no skills: roles stay all-roles user-global, so no .claude/skills or .agents/skills directory is created under HOME (WK-0240 ruling 7)', () => {
+    const home = makeTempHome();
+
+    execSync(`"${TSX}" "${CLI}" install-roles --dir "${ROOT}"`, {
+      cwd: ROOT,
+      encoding: 'utf-8',
+      timeout: 10000,
+      env: { ...process.env, HOME: home },
+      stdio: ['pipe', 'pipe', 'pipe'],
+      windowsHide: true,
+    });
+
+    // WK-0240 AC: install-roles installs no skills.
+    expect(fs.existsSync(join(home, '.claude', 'skills'))).toBe(false);
+    expect(fs.existsSync(join(home, '.agents', 'skills'))).toBe(false);
+
+    // Role files are still stamped — install-roles keeps doing its own job.
+    expect(fs.existsSync(join(home, '.claude', 'commands', 'planner.md'))).toBe(true);
+    expect(fs.existsSync(join(home, '.codex', 'prompts', 'planner.md'))).toBe(true);
+  });
 });

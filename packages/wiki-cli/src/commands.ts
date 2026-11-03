@@ -152,6 +152,11 @@ export async function cmdSyncContract(args: string[]): Promise<void> {
       console.log(`  > ${line}`);
     }
   }
+
+  console.log(`  Warnings: ${result.data.warnings.length}`);
+  for (const w of result.data.warnings) {
+    console.log(`  ! warning: ${w}`);
+  }
 }
 
 // ---------------------------------------------------------------------------

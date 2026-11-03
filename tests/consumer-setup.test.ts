@@ -891,7 +891,12 @@ describe('shipped block text', () => {
     expect(emitted).toContain('67. **Every deferral carries a written re-open trigger,**');
     expect(emitted).not.toMatch(/^68\. /m);
     expect(emitted).toContain('## kb — wiki');
-    expect(emitted).not.toContain('/resolve');
+    // WK-0240 ruling (a): the footer now deliberately names /resolve once (the skill
+    // pointer); guard against it leaking anywhere else instead of banning it outright.
+    expect(emitted).toContain(
+      'Skills (`/resolve`) arrive in this repo by `sync-contract`, never user-global.',
+    );
+    expect(emitted.split('/resolve').length - 1).toBe(1);
     expect(emitted.toLowerCase()).not.toMatch(/escalat/);
     expect(emitted).not.toMatch(/\bRD-\d+\b/);
     expect(emitted).not.toMatch(/Dashboard/);
