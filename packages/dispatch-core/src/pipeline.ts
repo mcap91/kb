@@ -342,14 +342,20 @@ export function buildClaudeSettingsJson(writeScope: string[], clonePath: string,
     }
   }
 
+  // WK-0268: Edit rules must be absolute (`//<clonePath>/...`), same as the
+  // Read rule below — Claude Code resolves a RELATIVE allow pattern against
+  // the session's current directory, and a worker's Bash `cd` moves that
+  // directory, so a relative Edit rule stops matching the moment the worker
+  // leaves the clone root. An absolute pattern is immune to `cd`.
+  const clonePathTrimmed = clonePath.replace(/^\/+/, '');
   const editEntries: string[] = [];
   for (const rel of writeScope) {
     const trimmed = rel.replace(/^\/+/, '').replace(/\/+$/, '');
     const absPath = join(clonePath, trimmed);
     if (classifyEntry(absPath, trimmed) === 'file') {
-      editEntries.push(`Edit(${trimmed})`);
+      editEntries.push(`Edit(//${clonePathTrimmed}/${trimmed})`);
     } else {
-      editEntries.push(`Edit(${trimmed}/**)`);
+      editEntries.push(`Edit(//${clonePathTrimmed}/${trimmed}/**)`);
     }
   }
   const deny = ['WebFetch', 'WebSearch', 'Task', 'Agent', 'Workflow', 'Skill', 'Monitor'];
@@ -358,7 +364,7 @@ export function buildClaudeSettingsJson(writeScope: string[], clonePath: string,
   }
   const settings = {
     permissions: {
-      allow: [`Read(//${clonePath.replace(/^\/+/, '')}/**)`, 'Bash', ...editEntries],
+      allow: [`Read(//${clonePathTrimmed}/**)`, 'Bash', ...editEntries],
       deny,
       disableBypassPermissionsMode: 'disable',
     },
