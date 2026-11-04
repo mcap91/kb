@@ -95,7 +95,7 @@ npm run typecheck
 npm test
 ```
 
-`npm ci` installs exactly what `package-lock.json` records and never rewrites it. Use `npm install` only when you change a dependency, and commit the updated lockfile with that change. `npm test` fails first if the lockfile is out of sync.
+`npm ci` installs exactly what `package-lock.json` records and never rewrites it. Use `npm install` only when you change a dependency, and commit the updated lockfile with that change. Before you commit a dependency change, run `npm run check:lockfile`; it fails if `package-lock.json` is out of sync with `package.json`.
 
 If `kb` is already installed and you are updating it:
 

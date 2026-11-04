@@ -466,10 +466,10 @@ Graph excludes:
 Before declaring any work complete, run:
 
 ```
-npm run typecheck && npm test
+npm run check:lockfile && npm run typecheck && npm test
 ```
 
-Both must pass. The gate must be green on Linux (WSL2 ext4).
+All three must pass. The gate must be green on Linux (WSL2 ext4).
 
 ## Test Consuming Repo
 

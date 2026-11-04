@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Fails when package-lock.json is out of sync with the workspace package.json files.
-// Runs automatically before `npm test` (the `pretest` script).
+// Run on the host with `npm run check:lockfile`; it is part of kb's validation command.
+// Not a pretest hook: dispatch jails mount the clone read-only, and this check writes package-lock.json.
 //
 // Regenerates the lockfile offline from the npm cache, compares it with the copy on
 // disk, and always restores the original bytes, so the check never edits the tree.

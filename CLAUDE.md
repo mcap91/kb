@@ -13,7 +13,7 @@ This file is the compatibility entrypoint for Claude Code sessions. The full age
 ### Validation (run before declaring any work complete)
 
 ```
-npm run typecheck && npm test
+npm run check:lockfile && npm run typecheck && npm test
 ```
 
 ### Key Commands
