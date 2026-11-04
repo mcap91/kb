@@ -743,6 +743,25 @@ export interface WikiContractMetadata {
   repo: string;
   bootstrappedAt: string;
   lastSyncedAt?: string;
+  /** Active opt-in install layers; dispatch is triggered by wiki/.dispatch/, not this field. */
+  layers?: Array<'planning'>;
+}
+
+/** Options for the init-planning operation. */
+export interface InitPlanningOpts {
+  dir: string;
+  remove?: boolean;
+  verbose?: boolean;
+}
+
+/** Result of the init-planning operation. */
+export interface InitPlanningResult {
+  /** The resulting `layers` value in wiki/.wiki-contract.json (empty when absent). */
+  layers: Array<'planning'>;
+  /** Whether the stamp file changed. */
+  changed: boolean;
+  /** Absolute path to the stamp file. */
+  path: string;
 }
 
 /** ID allocator state written to wiki/.id-state.json. */

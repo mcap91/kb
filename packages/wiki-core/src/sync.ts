@@ -37,6 +37,7 @@ import {
   assembleBlockBody,
   checkBlockBudget,
   dispatchInstalled,
+  planningInstalled,
 } from './agent-instructions.js';
 import { writeMcpConfig } from './mcp-config.js';
 import { ensureGitignoreEntries } from './gitignore.js';
@@ -502,9 +503,10 @@ export async function sync(opts: SyncOpts): Promise<Result<SyncResult>> {
   const instructions: string[] = [];
 
   const dispatch = dispatchInstalled(targetDir);
+  const planning = planningInstalled(targetDir);
 
   if (agentInstructionsSections) {
-    const blockBody = assembleBlockBody(agentInstructionsSections, { dispatch });
+    const blockBody = assembleBlockBody(agentInstructionsSections, { planning, dispatch });
     const blockResult = writeManagedBlock(targetDir, blockBody, { dryRun: checkOnly });
     if (blockResult.ok) {
       for (const entry of blockResult.data) {

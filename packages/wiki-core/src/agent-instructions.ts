@@ -3,6 +3,7 @@ import * as path from 'node:path';
 import { ok, fail, type Result } from './errors.js';
 import { debug } from './debug.js';
 import type { AgentInstructionsSection } from './contract.js';
+import type { WikiContractMetadata } from './types.js';
 
 const BEGIN_MARKER = '<!-- BEGIN kb-managed -->';
 const END_MARKER = '<!-- END kb-managed -->';
@@ -16,13 +17,39 @@ export function dispatchInstalled(targetDir: string): boolean {
   return fs.existsSync(path.join(targetDir, 'wiki', '.dispatch'));
 }
 
-/** Assemble the managed-block body from sections, dropping dispatch-gated ones when absent. */
+/**
+ * Whether the planning layer is active (WK-0261 Resolutions rows 2, 11): a `"planning"`
+ * entry in the committed `wiki/.wiki-contract.json`, or `wiki/.dispatch/` (dispatch
+ * implies planning). A missing stamp file or missing `layers` field means no planning
+ * entry.
+ */
+export function planningInstalled(targetDir: string): boolean {
+  if (dispatchInstalled(targetDir)) return true;
+
+  const contractPath = path.join(targetDir, 'wiki', '.wiki-contract.json');
+  if (!fs.existsSync(contractPath)) return false;
+
+  try {
+    const meta = JSON.parse(fs.readFileSync(contractPath, 'utf-8')) as WikiContractMetadata;
+    return Array.isArray(meta.layers) && meta.layers.includes('planning');
+  } catch {
+    // An unparseable stamp is handled loudly by sync's metadata step; a layer query
+    // must never throw. Callers that can fail (sync) surface the parse error there.
+    return false;
+  }
+}
+
+/** Assemble the managed-block body from sections, dropping inactive-layer sections. */
 export function assembleBlockBody(
   sections: AgentInstructionsSection[],
-  opts: { dispatch: boolean },
+  opts: { planning: boolean; dispatch: boolean },
 ): string {
   return sections
-    .filter(section => section.requires !== 'dispatch' || opts.dispatch)
+    .filter(section => {
+      if (section.requires === 'dispatch') return opts.dispatch;
+      if (section.requires === 'planning') return opts.planning;
+      return true;
+    })
     .map(section => section.body)
     .join('\n\n');
 }
@@ -44,7 +71,7 @@ export function countBlockWords(body: string): number {
 export function checkBlockBudget(
   sections: AgentInstructionsSection[],
 ): Result<{ words: number; budget: number }> {
-  const body = assembleBlockBody(sections, { dispatch: true });
+  const body = assembleBlockBody(sections, { planning: true, dispatch: true });
   const words = countBlockWords(body);
 
   if (words > BLOCK_WORD_BUDGET) {

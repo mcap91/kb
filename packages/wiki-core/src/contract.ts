@@ -200,11 +200,13 @@ export function getSkillSources(): Result<SkillFile[]> {
 
 /**
  * A per-tool section of the managed agent-instructions block (WK-0229 ruling 14).
- * `requires: 'dispatch'` means the section is dropped when `wiki/.dispatch/` is absent.
+ * `requires: 'planning'` means the section is dropped unless the planning layer is
+ * active (a `"planning"` entry in `wiki/.wiki-contract.json` or `wiki/.dispatch/`);
+ * `requires: 'dispatch'` means it is dropped when `wiki/.dispatch/` is absent.
  */
 export interface AgentInstructionsSection {
   id: 'wiki' | 'dispatch' | 'guidelines' | 'footer';
-  requires?: 'dispatch';
+  requires?: 'planning' | 'dispatch';
   body: string;
 }
 
@@ -212,8 +214,8 @@ export interface AgentInstructionsSection {
 const AGENT_INSTRUCTIONS_SECTION_ORDER: Array<Pick<AgentInstructionsSection, 'id' | 'requires'>> = [
   { id: 'wiki' },
   { id: 'dispatch', requires: 'dispatch' },
-  { id: 'guidelines' },
-  { id: 'footer' },
+  { id: 'guidelines', requires: 'planning' },
+  { id: 'footer', requires: 'planning' },
 ];
 
 /**

@@ -16,12 +16,13 @@ using the SDK's high-level `McpServer` + `registerTool` API.
   (and `destructiveHint` for dispatch); operator-setup / execution tools also carry
   `_meta["io.kb/audience"] = "operator"` so an agent can tell them from routine agent tools.
 
-## kb-wiki (14 tools)
+## kb-wiki (15 tools)
 
 | Tool | Purpose | Required | Optional | Notes |
 |------|---------|----------|----------|-------|
 | `bootstrap` | Bootstrap wiki structure in a consuming repo | `dir`, `repo` | `dryRun`, `mcpClient`, `agentInstructions` | operator |
 | `sync-contract` | Sync contract templates into a bootstrapped repo | `dir` | `check`, `mcpClient`, `agentInstructions`, `adopt` | operator |
+| `init-planning` | Add (or remove with `remove`) the planning layer entry in `wiki/.wiki-contract.json`; run `sync-contract` next | `dir` | `remove` | operator |
 | `allocate-id` | Peek/reserve the next id for a prefix (idempotent) | `dir`, `prefix` | `verbose` | read-only |
 | `create` | Create a new record from a template | `dir`, `prefix`, `title` | `verbose` | |
 | `lint` | Lint records for frontmatter errors | `dir` | `verbose` | read-only |

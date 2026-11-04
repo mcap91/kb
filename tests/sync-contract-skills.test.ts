@@ -394,7 +394,7 @@ describe('shipped block text: footer clause (WK-0240 stage 2 fix-up, overseer ru
     expect(sectionsResult.ok).toBe(true);
     if (!sectionsResult.ok) return;
 
-    const emitted = assembleBlockBody(sectionsResult.data, { dispatch: true });
+    const emitted = assembleBlockBody(sectionsResult.data, { planning: true, dispatch: true });
     // Ruling (ii): the clause names no skill, so it stays correct once a second skill ships.
     expect(emitted).toContain(
       'Skills arrive in this repo by `sync-contract`, never user-global.',

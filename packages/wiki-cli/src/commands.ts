@@ -8,6 +8,7 @@
 import {
   bootstrap,
   sync,
+  initPlanning,
   allocate,
   create,
   lint,
@@ -157,6 +158,34 @@ export async function cmdSyncContract(args: string[]): Promise<void> {
   for (const w of result.data.warnings) {
     console.log(`  ! warning: ${w}`);
   }
+}
+
+// ---------------------------------------------------------------------------
+// init-planning
+// ---------------------------------------------------------------------------
+
+/**
+ * Add or remove the planning layer entry in wiki/.wiki-contract.json (WK-0261).
+ * The layer is applied to the managed block and MCP config by the next sync.
+ */
+export async function cmdInitPlanning(args: string[]): Promise<void> {
+  let dir: string;
+  try { dir = requireDir(args); } catch { return; }
+
+  const remove = parseFlag(args, '--remove');
+  const result = initPlanning({ dir, remove });
+
+  if (!result.ok) {
+    console.error(`Error [${result.error}]: ${result.message}`);
+    process.exitCode = 1;
+    return;
+  }
+
+  const { layers, changed } = result.data;
+  console.log(`Planning layer ${changed ? (remove ? 'removed' : 'enabled') : 'unchanged'}.`);
+  console.log(`  layers: ${JSON.stringify(layers)}`);
+  console.log(`  Contract: ${result.data.path}`);
+  console.log('Next: run `sync-contract` to apply the layer.');
 }
 
 // ---------------------------------------------------------------------------
