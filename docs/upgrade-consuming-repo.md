@@ -12,7 +12,7 @@ Run from the `kb` checkout:
 
 ```bash
 git pull
-npm install
+npm ci
 npm run typecheck
 npm test
 npm run wiki -- install-roles

@@ -24,7 +24,7 @@ Install dependencies in `kb`:
 
 ```
 cd kb
-npm install
+npm ci
 ```
 
 ## Bootstrap

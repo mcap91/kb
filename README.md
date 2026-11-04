@@ -90,16 +90,18 @@ projects/
 From the `kb` repo:
 
 ```bash
-npm install
+npm ci
 npm run typecheck
 npm test
 ```
+
+`npm ci` installs exactly what `package-lock.json` records and never rewrites it. Use `npm install` only when you change a dependency, and commit the updated lockfile with that change. `npm test` fails first if the lockfile is out of sync.
 
 If `kb` is already installed and you are updating it:
 
 ```bash
 git pull
-npm install
+npm ci
 npm run typecheck
 npm test
 ```
@@ -452,7 +454,7 @@ If you are upgrading an existing consuming repo, the minimum safe sequence from 
 
 ```bash
 git pull
-npm install
+npm ci
 npm run typecheck
 npm test
 npm run wiki -- sync-contract --dir ../my-project
@@ -554,7 +556,7 @@ If `../kb` dependencies are not installed:
 
 ```bash
 cd ../kb
-npm install
+npm ci
 npm run typecheck
 npm test
 ```
@@ -671,7 +673,7 @@ Maintainers who track development in the project wiki:
 git clone https://github.com/mcap91/kb.git
 cd kb
 git clone https://github.com/mcap91/kb-wiki.git wiki
-npm install
+npm ci
 ```
 
 The `wiki/` directory is gitignored. Changes to wiki records are committed and pushed from within `wiki/` (which has its own git repo).

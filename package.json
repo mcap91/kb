@@ -15,6 +15,7 @@
     "dashboard": "node --import tsx packages/dashboard/src/cli.ts",
     "setup:test-kb": "node scripts/setup-test-kb.mjs",
     "eval": "node --import tsx evals/cli.ts",
+    "pretest": "node scripts/check-lockfile.mjs",
     "test": "vitest run",
     "typecheck": "tsc --build"
   },
