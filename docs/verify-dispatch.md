@@ -142,7 +142,7 @@ Dispatch must never target the `kb` checkout itself — always a disposable cons
    tree (including `wiki/issues/` and `wiki/handoffs/`), writes the `CLAUDE.md` managed block, and
    merges the `.mcp.json` entries. Commit the result — `create-handoff` needs at least one commit
    to stamp `base_sha` from.
-3. Scaffold dispatch config: `init-dispatch` (`kb-dispatch` MCP; MCP-only, no CLI subcommand)
+3. Scaffold dispatch config: `init-dispatch` (`kb-dispatch` MCP, or `npm run dispatch -- init-dispatch --dir <repo>`)
    writes blank `wiki/.dispatch/models.json`, `backends.json`, `profiles.json`, and a `README.md`
    with worked examples — every file written only if absent. Edit `models.json` to add your model
    alias (`available_on`, provider `model_id`) and `backends.json` to add your backend name

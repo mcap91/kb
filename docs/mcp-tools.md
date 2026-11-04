@@ -16,7 +16,7 @@ using the SDK's high-level `McpServer` + `registerTool` API.
   (and `destructiveHint` for dispatch); operator-setup / execution tools also carry
   `_meta["io.kb/audience"] = "operator"` so an agent can tell them from routine agent tools.
 
-## kb-wiki (13 tools)
+## kb-wiki (14 tools)
 
 | Tool | Purpose | Required | Optional | Notes |
 |------|---------|----------|----------|-------|
@@ -33,8 +33,9 @@ using the SDK's high-level `McpServer` + `registerTool` API.
 | `archive-plan` | Mark a PLN done without moving its bundle | `dir`, `plan` | — | |
 | `value-report` | Compute deterministic git+graph metrics for a VAL | `dir` | `since`, `untilRef` | read-only |
 | `value-usage` | Own the Claude+Codex JSONL read, price via a vendored LiteLLM table (by model+provider) for a date window | `dir`, `since`, `until` | — | read-only |
+| `value-finalize` | Render the deterministic VAL body and frontmatter numerics from frozen `value-report` + `value-usage` JSON and operator-ratified per-row days | `dir`, `report`, `usage`, `ratified` | — | |
 
-## kb-dispatch (9 tools)
+## kb-dispatch (10 tools)
 
 v2 only — there is no review/launch token pipeline, no operator config directory, and no agent
 registry. `dispatch` gates and runs the full pipeline (admission → clone → jail → worker → delivery →
@@ -50,6 +51,7 @@ a background Bash call (`run_in_background: true`) to be notified when the run r
 | `dispatch` | Run the v2 dispatch pipeline (admission → clone → jail → worker → delivery → capture). Always backgrounds; returns a `watch` command | `dir`, `handoff` | `model`, `backend`, `effort`, `preflight`, `verbose` | operator, destructive; `model`/`backend` optional — resolved by HO mode from `models.json` `use_for` defaults when omitted (WK-0070) |
 | `derive-review` | Create a `code_review` HO from a delivered `implement` HO. Does not dispatch it — dispatch separately | `dir`, `handoff_id` | — | operator |
 | `init-dispatch` | Scaffold `wiki/.dispatch/` config tables (`models.json`, `backends.json`, `profiles.json`) + write-once README | `dir` | — | operator |
+| `restamp` | Set an HO's `base_sha` (and `base_wiki_sha`, when declared) to current HEAD — the remediation for a `BASE_DRIFT` refusal. Re-read the declared files first; this does not re-read them | `dir`, `handoff` | — | |
 | `merge-delivery` | Merge a delivery branch into the target after review pass; gates on review evidence | `dir`, `handoff_id` | — | operator, destructive |
 | `stop-run` | Kill a running dispatch by run-id and mark its state cancelled. Already-terminal runs return `ok` with a note, not an error | `dir`, `run_id` | — | operator, destructive |
 

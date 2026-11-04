@@ -28,7 +28,7 @@ dispatch, see "Dispatch Config Tables" below.
 
 The managed block carries the kb-wiki section always. The kb-dispatch section appears on the next sync
 after `init-dispatch` has created `wiki/.dispatch/` — removing that directory removes the section (and the
-`.mcp.json` `kb-dispatch` entry) on the next sync. The 65 ratified engineering guidelines are carried inline
+`.mcp.json` `kb-dispatch` entry) on the next sync. The ratified engineering guidelines are carried inline
 in the block, not as a separate reference.
 
 The block has a 4,000-word budget (WK-0229 ruling 16), measured between the `<!-- BEGIN kb-managed -->` /

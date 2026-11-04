@@ -61,7 +61,7 @@ never author-set inputs.
 
 ## Modes and the Envelope
 
-Four mode ceilings (DEC-0007 D4); a handoff may narrow a ceiling, never widen it:
+Five mode ceilings (DEC-0007 D4); a handoff may narrow a ceiling, never widen it:
 
 | Mode | `write_scope` | `web` | Delivers a commit? |
 |------|---------------|-------|---------------------|
@@ -69,8 +69,9 @@ Four mode ceilings (DEC-0007 D4); a handoff may narrow a ceiling, never widen it
 | `code_review` | must be empty | never | no — response only |
 | `redteam` | must be empty | never | no — response only |
 | `research` | must be empty | opt-in | no — response only; never emits the recovery block (prose only) |
+| `explore_code` | must be empty | never | no — response only; read-only codebase investigation |
 
-`code_review`/`redteam`/`research` are advisory: the worker gets no write authority in the jail
+`code_review`/`redteam`/`research`/`explore_code` are advisory: the worker gets no write authority in the jail
 regardless of what it attempts, and any stray mutation is discarded with a warning rather than fed
 into delivery.
 

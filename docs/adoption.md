@@ -227,7 +227,7 @@ This writes `wiki/handoffs/HO-XXXX.md`. You can also author handoffs manually if
 Fill in or refine:
 
 - `allowed_agents`
-- `mode`: `implement`, `code_review`, `redteam`, or `research`
+- `mode`: `implement`, `code_review`, `redteam`, `research`, or `explore_code`
 - `write_scope`
 - `## Read First`
 - `## Objective`
@@ -236,7 +236,7 @@ Fill in or refine:
 - `## Context`
 
 `write_scope` entries may be file paths or directory paths, repo-relative. Only `implement` mode may
-deliver a commit; `code_review`/`redteam`/`research` must carry an empty `write_scope` and never gain
+deliver a commit; `code_review`/`redteam`/`research`/`explore_code` must carry an empty `write_scope` and never gain
 write authority inside the jail regardless of what the HO asks for.
 
 ### 4. Dispatch and Wait
@@ -256,7 +256,7 @@ npm run dispatch -- wait-for-run --dir ../my-project --run-id RUN-<uuid>
 
 For `implement` mode, a successful run lands a scope-checked commit onto `refs/heads/dispatch/HO-XXXX`
 and writes the result to `wiki/handoffs/HO-XXXX.response.md` (both auto-committed). Advisory modes
-(`code_review`/`redteam`/`research`) never deliver a commit — the worker's response is the deliverable.
+(`code_review`/`redteam`/`research`/`explore_code`) never deliver a commit — the worker's response is the deliverable.
 
 If admission fails, `dispatch` refuses synchronously, before any worker spawns, with a structured
 refusal code (`MISSING_WRITE_SCOPE`, `DIRTY_REPO`, `NO_ISOLATION_ROUTE`, and others — see

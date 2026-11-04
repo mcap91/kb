@@ -25,6 +25,7 @@ npm run dashboard -- <ID> [--dir <path>]
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--dir <path>` | `cwd` | Repo root to read wiki records from |
+| `--list` | off | List existing `wiki/dashboard/*.html` paths and exit |
 
 ### Output
 

@@ -314,7 +314,7 @@ Add a matching model entry:
 ### Dispatch to it
 
 ```bash
-npm run dispatch -- --dir <repo> --handoff wiki/handoffs/HO-XXXX.md --model qwen-0.5b-vllm --backend vllm-local
+npm run dispatch -- dispatch --dir <repo> --handoff wiki/handoffs/HO-XXXX.md --model qwen-0.5b-vllm --backend vllm-local
 ```
 
 or the `dispatch` MCP tool with the same `dir` / `handoff` / `model` / `backend` fields. Author
@@ -375,7 +375,7 @@ vllm serve <MODEL_ID> --enable-auto-tool-choice --tool-call-parser <CANDIDATE> .
 **Step 4 — Dispatch a test handoff.** Use a trivial implement HO (e.g. "write a hello
 function") — the task result doesn't matter, the capture does.
 ```bash
-npm run dispatch -- --dir <repo> --handoff wiki/handoffs/HO-XXXX.md \
+npm run dispatch -- dispatch --dir <repo> --handoff wiki/handoffs/HO-XXXX.md \
   --model <slug> --backend <vllm-backend>
 ```
 
