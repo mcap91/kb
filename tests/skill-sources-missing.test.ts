@@ -18,7 +18,6 @@ vi.mock('node:fs', async (importOriginal) => {
   return {
     ...actual,
     existsSync: patchedExistsSync,
-    default: { ...actual.default, existsSync: patchedExistsSync },
   };
 });
 
