@@ -394,15 +394,16 @@ orchestrator merges on pass     → merge-delivery
 ## Refusal Codes
 
 Every code the admission/pipeline gate can return as a synchronous refusal (before a worker ever
-spawns), grouped by the phase that raises it:
+spawns), grouped by the phase that raises it. `V2_REFUSAL_CODES` in `packages/dispatch-core/src/errors.ts`
+is the source list; a test fails if this table and that list disagree:
 
 | Phase | Codes |
 |-------|-------|
 | Handoff shape | `BAD_RECORD` |
-| Admission (repo-local) | `MISSING_WRITE_SCOPE`, `ENVELOPE_EXCEEDS_MODE`, `STALE_WRITE_SCOPE`, `MISSING_READ_FIRST`, `DIRTY_REPO`, `BAD_BASE_REF`, `BAD_DATA_MOUNT`, `WORK_ITEM_NOT_FOUND`, `BASE_DRIFT`, `ADMISSION_FAILED` |
-| Model/backend resolution | `MODEL_NOT_FOUND`, `EFFORT_UNSUPPORTED` |
+| Admission (repo-local) | `MISSING_WRITE_SCOPE`, `ENVELOPE_EXCEEDS_MODE`, `STALE_WRITE_SCOPE`, `WRITE_SCOPE_UNCAPTURABLE`, `MISSING_READ_FIRST`, `DIRTY_REPO`, `BAD_BASE_REF`, `BAD_DATA_MOUNT`, `BAD_RUNTIME_ENV`, `RUNTIME_EXPORT_OVERLAP`, `WORK_ITEM_NOT_FOUND`, `BASE_DRIFT`, `ADMISSION_FAILED` |
+| Model/backend resolution | `MODEL_NOT_FOUND`, `EFFORT_UNSUPPORTED`, `NO_MODEL_DEFAULT`, `AMBIGUOUS_MODEL_DEFAULT`, `AMBIGUOUS_BACKEND` |
 | Credentials | `CREDENTIALS_WITH_WEB`, `UNKNOWN_PROFILE`, `CREDENTIAL_NOT_CONFIGURED` |
-| Host / prompt budget | `PREFLIGHT_FAILED`, `NO_ISOLATION_ROUTE`, `CONTEXT_BUDGET_EXCEEDED` |
+| Host / prompt budget | `PREFLIGHT_FAILED`, `NO_ISOLATION_ROUTE`, `CLI_PATH_NOT_MOUNTABLE`, `CONTEXT_BUDGET_EXCEEDED` |
 | Worker-specific | `CLAUDE_PERMISSION_PROBE_FAILED` |
 | Concurrency | `ACTIVE_RUN_EXISTS` |
 
