@@ -430,18 +430,20 @@ describe('buildDeliveryScript excludePrefixes — generic git-add exclusion (no 
 // untouched skeleton blob from the landed tree/diff.
 // ---------------------------------------------------------------------------
 
-describe('delivery.ts — buildDeliveryScript filters untouched 0-byte write_scope skeletons (WK-0169)', () => {
-  it('generates the empty-blob exclusion fragment', () => {
+describe('delivery.ts — buildDeliveryScript filters untouched 0-byte write_scope skeletons (WK-0169, narrowed by WK-0263)', () => {
+  it('generates the empty-blob exclusion fragment, gated on the step-9b-created skeleton path list', () => {
     const { scriptContent } = buildDeliveryScript({
       clonePath: '/tmp/run/clone',
       motherRepoWsl: '/mnt/c/example/projects/kb',
       handoffId: 'HO-0002',
       baseSha: 'deadbeef',
+      skeletonPaths: ['src/skeleton.txt'],
     });
 
     expect(scriptContent).toContain('e69de29bb2d1d6434b8b29ae775ad8c2e48c5391');
     expect(scriptContent).toContain('update-index --force-remove');
-    expect(scriptContent).toContain('cat-file -e "$BASE_SHA:$ENTRY_PATH"');
+    expect(scriptContent).toContain("SKELETON_PATHS=('src/skeleton.txt')");
+    expect(scriptContent).toContain('is_skeleton_path');
   });
 
   it('excludes an untouched skeleton but includes a worker-written file in a real delivery', async () => {
@@ -478,6 +480,9 @@ describe('delivery.ts — buildDeliveryScript filters untouched 0-byte write_sco
         motherRepoWsl: motherRepo,
         handoffId: 'HO-WK0169',
         baseSha,
+        // Mirrors step 9b's return value: both file-level skeletons were
+        // created fresh in this (simulated) run.
+        skeletonPaths: ['src/skeleton-untouched.txt', 'src/skeleton-active.ts'],
       });
       const scriptPath = join(scriptDir, 'dispatch-deliver.sh');
       await writeFile(scriptPath, scriptContent, 'utf8');
@@ -497,6 +502,123 @@ describe('delivery.ts — buildDeliveryScript filters untouched 0-byte write_sco
       ).toString();
       expect(showTree).toContain('src/skeleton-active.ts');
       expect(showTree).not.toContain('src/skeleton-untouched.txt');
+    } finally {
+      await rm(motherRepo, { recursive: true, force: true });
+      await rm(cloneRepo, { recursive: true, force: true });
+      await rm(scriptDir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// delivery.ts — WK-0263: the skeleton filter keys on "created by step 9b in
+// this run", not "empty and new" (WK-0169's original, too-broad rule).
+// ---------------------------------------------------------------------------
+
+/** Shared real-git fixture setup for the WK-0263 live-execution tests below. */
+async function setupMotherAndClone(): Promise<{
+  motherRepo: string;
+  cloneRepo: string;
+  scriptDir: string;
+  baseSha: string;
+}> {
+  const motherRepo = await createTempDir('kb-wk0263-mother-');
+  const cloneRepo = await createTempDir('kb-wk0263-clone-');
+  const scriptDir = await createTempDir('kb-wk0263-script-');
+
+  execFileSync('git', ['init'], { cwd: motherRepo });
+  execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: motherRepo });
+  execFileSync('git', ['config', 'user.name', 'Test User'], { cwd: motherRepo });
+  await writeFile(join(motherRepo, 'README.md'), 'fixture repo\n', 'utf8');
+  await writeFile(join(motherRepo, 'tracked-not-empty.txt'), 'pre-existing content\n', 'utf8');
+  execFileSync('git', ['add', '-A'], { cwd: motherRepo });
+  execFileSync('git', ['commit', '-m', 'initial commit'], { cwd: motherRepo });
+  const baseSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: motherRepo }).toString().trim();
+
+  await rm(cloneRepo, { recursive: true, force: true });
+  execFileSync('git', ['clone', motherRepo, cloneRepo]);
+  execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: cloneRepo });
+  execFileSync('git', ['config', 'user.name', 'Test User'], { cwd: cloneRepo });
+
+  return { motherRepo, cloneRepo, scriptDir, baseSha };
+}
+
+describe('delivery.ts — buildDeliveryScript keeps worker-created zero-byte files (WK-0263)', () => {
+  it('AC1: keeps a worker-created zero-byte file under a directory write_scope entry', async () => {
+    const { motherRepo, cloneRepo, scriptDir, baseSha } = await setupMotherAndClone();
+    try {
+      // `skills/ntfy-bridge/` is a directory write_scope entry: step 9b only
+      // mkdirs it (precreateWriteScopeSkeleton never creates a file skeleton
+      // for a directory entry), so this path never reaches skeletonPaths.
+      await mkdir(join(cloneRepo, 'skills', 'ntfy-bridge'), { recursive: true });
+      await writeFile(join(cloneRepo, 'skills', 'ntfy-bridge', 'poll-zero.jsonl'), '', 'utf8');
+
+      const { scriptContent } = buildDeliveryScript({
+        clonePath: cloneRepo,
+        motherRepoWsl: motherRepo,
+        handoffId: 'HO-WK0263-AC1',
+        baseSha,
+        skeletonPaths: [],
+      });
+      const scriptPath = join(scriptDir, 'dispatch-deliver.sh');
+      await writeFile(scriptPath, scriptContent, 'utf8');
+      const stdout = execFileSync('bash', [scriptPath]).toString();
+
+      const delivery = parseDeliveryOutput(stdout);
+      expect(delivery.status).toBe('delivered');
+      if (delivery.status !== 'delivered') return;
+      expect(delivery.changedFiles).toContain('skills/ntfy-bridge/poll-zero.jsonl');
+
+      const showTree = execFileSync(
+        'git',
+        ['show', '--stat', '--format=', 'refs/heads/dispatch/HO-WK0263-AC1'],
+        { cwd: motherRepo },
+      ).toString();
+      expect(showTree).toContain('skills/ntfy-bridge/poll-zero.jsonl');
+
+      const blob = execFileSync(
+        'git',
+        ['show', 'refs/heads/dispatch/HO-WK0263-AC1:skills/ntfy-bridge/poll-zero.jsonl'],
+        { cwd: motherRepo },
+      ).toString();
+      expect(blob).toBe('');
+    } finally {
+      await rm(motherRepo, { recursive: true, force: true });
+      await rm(cloneRepo, { recursive: true, force: true });
+      await rm(scriptDir, { recursive: true, force: true });
+    }
+  });
+
+  it('AC3: keeps a pre-existing tracked file the worker truncated to empty', async () => {
+    const { motherRepo, cloneRepo, scriptDir, baseSha } = await setupMotherAndClone();
+    try {
+      // tracked-not-empty.txt already exists at baseSha with non-empty
+      // content; step 9b never touches it (not a write_scope entry at all),
+      // so it is never a skeleton candidate. The worker truncates it directly.
+      await writeFile(join(cloneRepo, 'tracked-not-empty.txt'), '', 'utf8');
+
+      const { scriptContent } = buildDeliveryScript({
+        clonePath: cloneRepo,
+        motherRepoWsl: motherRepo,
+        handoffId: 'HO-WK0263-AC3',
+        baseSha,
+        skeletonPaths: [],
+      });
+      const scriptPath = join(scriptDir, 'dispatch-deliver.sh');
+      await writeFile(scriptPath, scriptContent, 'utf8');
+      const stdout = execFileSync('bash', [scriptPath]).toString();
+
+      const delivery = parseDeliveryOutput(stdout);
+      expect(delivery.status).toBe('delivered');
+      if (delivery.status !== 'delivered') return;
+      expect(delivery.changedFiles).toContain('tracked-not-empty.txt');
+
+      const showTree = execFileSync(
+        'git',
+        ['show', '--stat', '--format=', 'refs/heads/dispatch/HO-WK0263-AC3'],
+        { cwd: motherRepo },
+      ).toString();
+      expect(showTree).toContain('tracked-not-empty.txt');
     } finally {
       await rm(motherRepo, { recursive: true, force: true });
       await rm(cloneRepo, { recursive: true, force: true });

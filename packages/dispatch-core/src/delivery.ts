@@ -248,7 +248,8 @@ export function scanSecrets(diff: string): { ok: true } | { ok: false; patterns:
 /**
  * Phase 2 (land): the canonical b4r delivery sequence — seed a temp index
  * from `base_sha`, stage the clone's full delta, drop untouched 0-byte
- * write_scope skeleton files (WK-0169 — see the inline script comment),
+ * write_scope skeleton files created by step 9b in this run and still empty
+ * (WK-0169, narrowed by WK-0263 — see the inline script comment),
  * write-tree/commit-tree with the pinned committer, then CAS-push onto
  * `refs/heads/dispatch/<handoffId>` in the mother repo. Never touches the
  * real index; never force-pushes. On a fresh delivery the script also
@@ -264,6 +265,12 @@ export function buildDeliveryScript(opts: {
   excludePrefixes?: string[];
   /** WK-0180 guard 2: write_scope entries to scope the post-add ignored-write scan to. */
   writeScope?: string[];
+  /**
+   * WK-0263: write_scope-relative paths step 9b (`precreateWriteScopeSkeleton`,
+   * pipeline.ts) actually created as file skeletons in this run — the only
+   * paths eligible for the untouched-skeleton drop below.
+   */
+  skeletonPaths?: string[];
 }): DeliveryScript {
   const { clonePath, motherRepoWsl, handoffId, baseSha } = opts;
   const prefixes = opts.excludePrefixes ?? [];
@@ -278,6 +285,10 @@ export function buildDeliveryScript(opts: {
   const ignoredScanLine = writeScope.length === 0
     ? ''
     : `IGNORED_IN_SCOPE=$($GIT ls-files --others -i --exclude-standard -- ${writeScope.map(shQuote).join(' ')})\n`;
+  const skeletonPaths = opts.skeletonPaths ?? [];
+  const skeletonPathsArrayLine = skeletonPaths.length === 0
+    ? 'SKELETON_PATHS=()'
+    : `SKELETON_PATHS=(${skeletonPaths.map(shQuote).join(' ')})`;
 
   const scriptContent = `#!/bin/bash
 set -euo pipefail
@@ -305,17 +316,35 @@ ${gitAddLine}
 
 IGNORED_IN_SCOPE=""
 ${ignoredScanLine}
-# WK-0169: drop untouched 0-byte write_scope skeleton files (step 9b
-# precreateWriteScopeSkeleton) from this commit. A skeleton file is created
-# via O_CREAT|O_EXCL and left empty; if the worker never writes to it, its
-# blob is still the canonical empty blob. Only paths that did not already
-# exist at BASE_SHA are candidates — a pre-existing tracked file the worker
-# deliberately truncated to empty is a real change and stays staged.
+# WK-0263 (was WK-0169's "empty and new" rule, too broad — it dropped every
+# zero-byte file the worker created, not only untouched skeletons): drop a
+# staged path only if BOTH hold — step 9b (precreateWriteScopeSkeleton,
+# pipeline.ts) created it as a file skeleton in THIS run (SKELETON_PATHS,
+# passed in from that step's return value) AND its blob is still the
+# canonical empty blob at delivery, i.e. the worker never wrote to it. A
+# zero-byte file the worker created itself — including one under a
+# directory write_scope entry, which 9b never skeletons — is never in
+# SKELETON_PATHS, so it is staged and committed like any other file. A
+# pre-existing tracked file the worker deliberately truncated to empty is
+# also never in SKELETON_PATHS (9b's O_CREAT|O_EXCL only adds a path there
+# when it created the file, not when the path already existed), so it stays
+# staged as a real change.
+${skeletonPathsArrayLine}
 EMPTY_BLOB="e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"
+is_skeleton_path() {
+  local target="$1"
+  local sp
+  for sp in "\${SKELETON_PATHS[@]}"; do
+    if [ "$sp" = "$target" ]; then
+      return 0
+    fi
+  done
+  return 1
+}
 $GIT ls-files -s | while IFS= read -r ENTRY; do
   ENTRY_HASH=$(printf '%s' "$ENTRY" | cut -d' ' -f2)
   ENTRY_PATH=$(printf '%s' "$ENTRY" | cut -f2)
-  if [ "$ENTRY_HASH" = "$EMPTY_BLOB" ] && ! $GIT cat-file -e "$BASE_SHA:$ENTRY_PATH" 2>/dev/null; then
+  if [ "$ENTRY_HASH" = "$EMPTY_BLOB" ] && is_skeleton_path "$ENTRY_PATH"; then
     $GIT update-index --force-remove -- "$ENTRY_PATH"
   fi
 done

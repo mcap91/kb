@@ -623,8 +623,17 @@ export async function collectMountWrites(
  * which has already run against every entry reaching this call site in the
  * real pipeline. File entries: mkdir the parent, touch the file (chassis
  * pattern: O_CREAT | O_EXCL). Directory entries: mkdir the entry itself.
+ *
+ * Returns the write_scope-relative paths of the file skeletons actually
+ * created in THIS run (the `O_CREAT | O_EXCL` succeeded — not an existing
+ * path that raced to `EEXIST`, and never a directory entry, since those get
+ * `mkdir` only). Delivery (WK-0263) uses this list, not a blob-shape guess,
+ * to tell an untouched step-9b skeleton apart from a worker-created
+ * zero-byte file.
  */
-export async function precreateWriteScopeSkeleton(writeScope: string[], clonePath: string): Promise<DispatchResult<null>> {
+export async function precreateWriteScopeSkeleton(writeScope: string[], clonePath: string): Promise<DispatchResult<string[]>> {
+  const createdSkeletonPaths: string[] = [];
+
   if (writeScope.length > 0) {
     for (const rel of writeScope) {
       const trimmed = rel.replace(/^\/+/, '').replace(/\/+$/, '');
@@ -643,6 +652,7 @@ export async function precreateWriteScopeSkeleton(writeScope: string[], clonePat
         }
         try {
           closeSync(openSync(entryPath, fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY, 0o644));
+          createdSkeletonPaths.push(trimmed);
         } catch (err) {
           if ((err as NodeJS.ErrnoException)?.code !== 'EEXIST') {
             return fail('PIPELINE_FAILED', `Failed to create write_scope skeleton file: ${entryPath}`, err);
@@ -658,7 +668,7 @@ export async function precreateWriteScopeSkeleton(writeScope: string[], clonePat
     }
   }
 
-  return ok(null);
+  return ok(createdSkeletonPaths);
 }
 
 /**
@@ -937,6 +947,7 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
     // every write_scope path must already exist on disk before buildBwrapPlan.
     const skeletonResult = await precreateWriteScopeSkeleton(handoff.write_scope, clonePath);
     if (!skeletonResult.ok) return skeletonResult;
+    const createdSkeletonPaths = skeletonResult.data;
 
     // 9c. Wiki mount-target skeleton for nested-private shape (WK-0149).
     await precreateWikiMountSkeleton(wikiShape, clonePath);
@@ -1609,6 +1620,7 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
           handoffId: handoff.id,
           baseSha: admission.data.baseSha,
           writeScope: handoff.write_scope,
+          skeletonPaths: createdSkeletonPaths,
         });
         const deliveryExec = await execBash({
           scriptContent: deliveryScript.scriptContent,
