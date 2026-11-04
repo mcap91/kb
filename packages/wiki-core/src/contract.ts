@@ -142,6 +142,62 @@ export function getRecordTemplates(): Result<string[]> {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Skill helpers (WK-0240 stage 2)
+// ---------------------------------------------------------------------------
+
+/** Path to the skills directory. */
+export function skillsDir(): string {
+  return contractPath('skills');
+}
+
+/** Runtime directories that receive a managed copy of each contract/skills/<name>/ folder. */
+export const SKILL_RUNTIME_DIRS = ['.claude/skills', '.agents/skills'] as const;
+
+/** One file to deliver for one skill: its name, absolute source path, and path relative to the skill folder. */
+export interface SkillFile {
+  skill: string;
+  srcPath: string;
+  relPath: string;
+}
+
+/**
+ * List every file under every `contract/skills/<name>/` folder, recursively.
+ * A missing `contract/skills/` directory is an empty list, not an error — stage 2
+ * ships ahead of any guaranteed skill folder.
+ */
+export function getSkillSources(): Result<SkillFile[]> {
+  const dir = skillsDir();
+
+  if (!fs.existsSync(dir)) {
+    return ok([]);
+  }
+
+  try {
+    const skillNames = fs
+      .readdirSync(dir)
+      .filter(name => fs.statSync(path.join(dir, name)).isDirectory());
+
+    const files: SkillFile[] = [];
+    for (const skill of skillNames) {
+      const skillPath = path.join(dir, skill);
+      const entries = fs.readdirSync(skillPath, { recursive: true }) as string[];
+      for (const entry of entries) {
+        const abs = path.join(skillPath, entry);
+        if (fs.statSync(abs).isFile()) {
+          files.push({ skill, srcPath: abs, relPath: entry.replace(/\\/g, '/') });
+        }
+      }
+    }
+
+    files.sort((a, b) => (a.skill + '/' + a.relPath).localeCompare(b.skill + '/' + b.relPath));
+    debug(`skill sources: ${files.map(f => `${f.skill}/${f.relPath}`).join(', ')}`);
+    return ok(files);
+  } catch (err) {
+    return fail('CONTRACT_NOT_FOUND', `Failed to read skills directory: ${String(err)}`, err);
+  }
+}
+
 /**
  * A per-tool section of the managed agent-instructions block (WK-0229 ruling 14).
  * `requires: 'dispatch'` means the section is dropped when `wiki/.dispatch/` is absent.

@@ -19,6 +19,8 @@ import {
   loadManifest,
   getBootstrapTemplates,
   getRecordTemplates,
+  getSkillSources,
+  SKILL_RUNTIME_DIRS,
   getAgentInstructionsSections,
   type AgentInstructionsSection,
 } from './contract.js';
@@ -64,7 +66,7 @@ function ensureDir(dirPath: string, dryRun: boolean, created: string[]): void {
 /** Write a file only if it does not already exist. Returns true if written. */
 function writeIfAbsent(
   filePath: string,
-  content: string,
+  content: string | Buffer,
   dryRun: boolean,
   created: string[],
   skipped: string[],
@@ -265,6 +267,8 @@ function ensureIdState(
  * - Writes wiki/.wiki-contract.json and wiki/.id-state.json
  * - Copies bootstrap surfaces (schema.md, conventions.md, index.md) only if absent
  * - Copies record templates (including handoff.md)
+ * - Copies skill files (contract/skills/<name>/) into .claude/skills/<name>/ and
+ *   .agents/skills/<name>/, only if absent
  * - Preserves existing docs/, AGENTS.md, CLAUDE.md
  * - Supports --dry-run
  */
@@ -361,7 +365,21 @@ export async function bootstrap(
     }
   }
 
-  // 5. Write agent instructions managed block
+  // 5. Copy skill files from contract/skills/<name>/ into .claude/skills/<name>/ and
+  // .agents/skills/<name>/ (write-if-absent, templates pattern — never gated on
+  // wiki/.dispatch/ or agentInstructions).
+  const skillsResult = getSkillSources();
+  if (skillsResult.ok) {
+    for (const file of skillsResult.data) {
+      const content = fs.readFileSync(file.srcPath);
+      for (const runtimeDir of SKILL_RUNTIME_DIRS) {
+        const destPath = path.join(targetDir, runtimeDir, file.skill, file.relPath);
+        writeIfAbsent(destPath, content, dryRun, created, skipped);
+      }
+    }
+  }
+
+  // 6. Write agent instructions managed block
   const updated: string[] = [];
   const instructions: string[] = [];
 
@@ -379,7 +397,7 @@ export async function bootstrap(
     }
   }
 
-  // 6. Write .mcp.json
+  // 7. Write .mcp.json
   const mcpClient = opts.mcpClient ?? 'claude';
   const mcpResult = writeMcpConfig(targetDir, { client: mcpClient, dispatch, dryRun });
   if (mcpResult.ok) {
@@ -395,7 +413,7 @@ export async function bootstrap(
     }
   }
 
-  // 7. Ensure .gitignore contains kb entries
+  // 8. Ensure .gitignore contains kb entries
   const gitignoreResult = ensureGitignoreEntries(targetDir, { dryRun });
   if (gitignoreResult.action !== 'unchanged') {
     updated.push('.gitignore');

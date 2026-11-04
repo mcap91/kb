@@ -837,6 +837,12 @@ export interface SyncResult {
   instructions?: string[];
   /** Files adopted (overwritten with seed) during this run. */
   adopted?: string[];
+  /**
+   * Warn-only diagnostics about user-global role drift or skill shadowing (WK-0240
+   * stage 2 rulings 2–3, 7). Always present, empty when nothing to report. Never
+   * changes `ok` or writes under `$HOME` — these are advisory only.
+   */
+  warnings: string[];
 }
 
 /** Options for ID allocation. */

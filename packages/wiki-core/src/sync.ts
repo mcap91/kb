@@ -2,13 +2,17 @@
  * Sync contract templates into an already-bootstrapped consuming repo.
  *
  * - Syncs record templates from contract/templates/ into the target repo
+ * - Syncs skill files from contract/skills/<name>/ into .claude/skills/<name>/ and
+ *   .agents/skills/<name>/, overwritten on drift (byte-identical)
  * - Reports drift on shared bootstrap surfaces (schema.md, conventions.md, index.md)
  * - Does NOT overwrite bootstrap surfaces — they are consumer-owned after bootstrap
  * - Updates wiki/.wiki-contract.json with lastSyncedAt timestamp
+ * - Warns (never installs) when a user-global role or skill shadows the repo copy
  * - Supports --check mode (report what would change without making changes)
  */
 
 import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import { ok, fail, type Result } from './errors.js';
 import type {
@@ -19,8 +23,11 @@ import type {
   WikiManifest,
 } from './types.js';
 import {
+  findKbRoot,
   loadManifest,
   getRecordTemplates,
+  getSkillSources,
+  SKILL_RUNTIME_DIRS,
   bootstrapDir,
   getAgentInstructionsSections,
   type AgentInstructionsSection,
@@ -64,6 +71,86 @@ function dominantEol(s: string): '\r\n' | '\n' {
 
 function normalize(targetDir: string, absPath: string): string {
   return path.relative(targetDir, absPath).replace(/\\/g, '/');
+}
+
+// ---------------------------------------------------------------------------
+// Warn-only checks (WK-0240 stage 2 rulings 2–3, 7): user-global role drift and
+// skill shadowing. These never write under $HOME and never change the Result.
+// ---------------------------------------------------------------------------
+
+/** Return true if `p` exists, checked with lstat so a (broken) symlink counts. */
+function lexists(p: string): boolean {
+  try {
+    fs.lstatSync(p);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Warn when a user-global role copy (`~/.claude/commands/<file>`,
+ * `~/.codex/prompts/<file>`) differs from its `contract/roles/<file>` source.
+ */
+function computeRoleWarnings(): string[] {
+  const warnings: string[] = [];
+  const rolesDir = path.join(findKbRoot(), 'contract', 'roles');
+
+  let roleFiles: string[];
+  try {
+    roleFiles = fs.readdirSync(rolesDir).filter(f => f.endsWith('.md'));
+  } catch {
+    return warnings;
+  }
+
+  const userGlobalDirs = [
+    path.join(os.homedir(), '.claude', 'commands'),
+    path.join(os.homedir(), '.codex', 'prompts'),
+  ];
+
+  for (const filename of roleFiles) {
+    const contractContent = fs.readFileSync(path.join(rolesDir, filename), 'utf-8');
+    for (const destDir of userGlobalDirs) {
+      const destPath = path.join(destDir, filename);
+      if (!fs.existsSync(destPath)) continue;
+      const destContent = fs.readFileSync(destPath, 'utf-8');
+      if (normalizeEol(destContent) !== normalizeEol(contractContent)) {
+        warnings.push(
+          `user-global role ${destPath} differs from contract/roles/${filename}; run \`install-roles\` from your kb checkout`,
+        );
+      }
+    }
+  }
+
+  return warnings;
+}
+
+/**
+ * Warn when a user-global skill of the same name shadows (Claude) or
+ * duplicates (Codex) the repo-managed copy.
+ */
+function computeSkillWarnings(skillNames: string[]): string[] {
+  const warnings: string[] = [];
+  const claudeSkillsDir = path.join(os.homedir(), '.claude', 'skills');
+  const codexSkillsDir = path.join(os.homedir(), '.agents', 'skills');
+
+  for (const name of skillNames) {
+    const claudePath = path.join(claudeSkillsDir, name);
+    if (lexists(claudePath)) {
+      warnings.push(
+        `user-global skill ${claudePath} shadows the repo copy .claude/skills/${name}; remove it`,
+      );
+    }
+
+    const codexPath = path.join(codexSkillsDir, name);
+    if (lexists(codexPath)) {
+      warnings.push(
+        `user-global skill ${codexPath} duplicates the repo copy .agents/skills/${name} (Codex shows both in skill selectors); remove it`,
+      );
+    }
+  }
+
+  return warnings;
 }
 
 function initialIdState(manifest: WikiManifest): IdState {
@@ -334,7 +421,34 @@ export async function sync(opts: SyncOpts): Promise<Result<SyncResult>> {
     }
   }
 
-  // 3. Check drift on bootstrap surfaces; adopt the named surface if requested.
+  // 3. Copy skill files from contract/skills/<name>/ into .claude/skills/<name>/ and
+  // .agents/skills/<name>/ (byte-identical, overwritten on drift — the templates pattern).
+  const skillsResult = getSkillSources();
+  if (!skillsResult.ok) {
+    return fail('CONTRACT_NOT_FOUND', `Failed to read skills: ${skillsResult.message}`);
+  }
+
+  for (const file of skillsResult.data) {
+    const srcBytes = fs.readFileSync(file.srcPath);
+    for (const runtimeDir of SKILL_RUNTIME_DIRS) {
+      const destPath = path.join(targetDir, runtimeDir, file.skill, file.relPath);
+
+      if (fs.existsSync(destPath) && fs.readFileSync(destPath).equals(srcBytes)) {
+        skipped.push(normalize(targetDir, destPath));
+        debug(`skipped skill file (unchanged): ${destPath}`);
+        continue;
+      }
+
+      if (!checkOnly) {
+        fs.mkdirSync(path.dirname(destPath), { recursive: true });
+        fs.writeFileSync(destPath, srcBytes);
+      }
+      synced.push(normalize(targetDir, destPath));
+      debug(`synced skill file: ${destPath}`);
+    }
+  }
+
+  // 4. Check drift on bootstrap surfaces; adopt the named surface if requested.
   const bsDir = bootstrapDir();
   for (const surface of BOOTSTRAP_SURFACES) {
     const destPath = path.join(wikiDir, surface);
@@ -365,7 +479,7 @@ export async function sync(opts: SyncOpts): Promise<Result<SyncResult>> {
     }
   }
 
-  // 4. Update contract metadata with current contractVersion and lastSyncedAt (unless check-only)
+  // 5. Update contract metadata with current contractVersion and lastSyncedAt (unless check-only)
   if (!checkOnly) {
     try {
       const raw = fs.readFileSync(contractPath, 'utf-8');
@@ -383,7 +497,7 @@ export async function sync(opts: SyncOpts): Promise<Result<SyncResult>> {
     }
   }
 
-  // 5. Write agent instructions managed block
+  // 6. Write agent instructions managed block
   const updated: string[] = [];
   const instructions: string[] = [];
 
@@ -401,7 +515,7 @@ export async function sync(opts: SyncOpts): Promise<Result<SyncResult>> {
     }
   }
 
-  // 6. Write .mcp.json
+  // 7. Write .mcp.json
   const mcpClient = opts.mcpClient ?? 'claude';
   const mcpResult = writeMcpConfig(targetDir, { client: mcpClient, dispatch, dryRun: checkOnly });
   if (mcpResult.ok) {
@@ -417,11 +531,17 @@ export async function sync(opts: SyncOpts): Promise<Result<SyncResult>> {
     }
   }
 
-  // 7. Ensure .gitignore contains kb entries
+  // 8. Ensure .gitignore contains kb entries
   const gitignoreResult = ensureGitignoreEntries(targetDir, { dryRun: checkOnly });
   if (gitignoreResult.action !== 'unchanged') {
     updated.push('.gitignore');
   }
+
+  // 9. Warn-only checks: user-global role drift, user-global skill shadowing (WK-0240
+  // stage 2 rulings 2–3, 7). Computed in both normal and --check mode; never writes
+  // under $HOME and never changes `ok`.
+  const skillNames = Array.from(new Set(skillsResult.data.map(f => f.skill)));
+  const warnings = [...computeRoleWarnings(), ...computeSkillWarnings(skillNames)];
 
   return ok({
     synced,
@@ -430,5 +550,6 @@ export async function sync(opts: SyncOpts): Promise<Result<SyncResult>> {
     updated,
     instructions: instructions.length > 0 ? instructions : undefined,
     adopted: adopted.length > 0 ? adopted : undefined,
+    warnings,
   });
 }

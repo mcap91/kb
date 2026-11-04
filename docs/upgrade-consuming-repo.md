@@ -44,6 +44,9 @@ the repo's own `AGENTS.md`/`CLAUDE.md` content. kb never reads or writes that te
 
 - creates missing required wiki directories such as `wiki/plans/`
 - syncs record templates such as `wiki/templates/plan.md`
+- copies every `contract/skills/<name>/` folder into `.claude/skills/<name>/` and
+  `.agents/skills/<name>/`, whole-file overwrite (same pattern as record templates — see
+  "Skill Delivery" below)
 - preserves existing `wiki/.id-state.json` counters and allocations
 - adds missing allocator entries such as `PLN`
 - updates `wiki/.wiki-contract.json` with the current contract version and `lastSyncedAt`
@@ -129,6 +132,30 @@ npm run wiki -- install-roles
 Run this from the `kb` checkout (the default `--dir` is cwd, read from `<dir>/contract/roles/`). It
 copies each file to `~/.claude/commands/<file>` and `~/.codex/prompts/<file>` as a whole-file,
 idempotent overwrite — safe to re-run after every `git pull`.
+
+## Skill Delivery (`.claude/skills/`, `.agents/skills/`)
+
+Every folder under `contract/skills/<name>/` (e.g. `resolve`) ships into the consuming repo at two
+target paths — Claude Code reads `.claude/skills/<name>/` and Codex reads `.agents/skills/<name>/`.
+`bootstrap` writes them once (write-if-absent, like record templates on first-time adoption);
+`sync-contract` overwrites them on drift on every run, byte-identical to the `contract/skills/`
+source. Both repo copies are managed by kb and should be committed, the same as `wiki/templates/` —
+commit them so your team gets them too. Delivery never depends on `wiki/.dispatch/` or on
+`--no-agent-instructions`.
+
+There is no user-global skill install — `install-roles` installs roles only. `sync-contract` warns
+(and changes nothing under `$HOME`) in two cases:
+
+- a user-global role copy (`~/.claude/commands/<role>.md` or `~/.codex/prompts/<role>.md`) differs
+  from its `contract/roles/<role>.md` source: remedy — run `install-roles` from your kb checkout.
+- a user-global skill of the same name exists (`~/.claude/skills/<name>` or
+  `~/.agents/skills/<name>`): it shadows (Claude) or duplicates (Codex) the repo copy — remedy:
+  remove it. Claude resolves a same-name duplicate "Enterprise over personal, and personal over
+  project", so a stale personal copy silently hides the fresh repo copy; Codex shows both in its
+  skill selectors instead of merging them.
+
+Both warnings print under a `Warnings: <n>` count line in the CLI output; they never change the
+command's exit code.
 
 ## MCP Client Setup
 
