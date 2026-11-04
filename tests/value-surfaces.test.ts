@@ -244,9 +244,9 @@ describe('MCP surface smoke — value tools', () => {
     expect(tool?.inputSchema).toBeDefined();
   });
 
-  it('total tool count is now 14 (11 original + 3 value tools)', async () => {
+  it('total tool count is now 15 (11 original + 3 value tools + init-planning)', async () => {
     const { tools } = await import('@kb/wiki-mcp');
-    expect(tools.length).toBe(14);
+    expect(tools.length).toBe(15);
   });
 });
 

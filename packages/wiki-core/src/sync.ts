@@ -37,6 +37,7 @@ import {
   assembleBlockBody,
   checkBlockBudget,
   dispatchInstalled,
+  planningInstalled,
 } from './agent-instructions.js';
 import { writeMcpConfig } from './mcp-config.js';
 import { ensureGitignoreEntries } from './gitignore.js';
@@ -360,6 +361,12 @@ export async function sync(opts: SyncOpts): Promise<Result<SyncResult>> {
   const skipped: string[] = [];
   const adopted: string[] = [];
 
+  // Refuse before any write, in both modes, when the stamp exists but cannot be parsed
+  // (WK-0261 fix-up). The NOT_BOOTSTRAPPED check above still comes first.
+  const planningResult = planningInstalled(targetDir);
+  if (!planningResult.ok) return planningResult;
+  const planning = planningResult.data;
+
   // Resolve and validate the --adopt surface if provided.
   let adoptSurface: string | undefined;
   if (opts.adopt !== undefined) {
@@ -504,7 +511,7 @@ export async function sync(opts: SyncOpts): Promise<Result<SyncResult>> {
   const dispatch = dispatchInstalled(targetDir);
 
   if (agentInstructionsSections) {
-    const blockBody = assembleBlockBody(agentInstructionsSections, { dispatch });
+    const blockBody = assembleBlockBody(agentInstructionsSections, { planning, dispatch });
     const blockResult = writeManagedBlock(targetDir, blockBody, { dryRun: checkOnly });
     if (blockResult.ok) {
       for (const entry of blockResult.data) {

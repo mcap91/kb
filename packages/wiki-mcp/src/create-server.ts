@@ -32,7 +32,7 @@ const READ_ONLY = new Set([
   'value-usage',
   'allocate-id',
 ]);
-const OPERATOR_ONLY = new Set(['bootstrap', 'sync-contract']);
+const OPERATOR_ONLY = new Set(['bootstrap', 'sync-contract', 'init-planning']);
 
 export function createServer(): McpServer {
   const server = new McpServer({

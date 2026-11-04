@@ -63,6 +63,7 @@ describe('MCP smoke tests', () => {
     expect(names).toContain('import-plan');
     expect(names).toContain('validate-plan');
     expect(names).toContain('archive-plan');
+    expect(names).toContain('init-planning');
   });
 
   it('all tools have name, description, and handler', async () => {
@@ -76,7 +77,7 @@ describe('MCP smoke tests', () => {
 
   it('tool count matches expected operations', async () => {
     const { tools } = await import('@kb/wiki-mcp');
-    expect(tools.length).toBe(14);
+    expect(tools.length).toBe(15);
   });
 
   it('registers real tool schemas and passes tool arguments through MCP', async () => {

@@ -29,6 +29,7 @@ import {
   assembleBlockBody,
   checkBlockBudget,
   dispatchInstalled,
+  planningInstalled,
 } from './agent-instructions.js';
 import { writeMcpConfig } from './mcp-config.js';
 import { ensureGitignoreEntries } from './gitignore.js';
@@ -305,6 +306,11 @@ export async function bootstrap(
   const created: string[] = [];
   const skipped: string[] = [];
 
+  // Refuse before any write when the stamp exists but cannot be parsed (WK-0261 fix-up).
+  const planningResult = planningInstalled(targetDir);
+  if (!planningResult.ok) return planningResult;
+  const planning = planningResult.data;
+
   // 1. Create wiki directories
   for (const rel of manifest.requiredSurfaces) {
     const abs = path.join(targetDir, rel);
@@ -386,7 +392,7 @@ export async function bootstrap(
   const dispatch = dispatchInstalled(targetDir);
 
   if (agentInstructionsSections) {
-    const blockBody = assembleBlockBody(agentInstructionsSections, { dispatch });
+    const blockBody = assembleBlockBody(agentInstructionsSections, { planning, dispatch });
     const blockResult = writeManagedBlock(targetDir, blockBody, { dryRun });
     if (blockResult.ok) {
       for (const entry of blockResult.data) {

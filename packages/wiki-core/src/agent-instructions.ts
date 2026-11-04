@@ -3,6 +3,7 @@ import * as path from 'node:path';
 import { ok, fail, type Result } from './errors.js';
 import { debug } from './debug.js';
 import type { AgentInstructionsSection } from './contract.js';
+import type { WikiContractMetadata } from './types.js';
 
 const BEGIN_MARKER = '<!-- BEGIN kb-managed -->';
 const END_MARKER = '<!-- END kb-managed -->';
@@ -16,13 +17,50 @@ export function dispatchInstalled(targetDir: string): boolean {
   return fs.existsSync(path.join(targetDir, 'wiki', '.dispatch'));
 }
 
-/** Assemble the managed-block body from sections, dropping dispatch-gated ones when absent. */
+/**
+ * Whether the planning layer is active (WK-0261 Resolutions rows 2, 11): a `"planning"`
+ * entry in the committed `wiki/.wiki-contract.json`, or `wiki/.dispatch/` (dispatch
+ * implies planning). A missing stamp file or missing `layers` field means no planning
+ * entry.
+ *
+ * A stamp that exists but does not parse, or that parses to a non-object, fails with
+ * `PARSE_ERROR` naming the file — never a quiet "no planning" downgrade. The stamp is
+ * parsed before the dispatch short-circuit so a corrupt stamp fails even in a dispatch
+ * repo. The only non-failing read of `wiki/.dispatch/` is its presence.
+ */
+export function planningInstalled(targetDir: string): Result<boolean> {
+  const contractPath = path.join(targetDir, 'wiki', '.wiki-contract.json');
+  if (!fs.existsSync(contractPath)) return ok(dispatchInstalled(targetDir));
+
+  let meta: WikiContractMetadata;
+  try {
+    const parsed: unknown = JSON.parse(fs.readFileSync(contractPath, 'utf-8'));
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return fail(
+        'PARSE_ERROR',
+        `${contractPath} is not a JSON object (parsed to ${parsed === null ? 'null' : typeof parsed})`,
+      );
+    }
+    meta = parsed as WikiContractMetadata;
+  } catch (err) {
+    return fail('PARSE_ERROR', `Failed to parse ${contractPath}: ${String(err)}`, err);
+  }
+
+  if (dispatchInstalled(targetDir)) return ok(true);
+  return ok(Array.isArray(meta.layers) && meta.layers.includes('planning'));
+}
+
+/** Assemble the managed-block body from sections, dropping inactive-layer sections. */
 export function assembleBlockBody(
   sections: AgentInstructionsSection[],
-  opts: { dispatch: boolean },
+  opts: { planning: boolean; dispatch: boolean },
 ): string {
   return sections
-    .filter(section => section.requires !== 'dispatch' || opts.dispatch)
+    .filter(section => {
+      if (section.requires === 'dispatch') return opts.dispatch;
+      if (section.requires === 'planning') return opts.planning;
+      return true;
+    })
     .map(section => section.body)
     .join('\n\n');
 }
@@ -44,7 +82,7 @@ export function countBlockWords(body: string): number {
 export function checkBlockBudget(
   sections: AgentInstructionsSection[],
 ): Result<{ words: number; budget: number }> {
-  const body = assembleBlockBody(sections, { dispatch: true });
+  const body = assembleBlockBody(sections, { planning: true, dispatch: true });
   const words = countBlockWords(body);
 
   if (words > BLOCK_WORD_BUDGET) {

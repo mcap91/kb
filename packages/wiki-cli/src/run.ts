@@ -10,6 +10,7 @@ import { setVerbose } from '@kb/wiki-core';
 import {
   cmdBootstrap,
   cmdSyncContract,
+  cmdInitPlanning,
   cmdInstallRoles,
   cmdAllocateId,
   cmdCreate,
@@ -54,6 +55,7 @@ Commands:
                          --adopt <surface>  Overwrite one bootstrap surface with the seed
                                             (schema.md | conventions.md | index.md;
                                              bare name or wiki/<name> form accepted)
+  init-planning        Add the planning layer (--remove to remove it) in wiki/.wiki-contract.json
   install-roles        Stamp contract/roles/ into global command dirs
   allocate-id          Peek/reserve the next id (idempotent until create claims it)
   create               Create a new wiki record
@@ -81,6 +83,7 @@ Global options:
 const COMMANDS: Record<string, (args: string[]) => Promise<void>> = {
   bootstrap: cmdBootstrap,
   'sync-contract': cmdSyncContract,
+  'init-planning': cmdInitPlanning,
   'install-roles': cmdInstallRoles,
   'allocate-id': cmdAllocateId,
   create: cmdCreate,

@@ -745,7 +745,7 @@ describe('ensureGitignoreEntries', () => {
 // ---------------------------------------------------------------------------
 
 describe('getAgentInstructionsSections', () => {
-  it('returns the four sections in order wiki, dispatch, guidelines, footer, with only dispatch requiring dispatch', () => {
+  it('returns the four sections in order wiki, dispatch, guidelines, footer; dispatch requires dispatch, guidelines and footer require planning', () => {
     const result = getAgentInstructionsSections();
     expect(result.ok).toBe(true);
     if (result.ok) {
@@ -753,6 +753,8 @@ describe('getAgentInstructionsSections', () => {
       for (const section of result.data) {
         if (section.id === 'dispatch') {
           expect(section.requires).toBe('dispatch');
+        } else if (section.id === 'guidelines' || section.id === 'footer') {
+          expect(section.requires).toBe('planning');
         } else {
           expect(section.requires).toBeUndefined();
         }
@@ -885,7 +887,7 @@ describe('shipped block text', () => {
     expect(sectionsResult.ok).toBe(true);
     if (!sectionsResult.ok) return;
 
-    const emitted = assembleBlockBody(sectionsResult.data, { dispatch: true });
+    const emitted = assembleBlockBody(sectionsResult.data, { planning: true, dispatch: true });
     expect(emitted).toContain('65. **Keep one source of truth per fact.**');
     expect(emitted).toContain('66. **Mark every shortcut.**');
     expect(emitted).toContain('67. **Every deferral carries a written re-open trigger,**');

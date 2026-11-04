@@ -2,6 +2,7 @@ import { z } from 'zod';
 import {
   bootstrap,
   sync,
+  initPlanning,
   allocate,
   create,
   lint,
@@ -55,6 +56,20 @@ export const tools: ToolDef[] = [
       ),
     }),
     handler: async (input) => sync(input as unknown as Parameters<typeof sync>[0]),
+  },
+  {
+    name: 'init-planning',
+    description:
+      'Add (or remove with remove: true) the planning layer entry in the committed wiki/.wiki-contract.json. Idempotent; run sync-contract next to apply it. Refuses on a non-bootstrapped repo.',
+    inputSchema: dirSchema.extend({
+      remove: z.boolean().optional().describe('Remove the planning layer instead of adding it'),
+    }),
+    handler: async (input) =>
+      initPlanning({
+        dir: input.dir as string,
+        remove: input.remove as boolean | undefined,
+        verbose: input.verbose as boolean | undefined,
+      }),
   },
   {
     name: 'allocate-id',

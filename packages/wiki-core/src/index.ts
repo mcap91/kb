@@ -43,6 +43,8 @@ export type {
   UsageMetrics,
   PlanBundleManifest,
   WikiContractMetadata,
+  InitPlanningOpts,
+  InitPlanningResult,
   IdState,
   ManifestRecordType,
   WikiManifest,
@@ -133,6 +135,7 @@ export {
   writeManagedBlock,
   BLOCK_WORD_BUDGET,
   dispatchInstalled,
+  planningInstalled,
   assembleBlockBody,
   countBlockWords,
   checkBlockBudget,
@@ -149,6 +152,9 @@ export { bootstrap } from './bootstrap.js';
 
 // Sync
 export { sync } from './sync.js';
+
+// Init planning layer (WK-0261)
+export { initPlanning } from './init-planning.js';
 
 // ID allocation
 export { allocate } from './allocate.js';
