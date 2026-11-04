@@ -306,6 +306,11 @@ export async function bootstrap(
   const created: string[] = [];
   const skipped: string[] = [];
 
+  // Refuse before any write when the stamp exists but cannot be parsed (WK-0261 fix-up).
+  const planningResult = planningInstalled(targetDir);
+  if (!planningResult.ok) return planningResult;
+  const planning = planningResult.data;
+
   // 1. Create wiki directories
   for (const rel of manifest.requiredSurfaces) {
     const abs = path.join(targetDir, rel);
@@ -385,7 +390,6 @@ export async function bootstrap(
   const instructions: string[] = [];
 
   const dispatch = dispatchInstalled(targetDir);
-  const planning = planningInstalled(targetDir);
 
   if (agentInstructionsSections) {
     const blockBody = assembleBlockBody(agentInstructionsSections, { planning, dispatch });

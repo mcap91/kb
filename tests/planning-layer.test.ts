@@ -153,7 +153,8 @@ describe('planning layer (WK-0261 s1)', () => {
 
     const contract = readContract(tmp.dir);
     expect(contract.layers).toBeUndefined();
-    expect(planningInstalled(tmp.dir)).toBe(true);
+    const planning = planningInstalled(tmp.dir);
+    expect(planning.ok && planning.data).toBe(true);
 
     const agents = readText(tmp.dir, 'AGENTS.md');
     expect(agents).toContain(SECTIONS.wiki);
@@ -237,5 +238,62 @@ describe('planning layer (WK-0261 s1)', () => {
 
     expect((await sync({ dir: tmp.dir })).ok).toBe(true);
     expect(readContract(tmp.dir).layers).toEqual(['planning']);
+  });
+
+  it('(i) an unparseable or non-object stamp fails sync (both modes) and bootstrap before writing any file', async () => {
+    for (const corrupt of ['{not json', 'null']) {
+      tmp = createTmpDir();
+      const repo = `test/planning-corrupt-${corrupt === 'null' ? 'null' : 'syntax'}`;
+      expect((await bootstrap({ dir: tmp.dir, repo })).ok).toBe(true);
+
+      const unchanged = ['AGENTS.md', 'CLAUDE.md', '.mcp.json', '.gitignore'].map(
+        rel => [rel, fs.readFileSync(path.join(tmp.dir, rel))] as const,
+      );
+
+      const stampPath = path.join(tmp.dir, 'wiki/.wiki-contract.json');
+      fs.writeFileSync(stampPath, corrupt, 'utf-8');
+      const stampBytes = fs.readFileSync(stampPath);
+
+      const syncResult = await sync({ dir: tmp.dir });
+      expect(syncResult.ok).toBe(false);
+      if (!syncResult.ok) {
+        expect(syncResult.error).toBe('PARSE_ERROR');
+        expect(syncResult.message).toContain(stampPath);
+      }
+
+      const checkResult = await sync({ dir: tmp.dir, check: true });
+      expect(checkResult.ok).toBe(false);
+      if (!checkResult.ok) {
+        expect(checkResult.error).toBe('PARSE_ERROR');
+        expect(checkResult.message).toContain(stampPath);
+      }
+
+      const bootstrapResult = await bootstrap({ dir: tmp.dir, repo });
+      expect(bootstrapResult.ok).toBe(false);
+      if (!bootstrapResult.ok) expect(bootstrapResult.error).toBe('PARSE_ERROR');
+
+      for (const [rel, bytes] of unchanged) {
+        expect(fs.readFileSync(path.join(tmp.dir, rel)).equals(bytes)).toBe(true);
+      }
+      expect(fs.readFileSync(stampPath).equals(stampBytes)).toBe(true);
+
+      tmp.cleanup();
+    }
+  });
+
+  it('(j) a corrupt stamp fails sync even when wiki/.dispatch/ exists', async () => {
+    tmp = createTmpDir();
+    expect((await bootstrap({ dir: tmp.dir, repo: 'test/planning-corrupt-dispatch' })).ok).toBe(true);
+    fs.mkdirSync(path.join(tmp.dir, 'wiki', '.dispatch'), { recursive: true });
+
+    const stampPath = path.join(tmp.dir, 'wiki/.wiki-contract.json');
+    fs.writeFileSync(stampPath, '{not json', 'utf-8');
+
+    const result = await sync({ dir: tmp.dir });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toBe('PARSE_ERROR');
+      expect(result.message).toContain(stampPath);
+    }
   });
 });

@@ -22,21 +22,32 @@ export function dispatchInstalled(targetDir: string): boolean {
  * entry in the committed `wiki/.wiki-contract.json`, or `wiki/.dispatch/` (dispatch
  * implies planning). A missing stamp file or missing `layers` field means no planning
  * entry.
+ *
+ * A stamp that exists but does not parse, or that parses to a non-object, fails with
+ * `PARSE_ERROR` naming the file — never a quiet "no planning" downgrade. The stamp is
+ * parsed before the dispatch short-circuit so a corrupt stamp fails even in a dispatch
+ * repo. The only non-failing read of `wiki/.dispatch/` is its presence.
  */
-export function planningInstalled(targetDir: string): boolean {
-  if (dispatchInstalled(targetDir)) return true;
-
+export function planningInstalled(targetDir: string): Result<boolean> {
   const contractPath = path.join(targetDir, 'wiki', '.wiki-contract.json');
-  if (!fs.existsSync(contractPath)) return false;
+  if (!fs.existsSync(contractPath)) return ok(dispatchInstalled(targetDir));
 
+  let meta: WikiContractMetadata;
   try {
-    const meta = JSON.parse(fs.readFileSync(contractPath, 'utf-8')) as WikiContractMetadata;
-    return Array.isArray(meta.layers) && meta.layers.includes('planning');
-  } catch {
-    // An unparseable stamp is handled loudly by sync's metadata step; a layer query
-    // must never throw. Callers that can fail (sync) surface the parse error there.
-    return false;
+    const parsed: unknown = JSON.parse(fs.readFileSync(contractPath, 'utf-8'));
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return fail(
+        'PARSE_ERROR',
+        `${contractPath} is not a JSON object (parsed to ${parsed === null ? 'null' : typeof parsed})`,
+      );
+    }
+    meta = parsed as WikiContractMetadata;
+  } catch (err) {
+    return fail('PARSE_ERROR', `Failed to parse ${contractPath}: ${String(err)}`, err);
   }
+
+  if (dispatchInstalled(targetDir)) return ok(true);
+  return ok(Array.isArray(meta.layers) && meta.layers.includes('planning'));
 }
 
 /** Assemble the managed-block body from sections, dropping inactive-layer sections. */
