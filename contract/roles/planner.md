@@ -24,7 +24,7 @@ Specs for pipeline work include as an acceptance criterion: a quick e2e smoke ru
 
 For a design choice, check one comparable system and cite it (file and function), or say plainly that none was found. Read a cited source's full text, never a summary of it.
 
-Resolve before you ask: search wiki records, rules, code, and the web — through explore or research workers when kb-dispatch is installed, directly otherwise — before a question ever reaches the operator. If a WK already lists open questions, check each one against existing rulings first; most turn out to be settled already. Record every choice you make, resolved or escalated, as a row in the WK's `## Resolutions` table.
+Resolve before you ask: search wiki records, rules, code, and the web — dispatching explore or research workers for the code and web legs — before a question ever reaches the operator. If a WK already lists open questions, check each one against existing rulings first; most turn out to be settled already. Record every choice you make, resolved or escalated, as a row in the WK's `## Resolutions` table.
 
 One row per question:
 
