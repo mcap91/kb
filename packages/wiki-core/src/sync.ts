@@ -26,8 +26,8 @@ import {
   findKbRoot,
   loadManifest,
   getRecordTemplates,
-  getSkillSources,
-  SKILL_RUNTIME_DIRS,
+  getManagedCopies,
+  managedCopyLayer,
   bootstrapDir,
   getAgentInstructionsSections,
   renderBootstrapSurface,
@@ -92,39 +92,28 @@ function lexists(p: string): boolean {
 }
 
 /**
- * Warn when a user-global role copy (`~/.claude/commands/<file>`,
- * `~/.codex/prompts/<file>`) differs from its `contract/roles/<file>` source.
+ * Warn when a user-global copy of a role this repo ships would beat the repo copy:
+ * `~/.claude/commands/<role>.md` shadows `.claude/commands/<role>.md` (Claude resolves
+ * personal over project), and `~/.agents/skills/<role>` duplicates
+ * `.agents/skills/<role>` (Codex shows both). WK-0261 s6.
  */
-function computeRoleWarnings(): string[] {
+function computeRoleWarnings(roleNames: string[]): string[] {
   const warnings: string[] = [];
-  const rolesDir = path.join(findKbRoot(), 'contract', 'roles');
+  for (const role of roleNames) {
+    const claudePath = path.join(os.homedir(), '.claude', 'commands', `${role}.md`);
+    if (lexists(claudePath)) {
+      warnings.push(
+        `user-global role ${claudePath} shadows the repo copy .claude/commands/${role}.md; remove it`,
+      );
+    }
 
-  let roleFiles: string[];
-  try {
-    roleFiles = fs.readdirSync(rolesDir).filter(f => f.endsWith('.md'));
-  } catch {
-    return warnings;
-  }
-
-  const userGlobalDirs = [
-    path.join(os.homedir(), '.claude', 'commands'),
-    path.join(os.homedir(), '.codex', 'prompts'),
-  ];
-
-  for (const filename of roleFiles) {
-    const contractContent = fs.readFileSync(path.join(rolesDir, filename), 'utf-8');
-    for (const destDir of userGlobalDirs) {
-      const destPath = path.join(destDir, filename);
-      if (!fs.existsSync(destPath)) continue;
-      const destContent = fs.readFileSync(destPath, 'utf-8');
-      if (normalizeEol(destContent) !== normalizeEol(contractContent)) {
-        warnings.push(
-          `user-global role ${destPath} differs from contract/roles/${filename}; run \`install-roles\` from your kb checkout`,
-        );
-      }
+    const codexPath = path.join(os.homedir(), '.agents', 'skills', role);
+    if (lexists(codexPath)) {
+      warnings.push(
+        `user-global skill ${codexPath} duplicates the repo copy .agents/skills/${role} (Codex shows both in skill selectors); remove it`,
+      );
     }
   }
-
   return warnings;
 }
 
@@ -480,69 +469,65 @@ export async function sync(opts: SyncOpts): Promise<Result<SyncResult>> {
     }
   }
 
-  // 3. Sync skill files whose layer is active (byte-identical, overwritten on
-  // drift — the templates pattern); run the same delete pass for a skill whose
-  // layer is inactive, removing the skill's runtime folder once it is empty
-  // (WK-0261 s3).
-  const skillsResult = getSkillSources();
-  if (!skillsResult.ok) {
-    return fail('CONTRACT_NOT_FOUND', `Failed to read skills: ${skillsResult.message}`);
+  // 3. Sync the managed skill and role copies whose layer is active (byte-identical,
+  // overwritten on drift — the templates pattern); run the same delete pass for a
+  // copy whose layer is inactive, then prune its folder once empty (WK-0261 s3, s6).
+  const copiesResult = getManagedCopies();
+  if (!copiesResult.ok) {
+    return fail('CONTRACT_NOT_FOUND', `Failed to read skills and roles: ${copiesResult.message}`);
   }
 
-  const inactiveSkillNames = new Set<string>();
+  const kbRoot = findKbRoot();
+  const activeCopyNames = { skill: new Set<string>(), role: new Set<string>() };
+  const inactiveFolders = new Set<string>();
 
-  for (const file of skillsResult.data) {
-    const srcBytes = fs.readFileSync(file.srcPath);
-    const layer = manifest.skillLayers[file.skill];
+  for (const copy of copiesResult.data) {
+    const srcBytes = fs.readFileSync(copy.srcPath);
+    const layer = managedCopyLayer(manifest, copy);
     const active = !!layer && layerActive(layer, layers);
-    if (!active) inactiveSkillNames.add(file.skill);
+    const destPath = path.join(targetDir, copy.dest);
 
-    for (const runtimeDir of SKILL_RUNTIME_DIRS) {
-      const destPath = path.join(targetDir, runtimeDir, file.skill, file.relPath);
-
-      if (active) {
-        if (fs.existsSync(destPath) && fs.readFileSync(destPath).equals(srcBytes)) {
-          skipped.push(normalize(targetDir, destPath));
-          debug(`skipped skill file (unchanged): ${destPath}`);
-          continue;
-        }
-
-        if (!checkOnly) {
-          fs.mkdirSync(path.dirname(destPath), { recursive: true });
-          fs.writeFileSync(destPath, srcBytes);
-        }
-        synced.push(normalize(targetDir, destPath));
-        debug(`synced skill file: ${destPath}`);
+    if (active) {
+      activeCopyNames[copy.kind].add(copy.name);
+      if (fs.existsSync(destPath) && fs.readFileSync(destPath).equals(srcBytes)) {
+        skipped.push(copy.dest);
+        debug(`skipped ${copy.kind} copy (unchanged): ${copy.dest}`);
         continue;
       }
 
-      // Inactive layer: delete pass only.
-      if (!fs.existsSync(destPath)) continue;
-      const destBytes = fs.readFileSync(destPath);
-      if (destBytes.equals(srcBytes)) {
-        if (!checkOnly) {
-          fs.unlinkSync(destPath);
-        }
-        removed.push(normalize(targetDir, destPath));
-        debug(`removed skill file (layer inactive): ${destPath}`);
-      } else {
-        conflictWarnings.push(
-          `${runtimeDir}/${file.skill}/${file.relPath} is no longer shipped by your active install ` +
-            `layer but its content differs from contract/skills/${file.skill}/${file.relPath}; ` +
-            'remove it manually if you no longer need it',
-        );
-        debug(`kept modified skill file (conflict): ${destPath}`);
+      if (!checkOnly) {
+        fs.mkdirSync(path.dirname(destPath), { recursive: true });
+        fs.writeFileSync(destPath, srcBytes);
       }
+      synced.push(copy.dest);
+      debug(`synced ${copy.kind} copy: ${copy.dest}`);
+      continue;
+    }
+
+    // Inactive layer: delete pass only.
+    if (copy.folder) inactiveFolders.add(copy.folder);
+    if (!fs.existsSync(destPath)) continue;
+    if (fs.readFileSync(destPath).equals(srcBytes)) {
+      if (!checkOnly) {
+        fs.unlinkSync(destPath);
+      }
+      removed.push(copy.dest);
+      debug(`removed ${copy.kind} copy (layer inactive): ${copy.dest}`);
+    } else {
+      const src = path.relative(kbRoot, copy.srcPath).replace(/\\/g, '/');
+      conflictWarnings.push(
+        `${copy.dest} is no longer shipped by your active install layer but its content differs ` +
+          `from ${src}; remove it manually if you no longer need it`,
+      );
+      debug(`kept modified ${copy.kind} copy (conflict): ${copy.dest}`);
     }
   }
 
-  // Remove now-empty skill runtime folders left behind by the delete pass above
-  // (never removes a folder that still holds a file).
+  // Remove now-empty folders left behind by the delete pass above (never removes a
+  // folder that still holds a file).
   if (!checkOnly) {
-    for (const name of inactiveSkillNames) {
-      for (const runtimeDir of SKILL_RUNTIME_DIRS) {
-        removeEmptyDirRecursive(path.join(targetDir, runtimeDir, name));
-      }
+    for (const folder of inactiveFolders) {
+      removeEmptyDirRecursive(path.join(targetDir, folder));
     }
   }
 
@@ -641,10 +626,11 @@ export async function sync(opts: SyncOpts): Promise<Result<SyncResult>> {
   // stage 2 rulings 2–3, 7) — the shadow check runs only for skills in the active
   // layer set (WK-0261 Context item 6). Computed in both normal and --check mode;
   // never writes under $HOME and never changes `ok`.
-  const activeSkillNames = Array.from(new Set(skillsResult.data.map(f => f.skill))).filter(
-    name => !inactiveSkillNames.has(name),
-  );
-  const warnings = [...computeRoleWarnings(), ...computeSkillWarnings(activeSkillNames), ...conflictWarnings];
+  const warnings = [
+    ...computeRoleWarnings([...activeCopyNames.role]),
+    ...computeSkillWarnings([...activeCopyNames.skill]),
+    ...conflictWarnings,
+  ];
 
   return ok({
     synced,

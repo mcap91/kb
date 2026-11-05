@@ -15,7 +15,6 @@ git pull
 npm ci
 npm run typecheck
 npm test
-npm run wiki -- install-roles
 npm run wiki -- sync-contract --dir /path/to/consuming-repo
 npm run wiki -- lint --dir /path/to/consuming-repo
 npm run wiki -- generate --dir /path/to/consuming-repo
@@ -137,18 +136,24 @@ ruling 1, executed in WK-0134). `~/.config/kb-dispatch/` is no longer a kb conce
 are operator-owned files at any path; a repo's `wiki/.dispatch/profiles.json` names them — kb verifies
 they exist, never writes them.
 
-## Role Preambles (`install-roles`)
+## Role Delivery (`.claude/commands/`, `.agents/skills/`)
 
-`contract/roles/*.md` are the canonical orchestrator/planner/overseer role preambles. Stamp them into the
-user-global command directories both Claude Code and Codex read from:
+`contract/roles/*.md` are the canonical planner, orchestrator, and overseer roles. `sync-contract`
+copies each role the repo's layers ship into two repo paths, byte-identical to the source:
+`.claude/commands/<role>.md` (Claude Code runs it as `/<role>`) and `.agents/skills/<role>/SKILL.md`
+(Codex runs it as `$<role>`). The planning layer ships `planner`; the dispatch layer adds
+`orchestrator` and `overseer`. Sync restores a hand-edited copy and removes the copies of a layer you
+turn off. Commit the copies so your team gets them too.
+
+**Removed: `install-roles`.** Roles no longer install user-global (WK-0261). Remove old user-global
+copies once, so they do not shadow the repo copies:
 
 ```bash
-npm run wiki -- install-roles
+rm -f ~/.claude/commands/{planner,orchestrator,overseer}.md
+rm -f ~/.codex/prompts/{planner,orchestrator,overseer}.md
 ```
 
-Run this from the `kb` checkout (the default `--dir` is cwd, read from `<dir>/contract/roles/`). It
-copies each file to `~/.claude/commands/<file>` and `~/.codex/prompts/<file>` as a whole-file,
-idempotent overwrite — safe to re-run after every `git pull`.
+Codex no longer reads `~/.codex/prompts/` at all, so those copies are dead files.
 
 ## Skill Delivery (`.claude/skills/`, `.agents/skills/`)
 
@@ -161,11 +166,11 @@ source, and removes them when the planning layer is off. Both repo copies are ma
 be committed, the same as `wiki/templates/` — commit them so your team gets them too. Delivery never
 depends on `--no-agent-instructions`.
 
-There is no user-global skill install — `install-roles` installs roles only. `sync-contract` warns
-(and changes nothing under `$HOME`) in two cases:
+There is no user-global skill or role install. `sync-contract` warns (and changes nothing under
+`$HOME`) in two cases:
 
-- a user-global role copy (`~/.claude/commands/<role>.md` or `~/.codex/prompts/<role>.md`) differs
-  from its `contract/roles/<role>.md` source: remedy — run `install-roles` from your kb checkout.
+- a user-global role copy (`~/.claude/commands/<role>.md` or `~/.agents/skills/<role>`) exists for a
+  role this repo ships: it shadows (Claude) or duplicates (Codex) the repo copy — remedy: remove it.
 - a user-global skill of the same name exists (`~/.claude/skills/<name>` or
   `~/.agents/skills/<name>`): it shadows (Claude) or duplicates (Codex) the repo copy — remedy:
   remove it. Claude resolves a same-name duplicate "Enterprise over personal, and personal over

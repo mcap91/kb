@@ -217,7 +217,10 @@ describe('sync-contract: warn-only user-global checks', () => {
     tmp?.cleanup();
   });
 
-  it('warns with the exact role-drift string when a user-global role copy differs from contract/roles/', async () => {
+  // CHANGED (WK-0261 s6, row 9 / AC 8): install-roles is retired and roles ship as repo
+  // copies, so a user-global copy is no longer "stale, reinstall it" but a shadow of the
+  // repo copy (Claude resolves personal over project): the warning says remove it.
+  it('warns with the exact shadow string when a user-global copy exists for a role the repo ships', async () => {
     tmp = await createPlanningRepo();
     home = makeTempHome();
 
@@ -229,19 +232,26 @@ describe('sync-contract: warn-only user-global checks', () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
 
-    // Exact warning string pinned by the AC (backticks around install-roles are literal).
     expect(result.data.warnings).toContain(
-      `user-global role ${stalePath} differs from contract/roles/planner.md; run \`install-roles\` from your kb checkout`,
+      `user-global role ${stalePath} shadows the repo copy .claude/commands/planner.md; remove it`,
     );
   });
 
-  it('adds no role warning when the user-global copy is byte-for-byte (EOL-normalized) identical', async () => {
+  // CHANGED (WK-0261 s6): a shadow is a shadow whatever its content, so the old
+  // "identical copy gets no warning" case is gone. Replaced by the two cases that do
+  // stay silent: a Codex prompts copy (Codex no longer reads prompts, row 13) and a
+  // role the repo's layers do not ship (nothing to shadow).
+  it('adds no role warning for a ~/.codex/prompts/ copy or for a role the repo does not ship', async () => {
     tmp = await createPlanningRepo();
     home = makeTempHome();
 
-    const identicalPath = path.join(home, '.codex', 'prompts', 'planner.md');
-    fs.mkdirSync(path.dirname(identicalPath), { recursive: true });
-    fs.copyFileSync(path.join(KB_ROOT, 'contract/roles/planner.md'), identicalPath);
+    const codexPrompt = path.join(home, '.codex', 'prompts', 'planner.md');
+    fs.mkdirSync(path.dirname(codexPrompt), { recursive: true });
+    fs.copyFileSync(path.join(KB_ROOT, 'contract/roles/planner.md'), codexPrompt);
+    // orchestrator ships with the dispatch layer only; this repo has planning only.
+    const orchestrator = path.join(home, '.claude', 'commands', 'orchestrator.md');
+    fs.mkdirSync(path.dirname(orchestrator), { recursive: true });
+    fs.writeFileSync(orchestrator, 'old orchestrator\n', 'utf-8');
 
     const result = await withHome(home, () => sync({ dir: tmp.dir }));
     expect(result.ok).toBe(true);
@@ -359,7 +369,7 @@ describe('cmdSyncContract CLI output', () => {
 
     expect(stdout).toContain('Warnings: 1');
     expect(stdout).toContain(
-      `  ! warning: user-global role ${stalePath} differs from contract/roles/planner.md; run \`install-roles\` from your kb checkout`,
+      `  ! warning: user-global role ${stalePath} shadows the repo copy .claude/commands/planner.md; remove it`,
     );
   });
 
@@ -460,7 +470,7 @@ describe('E2E smoke: sample-repo fixture through bootstrap + sync-contract', () 
     // Exactly the two expected warnings: one role-drift (planner), one skill-shadow (claude resolve).
     expect(firstSync.data.warnings).toHaveLength(2);
     expect(firstSync.data.warnings).toContain(
-      `user-global role ${stalePlannerPath} differs from contract/roles/planner.md; run \`install-roles\` from your kb checkout`,
+      `user-global role ${stalePlannerPath} shadows the repo copy .claude/commands/planner.md; remove it`,
     );
     expect(firstSync.data.warnings).toContain(
       `user-global skill ${claudeSkillShadow} shadows the repo copy .claude/skills/resolve; remove it`,

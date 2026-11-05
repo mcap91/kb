@@ -817,6 +817,8 @@ export interface WikiManifest {
   templateLayers: Record<string, ContractLayer>;
   /** contract/skills/<name>/ -> the install layer that ships it (WK-0261). */
   skillLayers: Record<string, ContractLayer>;
+  /** contract/roles/<role>.md -> the install layer that ships its repo copies (WK-0261 s6). */
+  roleLayers: Record<string, ContractLayer>;
   types: Record<string, ManifestRecordType>;
   generatedViews: {
     canonical: boolean;

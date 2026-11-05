@@ -10,7 +10,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { fail, ok, type Result } from './errors.js';
-import type { WikiManifest } from './types.js';
+import type { ContractLayer, WikiManifest } from './types.js';
 import { debug } from './debug.js';
 
 // ---------------------------------------------------------------------------
@@ -225,6 +225,80 @@ export function getSkillSources(): Result<SkillFile[]> {
   } catch (err) {
     return fail('CONTRACT_NOT_FOUND', `Failed to read skills directory: ${String(err)}`, err);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Managed repo copies: skills and roles (WK-0240 stage 2, WK-0261 s6)
+// ---------------------------------------------------------------------------
+
+/** Path to the role sources directory. */
+export function rolesDir(): string {
+  return contractPath('roles');
+}
+
+/**
+ * One kb-owned file copied byte-identical into a consuming repo. `kind` + `name`
+ * key the install layer (manifest `skillLayers` / `roleLayers`). `folder` is the
+ * repo-relative folder the copy owns, pruned when empty after the delete pass.
+ */
+export interface ManagedCopy {
+  kind: 'skill' | 'role';
+  name: string;
+  srcPath: string;
+  dest: string;
+  folder?: string;
+}
+
+/** The install layer that ships a managed copy; undefined means no layer ships it. */
+export function managedCopyLayer(manifest: WikiManifest, copy: ManagedCopy): ContractLayer | undefined {
+  return copy.kind === 'skill' ? manifest.skillLayers[copy.name] : manifest.roleLayers[copy.name];
+}
+
+/**
+ * Every managed copy kb can write: each `contract/skills/<name>/` file into
+ * `.claude/skills/<name>/` and `.agents/skills/<name>/`, and each
+ * `contract/roles/<role>.md` into `.claude/commands/<role>.md` (Claude) and
+ * `.agents/skills/<role>/SKILL.md` (Codex) — one source per role (WK-0261 row 14).
+ */
+export function getManagedCopies(): Result<ManagedCopy[]> {
+  const skillsResult = getSkillSources();
+  if (!skillsResult.ok) return skillsResult;
+
+  const copies: ManagedCopy[] = [];
+  for (const file of skillsResult.data) {
+    for (const runtimeDir of SKILL_RUNTIME_DIRS) {
+      copies.push({
+        kind: 'skill',
+        name: file.skill,
+        srcPath: file.srcPath,
+        dest: `${runtimeDir}/${file.skill}/${file.relPath}`,
+        folder: `${runtimeDir}/${file.skill}`,
+      });
+    }
+  }
+
+  const dir = rolesDir();
+  if (fs.existsSync(dir)) {
+    try {
+      const roleFiles = fs.readdirSync(dir).filter(f => f.endsWith('.md')).sort();
+      for (const file of roleFiles) {
+        const role = path.basename(file, '.md');
+        const srcPath = path.join(dir, file);
+        copies.push({ kind: 'role', name: role, srcPath, dest: `.claude/commands/${file}` });
+        copies.push({
+          kind: 'role',
+          name: role,
+          srcPath,
+          dest: `.agents/skills/${role}/SKILL.md`,
+          folder: `.agents/skills/${role}`,
+        });
+      }
+    } catch (err) {
+      return fail('CONTRACT_NOT_FOUND', `Failed to read roles directory: ${String(err)}`, err);
+    }
+  }
+
+  return ok(copies);
 }
 
 /**

@@ -50,11 +50,26 @@ const ISOLATION_EXCEPTIONS = new Set(['wiki/templates/issue.md', 'wiki/.id-state
 const WIKI_TEMPLATES = ['area.md', 'decision.md', 'initiative.md', 'issue.md', 'source.md'];
 const WIKI_DIRS = ['wiki/areas', 'wiki/decisions', 'wiki/initiatives', 'wiki/issues', 'wiki/sources'];
 const PLANNING_FILES = [
+  '.agents/skills/planner/SKILL.md',
   '.agents/skills/resolve/SKILL.md',
+  '.claude/commands/planner.md',
   '.claude/skills/resolve/SKILL.md',
   'wiki/templates/escalation.md',
 ];
-const DISPATCH_TEMPLATE = 'wiki/templates/handoff.md';
+/** Dispatch-layer files, beyond the planning files that dispatch implies. */
+const DISPATCH_FILES = [
+  '.agents/skills/orchestrator/SKILL.md',
+  '.agents/skills/overseer/SKILL.md',
+  '.claude/commands/orchestrator.md',
+  '.claude/commands/overseer.md',
+  'wiki/templates/handoff.md',
+];
+/** Each role's repo copies, both byte-identical to contract/roles/<role>.md (row 14). */
+const ROLE_COPIES: Record<string, string[]> = {
+  planner: ['.claude/commands/planner.md', '.agents/skills/planner/SKILL.md'],
+  orchestrator: ['.claude/commands/orchestrator.md', '.agents/skills/orchestrator/SKILL.md'],
+  overseer: ['.claude/commands/overseer.md', '.agents/skills/overseer/SKILL.md'],
+};
 
 type Snapshot = Map<string, string>;
 
@@ -112,6 +127,14 @@ function isolationViolations(dir: string): string[] {
 
 function mcpServers(dir: string): string[] {
   return Object.keys(readJson<{ mcpServers: Record<string, unknown> }>(dir, '.mcp.json').mcpServers).sort();
+}
+
+/** The YAML frontmatter keys of a markdown file (top-level `key:` lines only). */
+function frontmatterKeys(file: string): string[] {
+  const text = fs.readFileSync(file, 'utf-8').replace(/\r\n/g, '\n');
+  const match = text.match(/^---\n([\s\S]*?)\n---\n/);
+  if (!match) return [];
+  return match[1].split('\n').map(line => line.match(/^([a-z_-]+):/)?.[1]).filter((k): k is string => !!k);
 }
 
 function contractTemplate(name: string): Buffer {
@@ -209,7 +232,7 @@ describe('install layers over the whole repo tree (WK-0261)', () => {
     const dispatchConfig = up.added.filter(p => p.startsWith('wiki/.dispatch/'));
     expect(dispatchConfig.length).toBeGreaterThan(0);
     expect(up.added.filter(p => !p.startsWith('wiki/.dispatch/'))).toEqual(
-      [...PLANNING_FILES, DISPATCH_TEMPLATE].sort(),
+      [...PLANNING_FILES, ...DISPATCH_FILES].sort(),
     );
     expect(up.removed).toEqual([]);
     expect(up.changed).toEqual(['.mcp.json', 'AGENTS.md', 'wiki/.wiki-contract.json']);
@@ -231,10 +254,35 @@ describe('install layers over the whole repo tree (WK-0261)', () => {
     const asideBefore = snapshot(path.join(tmp.dir, 'dispatch-config-aside'));
     const result = await syncOk(tmp.dir);
 
-    expect([...result.removed].sort()).toEqual([...PLANNING_FILES, DISPATCH_TEMPLATE].sort());
+    expect([...result.removed].sort()).toEqual([...PLANNING_FILES, ...DISPATCH_FILES].sort());
     expect(fs.readFileSync(path.join(tmp.dir, 'wiki/handoffs/HO-0001.md'), 'utf-8')).toBe('# HO-0001\n');
     expect(mcpServers(tmp.dir)).toEqual(['kb-wiki']);
     expect(snapshot(path.join(tmp.dir, 'dispatch-config-aside'))).toEqual(asideBefore);
+  });
+
+  it('AC 2-3 + row 14: role copies are byte-identical to contract/roles/, carry name + description, and a hand edit is restored', async () => {
+    tmp = createTmpDir();
+    expect((await bootstrap({ dir: tmp.dir, repo: 'test/roles' })).ok).toBe(true);
+    expect((await initDispatch({ dir: tmp.dir })).ok).toBe(true);
+    await syncOk(tmp.dir);
+
+    for (const [role, copies] of Object.entries(ROLE_COPIES)) {
+      const src = fs.readFileSync(path.join(KB_ROOT, 'contract', 'roles', `${role}.md`));
+      for (const rel of copies) {
+        expect(fs.readFileSync(path.join(tmp.dir, rel)).equals(src), rel).toBe(true);
+      }
+    }
+    for (const skill of ['planner', 'orchestrator', 'overseer', 'resolve']) {
+      const keys = frontmatterKeys(path.join(tmp.dir, '.agents', 'skills', skill, 'SKILL.md'));
+      expect(keys, skill).toContain('name');
+      expect(keys, skill).toContain('description');
+    }
+
+    const planner = path.join(tmp.dir, '.claude', 'commands', 'planner.md');
+    fs.appendFileSync(planner, '\nLocal edit.\n');
+    const result = await syncOk(tmp.dir);
+    expect(result.synced).toContain('.claude/commands/planner.md');
+    expect(fs.readFileSync(planner).equals(fs.readFileSync(path.join(KB_ROOT, 'contract/roles/planner.md')))).toBe(true);
   });
 
   it('AC 4: on an already-synced repo, sync removes only unedited kb-owned copies of no-layer templates', async () => {

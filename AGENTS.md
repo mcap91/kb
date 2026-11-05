@@ -5,8 +5,9 @@ Managed by kb — edits inside this block are overwritten by `kb bootstrap` / `k
 
 ## kb — wiki
 
-This repository uses the kb toolkit. The installed kb MCP servers are registered in this repo's `.mcp.json`
-and run from the kb checkout; every kb tool call targets this repository via `dir`.
+This repository uses the kb toolkit. The installed kb MCP servers run from the kb checkout and are
+registered with your MCP client (a `.mcp.json` entry for Claude Code, a user-level `codex mcp add`
+registration for Codex); every kb tool call targets this repository via `dir`.
 
 ### Retrieval — do this before substantive work
 
@@ -143,9 +144,11 @@ The question behind all of it: how can I improve this so that a future agent doe
 66. **Mark every shortcut.** Label it `shortcut: <the limit>, <when to upgrade>`; a shortcut with no upgrade trigger is rot.
 67. **Every deferral carries a written re-open trigger,** checked at every gate.
 
-Roles (`/planner`, `/orchestrator`, `/overseer`) install user-global via `install-roles` from the kb
-checkout. This block is managed by kb and overwritten on sync; this repo's own rules, environment registry,
-and where-code-goes map live below the end marker, where kb never writes.
+Roles arrive in this repo by `sync-contract`: `/planner` with the planning layer, `/orchestrator` and
+`/overseer` with the dispatch layer (in Codex, `$planner`, `$orchestrator`, `$overseer`).
+Skills arrive in this repo by `sync-contract`, never user-global. This block is managed by kb and
+overwritten on sync; this repo's own rules, environment registry, and where-code-goes map live below the
+end marker, where kb never writes.
 <!-- END kb-managed -->
 
 

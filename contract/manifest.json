@@ -32,6 +32,11 @@
   "skillLayers": {
     "resolve": "planning"
   },
+  "roleLayers": {
+    "planner": "planning",
+    "orchestrator": "dispatch",
+    "overseer": "dispatch"
+  },
   "types": {
     "issue": {
       "aliases": ["issue", "wk", "work_item", "work-item"],

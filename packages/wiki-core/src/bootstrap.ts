@@ -19,8 +19,8 @@ import {
   loadManifest,
   getBootstrapTemplates,
   getRecordTemplates,
-  getSkillSources,
-  SKILL_RUNTIME_DIRS,
+  getManagedCopies,
+  managedCopyLayer,
   getAgentInstructionsSections,
   renderBootstrapSurface,
   type AgentInstructionsSection,
@@ -386,19 +386,14 @@ export async function bootstrap(
     }
   }
 
-  // 5. Copy skill files from contract/skills/<name>/ into .claude/skills/<name>/ and
-  // .agents/skills/<name>/ (write-if-absent, templates pattern) for skills whose
-  // layer is active (WK-0261 s3: gated on the planning layer).
-  const skillsResult = getSkillSources();
-  if (skillsResult.ok) {
-    for (const file of skillsResult.data) {
-      const layer = manifest.skillLayers[file.skill];
+  // 5. Write the managed skill and role copies whose layer is active
+  // (write-if-absent, templates pattern; WK-0261 s3 skills, s6 roles).
+  const copiesResult = getManagedCopies();
+  if (copiesResult.ok) {
+    for (const copy of copiesResult.data) {
+      const layer = managedCopyLayer(manifest, copy);
       if (!layer || !layerActive(layer, layers)) continue;
-      const content = fs.readFileSync(file.srcPath);
-      for (const runtimeDir of SKILL_RUNTIME_DIRS) {
-        const destPath = path.join(targetDir, runtimeDir, file.skill, file.relPath);
-        writeIfAbsent(destPath, content, dryRun, created, skipped);
-      }
+      writeIfAbsent(path.join(targetDir, copy.dest), fs.readFileSync(copy.srcPath), dryRun, created, skipped);
     }
   }
 

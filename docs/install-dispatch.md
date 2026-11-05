@@ -7,6 +7,8 @@ The dispatch layer adds kb's multi-agent handoff protocol to a repo that already
 Dispatch adds:
 
 - the kb-dispatch section of the managed block, and the `kb-dispatch` MCP server entry
+- the orchestrator and overseer roles: `/orchestrator` and `/overseer` in Claude Code
+  (`.claude/commands/`), `$orchestrator` and `$overseer` in Codex (`.agents/skills/`)
 - the handoff template, `wiki/templates/handoff.md`, and the `wiki/handoffs/` directory
 - the repo-local config tables in `wiki/.dispatch/`
 

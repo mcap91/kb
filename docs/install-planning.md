@@ -4,7 +4,10 @@ The planning layer adds kb's planning machinery to a repo that already has the w
 ([adoption.md](./adoption.md)):
 
 - the engineering rules and the roles footer in the managed block of `AGENTS.md`/`CLAUDE.md`
-- the `/resolve` skill, in `.claude/skills/` (Claude Code) and `.agents/skills/` (Codex)
+- the planner role: `/planner` in Claude Code (`.claude/commands/planner.md`), `$planner` in Codex
+  (`.agents/skills/planner/`)
+- the resolve skill: `/resolve` in Claude Code (`.claude/skills/resolve/`), `$resolve` in Codex
+  (`.agents/skills/resolve/`)
 - the escalation template, `wiki/templates/escalation.md`
 
 Run the commands from the `kb` checkout, with `MY_REPO` set to your repo's absolute path.
@@ -17,9 +20,10 @@ npm run wiki -- init-planning --dir "$MY_REPO"
 npm run wiki -- sync-contract --dir "$MY_REPO"
 ```
 
-`init-planning` adds `"planning"` to the `layers` field of `wiki/.wiki-contract.json`. Commit that file:
-the field is what keeps the layer on. `sync-contract` then writes the planning surfaces and prints each
-path. For a Codex repo, add `--mcp-client codex` to the `sync-contract` command.
+`init-planning` adds `"planning"` to the `layers` field of `wiki/.wiki-contract.json`. `sync-contract`
+then writes the planning surfaces and prints each path. Commit the stamp file and the copies: the
+`layers` field is what keeps the layer on. For a Codex repo, add `--mcp-client codex` to the
+`sync-contract` command.
 
 Both commands are idempotent. A second run reports no change.
 
