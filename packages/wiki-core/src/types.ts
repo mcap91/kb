@@ -90,6 +90,16 @@ export type OperatorAssessment =
 /** Manifest-driven wiki record prefixes. */
 export type WikiPrefix = 'WK' | 'IN' | 'DEC' | 'SRC' | 'AREA' | 'PLN' | 'VAL' | 'HO';
 
+/**
+ * Named install layer for a shipped surface (WK-0261). Layers are cumulative:
+ * `wiki` ships always; `planning` ships when the planning layer is active (the
+ * committed `layers` field or `wiki/.dispatch/`); `dispatch` ships only when
+ * `wiki/.dispatch/` is present. A surface (template, required directory, skill)
+ * absent from its manifest layer map ships in no layer — never emitted, but still
+ * eligible for the delete pass when a byte-identical leftover copy is found.
+ */
+export type ContractLayer = 'wiki' | 'planning' | 'dispatch';
+
 // ---------------------------------------------------------------------------
 // Frontmatter interfaces for manifest-driven record types
 // ---------------------------------------------------------------------------
@@ -800,7 +810,13 @@ export interface WikiManifest {
   retrievalEntrypoint: string;
   coreFiles: string[];
   runtimeFiles: string[];
-  requiredSurfaces: string[];
+  /** Required repo-local directory -> the install layer that ships it (WK-0261). */
+  requiredSurfaces: Record<string, ContractLayer>;
+  /** contract/templates/ filename -> the install layer that ships it (WK-0261). A
+   *  filename present on disk but absent here ships in no layer. */
+  templateLayers: Record<string, ContractLayer>;
+  /** contract/skills/<name>/ -> the install layer that ships it (WK-0261). */
+  skillLayers: Record<string, ContractLayer>;
   types: Record<string, ManifestRecordType>;
   generatedViews: {
     canonical: boolean;
@@ -857,9 +873,20 @@ export interface SyncResult {
   /** Files adopted (overwritten with seed) during this run. */
   adopted?: string[];
   /**
+   * Repo-relative paths removed by the kb-owned delete pass (WK-0261 Removal
+   * semantics): a template or skill file whose layer is no longer in the active
+   * set, deleted because its content still byte-matched (EOL-normalized) the kb
+   * contract source. Always present, empty when nothing was removed. A known-name
+   * file whose content had drifted is kept instead and reported via `warnings`
+   * (a conflict, never deleted). In `check: true` mode this lists what would be
+   * removed without deleting anything.
+   */
+  removed: string[];
+  /**
    * Warn-only diagnostics about user-global role drift or skill shadowing (WK-0240
-   * stage 2 rulings 2–3, 7). Always present, empty when nothing to report. Never
-   * changes `ok` or writes under `$HOME` — these are advisory only.
+   * stage 2 rulings 2–3, 7), and kb-owned-file conflicts from the WK-0261 delete
+   * pass. Always present, empty when nothing to report. Never changes `ok` or
+   * writes under `$HOME` — these are advisory only.
    */
   warnings: string[];
 }

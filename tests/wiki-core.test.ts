@@ -28,6 +28,7 @@ import {
   readSlices,
   readHardening,
   readResolutions,
+  renderBootstrapSurface,
 } from '../packages/wiki-core/src/index.js';
 
 import type {
@@ -58,7 +59,11 @@ describe('bootstrap', () => {
     tmp?.cleanup();
   });
 
-  it('creates all expected directories', async () => {
+  // CHANGED (WK-0261 Scope layer-partition table): wiki/plans and wiki/handoffs
+  // used to ship on every bootstrap; wiki/plans ships in no layer at all (Resolutions
+  // row 3) and wiki/handoffs ships only once the dispatch layer is active. A fresh,
+  // wiki-only bootstrap now creates exactly the 5 wiki-layer directories.
+  it('creates exactly the 5 wiki-layer directories on a fresh wiki-only bootstrap', async () => {
     tmp = createTmpDir();
     const result = await bootstrap({ dir: tmp.dir, repo: 'test/repo' });
     expect(result.ok).toBe(true);
@@ -69,8 +74,6 @@ describe('bootstrap', () => {
       'wiki/decisions',
       'wiki/sources',
       'wiki/areas',
-      'wiki/plans',
-      'wiki/handoffs',
     ];
     for (const dir of expectedDirs) {
       expect(
@@ -78,6 +81,26 @@ describe('bootstrap', () => {
         `Expected directory ${dir} to exist`,
       ).toBe(true);
     }
+
+    for (const dir of ['wiki/plans', 'wiki/value-reports', 'wiki/handoffs']) {
+      expect(
+        fs.existsSync(path.join(tmp.dir, dir)),
+        `Expected directory ${dir} to NOT exist (shipped in no layer, or dispatch-only)`,
+      ).toBe(false);
+    }
+  });
+
+  it('creates wiki/handoffs/ once the dispatch layer is active (wiki/.dispatch/ present)', async () => {
+    tmp = createTmpDir();
+    fs.mkdirSync(path.join(tmp.dir, 'wiki', '.dispatch'), { recursive: true });
+    const result = await bootstrap({ dir: tmp.dir, repo: 'test/repo' });
+    expect(result.ok).toBe(true);
+
+    expect(fs.existsSync(path.join(tmp.dir, 'wiki/handoffs'))).toBe(true);
+    // wiki/plans and wiki/value-reports ship in no layer, ever — even a full
+    // (wiki + planning + dispatch) repo never gets them auto-created.
+    expect(fs.existsSync(path.join(tmp.dir, 'wiki/plans'))).toBe(false);
+    expect(fs.existsSync(path.join(tmp.dir, 'wiki/value-reports'))).toBe(false);
   });
 
   it('writes .wiki-contract.json with correct metadata', async () => {
@@ -137,7 +160,9 @@ describe('bootstrap', () => {
     expect(state['PLN']).toEqual({ next: 1, allocated: [] });
   });
 
-  it('copies record templates', async () => {
+  // CHANGED (WK-0261): plan.md ships in no layer at all (Resolutions row 3) — a
+  // fresh wiki-only bootstrap carries only the 5 wiki-layer record templates.
+  it('copies exactly the 5 wiki-layer record templates on a fresh wiki-only bootstrap', async () => {
     tmp = createTmpDir();
     await bootstrap({ dir: tmp.dir, repo: 'test/repo' });
 
@@ -146,13 +171,23 @@ describe('bootstrap', () => {
     expect(fileExists(tmp.dir, 'wiki/templates/decision.md')).toBe(true);
     expect(fileExists(tmp.dir, 'wiki/templates/source.md')).toBe(true);
     expect(fileExists(tmp.dir, 'wiki/templates/area.md')).toBe(true);
-    expect(fileExists(tmp.dir, 'wiki/templates/plan.md')).toBe(true);
+
+    for (const name of ['plan.md', 'plan-execution-tracker.md', 'value.md', 'chain-doc.md', 'escalation.md', 'handoff.md']) {
+      expect(fileExists(tmp.dir, `wiki/templates/${name}`), `${name} should NOT be shipped`).toBe(false);
+    }
   });
 
-  it('copies handoff template', async () => {
+  // CHANGED (WK-0261): handoff.md ships only once the dispatch layer is active
+  // (wiki/.dispatch/ present) — it is no longer copied on every bootstrap.
+  it('copies handoff template only once the dispatch layer is active', async () => {
     tmp = createTmpDir();
     await bootstrap({ dir: tmp.dir, repo: 'test/repo' });
+    expect(fileExists(tmp.dir, 'wiki/templates/handoff.md')).toBe(false);
+    tmp.cleanup();
 
+    tmp = createTmpDir();
+    fs.mkdirSync(path.join(tmp.dir, 'wiki', '.dispatch'), { recursive: true });
+    await bootstrap({ dir: tmp.dir, repo: 'test/repo' });
     expect(fileExists(tmp.dir, 'wiki/templates/handoff.md')).toBe(true);
   });
 
@@ -525,11 +560,17 @@ describe('sync-contract', () => {
     expect(afterMeta.lastSyncedAt).toBeTruthy();
   });
 
+  // CHANGED (WK-0261): this test used wiki/plans + plan.md as its vehicle for
+  // "sync recreates a missing required surface/template"; both now ship in no
+  // layer at all (Resolutions row 3), so sync no longer recreates either —
+  // proven separately by the WK-0261 layer-partition tests. Re-pointed at
+  // wiki/sources + source.md, a wiki-layer surface that is still unconditionally
+  // active, to keep exercising the still-true recreate behavior.
   it('upgrades required surfaces and missing ID state entries', async () => {
     tmp = await createBootstrappedRepo();
 
-    fs.rmSync(path.join(tmp.dir, 'wiki/plans'), { recursive: true, force: true });
-    fs.rmSync(path.join(tmp.dir, 'wiki/templates/plan.md'), { force: true });
+    fs.rmSync(path.join(tmp.dir, 'wiki/sources'), { recursive: true, force: true });
+    fs.rmSync(path.join(tmp.dir, 'wiki/templates/source.md'), { force: true });
     const state = readJson<IdState>(tmp.dir, 'wiki/.id-state.json');
     state['WK'] = { next: 7, allocated: [1, 2, 3, 4, 5, 6] };
     delete state['PLN'];
@@ -542,23 +583,24 @@ describe('sync-contract', () => {
     const result = await sync({ dir: tmp.dir });
     expect(result.ok).toBe(true);
     if (result.ok) {
-      expect(result.data.synced).toContain('wiki/plans');
+      expect(result.data.synced).toContain('wiki/sources');
       expect(result.data.synced).toContain('wiki/.id-state.json');
-      expect(result.data.synced).toContain('wiki/templates/plan.md');
+      expect(result.data.synced).toContain('wiki/templates/source.md');
     }
 
-    expect(fs.existsSync(path.join(tmp.dir, 'wiki/plans'))).toBe(true);
-    expect(fileExists(tmp.dir, 'wiki/templates/plan.md')).toBe(true);
+    expect(fs.existsSync(path.join(tmp.dir, 'wiki/sources'))).toBe(true);
+    expect(fileExists(tmp.dir, 'wiki/templates/source.md')).toBe(true);
 
     const upgradedState = readJson<IdState>(tmp.dir, 'wiki/.id-state.json');
     expect(upgradedState['WK']).toEqual({ next: 7, allocated: [1, 2, 3, 4, 5, 6] });
     expect(upgradedState['PLN']).toEqual({ next: 1, allocated: [] });
   });
 
+  // CHANGED (WK-0261): same re-pointing as the test above, for the --check leg.
   it('--check mode reports upgrade changes without writing them', async () => {
     tmp = await createBootstrappedRepo();
 
-    fs.rmSync(path.join(tmp.dir, 'wiki/plans'), { recursive: true, force: true });
+    fs.rmSync(path.join(tmp.dir, 'wiki/sources'), { recursive: true, force: true });
     const state = readJson<IdState>(tmp.dir, 'wiki/.id-state.json');
     delete state['PLN'];
     fs.writeFileSync(
@@ -570,11 +612,11 @@ describe('sync-contract', () => {
     const result = await sync({ dir: tmp.dir, check: true });
     expect(result.ok).toBe(true);
     if (result.ok) {
-      expect(result.data.synced).toContain('wiki/plans');
+      expect(result.data.synced).toContain('wiki/sources');
       expect(result.data.synced).toContain('wiki/.id-state.json');
     }
 
-    expect(fs.existsSync(path.join(tmp.dir, 'wiki/plans'))).toBe(false);
+    expect(fs.existsSync(path.join(tmp.dir, 'wiki/sources'))).toBe(false);
     const unchangedState = readJson<IdState>(tmp.dir, 'wiki/.id-state.json');
     expect(unchangedState['PLN']).toBeUndefined();
   });
@@ -591,27 +633,30 @@ describe('sync-contract WK-0037', () => {
     tmp?.cleanup();
   });
 
-  // WHY (WK-0037-a): The bootstrap seed schema.md must list ALL manifest record
-  // types so consuming repos bootstrapped from the seed know about PLN and VAL.
-  it('seed schema.md lists PLN and VAL record type rows', () => {
+  // CHANGED (WK-0261 Resolutions row 3 / HO-0204 F1): the seed must now NEVER
+  // list PLN or VAL — they ship in no layer, and bootstrap-doc emission strips
+  // their mentions for every consumer regardless of layer. Supersedes the old
+  // WK-0037-a AC ("list ALL manifest record types").
+  it('seed schema.md no longer lists PLN or VAL record type rows', () => {
     // Read the actual seed file from the contract directory (not a consumer copy).
     const seedPath = path.resolve(process.cwd(), 'contract/bootstrap/schema.md');
     const content = fs.readFileSync(seedPath, 'utf-8');
-    // Must contain a row for PLN
-    expect(content).toMatch(/\|\s*`PLN`/);
-    // Must contain a row for VAL
-    expect(content).toMatch(/\|\s*`VAL`/);
+    expect(content).not.toMatch(/\|\s*`PLN`/);
+    expect(content).not.toMatch(/\|\s*`VAL`/);
   });
 
   // WHY (WK-0037-b): A dest core-doc that is byte-identical-modulo-EOL to the
-  // seed must NOT appear in drifted. Windows Git can commit CRLF files; without
-  // EOL normalization every Windows-checked-out file would report false drift.
-  it('CRLF dest that is identical to seed modulo line endings reports no drift', async () => {
+  // *emitted* seed (WK-0261: dispatch-conditional spans stripped for this
+  // wiki-only fixture) must NOT appear in drifted. Windows Git can commit CRLF
+  // files; without EOL normalization every Windows-checked-out file would
+  // report false drift.
+  it('CRLF dest that is identical to the emitted seed modulo line endings reports no drift', async () => {
     tmp = await createBootstrappedRepo();
 
-    // Read the real seed content and make a CRLF copy as the dest
+    // Read the real seed content, render it for this (wiki-only) repo's active
+    // layers, and make a CRLF copy as the dest.
     const seedPath = path.resolve(process.cwd(), 'contract/bootstrap/schema.md');
-    const seedContent = fs.readFileSync(seedPath, 'utf-8');
+    const seedContent = renderBootstrapSurface(fs.readFileSync(seedPath, 'utf-8'), { dispatch: false });
     const crlfContent = seedContent.replace(/\r?\n/g, '\r\n');
     fs.writeFileSync(path.join(tmp.dir, 'wiki/schema.md'), crlfContent, 'utf-8');
 
@@ -623,8 +668,9 @@ describe('sync-contract WK-0037', () => {
     }
   });
 
-  // WHY (WK-0037-c-1): --adopt overwrites the named surface with the seed
-  // content, enabling the orchestrator to refresh stale consumer docs.
+  // WHY (WK-0037-c-1): --adopt overwrites the named surface with the emitted
+  // seed content (WK-0261: the form rendered for this repo's active layers),
+  // enabling the orchestrator to refresh stale consumer docs.
   it('adopt overwrites dest with seed content (stale dest scenario)', async () => {
     tmp = await createBootstrappedRepo();
 
@@ -638,9 +684,11 @@ describe('sync-contract WK-0037', () => {
       expect(result.data.adopted).toContain('wiki/schema.md');
     }
 
-    // Dest must now match seed (modulo EOL)
+    // Dest must now match the emitted seed (modulo EOL) — this fixture has no
+    // dispatch layer active, so the dispatch-conditional span stays stripped.
     const seedPath = path.resolve(process.cwd(), 'contract/bootstrap/schema.md');
-    const seedContent = fs.readFileSync(seedPath, 'utf-8').replace(/\r?\n/g, '\n');
+    const seedContent = renderBootstrapSurface(fs.readFileSync(seedPath, 'utf-8'), { dispatch: false })
+      .replace(/\r?\n/g, '\n');
     const destContent = fs.readFileSync(
       path.join(tmp.dir, 'wiki/schema.md'),
       'utf-8',
@@ -682,9 +730,11 @@ describe('sync-contract WK-0037', () => {
       expect(result.data.adopted).toContain('wiki/schema.md');
     }
 
-    // schema.md must have been replaced by seed content; conventions.md untouched
+    // schema.md must have been replaced by the emitted seed content (WK-0261:
+    // dispatch-conditional span stripped for this wiki-only fixture); conventions.md untouched
     const seedPath = path.resolve(process.cwd(), 'contract/bootstrap/schema.md');
-    const seedContent = fs.readFileSync(seedPath, 'utf-8').replace(/\r?\n/g, '\n');
+    const seedContent = renderBootstrapSurface(fs.readFileSync(seedPath, 'utf-8'), { dispatch: false })
+      .replace(/\r?\n/g, '\n');
     const destSchema = fs.readFileSync(
       path.join(tmp.dir, 'wiki/schema.md'), 'utf-8',
     ).replace(/\r?\n/g, '\n');
@@ -4021,6 +4071,20 @@ describe('search', () => {
     tmp?.cleanup();
   });
 
+  it('first search on a fresh bootstrap returns ok, not a missing-index error (WK-0261 row 14)', async () => {
+    tmp = createTmpDir();
+    const boot = await bootstrap({ dir: tmp.dir, repo: 'test/repo' });
+    expect(boot.ok).toBe(true);
+    expect(fileExists(tmp.dir, 'wiki/.search-index.json')).toBe(false);
+
+    const result = await search({ dir: tmp.dir, query: 'zzzunmatchedterm' });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.data.hits).toEqual([]);
+    }
+    expect(fileExists(tmp.dir, 'wiki/.search-index.json')).toBe(true);
+  });
+
   it('build index includes manifest-driven records', async () => {
     tmp = await createBootstrappedRepo();
     await create({ dir: tmp.dir, prefix: 'WK', title: 'Searchable issue' });
@@ -4310,10 +4374,16 @@ describe('VAL value-report record type', () => {
     tmp?.cleanup();
   });
 
-  it('bootstrap creates the wiki/value-reports surface and value.md template', async () => {
-    tmp = await createBootstrappedRepo();
-    expect(fs.existsSync(path.join(tmp.dir, 'wiki/value-reports'))).toBe(true);
-    expect(fileExists(tmp.dir, 'wiki/templates/value.md')).toBe(true);
+  // CHANGED (WK-0261 Resolutions row 3): VAL ships in no install layer — bootstrap
+  // no longer auto-creates wiki/value-reports/ for any repo (`create` makes it on
+  // demand). The VAL tests below use createBootstrappedRepo, which seeds value.md
+  // directly (tests/helpers/tmp-repo.ts) so `create` still has its template.
+  it('bootstrap creates neither wiki/value-reports/ nor wiki/templates/value.md', async () => {
+    tmp = createTmpDir();
+    const result = await bootstrap({ dir: tmp.dir, repo: 'test/repo' });
+    expect(result.ok).toBe(true);
+    expect(fs.existsSync(path.join(tmp.dir, 'wiki/value-reports'))).toBe(false);
+    expect(fileExists(tmp.dir, 'wiki/templates/value.md')).toBe(false);
   });
 
   it('seeds a VAL entry in .id-state.json at bootstrap', async () => {

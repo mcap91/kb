@@ -43,6 +43,7 @@ export type {
   UsageMetrics,
   PlanBundleManifest,
   WikiContractMetadata,
+  ContractLayer,
   InitPlanningOpts,
   InitPlanningResult,
   IdState,
@@ -127,6 +128,7 @@ export {
   getRecordTemplates,
   getTemplate,
   getAgentInstructionsSections,
+  renderBootstrapSurface,
 } from './contract.js';
 export type { AgentInstructionsSection } from './contract.js';
 
@@ -136,6 +138,7 @@ export {
   BLOCK_WORD_BUDGET,
   dispatchInstalled,
   planningInstalled,
+  layerActive,
   assembleBlockBody,
   countBlockWords,
   checkBlockBudget,

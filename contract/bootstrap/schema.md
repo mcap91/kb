@@ -13,8 +13,6 @@ After bootstrap, this file is consumer-owned. You may customize it for your proj
 | `DEC` | Decision | `wiki/decisions/` | Allocated sequential |
 | `SRC` | Source | `wiki/sources/` | Allocated sequential |
 | `AREA` | Area | `wiki/areas/` | Slug-based |
-| `PLN` | Plan | `wiki/plans/` | Allocated sequential |
-| `VAL` | Value report | `wiki/value-reports/` | Allocated sequential |
 
 ## Frontmatter Reference
 
@@ -45,6 +43,8 @@ depends_on:
   - WK-0002
 ```
 
+<!-- kb:dispatch-span -->
 ## Dispatch-Owned Records
 
 `HO-*` handoff records are managed by `dispatch-core` and are not part of the manifest-driven wiki schema. See `wiki/handoffs/` for handoff files and the handoff template for the expected format.
+<!-- /kb:dispatch-span -->

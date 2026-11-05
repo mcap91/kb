@@ -22,6 +22,7 @@ import {
   getSkillSources,
   SKILL_RUNTIME_DIRS,
   getAgentInstructionsSections,
+  renderBootstrapSurface,
   type AgentInstructionsSection,
 } from './contract.js';
 import {
@@ -30,6 +31,7 @@ import {
   checkBlockBudget,
   dispatchInstalled,
   planningInstalled,
+  layerActive,
 } from './agent-instructions.js';
 import { writeMcpConfig } from './mcp-config.js';
 import { ensureGitignoreEntries } from './gitignore.js';
@@ -310,9 +312,14 @@ export async function bootstrap(
   const planningResult = planningInstalled(targetDir);
   if (!planningResult.ok) return planningResult;
   const planning = planningResult.data;
+  const dispatch = dispatchInstalled(targetDir);
+  const layers = { planning, dispatch };
 
-  // 1. Create wiki directories
-  for (const rel of manifest.requiredSurfaces) {
+  // 1. Create wiki directories whose layer is active (WK-0261: a surface whose
+  // layer is inactive is simply never created here — an existing directory from
+  // an earlier, wider layer is never touched by bootstrap or sync).
+  for (const [rel, layer] of Object.entries(manifest.requiredSurfaces)) {
+    if (!layerActive(layer, layers)) continue;
     const abs = path.join(targetDir, rel);
     ensureDir(abs, dryRun, created);
   }
@@ -343,20 +350,26 @@ export async function bootstrap(
   );
   if (!idStateResult.ok) return idStateResult;
 
-  // 3. Copy bootstrap surfaces (only if absent)
+  // 3. Copy bootstrap surfaces (only if absent). Always written — the wiki layer
+  // ships them — but their content has dispatch-conditional spans stripped at
+  // emission (WK-0261: PLN/VAL/plans/value-reports mentions are never emitted,
+  // so the source itself excludes them; dispatch/handoffs mentions survive only
+  // while the dispatch layer is active).
   const bootstrapResult = getBootstrapTemplates();
   if (bootstrapResult.ok) {
     for (const [destName, srcName] of Object.entries(BOOTSTRAP_SURFACES)) {
       const srcPath = bootstrapResult.data.find(p => path.basename(p) === srcName);
       if (srcPath) {
         const destPath = path.join(wikiDir, destName);
-        const content = fs.readFileSync(srcPath, 'utf-8');
+        const content = renderBootstrapSurface(fs.readFileSync(srcPath, 'utf-8'), { dispatch });
         writeIfAbsent(destPath, content, dryRun, created, skipped);
       }
     }
   }
 
-  // 4. Copy record templates (including handoff.md)
+  // 4. Copy record templates whose layer is active (e.g. handoff.md only once
+  // dispatch is active). A template absent from manifest.templateLayers ships
+  // in no layer and is never written here.
   const templatesResult = getRecordTemplates();
   if (templatesResult.ok) {
     // Determine template target directory
@@ -365,6 +378,8 @@ export async function bootstrap(
 
     for (const srcPath of templatesResult.data) {
       const filename = path.basename(srcPath);
+      const layer = manifest.templateLayers[filename];
+      if (!layer || !layerActive(layer, layers)) continue;
       const destPath = path.join(templateDest, filename);
       const content = fs.readFileSync(srcPath, 'utf-8');
       writeIfAbsent(destPath, content, dryRun, created, skipped);
@@ -372,11 +387,13 @@ export async function bootstrap(
   }
 
   // 5. Copy skill files from contract/skills/<name>/ into .claude/skills/<name>/ and
-  // .agents/skills/<name>/ (write-if-absent, templates pattern — never gated on
-  // wiki/.dispatch/ or agentInstructions).
+  // .agents/skills/<name>/ (write-if-absent, templates pattern) for skills whose
+  // layer is active (WK-0261 s3: gated on the planning layer).
   const skillsResult = getSkillSources();
   if (skillsResult.ok) {
     for (const file of skillsResult.data) {
+      const layer = manifest.skillLayers[file.skill];
+      if (!layer || !layerActive(layer, layers)) continue;
       const content = fs.readFileSync(file.srcPath);
       for (const runtimeDir of SKILL_RUNTIME_DIRS) {
         const destPath = path.join(targetDir, runtimeDir, file.skill, file.relPath);
@@ -388,8 +405,6 @@ export async function bootstrap(
   // 6. Write agent instructions managed block
   const updated: string[] = [];
   const instructions: string[] = [];
-
-  const dispatch = dispatchInstalled(targetDir);
 
   if (agentInstructionsSections) {
     const blockBody = assembleBlockBody(agentInstructionsSections, { planning, dispatch });

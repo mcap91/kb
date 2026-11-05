@@ -324,20 +324,15 @@ From the `kb` repo:
 
 ```bash
 npm run wiki -- bootstrap --dir ../my-project --repo org/my-project
-npm run dispatch -- init-dispatch --dir ../my-project
-npm run wiki -- generate --dir ../my-project
-npm run wiki -- build-search-index --dir ../my-project
-npm run graph -- --dir ../my-project
 ```
 
-What this does:
+This installs the wiki layer: the `wiki/` structure, record templates, bootstrap docs, the managed block,
+and the `kb-wiki` MCP entry. kb ships two more opt-in layers on top of it, each one command sequence:
 
-- creates `wiki/` structure in the consuming repo
-- copies bootstrap surfaces and templates
-- scaffolds repo-local dispatch config (`wiki/.dispatch/`)
-- generates standard wiki views
-- builds the search index
-- writes graph artifacts
+- planning (engineering rules, planner role, `/resolve`, escalation template): [docs/install-planning.md](docs/install-planning.md)
+- dispatch (multi-agent handoffs; implies planning): [docs/install-dispatch.md](docs/install-dispatch.md)
+
+[docs/adoption.md](docs/adoption.md) is the full wiki-layer install page, including the Codex path.
 
 ## Usage Examples
 
@@ -571,7 +566,6 @@ If this repo has not been bootstrapped yet:
 ```bash
 cd ../kb
 npm run wiki -- bootstrap --dir ../<this-repo-name> --repo <owner/name>
-npm run dispatch -- init-dispatch --dir ../<this-repo-name>
 npm run wiki -- generate --dir ../<this-repo-name>
 npm run wiki -- build-search-index --dir ../<this-repo-name>
 npm run graph -- --dir ../<this-repo-name>
@@ -615,48 +609,16 @@ npm test
 
 `kb bootstrap` and `kb sync-contract` automatically write a managed block into the consuming repo's
 `AGENTS.md` and `CLAUDE.md` between `<!-- BEGIN kb-managed -->` / `<!-- END kb-managed -->` markers.
-The block is the same in both files and contains the MCP-first retrieval procedure and operating rules.
+`AGENTS.md` carries the full block (MCP-first retrieval procedure and the layer's operating text);
+`CLAUDE.md` carries a thin `@AGENTS.md` redirect.
 Content outside the markers is never touched.
 
-Bootstrap also writes `.mcp.json` (for Claude, default) with resolved paths to `kb-wiki` and `kb-dispatch`
-servers. For Codex, pass `--mcp-client codex` to get `codex mcp add` commands instead.
+Bootstrap also writes `.mcp.json` (for Claude, default) with resolved paths to the `kb-wiki` server, and
+to `kb-dispatch` once the dispatch layer is installed. For Codex, pass `--mcp-client codex` to get
+`codex mcp add` commands instead.
 
-The managed block content is shown here for reference:
-
-````md
-## kb integration
-
-This repository uses the `kb` toolkit (repo-local wiki, reviewed dispatch, deterministic graph). The kb
-MCP servers (`kb-wiki`, `kb-dispatch`) are registered in this repo's `.mcp.json` and run from the kb
-checkout; every kb tool call targets this repository via `dir`.
-
-### Retrieval — do this before substantive work
-
-Repository-context retrieval is a wiki/docs retrieval problem first, not a filesystem-search problem first.
-
-1. Search the wiki with the kb wiki MCP `search` tool. This is the first retrieval step.
-2. If you need a structured overview, regenerate views with the MCP `generate` tool and read them
-   (`catalog`, `now`, `inbox`, `backlog`, `archive`).
-3. Then read the relevant durable `docs/` pages.
-4. Then check related `wiki/decisions/`, `wiki/issues/`, `wiki/initiatives/`, `wiki/areas/`, `wiki/sources/`.
-5. Only then inspect implementation files.
-
-If the kb wiki MCP server is not available this session, run the same steps via the kb CLI from the kb
-checkout (`npm run wiki -- search --dir <this repo>`, `npm run wiki -- generate --dir <this repo>`). Do
-not use raw `rg`, file globbing, or direct file reads as the first retrieval step — use the wiki MCP tools
-(`search`, `generate`, `lint`), or the CLI fallback, first. Do not parallelize implementation search with
-the initial retrieval pass.
-
-### Operating rules
-
-- Wiki: prefer the `kb-wiki` MCP tools (`search`, `generate`, `lint`, `create`, `allocate-id`,
-  `build-search-index`, `sync-contract`, `bootstrap`); CLI fallback `npm run wiki -- … --dir <this repo>`.
-- Dispatch: prefer the `kb-dispatch` MCP tools or the kb CLI.
-- Graph: kb CLI (`npm run graph -- --dir <this repo>`).
-- Always pass `dir` pointing at this repository; run kb from its own checkout, not this repo root.
-- Do not create `HO-*` via `wiki create` — handoffs are dispatch-owned under `wiki/handoffs/`.
-- If wiki records and code/tests disagree, report the mismatch rather than trusting a grep-first conclusion.
-````
+The block's sections are the files in `contract/agent-instructions/`; which ones a repo gets depends on its
+install layers. Read them there, or in any bootstrapped repo's `AGENTS.md`.
 
 ## Notes for Agents
 

@@ -21,6 +21,10 @@ import { deriveReview } from '../packages/dispatch-core/src/derive-review.js';
 import { parseHandoff } from '../packages/dispatch-core/src/ho.js';
 
 async function setupBootstrappedRepo(repoRoot: string): Promise<void> {
+  // WK-0261: wiki/handoffs/ (and the handoff.md template) now ship only once
+  // the dispatch layer is active — a real dispatch repo always has this by the
+  // time createHandoff runs (init-dispatch + sync-contract precede it).
+  await mkdir(join(repoRoot, 'wiki', '.dispatch'), { recursive: true });
   const result = await bootstrap({ dir: repoRoot, repo: 'test/repo' });
   if (!result.ok) {
     throw new Error(result.message);

@@ -4,8 +4,8 @@
  * Tests (TDD, written first):
  *   1. bootstrap: AGENTS.md does NOT contain the (removed, WK-0209) value-report recipe marker,
  *      and the dashboard bullet is explicitly kb-relative (CLAUDE.md is a thin @AGENTS.md redirect)
- *   2. wiki/value-reports/ directory exists after bootstrap
- *   3. wiki/templates/value.md exists after bootstrap
+ *   2. wiki/value-reports/ directory is not created by bootstrap (WK-0261 row 3)
+ *   3. wiki/templates/value.md is not shipped by bootstrap (WK-0261 row 3)
  *   4. allocate --prefix VAL → VAL-0001
  *   5. sync-contract does not reintroduce the removed recipe marker, and keeps the dashboard bullet
  *      kb-relative (WK-0209)
@@ -95,12 +95,27 @@ describe('VAL propagation — bootstrap', () => {
     expect(claude).not.toContain(RECIPE_MARKER);
   });
 
-  it('bootstrap: wiki/value-reports/ directory exists', () => {
-    expect(fs.existsSync(path.join(tmp.dir, 'wiki/value-reports'))).toBe(true);
+  // CHANGED (WK-0261 Resolutions row 3): VAL ships in no install layer at all —
+  // bootstrap no longer auto-creates wiki/value-reports/ for any repo. `create`
+  // still makes the directory on demand when a VAL-* record is first written
+  // (packages/wiki-core/src/create.ts).
+  it('bootstrap: wiki/value-reports/ directory does not exist (VAL ships in no layer)', () => {
+    expect(fs.existsSync(path.join(tmp.dir, 'wiki/value-reports'))).toBe(false);
   });
 
-  it('bootstrap: wiki/templates/value.md exists', () => {
-    expect(fileExists(tmp.dir, 'wiki/templates/value.md')).toBe(true);
+  // CHANGED (WK-0261 Resolutions row 3): value.md ships in no layer. Checked on a
+  // real bootstrap, not the beforeEach fixture: createBootstrappedRepo seeds
+  // value.md directly (tests/helpers/tmp-repo.ts), so asserting on it would only
+  // test the helper.
+  it('bootstrap: wiki/templates/value.md is not shipped (VAL ships in no layer)', async () => {
+    const fresh = createTmpDir();
+    try {
+      const result = await bootstrap({ dir: fresh.dir, repo: 'test/repo' });
+      expect(result.ok).toBe(true);
+      expect(fileExists(fresh.dir, 'wiki/templates/value.md')).toBe(false);
+    } finally {
+      fresh.cleanup();
+    }
   });
 
   it('bootstrap: allocate --prefix VAL returns VAL-0001', async () => {

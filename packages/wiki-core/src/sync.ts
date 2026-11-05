@@ -30,6 +30,7 @@ import {
   SKILL_RUNTIME_DIRS,
   bootstrapDir,
   getAgentInstructionsSections,
+  renderBootstrapSurface,
   type AgentInstructionsSection,
 } from './contract.js';
 import {
@@ -38,6 +39,7 @@ import {
   checkBlockBudget,
   dispatchInstalled,
   planningInstalled,
+  layerActive,
 } from './agent-instructions.js';
 import { writeMcpConfig } from './mcp-config.js';
 import { ensureGitignoreEntries } from './gitignore.js';
@@ -250,10 +252,15 @@ function reconcileIdState(state: IdState, diskEntries: Record<string, number[]>)
 function syncRequiredSurfaces(
   targetDir: string,
   manifest: WikiManifest,
+  layers: { planning: boolean; dispatch: boolean },
   checkOnly: boolean,
   synced: string[],
 ): void {
-  for (const surface of manifest.requiredSurfaces) {
+  // WK-0261: only create a missing required surface while its layer is active.
+  // A surface's layer going inactive never deletes an existing directory — it
+  // may hold user records (Removal semantics: never record directories).
+  for (const [surface, layer] of Object.entries(manifest.requiredSurfaces)) {
+    if (!layerActive(layer, layers)) continue;
     const absPath = path.join(targetDir, surface);
     if (fs.existsSync(absPath)) continue;
 
@@ -262,6 +269,20 @@ function syncRequiredSurfaces(
     }
     synced.push(normalize(targetDir, absPath));
     debug(`synced required surface: ${surface}`);
+  }
+}
+
+/** Remove `dirPath` and any now-empty parent skill folders, bottom-up. Never
+ *  removes a directory that still contains a file (HO-0215 item 4). */
+function removeEmptyDirRecursive(dirPath: string): void {
+  if (!fs.existsSync(dirPath)) return;
+  for (const entry of fs.readdirSync(dirPath, { withFileTypes: true })) {
+    if (entry.isDirectory()) {
+      removeEmptyDirRecursive(path.join(dirPath, entry.name));
+    }
+  }
+  if (fs.readdirSync(dirPath).length === 0) {
+    fs.rmdirSync(dirPath);
   }
 }
 
@@ -360,12 +381,16 @@ export async function sync(opts: SyncOpts): Promise<Result<SyncResult>> {
   const drifted: string[] = [];
   const skipped: string[] = [];
   const adopted: string[] = [];
+  const removed: string[] = [];
+  const conflictWarnings: string[] = [];
 
   // Refuse before any write, in both modes, when the stamp exists but cannot be parsed
   // (WK-0261 fix-up). The NOT_BOOTSTRAPPED check above still comes first.
   const planningResult = planningInstalled(targetDir);
   if (!planningResult.ok) return planningResult;
   const planning = planningResult.data;
+  const dispatch = dispatchInstalled(targetDir);
+  const layers = { planning, dispatch };
 
   // Resolve and validate the --adopt surface if provided.
   let adoptSurface: string | undefined;
@@ -383,11 +408,16 @@ export async function sync(opts: SyncOpts): Promise<Result<SyncResult>> {
   }
 
   // 1. Upgrade repo-local required surfaces and allocator state.
-  syncRequiredSurfaces(targetDir, manifest, checkOnly, synced);
+  syncRequiredSurfaces(targetDir, manifest, layers, checkOnly, synced);
   const idStateResult = syncIdState(targetDir, wikiDir, manifest, checkOnly, synced);
   if (!idStateResult.ok) return idStateResult;
 
-  // 2. Sync record templates
+  // 2. Sync record templates whose layer is active (add/overwrite-on-drift, as
+  // before); for a template whose layer is inactive (including one absent from
+  // manifest.templateLayers — shipped in no layer, e.g. plan.md), run the kb-owned
+  // delete pass instead (WK-0261 Removal semantics, HO-0204 F2): delete only when
+  // the on-disk file still byte-matches (EOL-normalized) the contract source;
+  // a modified known-name file is kept and reported as a conflict warning.
   const templatesResult = getRecordTemplates();
   if (!templatesResult.ok) {
     return fail('CONTRACT_NOT_FOUND', `Failed to read templates: ${templatesResult.message}`);
@@ -404,58 +434,123 @@ export async function sync(opts: SyncOpts): Promise<Result<SyncResult>> {
     const filename = path.basename(srcPath);
     const destPath = path.join(templateDest, filename);
     const srcContent = fs.readFileSync(srcPath, 'utf-8');
+    const layer = manifest.templateLayers[filename];
+    const active = !!layer && layerActive(layer, layers);
 
-    if (!fs.existsSync(destPath)) {
-      // Template missing in target — needs sync
-      if (!checkOnly) {
-        fs.writeFileSync(destPath, srcContent, 'utf-8');
-      }
-      synced.push(normalize(targetDir, destPath));
-      debug(`synced template: ${filename}`);
-    } else {
-      const destContent = fs.readFileSync(destPath, 'utf-8');
-      if (normalizeEol(srcContent) !== normalizeEol(destContent)) {
-        // Template has drifted — overwrite in normal mode
+    if (active) {
+      if (!fs.existsSync(destPath)) {
+        // Template missing in target — needs sync
         if (!checkOnly) {
           fs.writeFileSync(destPath, srcContent, 'utf-8');
         }
         synced.push(normalize(targetDir, destPath));
-        debug(`updated template: ${filename}`);
+        debug(`synced template: ${filename}`);
       } else {
-        skipped.push(normalize(targetDir, destPath));
-        debug(`skipped template (unchanged): ${filename}`);
+        const destContent = fs.readFileSync(destPath, 'utf-8');
+        if (normalizeEol(srcContent) !== normalizeEol(destContent)) {
+          // Template has drifted — overwrite in normal mode
+          if (!checkOnly) {
+            fs.writeFileSync(destPath, srcContent, 'utf-8');
+          }
+          synced.push(normalize(targetDir, destPath));
+          debug(`updated template: ${filename}`);
+        } else {
+          skipped.push(normalize(targetDir, destPath));
+          debug(`skipped template (unchanged): ${filename}`);
+        }
       }
+      continue;
+    }
+
+    // Inactive layer (or no layer at all): delete pass only — never recreate.
+    if (!fs.existsSync(destPath)) continue;
+    const destContent = fs.readFileSync(destPath, 'utf-8');
+    if (normalizeEol(destContent) === normalizeEol(srcContent)) {
+      if (!checkOnly) {
+        fs.unlinkSync(destPath);
+      }
+      removed.push(normalize(targetDir, destPath));
+      debug(`removed template (layer inactive): ${filename}`);
+    } else {
+      conflictWarnings.push(
+        `wiki/templates/${filename} is no longer shipped by your active install layer but its ` +
+          `content differs from contract/templates/${filename}; remove it manually if you no longer need it`,
+      );
+      debug(`kept modified template (conflict): ${filename}`);
     }
   }
 
-  // 3. Copy skill files from contract/skills/<name>/ into .claude/skills/<name>/ and
-  // .agents/skills/<name>/ (byte-identical, overwritten on drift — the templates pattern).
+  // 3. Sync skill files whose layer is active (byte-identical, overwritten on
+  // drift — the templates pattern); run the same delete pass for a skill whose
+  // layer is inactive, removing the skill's runtime folder once it is empty
+  // (WK-0261 s3).
   const skillsResult = getSkillSources();
   if (!skillsResult.ok) {
     return fail('CONTRACT_NOT_FOUND', `Failed to read skills: ${skillsResult.message}`);
   }
 
+  const inactiveSkillNames = new Set<string>();
+
   for (const file of skillsResult.data) {
     const srcBytes = fs.readFileSync(file.srcPath);
+    const layer = manifest.skillLayers[file.skill];
+    const active = !!layer && layerActive(layer, layers);
+    if (!active) inactiveSkillNames.add(file.skill);
+
     for (const runtimeDir of SKILL_RUNTIME_DIRS) {
       const destPath = path.join(targetDir, runtimeDir, file.skill, file.relPath);
 
-      if (fs.existsSync(destPath) && fs.readFileSync(destPath).equals(srcBytes)) {
-        skipped.push(normalize(targetDir, destPath));
-        debug(`skipped skill file (unchanged): ${destPath}`);
+      if (active) {
+        if (fs.existsSync(destPath) && fs.readFileSync(destPath).equals(srcBytes)) {
+          skipped.push(normalize(targetDir, destPath));
+          debug(`skipped skill file (unchanged): ${destPath}`);
+          continue;
+        }
+
+        if (!checkOnly) {
+          fs.mkdirSync(path.dirname(destPath), { recursive: true });
+          fs.writeFileSync(destPath, srcBytes);
+        }
+        synced.push(normalize(targetDir, destPath));
+        debug(`synced skill file: ${destPath}`);
         continue;
       }
 
-      if (!checkOnly) {
-        fs.mkdirSync(path.dirname(destPath), { recursive: true });
-        fs.writeFileSync(destPath, srcBytes);
+      // Inactive layer: delete pass only.
+      if (!fs.existsSync(destPath)) continue;
+      const destBytes = fs.readFileSync(destPath);
+      if (destBytes.equals(srcBytes)) {
+        if (!checkOnly) {
+          fs.unlinkSync(destPath);
+        }
+        removed.push(normalize(targetDir, destPath));
+        debug(`removed skill file (layer inactive): ${destPath}`);
+      } else {
+        conflictWarnings.push(
+          `${runtimeDir}/${file.skill}/${file.relPath} is no longer shipped by your active install ` +
+            `layer but its content differs from contract/skills/${file.skill}/${file.relPath}; ` +
+            'remove it manually if you no longer need it',
+        );
+        debug(`kept modified skill file (conflict): ${destPath}`);
       }
-      synced.push(normalize(targetDir, destPath));
-      debug(`synced skill file: ${destPath}`);
+    }
+  }
+
+  // Remove now-empty skill runtime folders left behind by the delete pass above
+  // (never removes a folder that still holds a file).
+  if (!checkOnly) {
+    for (const name of inactiveSkillNames) {
+      for (const runtimeDir of SKILL_RUNTIME_DIRS) {
+        removeEmptyDirRecursive(path.join(targetDir, runtimeDir, name));
+      }
     }
   }
 
   // 4. Check drift on bootstrap surfaces; adopt the named surface if requested.
+  // Both the drift comparison and the adopted content are the *emitted* form for
+  // the repo's active layers (WK-0261: dispatch-conditional spans stripped the
+  // same way bootstrap stripped them), so a freshly bootstrapped repo reports no
+  // drift and `--adopt` never reintroduces a span the repo's layer set excludes.
   const bsDir = bootstrapDir();
   for (const surface of BOOTSTRAP_SURFACES) {
     const destPath = path.join(wikiDir, surface);
@@ -465,13 +560,13 @@ export async function sync(opts: SyncOpts): Promise<Result<SyncResult>> {
       continue;
     }
 
-    const srcContent = fs.readFileSync(srcPath, 'utf-8');
+    const srcContent = renderBootstrapSurface(fs.readFileSync(srcPath, 'utf-8'), { dispatch });
     const destContent = fs.readFileSync(destPath, 'utf-8');
 
     const hasDrift = normalizeEol(srcContent) !== normalizeEol(destContent);
 
     if (adoptSurface === surface) {
-      // Adopt: overwrite dest with seed content, preserving dest's EOL style.
+      // Adopt: overwrite dest with the emitted seed content, preserving dest's EOL style.
       if (!checkOnly) {
         const eol = fs.existsSync(destPath) ? dominantEol(destContent) : '\n';
         const normalized = normalizeEol(srcContent);
@@ -508,8 +603,6 @@ export async function sync(opts: SyncOpts): Promise<Result<SyncResult>> {
   const updated: string[] = [];
   const instructions: string[] = [];
 
-  const dispatch = dispatchInstalled(targetDir);
-
   if (agentInstructionsSections) {
     const blockBody = assembleBlockBody(agentInstructionsSections, { planning, dispatch });
     const blockResult = writeManagedBlock(targetDir, blockBody, { dryRun: checkOnly });
@@ -545,10 +638,13 @@ export async function sync(opts: SyncOpts): Promise<Result<SyncResult>> {
   }
 
   // 9. Warn-only checks: user-global role drift, user-global skill shadowing (WK-0240
-  // stage 2 rulings 2–3, 7). Computed in both normal and --check mode; never writes
-  // under $HOME and never changes `ok`.
-  const skillNames = Array.from(new Set(skillsResult.data.map(f => f.skill)));
-  const warnings = [...computeRoleWarnings(), ...computeSkillWarnings(skillNames)];
+  // stage 2 rulings 2–3, 7) — the shadow check runs only for skills in the active
+  // layer set (WK-0261 Context item 6). Computed in both normal and --check mode;
+  // never writes under $HOME and never changes `ok`.
+  const activeSkillNames = Array.from(new Set(skillsResult.data.map(f => f.skill))).filter(
+    name => !inactiveSkillNames.has(name),
+  );
+  const warnings = [...computeRoleWarnings(), ...computeSkillWarnings(activeSkillNames), ...conflictWarnings];
 
   return ok({
     synced,
@@ -557,6 +653,7 @@ export async function sync(opts: SyncOpts): Promise<Result<SyncResult>> {
     updated,
     instructions: instructions.length > 0 ? instructions : undefined,
     adopted: adopted.length > 0 ? adopted : undefined,
+    removed,
     warnings,
   });
 }

@@ -1,7 +1,8 @@
 ## kb — wiki
 
-This repository uses the kb toolkit. The installed kb MCP servers are registered in this repo's `.mcp.json`
-and run from the kb checkout; every kb tool call targets this repository via `dir`.
+This repository uses the kb toolkit. The installed kb MCP servers run from the kb checkout and are
+registered with your MCP client (a `.mcp.json` entry for Claude Code, a user-level `codex mcp add`
+registration for Codex); every kb tool call targets this repository via `dir`.
 
 ### Retrieval — do this before substantive work
 

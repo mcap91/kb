@@ -21,15 +21,56 @@ npm run wiki -- lint --dir /path/to/consuming-repo
 npm run wiki -- generate --dir /path/to/consuming-repo
 ```
 
-After that, the consuming repo can use newly added wiki surfaces such as `PLN-*`. If the repo also uses
-dispatch, see "Dispatch Config Tables" below.
+Before the first sync after the install-layer change (WK-0261), read "Migrating to install layers"
+below. If the repo also uses dispatch, see "Dispatch Config Tables" below.
+
+## Migrating to install layers
+
+kb ships three install layers: wiki, planning, and dispatch ([adoption.md](./adoption.md)). Each sync
+writes the surfaces of the repo's active layers and removes kb-owned surfaces of inactive ones. Nothing
+changes in a repo until you run `sync-contract` there.
+
+- **A dispatch repo** (it has `wiki/.dispatch/`) keeps everything it has today: dispatch implies
+  planning. Sync removes only the templates no layer ships (`chain-doc.md`, `plan.md`,
+  `plan-execution-tracker.md`, `value.md`).
+- **A wiki-only repo that should keep the planning surfaces** (engineering rules, `/resolve`, the
+  escalation template): run `init-planning` once before the next sync, and commit
+  `wiki/.wiki-contract.json`:
+
+  ```bash
+  npm run wiki -- init-planning --dir /path/to/consuming-repo
+  npm run wiki -- sync-contract --dir /path/to/consuming-repo
+  ```
+
+- **A wiki-only repo that wants the wiki layer only:** run `sync-contract`. It removes the planning and
+  dispatch surfaces and lists each one under `Removed:`.
+
+What the removal pass touches:
+
+- It deletes a kb template or skill file only when its content still matches the kb source (line
+  endings ignored). A file you edited stays, and sync prints a warning for it.
+- It never deletes record directories (`wiki/plans/`, `wiki/value-reports/`, `wiki/handoffs/`) or the
+  records in them, any file kb did not ship, or text outside the managed-block markers.
+- It never reads, writes, or deletes anything in `wiki/.dispatch/`.
+
+The bootstrap docs (`wiki/schema.md`, `wiki/conventions.md`, `wiki/index.md`) are yours after bootstrap,
+and sync never rewrites them. Sync reports old PLN, VAL, and dispatch text in them as `drift`. To take
+the current kb text for one doc, review the drift, then adopt it:
+
+```bash
+npm run wiki -- sync-contract --dir /path/to/consuming-repo --check
+npm run wiki -- sync-contract --dir /path/to/consuming-repo --adopt schema.md
+```
+
+`--adopt` overwrites that one doc with the kb text for your repo's layers. Copy any of your own edits
+back in after.
 
 ## Rules: what the block carries, what the repo owns
 
-The managed block carries the kb-wiki section always. The kb-dispatch section appears on the next sync
-after `init-dispatch` has created `wiki/.dispatch/` — removing that directory removes the section (and the
-`.mcp.json` `kb-dispatch` entry) on the next sync. The ratified engineering guidelines are carried inline
-in the block, not as a separate reference.
+The managed block carries the kb-wiki section always. The engineering rules and the roles footer
+appear while the planning layer is active (`init-planning`, or `wiki/.dispatch/` present). The
+kb-dispatch section appears on the next sync after `init-dispatch` has created `wiki/.dispatch/` —
+removing that directory removes the section (and the `.mcp.json` `kb-dispatch` entry) on the next sync.
 
 The block has a 4,000-word budget (WK-0229 ruling 16), measured between the `<!-- BEGIN kb-managed -->` /
 `<!-- END kb-managed -->` markers. `sync-contract` and `bootstrap` refuse — and write nothing — when the
@@ -42,13 +83,14 @@ the repo's own `AGENTS.md`/`CLAUDE.md` content. kb never reads or writes that te
 
 `sync-contract` now handles repo-local contract drift that is safe to update automatically:
 
-- creates missing required wiki directories such as `wiki/plans/`
-- syncs record templates such as `wiki/templates/plan.md`
-- copies every `contract/skills/<name>/` folder into `.claude/skills/<name>/` and
-  `.agents/skills/<name>/`, whole-file overwrite (same pattern as record templates — see
-  "Skill Delivery" below)
+- creates missing wiki directories of the active layers (`wiki/handoffs/` only with dispatch)
+- syncs the record templates of the active layers, and removes unedited kb templates of inactive
+  layers (see "Migrating to install layers" above)
+- with the planning layer active, copies every `contract/skills/<name>/` folder into
+  `.claude/skills/<name>/` and `.agents/skills/<name>/`, whole-file overwrite (same pattern as record
+  templates — see "Skill Delivery" below)
 - preserves existing `wiki/.id-state.json` counters and allocations
-- adds missing allocator entries such as `PLN`
+- adds missing allocator entries
 - updates `wiki/.wiki-contract.json` with the current contract version and `lastSyncedAt`
 - reports drift in consumer-owned bootstrap docs without overwriting them
 - refreshes the managed block in `AGENTS.md` and `CLAUDE.md` (between `<!-- BEGIN kb-managed -->` / `<!-- END kb-managed -->` markers; content outside the markers is never touched)
@@ -78,31 +120,6 @@ npm run wiki -- sync-contract --dir /path/to/consuming-repo
 
 `bootstrap` is idempotent and no longer resets existing `.id-state.json`, but `sync-contract` is the
 intended upgrade command because it updates templates and records `lastSyncedAt`.
-
-## Using PLN After Upgrade
-
-After `sync-contract`, a consuming repo can create and import a plan:
-
-```bash
-npm run wiki -- create --dir /path/to/consuming-repo --prefix PLN --title "My implementation plan"
-
-npm run wiki -- import-plan --dir /path/to/consuming-repo --plan PLN-0001 \
-  --design docs/design.md \
-  --execution docs/implementation-plan.md \
-  --source-tool manual \
-  --overwrite
-
-npm run wiki -- validate-plan --dir /path/to/consuming-repo --plan PLN-0001
-npm run wiki -- generate --dir /path/to/consuming-repo
-```
-
-Expected results:
-
-- `wiki/plans/PLN-0001.md`
-- `wiki/plans/PLN-0001/bundle.json`
-- `wiki/plans/PLN-0001/design/spec.md`
-- `wiki/plans/PLN-0001/execution/tracker.md`
-- preserved raw source artifacts under `wiki/plans/PLN-0001/source/raw/`
 
 ## Dispatch Config Tables (`init-dispatch`)
 
@@ -137,11 +154,12 @@ idempotent overwrite — safe to re-run after every `git pull`.
 
 Every folder under `contract/skills/<name>/` (e.g. `resolve`) ships into the consuming repo at two
 target paths — Claude Code reads `.claude/skills/<name>/` and Codex reads `.agents/skills/<name>/`.
+Skills ship with the planning layer only ([install-planning.md](./install-planning.md)).
 `bootstrap` writes them once (write-if-absent, like record templates on first-time adoption);
 `sync-contract` overwrites them on drift on every run, byte-identical to the `contract/skills/`
-source. Both repo copies are managed by kb and should be committed, the same as `wiki/templates/` —
-commit them so your team gets them too. Delivery never depends on `wiki/.dispatch/` or on
-`--no-agent-instructions`.
+source, and removes them when the planning layer is off. Both repo copies are managed by kb and should
+be committed, the same as `wiki/templates/` — commit them so your team gets them too. Delivery never
+depends on `--no-agent-instructions`.
 
 There is no user-global skill install — `install-roles` installs roles only. `sync-contract` warns
 (and changes nothing under `$HOME`) in two cases:

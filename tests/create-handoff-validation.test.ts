@@ -11,7 +11,7 @@
  */
 import { describe, expect, it, beforeEach, afterEach } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -33,6 +33,10 @@ function baseOpts(overrides: Partial<CreateHandoffOpts> = {}): CreateHandoffOpts
 
 /** Mirrors tests/dispatch.test.ts's helper of the same name. */
 async function setupBootstrappedRepo(repoRoot: string): Promise<void> {
+  // WK-0261: wiki/handoffs/ (and the handoff.md template) now ship only once
+  // the dispatch layer is active — a real dispatch repo always has this by the
+  // time createHandoff runs (init-dispatch + sync-contract precede it).
+  await mkdir(join(repoRoot, 'wiki', '.dispatch'), { recursive: true });
   const { bootstrap } = await import('@kb/wiki-core');
   const result = await bootstrap({ dir: repoRoot, repo: 'test/repo' });
   if (!result.ok) {

@@ -145,6 +145,10 @@ export async function cmdSyncContract(args: string[]): Promise<void> {
       console.log(`    = adopted: ${f}`);
     }
   }
+  console.log(`  Removed: ${result.data.removed.length}`);
+  for (const f of result.data.removed) {
+    console.log(`    - removed: ${f}`);
+  }
   for (const f of result.data.drifted) {
     console.log(`  ! drift: ${f}`);
   }

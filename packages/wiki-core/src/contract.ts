@@ -119,6 +119,35 @@ export function getBootstrapTemplates(): Result<string[]> {
 }
 
 // ---------------------------------------------------------------------------
+// Bootstrap-doc span stripping (WK-0261 Scope "Surface inventory"; HO-0204 F1)
+// ---------------------------------------------------------------------------
+
+/**
+ * Marks a span in a `contract/bootstrap/*.md` source that is emitted to a
+ * consuming repo only while the dispatch layer is active (`wiki/.dispatch/`
+ * present). Spans occupy whole lines so stripping never leaves a partial line.
+ */
+const DISPATCH_SPAN_RE = /^[^\S\n]*<!-- kb:dispatch-span -->\n([\s\S]*?)^[^\S\n]*<!-- \/kb:dispatch-span -->\n?/gm;
+
+/**
+ * Render a bootstrap-doc source for emission to a consuming repo (WK-0261):
+ * strip `<!-- kb:dispatch-span -->...<!-- /kb:dispatch-span -->` markers,
+ * keeping the interior text only while `opts.dispatch` is true, then collapse
+ * any resulting run of 3+ blank lines to one. PLN/VAL/plans/value-reports
+ * mentions carry no marker — they are never emitted, so the source text
+ * itself excludes them (Resolutions row 3).
+ *
+ * Used identically by bootstrap (first write) and sync (drift check / --adopt)
+ * so a freshly bootstrapped repo's bootstrap docs always report zero drift.
+ */
+export function renderBootstrapSurface(content: string, opts: { dispatch: boolean }): string {
+  const stripped = content.replace(DISPATCH_SPAN_RE, (_match, inner: string) =>
+    opts.dispatch ? inner : '',
+  );
+  return stripped.replace(/\n{3,}/g, '\n\n');
+}
+
+// ---------------------------------------------------------------------------
 // Record template helpers
 // ---------------------------------------------------------------------------
 

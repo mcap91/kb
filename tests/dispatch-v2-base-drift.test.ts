@@ -330,6 +330,10 @@ describe('createHandoff stamping (WK-0152)', () => {
 
   beforeEach(async () => {
     repo = await mkdtemp(join(tmpdir(), 'kb-stamp-'));
+    // WK-0261: wiki/handoffs/ (and the handoff.md template) now ship only once
+    // the dispatch layer is active — a real dispatch repo always has this by the
+    // time createHandoff runs (init-dispatch + sync-contract precede it).
+    await mkdir(join(repo, 'wiki', '.dispatch'), { recursive: true });
     const boot = await bootstrap({ dir: repo, repo: 'test/repo' });
     if (!boot.ok) throw new Error(boot.message);
   });

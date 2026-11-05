@@ -3,7 +3,7 @@ import * as path from 'node:path';
 import { ok, fail, type Result } from './errors.js';
 import { debug } from './debug.js';
 import type { AgentInstructionsSection } from './contract.js';
-import type { WikiContractMetadata } from './types.js';
+import type { ContractLayer, WikiContractMetadata } from './types.js';
 
 const BEGIN_MARKER = '<!-- BEGIN kb-managed -->';
 const END_MARKER = '<!-- END kb-managed -->';
@@ -48,6 +48,18 @@ export function planningInstalled(targetDir: string): Result<boolean> {
 
   if (dispatchInstalled(targetDir)) return ok(true);
   return ok(Array.isArray(meta.layers) && meta.layers.includes('planning'));
+}
+
+/**
+ * Whether a manifest-declared install layer (WK-0261) is active, given the
+ * resolved planning/dispatch flags for a target repo. The one evaluation rule
+ * every surface reader (templates, required directories, skills, bootstrap-doc
+ * spans) shares — no per-surface copy of this logic.
+ */
+export function layerActive(layer: ContractLayer, opts: { planning: boolean; dispatch: boolean }): boolean {
+  if (layer === 'wiki') return true;
+  if (layer === 'planning') return opts.planning;
+  return opts.dispatch;
 }
 
 /** Assemble the managed-block body from sections, dropping inactive-layer sections. */

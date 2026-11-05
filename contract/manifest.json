@@ -12,16 +12,26 @@
     "wiki/.wiki-contract.json",
     "wiki/.id-state.json"
   ],
-  "requiredSurfaces": [
-    "wiki/issues",
-    "wiki/initiatives",
-    "wiki/decisions",
-    "wiki/sources",
-    "wiki/areas",
-    "wiki/plans",
-    "wiki/value-reports",
-    "wiki/handoffs"
-  ],
+  "requiredSurfaces": {
+    "wiki/issues": "wiki",
+    "wiki/initiatives": "wiki",
+    "wiki/decisions": "wiki",
+    "wiki/sources": "wiki",
+    "wiki/areas": "wiki",
+    "wiki/handoffs": "dispatch"
+  },
+  "templateLayers": {
+    "issue.md": "wiki",
+    "initiative.md": "wiki",
+    "decision.md": "wiki",
+    "source.md": "wiki",
+    "area.md": "wiki",
+    "escalation.md": "planning",
+    "handoff.md": "dispatch"
+  },
+  "skillLayers": {
+    "resolve": "planning"
+  },
   "types": {
     "issue": {
       "aliases": ["issue", "wk", "work_item", "work-item"],

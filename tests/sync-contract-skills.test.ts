@@ -13,10 +13,11 @@ import * as path from 'node:path';
 
 import { bootstrap } from '../packages/wiki-core/src/bootstrap.js';
 import { sync } from '../packages/wiki-core/src/sync.js';
+import { initPlanning } from '../packages/wiki-core/src/init-planning.js';
 import { getSkillSources, getAgentInstructionsSections } from '../packages/wiki-core/src/contract.js';
 import { assembleBlockBody } from '../packages/wiki-core/src/agent-instructions.js';
 import type { SyncResult } from '../packages/wiki-core/src/types.js';
-import { createTmpDir, createBootstrappedRepo, type TmpRepo } from './helpers/tmp-repo.js';
+import { createTmpDir, createPlanningRepo, type TmpRepo } from './helpers/tmp-repo.js';
 
 const KB_ROOT = path.resolve(__dirname, '..');
 const RESOLVE_SKILL_SRC = path.join(KB_ROOT, 'contract/skills/resolve/SKILL.md');
@@ -95,20 +96,36 @@ describe('getSkillSources (contract.ts)', () => {
   });
 });
 
-describe('bootstrap: skill delivery', () => {
+describe('bootstrap: skill delivery (WK-0261 s3: gated on the planning layer)', () => {
   let tmp: TmpRepo;
 
   afterEach(() => {
     tmp?.cleanup();
   });
 
-  it('writes both runtime copies byte-identical on a fresh repo and lists them in created', async () => {
+  // CHANGED (WK-0261 s3): skills unconditionally shipped on every bootstrap pre-s3;
+  // they now gate on the planning layer (contract/manifest.json skillLayers.resolve =
+  // "planning"). A fresh wiki-only bootstrap carries neither layer, so no skill is
+  // copied — this replaces the old "writes both runtime copies on a fresh repo" AC.
+  it('writes no skill copies on a fresh wiki-only bootstrap (no planning, no dispatch)', async () => {
     tmp = createTmpDir();
     const result = await bootstrap({ dir: tmp.dir, repo: 'test/repo' });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
 
-    // AC: bootstrap on a fresh repo writes the same two copies, byte-identical, listed in created.
+    expect(result.data.created).not.toContain('.claude/skills/resolve/SKILL.md');
+    expect(result.data.created).not.toContain('.agents/skills/resolve/SKILL.md');
+    expect(fs.existsSync(path.join(tmp.dir, '.claude/skills'))).toBe(false);
+    expect(fs.existsSync(path.join(tmp.dir, '.agents/skills'))).toBe(false);
+  });
+
+  it('writes both runtime copies byte-identical once wiki/.dispatch/ is present (dispatch implies planning), and lists them in created', async () => {
+    tmp = createTmpDir();
+    fs.mkdirSync(path.join(tmp.dir, 'wiki', '.dispatch'), { recursive: true });
+    const result = await bootstrap({ dir: tmp.dir, repo: 'test/repo' });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
     expect(result.data.created).toContain('.claude/skills/resolve/SKILL.md');
     expect(result.data.created).toContain('.agents/skills/resolve/SKILL.md');
 
@@ -117,14 +134,18 @@ describe('bootstrap: skill delivery', () => {
     expect(fs.readFileSync(path.join(tmp.dir, '.agents/skills/resolve/SKILL.md')).equals(srcBytes)).toBe(true);
   });
 
-  it('delivers skills with agentInstructions: false and with no wiki/.dispatch/ present (never gated on either)', async () => {
+  // CHANGED (WK-0261 s3): this used to prove skill delivery is "never gated on
+  // wiki/.dispatch/ or agentInstructions" — the premise is now reversed for
+  // wiki/.dispatch/ specifically (dispatch implies planning, which gates skills).
+  // The surviving claim is narrower and still true: the gate is the install layer,
+  // never the unrelated --no-agent-instructions flag.
+  it('delivers skills with agentInstructions: false once the dispatch layer is active (gated on the layer, never on agentInstructions)', async () => {
     tmp = createTmpDir();
+    fs.mkdirSync(path.join(tmp.dir, 'wiki', '.dispatch'), { recursive: true });
     const result = await bootstrap({ dir: tmp.dir, repo: 'test/repo', agentInstructions: false });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
 
-    // AC: skill delivery is not gated on wiki/.dispatch/ or the agentInstructions option.
-    expect(fs.existsSync(path.join(tmp.dir, 'wiki', '.dispatch'))).toBe(false);
     expect(result.data.created).toContain('.claude/skills/resolve/SKILL.md');
     expect(result.data.created).toContain('.agents/skills/resolve/SKILL.md');
   });
@@ -139,7 +160,7 @@ describe('sync-contract: skill delivery', () => {
   });
 
   it('restores a hand-edited repo copy (listed in synced); an unchanged copy stays listed in skipped; a repo file with no contract counterpart is left in place', async () => {
-    tmp = await createBootstrappedRepo();
+    tmp = await createPlanningRepo();
     home = makeTempHome();
 
     // Baseline delivery (bootstrap already wrote these; this just establishes the starting state).
@@ -168,7 +189,7 @@ describe('sync-contract: skill delivery', () => {
   });
 
   it('--check lists the skill paths it would write in synced and writes nothing', async () => {
-    tmp = await createBootstrappedRepo();
+    tmp = await createPlanningRepo();
     home = makeTempHome();
 
     // Remove the skill copies bootstrap already wrote, to isolate what --check would do.
@@ -197,7 +218,7 @@ describe('sync-contract: warn-only user-global checks', () => {
   });
 
   it('warns with the exact role-drift string when a user-global role copy differs from contract/roles/', async () => {
-    tmp = await createBootstrappedRepo();
+    tmp = await createPlanningRepo();
     home = makeTempHome();
 
     const stalePath = path.join(home, '.claude', 'commands', 'planner.md');
@@ -215,7 +236,7 @@ describe('sync-contract: warn-only user-global checks', () => {
   });
 
   it('adds no role warning when the user-global copy is byte-for-byte (EOL-normalized) identical', async () => {
-    tmp = await createBootstrappedRepo();
+    tmp = await createPlanningRepo();
     home = makeTempHome();
 
     const identicalPath = path.join(home, '.codex', 'prompts', 'planner.md');
@@ -228,7 +249,7 @@ describe('sync-contract: warn-only user-global checks', () => {
   });
 
   it('warns with the exact shadow string for a user-global Claude skill (lstat, so a broken symlink counts) and the exact duplicate string for Codex', async () => {
-    tmp = await createBootstrappedRepo();
+    tmp = await createPlanningRepo();
     home = makeTempHome();
 
     const claudeSkillPath = path.join(home, '.claude', 'skills', 'resolve');
@@ -251,7 +272,7 @@ describe('sync-contract: warn-only user-global checks', () => {
   });
 
   it('adds no warnings when no user-global role or skill paths exist', async () => {
-    tmp = await createBootstrappedRepo();
+    tmp = await createPlanningRepo();
     home = makeTempHome();
 
     const result = await withHome(home, () => sync({ dir: tmp.dir }));
@@ -260,7 +281,7 @@ describe('sync-contract: warn-only user-global checks', () => {
   });
 
   it('computes warnings in both normal and --check mode, and never writes under $HOME in either (warn only, never installs)', async () => {
-    tmp = await createBootstrappedRepo();
+    tmp = await createPlanningRepo();
     home = makeTempHome();
 
     const stalePath = path.join(home, '.claude', 'commands', 'planner.md');
@@ -286,7 +307,7 @@ describe('sync-contract: warn-only user-global checks', () => {
   });
 
   it('never changes `ok` or the CLI exit code because of warnings', async () => {
-    tmp = await createBootstrappedRepo();
+    tmp = await createPlanningRepo();
     home = makeTempHome();
     const stalePath = path.join(home, '.claude', 'commands', 'planner.md');
     fs.mkdirSync(path.dirname(stalePath), { recursive: true });
@@ -322,7 +343,7 @@ describe('cmdSyncContract CLI output', () => {
   });
 
   it('prints a "Warnings: <n>" count line and one "  ! warning: <message>" line per warning, after the existing output', async () => {
-    tmp = await createBootstrappedRepo();
+    tmp = await createPlanningRepo();
     home = makeTempHome();
     const stalePath = path.join(home, '.claude', 'commands', 'planner.md');
     fs.mkdirSync(path.dirname(stalePath), { recursive: true });
@@ -343,7 +364,7 @@ describe('cmdSyncContract CLI output', () => {
   });
 
   it('prints "Warnings: 0" with no warning lines when there is nothing to report', async () => {
-    tmp = await createBootstrappedRepo();
+    tmp = await createPlanningRepo();
     home = makeTempHome();
 
     const stdout = execSync(`"${TSX}" "${CLI}" sync-contract --dir "${tmp.dir}"`, {
@@ -373,7 +394,7 @@ describe('wiki-mcp sync-contract tool: warnings pass-through', () => {
     expect(syncTool).toBeTruthy();
     if (!syncTool) return;
 
-    tmp = await createBootstrappedRepo();
+    tmp = await createPlanningRepo();
     home = makeTempHome();
     const stalePath = path.join(home, '.claude', 'commands', 'planner.md');
     fs.mkdirSync(path.dirname(stalePath), { recursive: true });
@@ -416,9 +437,13 @@ describe('E2E smoke: sample-repo fixture through bootstrap + sync-contract', () 
     fs.mkdirSync(path.dirname(claudeSkillShadow), { recursive: true });
     fs.symlinkSync('/nonexistent-target', claudeSkillShadow);
 
-    // The fixture has no wiki/.wiki-contract.json — bootstrap it first.
+    // The fixture has no wiki/.wiki-contract.json — bootstrap it first, then
+    // activate the planning layer (WK-0261 s3: skills gate on it) so sync
+    // delivers the skill copies this test exercises.
     const bootstrapResult = await bootstrap({ dir: repoDir, repo: 'test/sample-repo' });
     expect(bootstrapResult.ok).toBe(true);
+    const planningResult = initPlanning({ dir: repoDir });
+    expect(planningResult.ok).toBe(true);
 
     const before = snapshotHome(home);
 

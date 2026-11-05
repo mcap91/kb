@@ -454,28 +454,25 @@ async function ensureFreshSearchIndex(
   const currentSignature = computeSearchSourceSignature(sourceFiles);
   const indexPath = path.join(targetDir, 'wiki', '.search-index.json');
 
-  if (!fs.existsSync(indexPath)) {
-    return fail(
-      'SEARCH_ERROR',
-      `Search index not found at ${indexPath} — run buildSearchIndex first`,
-    );
+  // The index is a derived cache: a missing index is rebuilt like a stale one,
+  // so the first search on a fresh bootstrap works (WK-0261 row 14).
+  if (fs.existsSync(indexPath)) {
+    const existingResult = readSearchIndex(indexPath);
+    if (!existingResult.ok) {
+      return existingResult;
+    }
+
+    const existing = existingResult.data;
+    const isStale =
+      existing.version !== SEARCH_INDEX_VERSION ||
+      existing.sourceSignature !== currentSignature;
+
+    if (!isStale) {
+      return ok(existing);
+    }
   }
 
-  const existingResult = readSearchIndex(indexPath);
-  if (!existingResult.ok) {
-    return existingResult;
-  }
-
-  const existing = existingResult.data;
-  const isStale =
-    existing.version !== SEARCH_INDEX_VERSION ||
-    existing.sourceSignature !== currentSignature;
-
-  if (!isStale) {
-    return ok(existing);
-  }
-
-  debug(`search index stale at ${indexPath}; rebuilding`);
+  debug(`search index missing or stale at ${indexPath}; rebuilding`);
   const rebuildResult = await buildSearchIndex({ dir: targetDir, verbose });
   if (!rebuildResult.ok) {
     return fail(rebuildResult.error, rebuildResult.message, rebuildResult.detail);
