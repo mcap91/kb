@@ -56,6 +56,11 @@ file that exists; write two files as two citations. A slash-joined pair such as
 state the question, the output fields you need, and "cite every claim". Subagents are
 read-only. Budget: at most four search subagents.
 
+Invoking `/resolve` is the operator's approval for these read-only subagents and the one in
+step 5; they are not pipeline work, so a rule against spawning subagents does not cover
+them. If kb-dispatch is installed, you may run them as kb-dispatch handoffs instead:
+`explore_code` for code, `research` for the web.
+
 ### 4. Choose
 
 Pick what the evidence supports. If the evidence is split, pick the simplest, most
