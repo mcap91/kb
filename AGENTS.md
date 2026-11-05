@@ -43,7 +43,6 @@ implementation search with the initial retrieval pass.
   recipe. Prefer `kb-dispatch` MCP tools; CLI fallback `npm run dispatch -- …`.
 - For pipeline work, delegate via kb-dispatch; do not spawn coding-agent subagents or workflows unless the
   operator explicitly approves.
-- Read-only search and review workers run through kb-dispatch `explore_code` / `research` modes.
 - `HO-*` handoffs are dispatch-owned (`wiki/handoffs/`, excluded from wiki scans); never create them via
   `wiki create`.
 - Merges go through `merge-delivery` only — never by hand. After a merge, run this repo's validation command

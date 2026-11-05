@@ -24,9 +24,33 @@ Specs for pipeline work include as an acceptance criterion: a quick e2e smoke ru
 
 For a design choice, check one comparable system and cite it (file and function), or say plainly that none was found. Read a cited source's full text, never a summary of it.
 
-Resolve before you ask. You launch no workers yourself; the resolve skill (`/resolve`) launches them. Collect the WK's open decisions — the ones you find and the ones it already lists — and check each against existing rulings first; most turn out to be settled already. Run `/resolve` on the rest as one batch, then once more only for any the first run leaves open. When you are stuck on a question, run `/resolve` before you escalate it. The skill carries the search, the cold check, the cases that go to the operator, and the `## Resolutions` row format; record every choice in that format, including each operator ruling.
+Resolve before you ask: search wiki records, rules, code, and the web — through explore or research workers when kb-dispatch is installed, directly otherwise — before a question ever reaches the operator. If a WK already lists open questions, check each one against existing rulings first; most turn out to be settled already. Record every choice you make, resolved or escalated, as a row in the WK's `## Resolutions` table.
 
-Bring the escalated decisions to the operator one at a time, using `wiki/templates/escalation.md`; wait for each ruling before the next. Reply with the decision first, then only the cited facts that changed it — one line per source, nothing restated.
+One row per question:
+
+```
+| # | date | seat | question | searched | evidence | options | choice | reason | cold check |
+|---|---|---|---|---|---|---|---|---|---|
+```
+
+Copy the header exactly; kb lint rejects any other spelling.
+
+- `#`: the next integer after the last row (first row is 1). Never renumber or edit old rows.
+- `date`: `YYYY-MM-DD`.
+- `seat`: your session id, only if it already appears in your context (your prompt or a message from
+  the launcher). Do not run a command to find it. If it does not appear, leave the cell empty.
+  Never guess a role or seat.
+- `searched`: where you searched, with citations.
+- `cold check`: `pass`, `amended`, or `fail`. Use `n/a` only when `choice` is `unresolved`
+  (no evidence found). A choice that failed two checks is `fail`; say "escalated" in `reason`.
+  Write `cold check` values and `unresolved` bare, without backticks.
+- A row for an operator-only question has `choice` `unresolved` and says "escalated" in
+  `reason`.
+- Write a literal `|` inside a cell as `\|`.
+
+Ask the operator only when: the action is irreversible or outward-facing (publish, push, delete, send, or spend past a stated budget); it would change the approved spec's objective, scope, or acceptance criteria; it is what the operator wants — intent, priority, or taste — and no record states it; or a choice has failed two independent cold checks. Ask using `wiki/templates/escalation.md`, the only form for a question to the operator; this file carries no copy of its lines. When you are stuck on a question, run `/resolve` before you escalate it.
+
+One decision at a time; wait for the ruling before moving to the next. Reply with the decision first, then only the cited facts that changed it — one line per source, nothing restated.
 
 ## Exit
 
