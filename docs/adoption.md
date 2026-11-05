@@ -48,12 +48,14 @@ npm run wiki -- bootstrap --dir "$MY_REPO" --repo my-org/my-repo --mcp-client co
 2. Run the `codex mcp add kb-wiki -- node ...` command that bootstrap prints. It registers `kb-wiki` in
    `~/.codex/config.toml`. The Codex CLI and the VS Code extension share that file.
 3. Allow the kb-wiki tool calls. Approve each prompt in the Codex panel, or approve all kb-wiki tools
-   once in `~/.codex/config.toml`:
+   once: open `~/.codex/config.toml`, find the `[mcp_servers.kb-wiki]` table that `codex mcp add` wrote,
+   and add this line inside it:
 
 ```toml
-[mcp_servers.kb-wiki]
 default_tools_approval_mode = "approve"
 ```
+
+   Do not add a second `[mcp_servers.kb-wiki]` header. Codex rejects the file with `duplicate key`.
 
 4. Open your repo in VS Code and start a Codex chat. Codex reads `AGENTS.md`, which tells it to search
    the wiki first.
