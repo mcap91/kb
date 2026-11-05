@@ -19,7 +19,9 @@ options is not.
 ```
 
 With no argument, resolve the question you are about to put to the operator, or the last
-question, option list, or "Approve?" you put to them. If there are several, resolve each one.
+question, option list, or "Approve?" you put to them. If there are several, resolve them as one batch:
+name and check each one (steps 1–2), search once for the whole batch (step 3), choose each (step 4),
+cold-check all the choices in one check (step 5), and record a row per question (step 6).
 
 ## Workflow
 
@@ -44,7 +46,7 @@ Search until the answer is clear. The order is your choice; skip what cannot hel
 - **Rules** — the repo's rules file, `AGENTS.md` / `CLAUDE.md`, accepted decisions. A rule
   that answers the question ends the search. When rules leave a tie, the simplest option
   with the smallest blast radius wins.
-- **Code** — read it. For a broad sweep, use a read-only explore subagent.
+- **Code** — read it. For a broad sweep, use a read-only explore worker.
 - **Reference systems** — any comparable codebase or catalog the repo names as a
   reference. Check what it does for the same problem.
 - **Web** — only when the answer depends on external facts (library behavior, versions,
@@ -52,9 +54,11 @@ Search until the answer is clear. The order is your choice; skip what cannot hel
 
 Every claim carries a citation: `file:line`, a record id, or a URL. Each citation names one
 file that exists; write two files as two citations. A slash-joined pair such as
-`AGENTS.md/CLAUDE.md` and a glob such as `wiki/**/*.md` are not citations. Subagent prompts
-state the question, the output fields you need, and "cite every claim". Subagents are
-read-only. Budget: at most four search subagents.
+`AGENTS.md/CLAUDE.md` and a glob such as `wiki/**/*.md` are not citations.
+
+Workers are read-only. Launch them the way the repo's `AGENTS.md` says; if it says nothing,
+launch them as subagents. Worker prompts state the questions, the output fields you need, and
+"cite every claim". Budget: at most four search workers per run, shared across a batch.
 
 ### 4. Choose
 
@@ -63,10 +67,10 @@ reversible option and say that is why.
 
 ### 5. Cold check
 
-Give one fresh read-only subagent only the choice and its evidence — not your reasoning —
-and ask it to refute the choice, citing file:line. Apply its amendments. If it refutes the
-choice, choose again once and check again; if the second check also refutes, the item
-goes to the operator (below).
+Give one fresh read-only worker only the choices and their evidence — for a batch, all of
+them in one check — not your reasoning, and ask it to refute each choice, citing file:line.
+Apply its amendments. For each choice it refutes, choose again once and check again; if the
+second check also refutes it, that item goes to the operator (below).
 
 ### 6. Record
 
