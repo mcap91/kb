@@ -288,6 +288,36 @@ describe('admission.ts — S0 admission checks', () => {
     if (result.ok) return;
     expect(result.error).toBe('MISSING_WRITE_SCOPE');
   });
+
+  it('admits an advisory handoff (empty write_scope) with a dirty file OUTSIDE any declared path — WK-0272: the scan must not widen to the whole repo', async () => {
+    await mkdir(join(repoRoot, 'src'), { recursive: true });
+    const dirtyFile = join(repoRoot, 'src', 'unrelated.txt');
+    await writeFile(dirtyFile, 'committed\n', 'utf8');
+    execFileSync('git', ['add', 'src/unrelated.txt'], { cwd: repoRoot });
+    execFileSync('git', ['commit', '-m', 'add src/unrelated.txt'], { cwd: repoRoot });
+    const expectedSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repoRoot }).toString().trim();
+    await writeFile(dirtyFile, 'modified without committing\n', 'utf8');
+
+    const result = await checkAdmission(
+      makeHandoff({ mode: 'code_review', write_scope: [], validation: ['review only'], base_sha: expectedSha }),
+      repoRoot,
+    );
+    expect(result.ok).toBe(true);
+  });
+
+  it('still refuses an implement handoff whose dirty file is inside write_scope', async () => {
+    await mkdir(join(repoRoot, 'src'), { recursive: true });
+    const dirtyFile = join(repoRoot, 'src', 'in-scope.txt');
+    await writeFile(dirtyFile, 'committed\n', 'utf8');
+    execFileSync('git', ['add', 'src/in-scope.txt'], { cwd: repoRoot });
+    execFileSync('git', ['commit', '-m', 'add src/in-scope.txt'], { cwd: repoRoot });
+    await writeFile(dirtyFile, 'modified without committing\n', 'utf8');
+
+    const result = await checkAdmission(makeHandoff(), repoRoot);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toBe('DIRTY_REPO');
+  });
 });
 
 // ---------------------------------------------------------------------------

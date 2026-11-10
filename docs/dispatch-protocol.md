@@ -87,7 +87,8 @@ here is a persisted review state — it all re-runs, every time, against the liv
 | `implement` with empty `write_scope` | `MISSING_WRITE_SCOPE` |
 | Every `write_scope` entry is repo-relative, resolves inside the repo, and it or its parent exists | `STALE_WRITE_SCOPE` |
 | Every `read_first` entry exists | `MISSING_READ_FIRST` |
-| Repo is clean (`git status --porcelain` over `write_scope`) | `DIRTY_REPO` |
+| Repo is clean (`git status --porcelain` over `write_scope` paths only; with an empty `write_scope` — every advisory mode — the scan is skipped and declared-path staleness is covered by the base-drift gate) | `DIRTY_REPO` |
+| Every `read_first` entry is committed — no modified, staged, or untracked file under it (wiki entries checked in the wiki repo when nested-private); checked before base drift | `UNCOMMITTED_READ_FIRST` (see below) |
 | `base_ref`, if set, starts with `dispatch/` and exists | `BAD_BASE_REF` |
 | Every `data_mounts`/`export_mounts` entry is absolute, exists, and is outside the repo root | `BAD_DATA_MOUNT` |
 | `runtime_envs` only declared for `mode: implement` | `ENVELOPE_EXCEEDS_MODE` |
@@ -324,6 +325,20 @@ For the wiki stamp, substitute `base_wiki_sha` / `git -C wiki rev-parse HEAD`. W
 
 **The fix.** Re-read the listed changes against the HO and its WK, fix and commit anything stale, then set the stamp to the current HEAD printed in the message and re-dispatch.
 
+**Uncommitted read_first inputs (WK-0272, DEC-0047 A2 R9).** Before the base-drift check, admission
+refuses `UNCOMMITTED_READ_FIRST` when any `read_first` entry has uncommitted changes, in either wiki shape.
+The clone is cut from a commit, so uncommitted code-repo bytes never reach the worker; a nested-private
+wiki is bound live, so its uncommitted bytes reach the worker, but the response's `wiki_commit` does not
+record them. The message names the files and the remedy:
+
+- `base_ref` null: commit them, then run `restamp`, then re-dispatch. A commit alone moves HEAD past the
+  stamp and refuses `BASE_DRIFT`.
+- chained (`base_ref` set): commit them and re-dispatch. A chained HO has no stamp to refresh.
+
+The dirty-tree gate (`DIRTY_REPO`) covers only `write_scope`. An advisory HO (empty `write_scope`) skips
+it, so kb's own uncommitted outputs (a fresh HO file, `wiki/.id-state.json`, another session's dispatch
+stamp) never block an advisory dispatch.
+
 **Chained-HO exemption.** An HO with `base_ref` set runs on an immutable `dispatch/` branch and is exempt from this gate — the orchestrator is expected to update its WK mid-chain by design.
 
 ## Post-Run Lifecycle Tools (WK-0132)
@@ -400,7 +415,7 @@ is the source list; a test fails if this table and that list disagree:
 | Phase | Codes |
 |-------|-------|
 | Handoff shape | `BAD_RECORD` |
-| Admission (repo-local) | `MISSING_WRITE_SCOPE`, `ENVELOPE_EXCEEDS_MODE`, `STALE_WRITE_SCOPE`, `WRITE_SCOPE_UNCAPTURABLE`, `MISSING_READ_FIRST`, `DIRTY_REPO`, `BAD_BASE_REF`, `BAD_DATA_MOUNT`, `BAD_RUNTIME_ENV`, `RUNTIME_EXPORT_OVERLAP`, `WORK_ITEM_NOT_FOUND`, `BASE_DRIFT`, `ADMISSION_FAILED` |
+| Admission (repo-local) | `MISSING_WRITE_SCOPE`, `ENVELOPE_EXCEEDS_MODE`, `STALE_WRITE_SCOPE`, `WRITE_SCOPE_UNCAPTURABLE`, `MISSING_READ_FIRST`, `DIRTY_REPO`, `UNCOMMITTED_READ_FIRST`, `BAD_BASE_REF`, `BAD_DATA_MOUNT`, `BAD_RUNTIME_ENV`, `RUNTIME_EXPORT_OVERLAP`, `WORK_ITEM_NOT_FOUND`, `BASE_DRIFT`, `ADMISSION_FAILED` |
 | Model/backend resolution | `MODEL_NOT_FOUND`, `EFFORT_UNSUPPORTED`, `NO_MODEL_DEFAULT`, `AMBIGUOUS_MODEL_DEFAULT`, `AMBIGUOUS_BACKEND` |
 | Credentials | `CREDENTIALS_WITH_WEB`, `UNKNOWN_PROFILE`, `CREDENTIAL_NOT_CONFIGURED` |
 | Host / prompt budget | `PREFLIGHT_FAILED`, `NO_ISOLATION_ROUTE`, `CLI_PATH_NOT_MOUNTABLE`, `CONTEXT_BUDGET_EXCEEDED` |

@@ -182,6 +182,114 @@ async function checkMissingReadFirst(handoff: Handoff, repoRootResolved: string)
   return ok(null);
 }
 
+/**
+ * `dirty_repo`, scoped to `write_scope` (WK-0272, DEC-0047 A1 ruling on F8):
+ * the delivery must not mix with uncommitted edits to the files the worker
+ * writes. An empty write_scope (every advisory mode — implement is already
+ * refused `MISSING_WRITE_SCOPE`) skips the scan: a bare `git status --`
+ * scans the whole repo, so kb's own uncommitted outputs (a fresh HO,
+ * `wiki/.id-state.json`, another session's dispatch stamp) would refuse it.
+ * What an advisory worker reads is guarded by `checkUncommittedReadFirst`.
+ */
+async function checkDirtyWriteScope(handoff: Handoff, repoRoot: string): Promise<DispatchResult<null>> {
+  if (handoff.write_scope.length === 0) return ok(null);
+
+  let statusStdout: string;
+  try {
+    const { stdout } = await execFile('git', ['status', '--porcelain', '--', ...handoff.write_scope], { cwd: repoRoot });
+    statusStdout = stdout;
+  } catch (err) {
+    return fail('ADMISSION_FAILED', `Failed to run "git status --porcelain" in ${repoRoot}.`, err);
+  }
+
+  const dirtyPaths = statusStdout
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+
+  if (dirtyPaths.length > 0) {
+    return fail(
+      'DIRTY_REPO',
+      `Repository at ${repoRoot} is not clean; refusing admission for handoff ${handoff.id}.`,
+      { dirtyPaths },
+    );
+  }
+  return ok(null);
+}
+
+/** Paths `git status --porcelain -z` reports under `paths` (untracked files listed individually). */
+async function porcelainPaths(cwd: string, paths: string[]): Promise<string[]> {
+  const { stdout } = await execFile('git', ['status', '--porcelain', '-z', '--untracked-files=all', '--', ...paths], {
+    cwd,
+  });
+  const entries = stdout.split('\0');
+  const reported: string[] = [];
+  for (let i = 0; i < entries.length; i++) {
+    const entry = entries[i] ?? '';
+    if (entry.length < 4) continue;
+    reported.push(entry.slice(3));
+    // -z prints a rename/copy as `XY <new>\0<old>`; skip the old path.
+    if (entry[0] === 'R' || entry[0] === 'C') i++;
+  }
+  return reported;
+}
+
+/**
+ * `uncommitted_read_first` (WK-0272, DEC-0047 A2 R9): every declared
+ * read_first input the worker reads from a working tree must be committed.
+ * The clone is cut from a commit, so uncommitted code-repo bytes never reach
+ * the worker; the nested-private wiki is bound live (DEC-0039), so its
+ * uncommitted bytes reach the worker but no commit records them (the
+ * response's `wiki_commit` would lie). Runs before `checkBaseDrift`: in the
+ * nested-private shape an uncommitted wiki edit would otherwise refuse as
+ * BASE_DRIFT with a remedy that cannot clear it. The remedy depends on chain
+ * position: a fresh-HEAD HO (base_ref null) needs commit + restamp, because
+ * the commit alone moves HEAD past its stamp (WK-0152 decision 4); a chained
+ * HO carries no stamp, so a commit is enough.
+ */
+async function checkUncommittedReadFirst(handoff: Handoff, repoRoot: string): Promise<DispatchResult<null>> {
+  const entries = handoff.read_first;
+  if (entries.length === 0) return ok(null);
+
+  const wikiEntries = entries.filter(isWikiPath);
+  let nested = false;
+  if (wikiEntries.length > 0) {
+    const wiki = await probeWikiSource(repoRoot);
+    if (!wiki.ok) return fail('ADMISSION_FAILED', wiki.message, wiki.detail);
+    nested = wiki.data.shape === 'nested-private';
+  }
+
+  const scans = nested
+    ? [
+        { cwd: repoRoot, prefix: '', paths: entries.filter((p) => !isWikiPath(p)) },
+        { cwd: join(repoRoot, 'wiki'), prefix: 'wiki/', paths: wikiEntries.map(toWikiRepoPath) },
+      ]
+    : [{ cwd: repoRoot, prefix: '', paths: [...entries] }];
+
+  const uncommitted: string[] = [];
+  for (const scan of scans) {
+    // An empty pathspec would scan the whole repo.
+    if (scan.paths.length === 0) continue;
+    try {
+      for (const path of await porcelainPaths(scan.cwd, scan.paths)) uncommitted.push(`${scan.prefix}${path}`);
+    } catch (err) {
+      return fail('ADMISSION_FAILED', `Failed to run "git status --porcelain" in ${scan.cwd}.`, err);
+    }
+  }
+  if (uncommitted.length === 0) return ok(null);
+
+  const where = nested ? ' (wiki/ paths in the wiki repo: `git -C wiki commit`)' : '';
+  const fresh = handoff.base_ref === null;
+  const remedy = fresh
+    ? `Commit them${where}, then run \`npm run dispatch -- restamp --handoff <path> --dir <repo>\` (or the MCP restamp tool), then re-dispatch. Both steps are needed: the commit moves HEAD past this HO's stamp, so a commit alone refuses BASE_DRIFT.`
+    : `Commit them${where}, then re-dispatch. A chained HO carries no base stamp, so no restamp is needed.`;
+  return fail(
+    'UNCOMMITTED_READ_FIRST',
+    `Handoff ${handoff.id}: ${uncommitted.length} read_first input(s) are uncommitted: ${uncommitted.join(', ')}. ${remedy}`,
+    { uncommitted, remedy: fresh ? 'commit_then_restamp' : 'commit' },
+  );
+}
+
 /** §7.12 `bad_base_ref` — a declared base_ref must exist and be dispatch-owned. */
 async function checkBaseRef(handoff: Handoff, repoRoot: string): Promise<DispatchResult<null>> {
   const baseRef = handoff.base_ref;
@@ -390,6 +498,11 @@ function isWikiPath(entry: string): boolean {
   return entry === 'wiki' || entry.startsWith('wiki/');
 }
 
+/** A `wiki/…` entry as a path inside the nested-private wiki repo. */
+function toWikiRepoPath(entry: string): string {
+  return entry === 'wiki' || entry === 'wiki/' ? '.' : entry.slice('wiki/'.length);
+}
+
 /** Paths whose drift makes an HO stale: what it edits, what it reads, and its ticket. */
 function declaredPaths(handoff: Handoff): string[] {
   const paths = [...handoff.write_scope, ...handoff.read_first];
@@ -509,7 +622,7 @@ async function checkBaseDrift(handoff: Handoff, repoRoot: string, baseSha: strin
     target: undefined,
     currentHead: wiki.data.head ?? '',
     headCommand: 'git -C wiki rev-parse HEAD',
-    paths: paths.filter(isWikiPath).map((p) => (p === 'wiki' || p === 'wiki/' ? '.' : p.slice('wiki/'.length))),
+    paths: paths.filter(isWikiPath).map(toWikiRepoPath),
   });
 }
 
@@ -549,30 +662,11 @@ export async function checkAdmission(handoff: Handoff, repoRoot: string): Promis
   const readFirstCheck = await checkMissingReadFirst(handoff, repoRootResolved);
   if (!readFirstCheck.ok) return readFirstCheck;
 
-  let statusStdout: string;
-  try {
-    const statusArgs = ['status', '--porcelain', '--'];
-    for (const entry of handoff.write_scope) {
-      statusArgs.push(entry);
-    }
-    const { stdout } = await execFile('git', statusArgs, { cwd: repoRoot });
-    statusStdout = stdout;
-  } catch (err) {
-    return fail('ADMISSION_FAILED', `Failed to run "git status --porcelain" in ${repoRoot}.`, err);
-  }
+  const dirtyCheck = await checkDirtyWriteScope(handoff, repoRoot);
+  if (!dirtyCheck.ok) return dirtyCheck;
 
-  const dirtyPaths = statusStdout
-    .split('\n')
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0);
-
-  if (dirtyPaths.length > 0) {
-    return fail(
-      'DIRTY_REPO',
-      `Repository at ${repoRoot} is not clean; refusing admission for handoff ${handoff.id}.`,
-      { dirtyPaths },
-    );
-  }
+  const uncommittedCheck = await checkUncommittedReadFirst(handoff, repoRoot);
+  if (!uncommittedCheck.ok) return uncommittedCheck;
 
   const baseRefCheck = await checkBaseRef(handoff, repoRoot);
   if (!baseRefCheck.ok) return baseRefCheck;
