@@ -19,6 +19,10 @@ import { basename } from 'node:path';
 
 import type { DispatchResult } from './errors.js';
 import { ok } from './errors.js';
+import { isRunId } from './paths.js';
+
+/** A full git commit id (SHA-1 or SHA-256 object format). */
+export const FULL_SHA = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 
 /** The five §6 mode ceilings — all valid at parse time; execution support is a pipeline concern. */
 export type HandoffMode = 'implement' | 'code_review' | 'redteam' | 'research' | 'explore_code';
@@ -37,6 +41,7 @@ export interface Handoff {
   base_sha?: string; // WK-0152: commit this fresh-HEAD HO was checked against; admission's base-drift gate diffs declared paths from here
   base_wiki_sha?: string; // WK-0152: nested-private wiki repo's commit this HO was checked against
   reviewed_run?: string; // Run id this review targets (WK-0153 discharge evidence)
+  reviewed_sha?: string; // Delivery-branch commit this review was derived for; merge requires it to equal the branch head (WK-0294 F1)
   web: boolean;
   credentials: string[];
   data_mounts: string[];
@@ -248,6 +253,14 @@ export function parseHandoffContent(content: string, filename: string): Dispatch
     return fail('Handoff fixup_context must be a string.');
   }
 
+  // WK-0294 (HO-0220 F1): these stamps name a run dir and a commit; anything else is refused, never path-joined.
+  if (raw.reviewed_run !== undefined && (typeof raw.reviewed_run !== 'string' || !isRunId(raw.reviewed_run))) {
+    return fail(`Handoff reviewed_run must be a dispatch run id (RUN-<uuid>); got: ${String(raw.reviewed_run)}`);
+  }
+  if (raw.reviewed_sha !== undefined && (typeof raw.reviewed_sha !== 'string' || !FULL_SHA.test(raw.reviewed_sha))) {
+    return fail(`Handoff reviewed_sha must be a full commit sha; got: ${String(raw.reviewed_sha)}`);
+  }
+
   if (raw.work_item !== undefined && raw.work_item !== null) {
     if (typeof raw.work_item !== 'string' || !/^WK-\d{4}$/.test(raw.work_item)) {
       return fail(`Handoff work_item must match /^WK-\\d{4}$/; got: ${String(raw.work_item)}`);
@@ -287,6 +300,7 @@ export function parseHandoffContent(content: string, filename: string): Dispatch
   if (typeof raw.branch === 'string') handoff.branch = raw.branch;
   if (typeof raw.response === 'string') handoff.response = raw.response;
   if (typeof raw.reviewed_run === 'string') handoff.reviewed_run = raw.reviewed_run;
+  if (typeof raw.reviewed_sha === 'string') handoff.reviewed_sha = raw.reviewed_sha;
 
   return ok(handoff);
 }

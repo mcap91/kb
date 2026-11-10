@@ -31,6 +31,7 @@
  *   5b. --unshare-ipc                 IPC namespace (WK-0202, chassis baseline)
  *   5c. --new-session                 setsid (WK-0202, chassis baseline: no terminal signals)
  *   6.  --unshare-net                 opt-in (T26/D21): no network stack
+ *   6-env. --clearenv + --setenv      opt-in allowlist env (WK-0294)
  *   6a. toolchain leaf binds (DEC-0011) --ro-bind-try each opts.toolchainPaths
  *                                      entry (CLI binaries living under $HOME)
  *   6b. auth leaf binds (DEC-0011)    the ONLY $HOME paths let through —
@@ -115,6 +116,11 @@ export interface JailOpts {
   /** Absolute path to the run directory (prompt, relay script, tunnel socket,
    *  logs). Bound writable — chassis's `runtimeRoots` category. */
   runDirPath?: string;
+
+  /** Allowlist env (WK-0294, DEC-0047 A4.3): when set, bwrap starts the child
+   *  with `--clearenv` and only these vars (`--setenv`), so nothing in the
+   *  spawn env reaches it. Unset keeps bwrap's default env passthrough. */
+  allowlistEnv?: Readonly<Record<string, string>>;
 }
 
 export interface JailArgs {
@@ -208,6 +214,13 @@ function buildJailPlanSteps(opts: JailOpts): JailPlanSteps {
   // 6: network namespace removal (T26/D21) — opt-in.
   if (opts.unshareNet) {
     mountArgv.push('--unshare-net');
+  }
+  // 6-env: allowlist env (WK-0294) — the child inherits nothing.
+  if (opts.allowlistEnv) {
+    mountArgv.push('--clearenv');
+    for (const [key, value] of Object.entries(opts.allowlistEnv)) {
+      mountArgv.push('--setenv', key, value);
+    }
   }
 
   // 6-rundir: run directory as a writable bind (chassis: runtimeRoots).
@@ -540,4 +553,26 @@ export function buildSecretMaskArgs(clonePath: string): string[] {
     args.push('--tmpfs', claudeDirPath);
   }
   return args;
+}
+
+/**
+ * Layer D2 ruling 2 item 5's `.env`/`.claude/` secret-mask args onto an
+ * already-built bwrap plan, right before the `--chdir` terminator — bwrap
+ * resolves LATER binds over EARLIER ones (jail.ts's own recipe-order
+ * comment), so appending here means these masks win over anything
+ * `buildBwrapPlan`'s own write_scope/data_mount binds already laid down for
+ * the same clone. `buildBwrapPlan` itself stays unmodified (jail.ts's
+ * additive-only contract) — a post-processing step applied by
+ * pipeline.ts to every family and by host-validation.ts to every validation jail (Pi included: masking is dormant unless
+ * the clone actually carries a `.env`/`.claude/` — see `buildSecretMaskArgs`).
+ */
+export function withSecretMaskArgs(plan: BwrapPlan, clonePath: string): BwrapPlan {
+  const maskArgs = buildSecretMaskArgs(clonePath);
+  if (maskArgs.length === 0) return plan;
+  const chdirIdx = plan.bwrapArgs.indexOf('--chdir');
+  const insertAt = chdirIdx === -1 ? plan.bwrapArgs.length : chdirIdx;
+  return {
+    ...plan,
+    bwrapArgs: [...plan.bwrapArgs.slice(0, insertAt), ...maskArgs, ...plan.bwrapArgs.slice(insertAt)],
+  };
 }

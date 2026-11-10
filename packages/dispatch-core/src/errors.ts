@@ -59,6 +59,10 @@ export type DispatchErrorCode =
   | 'MISSING_READ_FIRST'
   | 'BAD_BASE_REF'
   | 'BASE_DRIFT'
+  // --- v2 uncommitted declared inputs (WK-0272, DEC-0047 A2 R9) ---
+  | 'UNCOMMITTED_READ_FIRST'
+  // --- v2 derived review bound to its head (WK-0294, HO-0220 F2) ---
+  | 'REVIEWED_SHA_MISMATCH'
   | 'CONTEXT_BUDGET_EXCEEDED'
   | 'BAD_DATA_MOUNT'
   // --- v2 runtime env projection (WK-0201) ---
@@ -120,6 +124,8 @@ export const V2_REFUSAL_CODES = [
   'WORK_ITEM_NOT_FOUND',
   'CLAUDE_PERMISSION_PROBE_FAILED',
   'BASE_DRIFT',
+  'UNCOMMITTED_READ_FIRST',
+  'REVIEWED_SHA_MISMATCH',
   'NO_MODEL_DEFAULT',
   'AMBIGUOUS_MODEL_DEFAULT',
   'AMBIGUOUS_BACKEND',

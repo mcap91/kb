@@ -1284,7 +1284,9 @@ describe('contract/kb-dispatch-recovery.v1.schema.json — structural shape matc
     const expected = [
       'schema_version', 'reported_role', 'reported_subject', 'reported_outcome',
       'findings', 'finding_counts', 'reviewed_controls', // TOP_LEVEL_REQUIRED_FIELDS
-      'summary', 'kind', // TOP_LEVEL_OPTIONAL_FIELDS — nullable-and-required here
+      'summary', 'kind', 'report', // TOP_LEVEL_OPTIONAL_FIELDS — nullable-and-required here
+      // WK-0251: `report` is REQUIRED (non-nullable string) in this schema file only — see
+      // the dedicated WK-0251 describe block below for the required-here-optional-elsewhere split.
     ].sort();
     expect([...schema.required].sort()).toEqual(expected);
     expect(Object.keys(schema.properties).sort()).toEqual(expected);

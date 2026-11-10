@@ -207,6 +207,10 @@ export { launchDispatchBackground } from './dispatch-background.js';
 
 export type { BackendEntry, BackendFamily, ModelTableEntry, ProfileEntry, ProfilesConfig, RepoDispatchConfig } from './repo-config.js';
 export { loadModelsTable, loadBackendsTable, loadProfilesConfig } from './repo-config.js';
+export type { ValidationCommand, ValidationRegistry } from './repo-config.js';
+export { loadValidationRegistry, validationRegistryFingerprint } from './repo-config.js';
+export type { ValidationEvidence, ValidationStepResult } from './host-validation.js';
+export { VALIDATION_EVIDENCE_FILE, readValidationEvidence, renderValidationEvidence, runHostValidation } from './host-validation.js';
 
 // ---------------------------------------------------------------------------
 // V2 credential resolution (S3)
@@ -305,7 +309,7 @@ export { extractRecoveryBlock, validateRecoveryPayload, KB_DISPATCH_RECOVERY_VER
 // the target branch after review evidence confirms a pass. Local only.
 // ---------------------------------------------------------------------------
 
-export type { MergeDeliveryOpts, MergeDeliveryResult } from './merge-delivery.js';
+export type { MergeDeliveryOpts, MergeDeliveryResult, MergeOverride } from './merge-delivery.js';
 export { mergeDelivery } from './merge-delivery.js';
 
 // ---------------------------------------------------------------------------

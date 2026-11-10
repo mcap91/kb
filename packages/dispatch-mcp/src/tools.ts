@@ -121,12 +121,28 @@ export const tools: ToolDef[] = [
   },
   {
     name: 'merge-delivery',
-    description: 'Merge a dispatch delivery branch into the target branch after review pass. Gates on review evidence. No remote push.',
+    description:
+      'Merge a dispatch delivery branch into the target branch after review pass. Gates on review evidence and on host validation evidence (derive-review). Missing, failing, or stale-registry evidence refuses unless override_reason and override_actor are both given; an override commits a provenance record first. No remote push.',
     inputSchema: z.object({
       dir: z.string().describe('Target repo directory'),
       handoff_id: z.string().describe('The implement HO id whose delivery branch to merge (e.g. HO-0034)'),
+      override_reason: z.string().optional().describe('OPERATOR-AUTHORIZED ONLY: pass only on an explicit operator instruction in this session, never on your own judgment. Overrides the host validation gate; states why merging without passing evidence is acceptable.'),
+      override_actor: z.string().optional().describe('OPERATOR-AUTHORIZED ONLY (see override_reason): the operator who authorized the override. Self-reported and recorded as unauthenticated.'),
     }),
-    handler: async (input) => mergeDelivery({ dir: input.dir as string, handoff_id: input.handoff_id as string }),
+    handler: async (input) =>
+      mergeDelivery({
+        dir: input.dir as string,
+        handoff_id: input.handoff_id as string,
+        ...(input.override_reason !== undefined || input.override_actor !== undefined
+          ? {
+              override: {
+                reason: (input.override_reason as string | undefined) ?? '',
+                actor: (input.override_actor as string | undefined) ?? '',
+                surface: 'mcp' as const,
+              },
+            }
+          : {}),
+      }),
   },
   {
     name: 'restamp',

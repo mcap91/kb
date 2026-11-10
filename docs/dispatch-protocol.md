@@ -43,12 +43,13 @@ pipeline after the run (see "Capture and Provenance").
 |-------|------|-------|
 | `base_ref` | string \| null | `null` = fresh HEAD; otherwise must start with `dispatch/` and name an existing ref (chained review/fix-up HOs) |
 | `base_sha` / `base_wiki_sha` | string | Authoring-time commit stamps (WK-0152) — see "Base Drift Gate" |
-| `reviewed_run` | string | Run id a `code_review` HO targets (WK-0153 discharge evidence) |
+| `reviewed_run` | string | Run id a `code_review` HO targets (WK-0153 discharge evidence). Must be a dispatch run id (`RUN-<uuid>`); anything else is `BAD_RECORD` at parse |
+| `reviewed_sha` | string | Delivery-branch commit a derived `code_review` HO was derived for (full sha; anything else is `BAD_RECORD` at parse). Dispatch refuses unless `base_ref` resolves to it; `merge-delivery` requires the branch head to equal it (WK-0294) |
 | `web` | boolean | Default `false`. Never allowed for `code_review`/`redteam` |
 | `credentials` | string[] | Names from `wiki/.dispatch/profiles.json`. Mutually exclusive with `web: true` |
 | `data_mounts` / `export_mounts` | string[] | Absolute host paths *outside* the repo root, bound `ro` / `rw` into the jail. Must already exist |
 | `runtime_envs` | string[] | Absolute paths to pre-installed runtime env roots (e.g. a conda/mamba env), implement-mode only (WK-0201) — see "Runtime Env Projection" below |
-| `read_first` | string[] | Repo-relative paths; each must exist at dispatch time (`MISSING_READ_FIRST`) |
+| `read_first` | string[] | Repo-relative paths; each must exist where the worker reads it at dispatch time (`MISSING_READ_FIRST`; see "Where read_first resolves") |
 | `vars` | string[] | `"KEY=value"` non-secret literal env for the worker |
 | `fixup_context` | string | Prior review findings injected verbatim on a re-dispatch |
 | `work_item` | string | `WK-####`; required for `mode: implement`, and its `wiki/issues/<id>.md` must exist |
@@ -86,15 +87,31 @@ here is a persisted review state — it all re-runs, every time, against the liv
 | `write_scope` empty outside `implement`, or `web: true` for `code_review`/`redteam` | `ENVELOPE_EXCEEDS_MODE` |
 | `implement` with empty `write_scope` | `MISSING_WRITE_SCOPE` |
 | Every `write_scope` entry is repo-relative, resolves inside the repo, and it or its parent exists | `STALE_WRITE_SCOPE` |
-| Every `read_first` entry exists | `MISSING_READ_FIRST` |
-| Repo is clean (`git status --porcelain` over `write_scope`) | `DIRTY_REPO` |
+| Every `read_first` entry exists — in the `base_ref` tree for a chained HO's non-wiki entries, else in the working tree | `MISSING_READ_FIRST` |
+| Repo is clean (`git status --porcelain` over `write_scope` paths only; with an empty `write_scope` — every advisory mode — the scan is skipped and declared-path staleness is covered by the base-drift gate) | `DIRTY_REPO` |
+| Every `read_first` entry is committed — no modified, staged, or untracked file under it (wiki entries checked in the wiki repo when nested-private); checked before base drift | `UNCOMMITTED_READ_FIRST` (see below) |
 | `base_ref`, if set, starts with `dispatch/` and exists | `BAD_BASE_REF` |
 | Every `data_mounts`/`export_mounts` entry is absolute, exists, and is outside the repo root | `BAD_DATA_MOUNT` |
 | `runtime_envs` only declared for `mode: implement` | `ENVELOPE_EXCEEDS_MODE` |
 | Every `runtime_envs` entry canonicalizes (realpath) to an absolute, existing, mountable path that is not `$HOME` itself and has a `bin/` dir | `BAD_RUNTIME_ENV` |
 | No `runtime_envs` entry overlaps a `export_mounts` entry in either direction | `RUNTIME_EXPORT_OVERLAP` |
 | `implement` declares a `work_item` whose `wiki/issues/<id>.md` exists | `WORK_ITEM_NOT_FOUND` |
+| An HO carrying `reviewed_sha`: the commit it would clone (`base_ref`, else HEAD) is that sha — a derived review runs only against the head it was derived for | `REVIEWED_SHA_MISMATCH` |
 | Fresh-HEAD HOs: declared paths haven't changed since `base_sha`/`base_wiki_sha` | `BASE_DRIFT` (see below) |
+
+### Where read_first resolves (WK-0258)
+
+The worker's clone is cut from `base_ref` (or HEAD when it is null), so admission checks each `read_first`
+entry where the worker will read it:
+
+1. `wiki/…` entries resolve against the wiki working tree, in both wiki shapes.
+2. For a chained HO (`base_ref` set), every other entry resolves against the `base_ref` tree
+   (`git cat-file -e <base_ref>:<path>`). A file that exists only on that branch is admitted. A file
+   that exists only on `main` is not in the clone, so admission refuses `MISSING_READ_FIRST` with
+   guidance: dispatch artifacts (the implement response, validation evidence) reach the worker through
+   the run-dir evidence channel, and other content belongs in the HO context. Nothing is copied into the
+   clone.
+3. For an HO with `base_ref` null, every other entry resolves against the working tree.
 
 A few checks need facts the admission gate doesn't have yet and run later in the same `dispatch` call,
 still before any worker spawns: `MODEL_NOT_FOUND` / `EFFORT_UNSUPPORTED` (model+backend resolution),
@@ -277,6 +294,14 @@ structured evidence (outcome, findings, kind) extracted from the worker's own la
 never changes the run's verdict; for `code_review`/`redteam` the block *is* the deliverable, and a
 missing or invalid block drives the response doc's verdict to `failed` (`missing_review_artifact`).
 
+WK-0251: the schema handed to claude/codex implement runs for constrained decoding (DEC-0037) requires a
+`report` field — the full human-readable report — because those backends' final message IS this JSON
+block, with no separate chat message left for prose. `## Worker Report` renders a valid block's non-empty
+`report` when present, falling back to the worker's raw final message otherwise (pi implement and every
+reviewer/redteam/explorer/research run, none of which populate `report`, are unaffected). `report` is
+optional+nullable in recovery-block.ts's validator for every role/family — only this one schema file
+requires it.
+
 The response doc's own frontmatter also stamps three fields distilled from that evidence (WK-0166), so
 downstream consumers (e.g. `merge-delivery`) can read a fact instead of re-parsing the rendered
 `## Worker Report` markdown:
@@ -284,8 +309,10 @@ downstream consumers (e.g. `merge-delivery`) can read a fact instead of re-parsi
 - `recovery_outcome` — the block's `reported_outcome` string (e.g. `passed_no_blocking_or_medium_findings`)
   when a valid block was extracted; empty string otherwise.
 - `recovery_valid` — boolean; whether a valid `kb-dispatch-recovery.v1` block was extracted at all.
-- `worker_report_chars` — the trimmed length of the worker's final assistant message; the fail-closed
-  "did a review/run actually happen" fact, independent of whether it carried a parseable block.
+- `worker_report_chars` — the trimmed length of what `## Worker Report` actually renders (a valid block's
+  `report` field when present, else the worker's final assistant message — WK-0251, same resolution the
+  section itself uses); the fail-closed "did a review/run actually happen" fact, independent of whether
+  it carried a parseable block.
 
 A response doc written before this change carries none of these three fields — consumers must refuse
 loudly on that absence rather than falling back to parsing the markdown body.
@@ -324,6 +351,22 @@ For the wiki stamp, substitute `base_wiki_sha` / `git -C wiki rev-parse HEAD`. W
 
 **The fix.** Re-read the listed changes against the HO and its WK, fix and commit anything stale, then set the stamp to the current HEAD printed in the message and re-dispatch.
 
+**Uncommitted read_first inputs (WK-0272, DEC-0047 A2 R9).** Before the base-drift check, admission
+refuses `UNCOMMITTED_READ_FIRST` when any `read_first` entry the worker reads from a working tree has
+uncommitted changes, in either wiki shape. A chained HO's non-wiki entries resolve against `base_ref`
+(committed by construction) and are not checked.
+The clone is cut from a commit, so uncommitted code-repo bytes never reach the worker; a nested-private
+wiki is bound live, so its uncommitted bytes reach the worker, but the response's `wiki_commit` does not
+record them. The message names the files and the remedy:
+
+- `base_ref` null: commit them, then run `restamp`, then re-dispatch. A commit alone moves HEAD past the
+  stamp and refuses `BASE_DRIFT`.
+- chained (`base_ref` set): commit them and re-dispatch. A chained HO has no stamp to refresh.
+
+The dirty-tree gate (`DIRTY_REPO`) covers only `write_scope`. An advisory HO (empty `write_scope`) skips
+it, so kb's own uncommitted outputs (a fresh HO file, `wiki/.id-state.json`, another session's dispatch
+stamp) never block an advisory dispatch.
+
 **Chained-HO exemption.** An HO with `base_ref` set runs on an immutable `dispatch/` branch and is exempt from this gate — the orchestrator is expected to update its WK mid-chain by design.
 
 ## Post-Run Lifecycle Tools (WK-0132)
@@ -339,14 +382,77 @@ state `cancelled`; an already-terminal run or an already-dead process is a no-op
 
 ### `derive-review`
 
-Creates a `code_review` HO from a delivered `implement` HO. Derivation: `mode=code_review`,
-`write_scope=[]` (the mode ceiling — never copied from implement), `base_ref=dispatch/<implement_id>`,
+Creates a `code_review` HO from a delivered `implement` HO, after running host validation against the
+delivery (see "Host Validation Evidence" below). Derivation: `mode=code_review`, `write_scope=[]` (the
+mode ceiling — never copied from implement), `base_ref=dispatch/<implement_id>`,
 `acceptance`/`validation`/`web`/`credentials`/`data_mounts`/`export_mounts`/`vars`/`work_item` copied
-from implement, `read_first` = implement's + response doc path, `title` = `Code review:
-<implement_title>`, `reviewed_run` stamped to the implement's latest terminal run id. Does NOT
-auto-dispatch — the orchestrator dispatches separately (two-step review chain).
+from implement, `read_first` = implement's only (the response reaches the reviewer through its run dir,
+never `read_first` — DEC-0047 A4.4), `title` = `Code review: <implement_title>`, `reviewed_run` stamped
+to the implement's latest run whose outcome is `delivered` and that left a delivery branch,
+`reviewed_sha` stamped to the delivery branch head that was validated, and a
+`### Host Validation Evidence` section rendered from the evidence JSON into the HO's Context. Acceptance
+text is copied verbatim, never rewritten. Does NOT auto-dispatch — the orchestrator dispatches separately
+(two-step review chain).
 
-Refusals: implement not found, mode != implement, not delivered (response doc missing).
+Refusals: implement not found, mode != implement, not delivered (response doc missing), no delivered run
+with a delivery branch, delivery branch missing, malformed `validation.json`, or a validation run that
+could not be carried out at all (bad runtime path, clone or bwrap failure).
+
+### Host Validation Evidence (WK-0294, DEC-0047)
+
+Advisory workers never run the project toolchain. The host runs the operator's registered validation
+commands against the delivery commit and records what happened. The review judges the diff plus that
+evidence, and `merge-delivery` gates on it.
+
+**Registry.** `wiki/.dispatch/validation.json` is the only source of commands the host runs. HO
+`validation` entries stay worker instructions; the host never parses or executes them. The file is
+strict: an unknown key, a shell string instead of an argv array, or a missing timeout refuses with
+`BAD_RECORD`. With no file, there are no registered commands: the host runs nothing and the evidence
+records zero commands.
+
+```json
+{
+  "schema_version": 1,
+  "setup": { "argv": ["npm", "ci", "--ignore-scripts"], "timeout_ms": 600000 },
+  "commands": [
+    { "name": "typecheck", "argv": ["npm", "run", "typecheck"], "timeout_ms": 600000 },
+    { "name": "test", "argv": ["npm", "test"], "timeout_ms": 900000 }
+  ],
+  "env": { "FORCE_COLOR": "0" },
+  "runtime_paths": ["/opt/node-22"]
+}
+```
+
+| Key | Meaning |
+|---|---|
+| `setup` | Optional. Runs first and is the only step with network. npm lifecycle scripts are forced off (`npm_config_ignore_scripts=true`). If setup fails, no command runs. |
+| `commands[]` | `name` (`[A-Za-z0-9._-]+`, unique), `argv`, `timeout_ms`. They run in order, network-denied. |
+| `env` | Extra variables for every step. `PATH`, `HOME`, and `TMPDIR` are reserved. |
+| `runtime_paths` | Absolute runtime roots. Each must have `bin/`, live under `$HOME` or a system root, and not be `$HOME` itself. Each is bound read-only, and its `bin/` goes first on `PATH`. |
+
+**Confinement.** Each step runs in a bwrap jail over a fresh temp clone of the delivery sha (bound
+writable), built by the same generic jail layer the workers use. Nothing derived from the delivery runs on
+the host outside the jail. The env is an allowlist (`--clearenv`): `PATH` (runtime `bin/` dirs, then
+`/usr/local/bin:/usr/bin:/bin`), `HOME=/tmp`, `TMPDIR=/tmp`, and the registry `env`. No host variable
+reaches a step, whatever its name. Commands run with `--unshare-net`; bwrap brings loopback up, so local
+test servers work and egress fails. `.env` and `.claude/` in the clone are masked. stdout and stderr are
+each kept as a 16 KiB tail. On timeout the whole process group gets `SIGTERM`, then `SIGKILL` after 5 s,
+and the runner waits for the exit before it records the result.
+
+**Evidence.** `derive-review` writes `validation-evidence.json` into the delivered implement run's dir
+(`.agent-runs/runs/<implement_id>/<run_id>/`). It holds `handoff_id`, `run_id`, `delivery_branch`,
+`delivery_sha`, `registry_fingerprint` (sha256 of the effective registry), per-step `argv`, `exit_code`,
+`signal`, `timed_out`, `duration_ms`, `stdout_tail`, `stderr_tail`, `result`, and an overall `outcome`
+(`pass` only when setup and every command passed). A failing command is evidence, not an error: the
+review still derives. This JSON is the record; the review HO's evidence section renders from it.
+
+**Review dispatch.** A derived review is a `code_review` HO with a `dispatch/` `base_ref` and a
+`reviewed_run` stamp. Dispatching one copies the evidence JSON and
+`wiki/handoffs/<implement_id>.response.md` into the review's own run dir as `validation-evidence.json`
+and `implement-response.md`. The run dir is bound into every jail, so the reviewer reads both in either
+wiki shape. The prompt names the two paths and says that executing tests or the toolchain is out of
+scope. If the evidence or the response is gone, the dispatch refuses; re-run `derive-review`. The copies
+belong to the reviewer only: the merge gate never reads them.
 
 ### `merge-delivery`
 
@@ -366,7 +472,27 @@ Preconditions (checked in order, fail-closed):
    fields (all three absent — no legacy regex fallback) refuses outright.
 2. Working tree clean
 3. Delivery branch exists
-4. Merge succeeds (fast-forward or a real merge) — aborts and refuses on conflict
+4. Host validation evidence (WK-0294). The gate reads only the host original: the
+   `validation-evidence.json` in the implement run dir named by the review's `reviewed_run`, never the
+   reviewer's copy. It refuses when the review has no `reviewed_run` or `reviewed_sha`, the evidence is
+   missing or unreadable, the evidence belongs to another run, the evidence `outcome` is `fail`, or the
+   `registry_fingerprint` differs from the current `validation.json` (revalidate by re-running
+   `derive-review`). An override can clear each of these. A delivery branch whose head is not the review's
+   `reviewed_sha` or the evidence `delivery_sha` always refuses, because the reviewed commit is not what
+   would merge; no override applies. The review's own stamp is the binding: re-running `derive-review`
+   for the same run overwrites that run's evidence, so evidence for a new head says nothing about which
+   head an older review saw.
+5. Merge succeeds (fast-forward or a real merge). The merge names the evidence sha, not the branch; it
+   aborts and refuses on conflict
+
+**Override (DEC-0047 A2 R8).** `override_reason` and `override_actor` (MCP; `override: { reason, actor,
+surface }` in the API) let an operator merge past a step-4 refusal. Both must be non-empty. Before the
+merge, dispatch writes `wiki/handoffs/<handoff_id>.merge-override.json` and commits it with the
+isolated-index pattern. The record holds the reason, the actor (with `actor_authenticated: false`: it is
+self-reported, because no identity exists on the MCP path), the call surface, the merged sha, the run id,
+the refusal reasons, and the per-command results. If that commit fails, the file is removed and the merge
+refuses. An orchestrator passes the override only on an explicit operator instruction. The result reports
+`gate: "evidence"` or `gate: "override"`, plus `mergedSha` and, for an override, `overrideRecord`.
 
 ### `cleanup`
 
@@ -384,7 +510,7 @@ orchestrator dispatches         → dispatch + watch
 pipeline executes + delivers    → automatic
 pipeline auto-commits artifacts → DEC-0038 (automatic)
 orchestrator reads result       → HO-XXXX.response.md
-orchestrator derives review     → derive-review
+orchestrator derives review     → derive-review (host runs validation.json, records evidence)
 orchestrator dispatches review  → dispatch + watch (same cycle)
 pipeline auto-commits review    → DEC-0038 (automatic)
 orchestrator reads review       → review response.md
@@ -400,7 +526,7 @@ is the source list; a test fails if this table and that list disagree:
 | Phase | Codes |
 |-------|-------|
 | Handoff shape | `BAD_RECORD` |
-| Admission (repo-local) | `MISSING_WRITE_SCOPE`, `ENVELOPE_EXCEEDS_MODE`, `STALE_WRITE_SCOPE`, `WRITE_SCOPE_UNCAPTURABLE`, `MISSING_READ_FIRST`, `DIRTY_REPO`, `BAD_BASE_REF`, `BAD_DATA_MOUNT`, `BAD_RUNTIME_ENV`, `RUNTIME_EXPORT_OVERLAP`, `WORK_ITEM_NOT_FOUND`, `BASE_DRIFT`, `ADMISSION_FAILED` |
+| Admission (repo-local) | `MISSING_WRITE_SCOPE`, `ENVELOPE_EXCEEDS_MODE`, `STALE_WRITE_SCOPE`, `WRITE_SCOPE_UNCAPTURABLE`, `MISSING_READ_FIRST`, `DIRTY_REPO`, `UNCOMMITTED_READ_FIRST`, `BAD_BASE_REF`, `BAD_DATA_MOUNT`, `BAD_RUNTIME_ENV`, `RUNTIME_EXPORT_OVERLAP`, `WORK_ITEM_NOT_FOUND`, `REVIEWED_SHA_MISMATCH`, `BASE_DRIFT`, `ADMISSION_FAILED` |
 | Model/backend resolution | `MODEL_NOT_FOUND`, `EFFORT_UNSUPPORTED`, `NO_MODEL_DEFAULT`, `AMBIGUOUS_MODEL_DEFAULT`, `AMBIGUOUS_BACKEND` |
 | Credentials | `CREDENTIALS_WITH_WEB`, `UNKNOWN_PROFILE`, `CREDENTIAL_NOT_CONFIGURED` |
 | Host / prompt budget | `PREFLIGHT_FAILED`, `NO_ISOLATION_ROUTE`, `CLI_PATH_NOT_MOUNTABLE`, `CONTEXT_BUDGET_EXCEEDED` |

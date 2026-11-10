@@ -506,11 +506,14 @@ describe('assemble.ts — mode-specific framings (S6a)', () => {
     expect(result.data.text).not.toContain('the run is marked `failed`');
   });
 
-  it('code_review framing includes the tsc --build --noEmit sandbox guidance', async () => {
+  // Replaces the "tsc --build --noEmit sandbox guidance" check: DEC-0047 ruling 1 (WK-0294) — advisory
+  // workers never execute the toolchain; the host runs validation and the review judges that evidence.
+  it('code_review framing puts toolchain execution out of scope and names the host evidence', async () => {
     const result = await assembleForMode('code_review');
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.data.text).toContain('tsc --build --noEmit');
+    expect(result.data.text).toContain('Executing tests, builds, or any project toolchain is out of scope for this review');
+    expect(result.data.text).not.toContain('tsc --build --noEmit');
   });
 
   it('code_review framing includes fix-up flagging', async () => {

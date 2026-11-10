@@ -58,6 +58,17 @@ export interface SpawnIsolatedOpts {
    * a bug, not a runtime condition to silently paper over.
    */
   injectedFiles?: ReadonlyArray<{ content: string; dest: string }>;
+  /** Which end of stdout to retain under `maxCaptureBytes`: `head` (default — the worker event stream's start) or `tail` (the end, where a test runner prints its verdict). */
+  stdoutCapture?: 'head' | 'tail';
+  /**
+   * Group teardown (WK-0294, DEC-0047 A4.6). When set, the kill timer sends
+   * SIGTERM to the child's whole process group (it is spawned `detached`, so
+   * its pgid is its pid), waits up to `killGraceMs` for exit, then sends
+   * SIGKILL to the group and waits up to `killGraceMs` again before
+   * resolving. Unset keeps the original behavior: SIGTERM the child and
+   * resolve at once.
+   */
+  groupTeardown?: { killGraceMs: number };
 }
 
 export interface SpawnResult {
@@ -85,8 +96,19 @@ function boundedHeadCapture(cap: number) {
         truncated = true;
         return;
       }
+      const bytes = Buffer.from(str, 'utf8');
+      const room = cap - retained;
+      if (bytes.length > room) {
+        // The chunk crosses the cap: keep only its first `room` bytes, ending on a UTF-8 character boundary.
+        let end = room;
+        while (end > 0 && ((bytes[end] ?? 0) & 0xc0) === 0x80) end -= 1;
+        chunks.push(bytes.subarray(0, end).toString('utf8'));
+        retained = cap; // closed: nothing after the cut may be appended, even if a boundary step left room
+        truncated = true;
+        return;
+      }
       chunks.push(str);
-      retained += Buffer.byteLength(str, 'utf8');
+      retained += bytes.length;
       if (retained >= cap) truncated = true;
     },
     text: (): string => chunks.join(''),
@@ -124,7 +146,15 @@ function boundedTailCapture(cap: number) {
         const dropped = chunks.shift();
         if (dropped !== undefined) bytes -= Buffer.byteLength(dropped, 'utf8');
       }
-      if (bytes > cap) truncated = true;
+      if (bytes > cap) {
+        // One chunk alone exceeds the cap: keep its last `cap` bytes, starting on a UTF-8 character boundary.
+        truncated = true;
+        const sole = Buffer.from(chunks[0] ?? '', 'utf8');
+        let start = sole.length - cap;
+        while (start < sole.length && ((sole[start] ?? 0) & 0xc0) === 0x80) start += 1;
+        chunks[0] = sole.subarray(start).toString('utf8');
+        bytes = sole.length - start;
+      }
     },
     text: (): string => chunks.join(''),
     get truncated(): boolean {
@@ -225,7 +255,7 @@ export async function spawnIsolated(
     pipe.end(injected.content, 'utf8');
   }
 
-  const stdoutCapture = boundedHeadCapture(maxCaptureBytes);
+  const stdoutCapture = opts.stdoutCapture === 'tail' ? boundedTailCapture(maxCaptureBytes) : boundedHeadCapture(maxCaptureBytes);
   const stderrCapture = boundedTailCapture(maxStderrBytes);
   const stdoutLogStream = opts.stdoutLogPath !== undefined ? createWriteStream(opts.stdoutLogPath) : null;
   // WriteStream 'error' is otherwise uncaught-exception fatal — a full disk or
@@ -247,6 +277,7 @@ export async function spawnIsolated(
     let streamDrainTimedOut = false;
     let killTimer: NodeJS.Timeout | null = null;
     let drainTimer: NodeJS.Timeout | null = null;
+    let teardownTimer: NodeJS.Timeout | null = null;
     let exitInfo: { code: number | null; signal: NodeJS.Signals | null } | null = null;
     let pendingStreams = 2; // stdout + stderr
 
@@ -268,6 +299,10 @@ export async function spawnIsolated(
       settled = true;
       clearKillTimer();
       clearDrainTimer();
+      if (teardownTimer !== null) {
+        clearTimeout(teardownTimer);
+        teardownTimer = null;
+      }
       resolve(
         ok({
           stdout: stdoutCapture.text(),
@@ -312,6 +347,14 @@ export async function spawnIsolated(
     child.once('exit', (code, signal) => {
       exitInfo = { code, signal };
       clearKillTimer();
+      // Group teardown after a timeout: sweep any group member that outlived the leader.
+      if (timedOut && opts.groupTeardown !== undefined && child.pid !== undefined) {
+        try {
+          process.kill(-child.pid, 'SIGKILL');
+        } catch {
+          // group already gone
+        }
+      }
       if (pendingStreams <= 0) finish();
       else armDrainTimer();
     });
@@ -334,7 +377,38 @@ export async function spawnIsolated(
     // resolve immediately rather than also waiting out streamDrainMs on top
     // (mirrors chassis's kill-timer, which synthesizes a terminal result
     // in the same callback instead of waiting for the real exit event).
-    if (timeoutMs > 0) {
+    const signalGroup = (signal: NodeJS.Signals): void => {
+      if (child.pid === undefined) return;
+      try {
+        process.kill(-child.pid, signal);
+      } catch {
+        // group already gone
+      }
+    };
+    const groupTeardown = opts.groupTeardown;
+
+    if (timeoutMs > 0 && groupTeardown !== undefined) {
+      // Group teardown: the normal exit/stream-close path above still settles
+      // the result; these timers only bound how long that may take.
+      killTimer = setTimeout(() => {
+        killTimer = null;
+        timedOut = true;
+        signalGroup('SIGTERM');
+        teardownTimer = setTimeout(() => {
+          signalGroup('SIGKILL');
+          teardownTimer = setTimeout(() => {
+            teardownTimer = null;
+            exitInfo = exitInfo ?? { code: null, signal: null };
+            child.stdout?.destroy();
+            child.stderr?.destroy();
+            finish();
+          }, groupTeardown.killGraceMs);
+          teardownTimer.unref?.();
+        }, groupTeardown.killGraceMs);
+        teardownTimer.unref?.();
+      }, timeoutMs);
+      killTimer.unref?.();
+    } else if (timeoutMs > 0) {
       killTimer = setTimeout(() => {
         killTimer = null;
         timedOut = true;

@@ -2,14 +2,22 @@
  * WK-0132 Slice 2 — derive a `code_review` HO from a delivered `implement` HO.
  *
  * Mechanical field derivation only (no judgment): reads the implement HO,
- * confirms it is mode=implement and delivered (response doc present), then
- * writes a new code_review HO whose fields are copied/derived from the
- * implement per the WK-0132 spec. Does NOT dispatch the review — the
- * orchestrator does that separately via the existing `dispatch` tool
- * (two-step review chain, ratified in WK-0132).
+ * confirms it is mode=implement and delivered (response doc present, and a
+ * run whose outcome is `delivered` with a delivery branch — DEC-0047 A2 R6),
+ * runs the operator-registered validation commands against the delivery sha
+ * on the host (WK-0294, host-validation.ts; the evidence JSON lands in that
+ * implement run's dir), then writes a new code_review HO whose fields are
+ * copied/derived from the implement per the WK-0132 spec, with the evidence
+ * rendered into its Context. `read_first` does not list the implement
+ * response (A4.4): review dispatch copies the response and the evidence JSON
+ * into the review run dir. Does NOT dispatch the review — the orchestrator
+ * does that separately via the existing `dispatch` tool (two-step review
+ * chain, ratified in WK-0132).
  */
+import { execFile as execFileCb } from 'node:child_process';
 import { readFile, readdir, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
+import { promisify } from 'node:util';
 
 import { allocate } from '@kb/wiki-core';
 
@@ -18,6 +26,11 @@ import { renderHandoff } from './create-handoff.js';
 import type { CreateHandoffOpts } from './types.js';
 import type { DispatchResult } from './errors.js';
 import { ok, fail } from './errors.js';
+import { renderValidationEvidence, runHostValidation, type ValidationEvidence } from './host-validation.js';
+import { isRunId } from './paths.js';
+import { loadValidationRegistry } from './repo-config.js';
+
+const execFile = promisify(execFileCb);
 
 export interface DeriveReviewOpts {
   dir: string;
@@ -29,7 +42,9 @@ export interface DeriveReviewResult {
   reviewPath: string;
   reviewRelativePath: string;
   implementId: string;
-  reviewedRunId: string | undefined;
+  reviewedRunId: string;
+  /** Host validation evidence written to the implement run dir (WK-0294). */
+  validation: ValidationEvidence;
 }
 
 export async function deriveReview(opts: DeriveReviewOpts): Promise<DispatchResult<DeriveReviewResult>> {
@@ -60,34 +75,61 @@ export async function deriveReview(opts: DeriveReviewOpts): Promise<DispatchResu
     return fail('BAD_RECORD', `Implement HO ${implement.id} is not delivered (response doc missing)`);
   }
 
-  // Find the HO's latest terminal run for reviewed_run stamp (WK-0153)
-  const V2_TERMINAL = new Set(['delivered', 'completed', 'failed', 'refused', 'timed_out', 'cancelled']);
+  // The HO's latest delivered run is the one the review targets (WK-0153 reviewed_run;
+  // DEC-0047 A2 R6: only a run whose outcome is `delivered` and that left a branch).
   let reviewedRunId: string | undefined;
 
   const runsDir = join(targetDir, '.agent-runs', 'runs', implement.id);
+  let runIds: string[] = [];
   try {
-    const runIds = await readdir(runsDir);
-    let latestCompletedAt = '';
-
-    for (const runId of runIds) {
-      try {
-        const stateRaw = await readFile(join(runsDir, runId, 'state.json'), 'utf-8');
-        const state = JSON.parse(stateRaw) as Record<string, unknown>;
-        if (state.schema_version !== 2) continue;
-        const status = typeof state.status === 'string' ? state.status : '';
-        if (!V2_TERMINAL.has(status)) continue;
-        const completedAt = typeof state.completed_at === 'string' ? state.completed_at : '';
-        if (completedAt > latestCompletedAt) {
-          latestCompletedAt = completedAt;
-          reviewedRunId = runId;
-        }
-      } catch {
-        // Skip unreadable run state
-      }
-    }
+    runIds = await readdir(runsDir);
   } catch {
-    // No runs dir — reviewed_run will be undefined
+    // No runs dir — no delivered run; refused below.
   }
+  let latestCompletedAt = '';
+  for (const runId of runIds) {
+    if (!isRunId(runId)) continue; // not a dispatch-minted run dir; never stamped (HO-0220 F1)
+    try {
+      const stateRaw = await readFile(join(runsDir, runId, 'state.json'), 'utf-8');
+      const state = JSON.parse(stateRaw) as Record<string, unknown>;
+      if (state.schema_version !== 2) continue;
+      if (state.outcome !== 'delivered' || typeof state.branch !== 'string') continue;
+      const completedAt = typeof state.completed_at === 'string' ? state.completed_at : '';
+      if (completedAt > latestCompletedAt) {
+        latestCompletedAt = completedAt;
+        reviewedRunId = runId;
+      }
+    } catch {
+      // Skip unreadable run state
+    }
+  }
+  if (reviewedRunId === undefined) {
+    return fail(
+      'BAD_RECORD',
+      `Implement HO ${implement.id} has no delivered run with a delivery branch under ${runsDir}; nothing to validate or review.`,
+    );
+  }
+
+  const deliveryBranch = `dispatch/${implement.id}`;
+  let deliverySha: string;
+  try {
+    const { stdout } = await execFile('git', ['rev-parse', '--verify', `refs/heads/${deliveryBranch}^{commit}`], { cwd: targetDir });
+    deliverySha = stdout.trim();
+  } catch (err) {
+    return fail('BAD_RECORD', `Delivery branch ${deliveryBranch} does not exist in ${targetDir}.`, err);
+  }
+
+  const registry = await loadValidationRegistry(targetDir);
+  if (!registry.ok) return registry;
+  const validation = await runHostValidation({
+    dir: targetDir,
+    handoffId: implement.id,
+    runId: reviewedRunId,
+    deliveryBranch,
+    deliverySha,
+    registry: registry.data,
+  });
+  if (!validation.ok) return validation;
 
   const allocResult = await allocate({ dir: targetDir, prefix: 'HO' });
   if (!allocResult.ok) return fail('ALLOCATION_FAILED', allocResult.message);
@@ -101,7 +143,7 @@ export async function deriveReview(opts: DeriveReviewOpts): Promise<DispatchResu
     mode: 'code_review',
     work_item: implement.work_item,
     write_scope: [],
-    read_first: [...implement.read_first, responseRelativePath],
+    read_first: [...implement.read_first],
     acceptance: implement.acceptance,
     validation: implement.validation,
     web: implement.web,
@@ -111,6 +153,8 @@ export async function deriveReview(opts: DeriveReviewOpts): Promise<DispatchResu
     base_ref: `dispatch/${implement.id}`,
     vars: implement.vars,
     reviewed_run: reviewedRunId,
+    reviewed_sha: deliverySha,
+    context: `### Host Validation Evidence\n\n${renderValidationEvidence(validation.data)}`,
   };
 
   const content = renderHandoff(reviewId, createOpts);
@@ -129,5 +173,6 @@ export async function deriveReview(opts: DeriveReviewOpts): Promise<DispatchResu
     reviewRelativePath,
     implementId: implement.id,
     reviewedRunId,
+    validation: validation.data,
   });
 }

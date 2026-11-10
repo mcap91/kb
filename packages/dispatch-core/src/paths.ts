@@ -66,6 +66,14 @@ export function getReviewDir(repoRoot: string, reviewId: string): string {
   return join(repoRoot, '.agent-runs', 'reviews', reviewId);
 }
 
+/** The shape of every run id dispatch mints (`RUN-${randomUUID()}`): one path component, no separators or dots. */
+const RUN_ID_PATTERN = /^RUN-[0-9a-f-]{36}$/i;
+
+/** True when `value` is a dispatch-minted run id — the only run id that may name a run dir. */
+export function isRunId(value: string): boolean {
+  return RUN_ID_PATTERN.test(value);
+}
+
 /**
  * Resolve the run directory for a given handoff/run combination.
  *

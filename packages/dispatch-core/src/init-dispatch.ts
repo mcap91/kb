@@ -40,6 +40,7 @@ to configure models and backends for your repository.
 | \`models.json\` | Model slug → available backends + provider model_id | \`{}\` |
 | \`backends.json\` | Backend name → family, base_url, api_key_env, secrets_file | \`{}\` |
 | \`profiles.json\` | Credential profiles (schema_version 1, inject + optional endpoints) | \`{"schema_version": 1}\` |
+| \`validation.json\` | Optional, not scaffolded: commands the host runs against a delivery before review (WK-0294; docs/dispatch-protocol.md "Host Validation Evidence") | absent = none |
 
 ## Example models.json
 

@@ -10,6 +10,7 @@
  * dispatches, per ruling 1's "malformed profiles.json refuses credentialed
  * dispatches only".
  */
+import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
@@ -380,4 +381,139 @@ export async function loadProfilesConfig(dir: string): Promise<DispatchResult<Pr
   }
 
   return ok({ schemaVersion: 1, profiles });
+}
+
+// ---------------------------------------------------------------------------
+// Host validation registry (WK-0294, DEC-0047 A1 ruling 1 / A2 R5-R6 / A4)
+// ---------------------------------------------------------------------------
+
+/** One operator-registered command the host runs against a delivery. */
+export interface ValidationCommand {
+  /** Stable label rendered in evidence (`[A-Za-z0-9._-]+`, unique). */
+  name: string;
+  /** argv array, executed directly — never a shell string. */
+  argv: string[];
+  timeout_ms: number;
+}
+
+/**
+ * `wiki/.dispatch/validation.json` — the sole source of host-run commands
+ * (A2 R6). Operator-owned: HO `validation` text is never read here.
+ */
+export interface ValidationRegistry {
+  /** Optional setup step; the only step that runs with network (A4.2). */
+  setup: { argv: string[]; timeout_ms: number } | null;
+  commands: ValidationCommand[];
+  /** Registry-declared vars added to the allowlist env (A4.3). PATH/HOME/TMPDIR are reserved. */
+  env: Record<string, string>;
+  /** Absolute runtime roots ro-bound into the validation jail; each `<path>/bin` goes on PATH (A2 R5). */
+  runtime_paths: string[];
+}
+
+const VALIDATION_FILE = 'validation.json';
+const VALIDATION_TOP_KEYS = new Set(['schema_version', 'setup', 'commands', 'env', 'runtime_paths']);
+const VALIDATION_COMMAND_NAME = /^[A-Za-z0-9._-]+$/;
+const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+/** Vars the runner itself constructs; a registry may not override them. */
+export const VALIDATION_RESERVED_ENV: readonly string[] = ['PATH', 'HOME', 'TMPDIR'];
+
+function validateArgvStep(
+  raw: unknown,
+  context: string,
+  extraKeys: readonly string[],
+): DispatchResult<{ argv: string[]; timeout_ms: number }> {
+  if (!isPlainObject(raw)) return fail('BAD_RECORD', `${context} in ${VALIDATION_FILE} must be an object.`);
+  const allowed = new Set(['argv', 'timeout_ms', ...extraKeys]);
+  for (const key of Object.keys(raw)) {
+    if (!allowed.has(key)) return fail('BAD_RECORD', `Unknown key "${key}" in ${context} in ${VALIDATION_FILE}.`);
+  }
+  if (!Array.isArray(raw.argv) || raw.argv.length === 0 || !raw.argv.every((a) => typeof a === 'string' && a.length > 0)) {
+    return fail('BAD_RECORD', `${context} in ${VALIDATION_FILE}: "argv" must be a non-empty array of non-empty strings.`);
+  }
+  if (typeof raw.timeout_ms !== 'number' || !Number.isInteger(raw.timeout_ms) || raw.timeout_ms <= 0) {
+    return fail('BAD_RECORD', `${context} in ${VALIDATION_FILE}: "timeout_ms" must be a positive integer.`);
+  }
+  return ok({ argv: [...(raw.argv as string[])], timeout_ms: raw.timeout_ms });
+}
+
+/**
+ * Load `wiki/.dispatch/validation.json`. Absent file = `null` (no registered
+ * commands). Strict like profiles.json: this file decides what the host
+ * executes, so an unknown key refuses instead of warning.
+ */
+export async function loadValidationRegistry(dir: string): Promise<DispatchResult<ValidationRegistry | null>> {
+  const loaded = await loadJsonFile(dispatchConfigPath(dir, VALIDATION_FILE), VALIDATION_FILE);
+  if (!loaded.ok) return loaded;
+  if (loaded.data === undefined) return ok(null);
+  const raw = loaded.data;
+  if (!isPlainObject(raw)) return fail('BAD_RECORD', `${VALIDATION_FILE} must be a JSON object.`);
+  for (const key of Object.keys(raw)) {
+    if (!VALIDATION_TOP_KEYS.has(key)) return fail('BAD_RECORD', `Unknown key "${key}" in ${VALIDATION_FILE}.`);
+  }
+  if (raw.schema_version !== 1) {
+    return fail('BAD_RECORD', `${VALIDATION_FILE} "schema_version" must be 1; got: ${JSON.stringify(raw.schema_version)}`);
+  }
+
+  let setup: ValidationRegistry['setup'] = null;
+  if (raw.setup !== undefined && raw.setup !== null) {
+    const step = validateArgvStep(raw.setup, '"setup"', []);
+    if (!step.ok) return step;
+    setup = step.data;
+  }
+
+  if (!Array.isArray(raw.commands)) return fail('BAD_RECORD', `${VALIDATION_FILE}: "commands" must be an array.`);
+  const commands: ValidationCommand[] = [];
+  const names = new Set<string>();
+  for (const [i, entry] of raw.commands.entries()) {
+    const step = validateArgvStep(entry, `commands[${i}]`, ['name']);
+    if (!step.ok) return step;
+    const name = (entry as Record<string, unknown>).name;
+    if (typeof name !== 'string' || !VALIDATION_COMMAND_NAME.test(name)) {
+      return fail('BAD_RECORD', `commands[${i}] in ${VALIDATION_FILE}: "name" must match ${VALIDATION_COMMAND_NAME}.`);
+    }
+    if (names.has(name)) return fail('BAD_RECORD', `Duplicate command name "${name}" in ${VALIDATION_FILE}.`);
+    names.add(name);
+    commands.push({ name, ...step.data });
+  }
+
+  const env: Record<string, string> = {};
+  if (raw.env !== undefined) {
+    if (!isPlainObject(raw.env)) return fail('BAD_RECORD', `${VALIDATION_FILE}: "env" must be an object.`);
+    for (const [key, value] of Object.entries(raw.env)) {
+      if (!ENV_NAME.test(key)) return fail('BAD_RECORD', `${VALIDATION_FILE}: env name "${key}" is not a valid variable name.`);
+      if (VALIDATION_RESERVED_ENV.includes(key)) {
+        return fail('BAD_RECORD', `${VALIDATION_FILE}: env "${key}" is reserved; the runner constructs it.`);
+      }
+      if (typeof value !== 'string') return fail('BAD_RECORD', `${VALIDATION_FILE}: env "${key}" must be a string.`);
+      env[key] = value;
+    }
+  }
+
+  const runtimePaths: string[] = [];
+  if (raw.runtime_paths !== undefined) {
+    if (!Array.isArray(raw.runtime_paths) || !raw.runtime_paths.every((p) => typeof p === 'string' && p.startsWith('/'))) {
+      return fail('BAD_RECORD', `${VALIDATION_FILE}: "runtime_paths" must be an array of absolute paths.`);
+    }
+    runtimePaths.push(...(raw.runtime_paths as string[]));
+  }
+
+  return ok({ setup, commands, env, runtime_paths: runtimePaths });
+}
+
+/**
+ * Content hash of the effective registry (A4.5): sha256 over a canonical
+ * JSON rendering, so key order and whitespace in the file do not matter but
+ * any change to what runs does. `null` (no registry) has its own hash.
+ */
+export function validationRegistryFingerprint(registry: ValidationRegistry | null): string {
+  const canonical =
+    registry === null
+      ? null
+      : {
+          setup: registry.setup === null ? null : { argv: registry.setup.argv, timeout_ms: registry.setup.timeout_ms },
+          commands: registry.commands.map((c) => ({ name: c.name, argv: c.argv, timeout_ms: c.timeout_ms })),
+          env: Object.fromEntries(Object.entries(registry.env).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))),
+          runtime_paths: registry.runtime_paths,
+        };
+  return `sha256:${createHash('sha256').update(JSON.stringify(canonical)).digest('hex')}`;
 }

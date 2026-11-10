@@ -258,7 +258,13 @@ export interface CaptureOpts {
    * The worker's final assistant message, verbatim (DEC-0010 diagnosis
    * channel) — rendered as the `## Worker Report` section, evidence only,
    * never consulted by the verdict ladder below. Typically `piResult`'s own
-   * `lastAssistantText` (adapters/pi.ts).
+   * `lastAssistantText` (adapters/pi.ts). WK-0251: this is now the FALLBACK
+   * source for that section — `resolveWorkerReportText` below prefers a
+   * valid `recoveryEvidence`'s non-empty `report` field (claude/codex
+   * implement, whose final message is schema-only JSON with nowhere else for
+   * prose to live) and only falls back to this field when `report` is
+   * absent/empty, which is unchanged behavior for pi implement and every
+   * reviewer/redteam/explorer/research run.
    */
   lastAssistantText?: string;
   /**
@@ -569,14 +575,38 @@ function formatUsageSection(piResult: CaptureOpts['piResult'], billing?: 'seat' 
 }
 
 /**
- * Render the `## Worker Report` section body (DEC-0010 diagnosis channel):
- * the worker's final assistant message, embedded VERBATIM as evidence —
- * never parsed, never consulted by `deriveVerdict` above. Absent/empty text
- * (no final message captured at all, e.g. a crashed or empty event stream)
- * renders an explicit placeholder rather than a blank section.
+ * Resolve the text rendered into the `## Worker Report` section AND counted
+ * into `worker_report_chars` (WK-0251) — always the SAME source, so the
+ * stamped fact matches what a reader of the section actually sees. Prefers
+ * a valid recovery block's non-empty `report` field (claude/codex implement:
+ * DEC-0037 constrained decoding forces the final message to be schema-only
+ * JSON, so the human-readable report has nowhere else to live but this
+ * field); falls back to `lastAssistantText` verbatim otherwise — pi
+ * implement (no constrained decoding) and every reviewer/redteam/explorer/
+ * research run, none of which populate `report`, see no change. `report`
+ * fully REPLACES `lastAssistantText` when present; the two are never
+ * concatenated.
  */
-function formatWorkerReportSection(lastAssistantText: string | undefined): string {
-  return lastAssistantText && lastAssistantText.length > 0 ? lastAssistantText : '(no final message captured)';
+function resolveWorkerReportText(
+  lastAssistantText: string | undefined,
+  recoveryEvidence: RecoveryBlockEvidence | undefined,
+): string | undefined {
+  const report = recoveryEvidence?.valid ? recoveryEvidence.result?.report : null;
+  if (typeof report === 'string' && report.trim().length > 0) {
+    return report;
+  }
+  return lastAssistantText;
+}
+
+/**
+ * Render the `## Worker Report` section body (DEC-0010 diagnosis channel):
+ * `resolveWorkerReportText`'s resolved text, embedded VERBATIM as evidence —
+ * never parsed, never consulted by `deriveVerdict` above. Absent/empty text
+ * (no final message or `report` captured at all, e.g. a crashed or empty
+ * event stream) renders an explicit placeholder rather than a blank section.
+ */
+function formatWorkerReportSection(workerReportText: string | undefined): string {
+  return workerReportText && workerReportText.length > 0 ? workerReportText : '(no final message captured)';
 }
 
 /**
@@ -720,7 +750,15 @@ export async function writeResponseDoc(opts: CaptureOpts): Promise<DispatchResul
   const recoveryOutcome =
     opts.recoveryEvidence?.valid && opts.recoveryEvidence.result ? opts.recoveryEvidence.result.reported_outcome : '';
   const recoveryValid = opts.recoveryEvidence?.valid ?? false;
-  const workerReportChars = (opts.lastAssistantText?.trim() ?? '').length;
+  // WK-0251: `worker_report_chars` keeps its existing meaning — "length of
+  // what the `## Worker Report` section shows" — but what that section
+  // shows now prefers a valid block's `report` field over the raw final
+  // message (resolveWorkerReportText below), so the two must be computed
+  // from the exact same resolved string or merge-delivery's "did a review/
+  // run actually happen" fact (checkReviewEvidence) would drift from the
+  // rendered evidence it's a proxy for.
+  const workerReportText = resolveWorkerReportText(opts.lastAssistantText, opts.recoveryEvidence);
+  const workerReportChars = (workerReportText?.trim() ?? '').length;
   frontmatterLines.push(`recovery_outcome: ${recoveryOutcome}`);
   frontmatterLines.push(`recovery_valid: ${recoveryValid}`);
   frontmatterLines.push(`worker_report_chars: ${workerReportChars}`);
@@ -742,7 +780,7 @@ export async function writeResponseDoc(opts: CaptureOpts): Promise<DispatchResul
     ...formatTokenDetailSection(piResult?.usage, opts.modelId, opts.billing),
     '## Worker Report (evidence, not verdict)',
     '',
-    formatWorkerReportSection(opts.lastAssistantText),
+    formatWorkerReportSection(workerReportText),
     '',
   ];
   if (opts.compaction && opts.compaction.total > 0) {
