@@ -581,7 +581,12 @@ describe('dispatch', () => {
       await setupIsolatedHome();
 
       const { checkEnvironment } = await import('@kb/dispatch-core');
-      const result = await checkEnvironment();
+      // Point at the registry-less tempDir, not process.cwd(): from the repo root,
+      // checkEnvironment finds wiki/.dispatch/backends.json and live-probes every
+      // provider-pinned endpoint — real network calls whose latency depends on the
+      // provider, which blew the 5s test timeout (observed 2026-11-09). This test's
+      // seam is the stateless fact report; endpoint eligibility is not asserted here.
+      const result = await checkEnvironment(tempDir);
 
       expect(result.ok).toBe(true);
       if (!result.ok) return;
