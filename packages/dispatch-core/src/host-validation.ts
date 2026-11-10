@@ -13,7 +13,14 @@
  * network (npm lifecycle scripts forced off); registered commands run with
  * `--unshare-net`, which brings loopback up by itself (captured against
  * bubblewrap 0.9.0, 2026-11-09: a listener on 127.0.0.1 accepts, egress is
- * "Network is unreachable"), so no loopback wrapper is needed. The env is an
+ * "Network is unreachable"), so no loopback wrapper is needed. Because the
+ * setup step keeps network (`unshareNet: false` below), jail.ts's generic
+ * plan builder also applies its WK-0301 resolver bind there: when the host's
+ * `/etc/resolv.conf` is a symlink whose target lies outside the curated
+ * system roots (WSL2: `/mnt/wsl/resolv.conf`), it ro-binds that one resolved
+ * file at the same path so DNS resolves inside the jail — no change needed
+ * here, `buildBwrapPlan`'s existing `unshareNet: !opts.network` already
+ * selects it. The env is an
  * allowlist — `--clearenv` plus PATH, HOME, TMPDIR and registry-declared vars
  * only (A4.3). `.env`/`.claude/` are masked. Output is tail-capped; a
  * timeout kills the jail's whole process group and waits for exit with a

@@ -8,8 +8,18 @@
  * Pure/synchronous throughout — no WSL2/bwrap required,
  * runs everywhere including Windows. No personal/absolute paths in fixtures
  * (WK-0043 rule) — clonePath etc. below are synthetic.
+ *
+ * The WK-0301 resolver-bind describes below are the one exception: they use
+ * real temp-dir fixtures (never real host paths) so the symlink/regular-file
+ * layouts are deterministic on every host, and the final `describe.skipIf`
+ * block spawns a REAL bwrap (self-skipping loudly without one, mirroring
+ * `dispatch-v2-jail-integration.test.ts`'s own probe).
  */
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { execFileSync } from 'node:child_process';
+import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import {
   buildBwrapPlan,
@@ -21,6 +31,7 @@ import {
   type BwrapMount,
   type JailOpts,
 } from '../packages/dispatch-core/src/jail.js';
+import { spawnIsolated } from '../packages/dispatch-core/src/spawn-isolated.js';
 
 const clonePath = '/home/user/.kb-dispatch/clones/RUN-JAIL';
 
@@ -981,5 +992,148 @@ describe('classifyEntry / looksLikeFile — write_scope file vs directory classi
     expect(looksLikeFile('src/')).toBe(false);
     expect(looksLikeFile('src')).toBe(false);
     expect(looksLikeFile('docs/api')).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// WK-0301 — resolver bind for networked jails. Real caller semantics
+// (host-validation.ts's setup step: `unshareNet: false`; every worker plan,
+// pipeline.ts: `unshareNet: true`) mean this check only ever fires when
+// `unshareNet` is explicitly `false` — a plan that leaves it unset (every
+// test above) is untouched, so none of those exact-argv assertions see this
+// addition. Temp-dir symlink fixtures only, never a real host path, so these
+// stay deterministic across hosts (WSL2's real /etc/resolv.conf symlink
+// included).
+// ---------------------------------------------------------------------------
+
+describe('buildJailArgs / buildBwrapPlan — resolver bind for networked jails (WK-0301)', () => {
+  let fixtureDir: string;
+  let outsideTarget: string;
+  let resolvSymlink: string;
+  let regularFile: string;
+  let danglingSymlink: string;
+
+  beforeEach(async () => {
+    fixtureDir = await mkdtemp(join(tmpdir(), 'kb-resolv-fixture-'));
+    outsideTarget = join(fixtureDir, 'outside', 'resolv.conf');
+    await mkdir(join(fixtureDir, 'outside'), { recursive: true });
+    await writeFile(outsideTarget, 'nameserver 203.0.113.53\n');
+
+    resolvSymlink = join(fixtureDir, 'resolv.conf');
+    await symlink(outsideTarget, resolvSymlink);
+
+    regularFile = join(fixtureDir, 'regular-resolv.conf');
+    await writeFile(regularFile, 'nameserver 203.0.113.53\n');
+
+    danglingSymlink = join(fixtureDir, 'dangling-resolv.conf');
+    await symlink(join(fixtureDir, 'does-not-exist', 'resolv.conf'), danglingSymlink);
+  });
+
+  afterEach(async () => {
+    await rm(fixtureDir, { recursive: true, force: true });
+  });
+
+  // Why: the bite proof — this is the one assertion that fails against pre-fix jail.ts (no resolver-bind
+  // step exists at all, so the extra `--ro-bind-try <target> <target>` pair is simply absent).
+  it('symlinked layout: a jail that keeps network ro-binds exactly the symlink target, never its parent directory', () => {
+    const argvResult = buildJailArgs({ clonePath, unshareNet: false, resolvConfPath: resolvSymlink });
+    const idx = argvResult.argv.indexOf(outsideTarget);
+    expect(idx).toBeGreaterThan(0);
+    expect(argvResult.argv[idx - 1]).toBe('--ro-bind-try');
+    expect(argvResult.argv[idx + 1]).toBe(outsideTarget);
+    expect(argvResult.argv).not.toContain(join(fixtureDir, 'outside'));
+
+    const plan = buildBwrapPlan({ clonePath, unshareNet: false, resolvConfPath: resolvSymlink, command: ['true'] });
+    expect(plan.mounts).toEqual(expect.arrayContaining([{ kind: 'ro-bind-try', src: outsideTarget, dst: outsideTarget }]));
+    // Exactly one bind for the target — never a directory bind standing in for it.
+    expect(plan.mounts.filter((m) => m.dst === outsideTarget)).toHaveLength(1);
+  });
+
+  it('regular-file layout: a jail that keeps network adds no extra bind and is otherwise unchanged', () => {
+    const withResolv = buildJailArgs({ clonePath, unshareNet: false, resolvConfPath: regularFile });
+    const withoutResolv = buildJailArgs({ clonePath, unshareNet: false });
+    expect(withResolv.argv).toEqual(withoutResolv.argv);
+  });
+
+  it('network-denied jails (unshareNet: true) get no resolver bind and keep --unshare-net, even with a symlinked fixture', () => {
+    const withResolv = buildJailArgs({ clonePath, unshareNet: true, resolvConfPath: resolvSymlink });
+    const withoutResolv = buildJailArgs({ clonePath, unshareNet: true });
+    expect(withResolv.argv).toEqual(withoutResolv.argv);
+    expect(withResolv.argv).toContain('--unshare-net');
+    expect(withResolv.argv).not.toContain(outsideTarget);
+  });
+
+  it('a plan that leaves unshareNet unset never consults the resolver at all (worker/test-fixture default)', () => {
+    const withResolv = buildJailArgs({ clonePath, resolvConfPath: resolvSymlink });
+    const withoutResolv = buildJailArgs({ clonePath });
+    expect(withResolv.argv).toEqual(withoutResolv.argv);
+  });
+
+  it('dangling target on the host: no bind is added, so bwrap itself is never asked to fail on it', () => {
+    const withDangling = buildJailArgs({ clonePath, unshareNet: false, resolvConfPath: danglingSymlink });
+    const withoutResolv = buildJailArgs({ clonePath, unshareNet: false });
+    expect(withDangling.argv).toEqual(withoutResolv.argv);
+  });
+
+  it('a symlink target that already lies under a curated system root needs no extra bind', async () => {
+    // The target must actually EXIST (realpath, not string prefixing, decides visibility) — the
+    // system root directory itself always does, unlike a made-up subpath under it.
+    const target = SYSTEM_ROOTS[0] ?? '/usr';
+    const underRootSymlink = join(fixtureDir, 'under-root-resolv.conf');
+    await symlink(target, underRootSymlink);
+    const withResolv = buildJailArgs({ clonePath, unshareNet: false, resolvConfPath: underRootSymlink });
+    const withoutResolv = buildJailArgs({ clonePath, unshareNet: false });
+    expect(withResolv.argv).toEqual(withoutResolv.argv);
+  });
+});
+
+function probeBwrapFunctional(): boolean {
+  try {
+    execFileSync('bwrap', ['--ro-bind', '/', '/', 'true'], { stdio: 'ignore' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const BWRAP_FUNCTIONAL = probeBwrapFunctional();
+if (!BWRAP_FUNCTIONAL) {
+  console.warn(
+    'SKIPPED: "real bwrap jail integration — resolver bind (WK-0301)" requires a working bwrap ' +
+      '(`bwrap --ro-bind / / true` failed).',
+  );
+}
+
+describe.skipIf(!BWRAP_FUNCTIONAL)('real bwrap jail integration — resolver bind (WK-0301)', () => {
+  let liveClonePath: string;
+  let liveOutsideDir: string;
+
+  beforeEach(async () => {
+    liveClonePath = await mkdtemp(join(tmpdir(), 'kb-jail-resolv-clone-'));
+    liveOutsideDir = await mkdtemp(join(tmpdir(), 'kb-jail-resolv-outside-'));
+    await writeFile(join(liveOutsideDir, 'resolv.conf'), 'nameserver 203.0.113.53\n');
+    await symlink(join(liveOutsideDir, 'resolv.conf'), join(liveClonePath, 'resolv.conf'));
+  });
+
+  afterEach(async () => {
+    await rm(liveClonePath, { recursive: true, force: true });
+    await rm(liveOutsideDir, { recursive: true, force: true });
+  });
+
+  // Why: proves the mechanism end to end against a real bwrap sandbox, not just argv shape — a symlink
+  // inside the clone (ro-bind-tried as part of the clone bind itself) whose target lives OUTSIDE the
+  // clone and every curated system root dangles without the WK-0301 bind, and resolves with it.
+  it('a networked jail reads a symlinked resolv.conf whose target lies outside the clone and system roots', async () => {
+    const plan = buildBwrapPlan({
+      clonePath: liveClonePath,
+      unshareNet: false,
+      resolvConfPath: join(liveClonePath, 'resolv.conf'),
+      command: ['cat', 'resolv.conf'],
+    });
+    const result = await spawnIsolated(plan, { timeoutMs: 10_000 });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.exitCode).toBe(0);
+    expect(result.data.stdout).toBe('nameserver 203.0.113.53\n');
   });
 });

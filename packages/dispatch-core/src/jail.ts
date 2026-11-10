@@ -39,6 +39,19 @@
  *   6c. runtime env binds (WK-0201)   strict --ro-bind each
  *                                      opts.runtimeEnvPaths entry
  *                                      (operator-declared, admission-validated)
+ *   6d. resolver bind (WK-0301)       jails that keep network only
+ *                                      (`unshareNet === false`): if the
+ *                                      resolv-conf path is a symlink whose
+ *                                      realpath target lies outside the
+ *                                      curated roots (WSL2:
+ *                                      /etc/resolv.conf -> /mnt/wsl/resolv.conf,
+ *                                      and /mnt is never bound), ro-bind-try
+ *                                      exactly that target file at the same
+ *                                      path — never its parent directory.
+ *                                      Placed after step 4's unconditional
+ *                                      `--tmpfs /tmp` (like the clone bind
+ *                                      below) so a target under `/tmp` is
+ *                                      never shadowed by it.
  *   7.  clone bind                    ro-bind first if write_scope is
  *                                      sparse, else writable (legacy shape)
  *   8.  write_scope binds             selective rw layered over step 7
@@ -55,7 +68,7 @@
  *   14. --                            terminates bwrap's own argv; the
  *                                      caller appends the worker invocation
  */
-import { existsSync, statSync } from 'node:fs';
+import { existsSync, lstatSync, realpathSync, statSync } from 'node:fs';
 import { dirname } from 'node:path';
 
 import { SYSTEM_ROOTS } from './mountability.js';
@@ -87,6 +100,12 @@ export interface JailOpts {
   dataMounts?: ReadonlyArray<{ path: string; access: 'ro' | 'rw' }>;
   /** Whether to unshare the network namespace (true for S5 enforcement). */
   unshareNet?: boolean;
+  /** Host path to the resolver config checked for the WK-0301 resolver bind
+   *  (see `resolveResolvBindTarget`) — defaults to '/etc/resolv.conf'.
+   *  Injectable so tests can point at a temp-dir fixture instead of the real
+   *  host file; production callers never need to set it. Only consulted when
+   *  `unshareNet` is explicitly `false` — a jail that keeps network. */
+  resolvConfPath?: string;
   /** Path to the tunnel unix socket to bind-mount into the jail. */
   tunnelSocketPath?: string;
   /** Path inside the jail where the relay script lives (for bind-mounting). */
@@ -155,6 +174,39 @@ export function classifyWikiShape(lsFilesOutput: string): WikiShape {
 function joinUnderClone(clonePath: string, relPath: string): string {
   const trimmed = relPath.replace(/^\/+/, '').replace(/\/+$/, '');
   return trimmed.length > 0 ? `${clonePath}/${trimmed}` : clonePath;
+}
+
+/**
+ * Resolver bind target for jails that keep network (WK-0301, Resolutions row
+ * 1). `resolvPath` (`/etc/resolv.conf` or `opts.resolvConfPath`) can be a
+ * symlink into a path outside the curated system roots — on WSL2 it targets
+ * `/mnt/wsl/resolv.conf`, and `/mnt` is never bound (DEC-0011 deny-by-default
+ * visibility). When it is, this resolves the realpath and returns that single
+ * file so the caller can ro-bind-try it at the SAME absolute path — never its
+ * parent directory. Returns `null` (nothing to bind) when: the path does not
+ * exist; it is a regular file (already visible through the curated `/etc`
+ * root bind, needs nothing extra); its target already lies under one of
+ * `roots` (already visible); or it is a dangling symlink (`realpath` fails —
+ * returning `null` here means bwrap itself never fails on a missing bind
+ * target; the step that actually needs DNS fails on its own merits instead,
+ * as evidence). Synchronous, matching this module's "cannot fail" contract.
+ */
+function resolveResolvBindTarget(resolvPath: string, roots: readonly string[]): string | null {
+  let st;
+  try {
+    st = lstatSync(resolvPath);
+  } catch {
+    return null;
+  }
+  if (!st.isSymbolicLink()) return null;
+  let target: string;
+  try {
+    target = realpathSync(resolvPath);
+  } catch {
+    return null;
+  }
+  if (roots.some((root) => target === root || target.startsWith(`${root}/`))) return null;
+  return target;
 }
 
 /**
@@ -250,6 +302,22 @@ function buildJailPlanSteps(opts: JailOpts): JailPlanSteps {
   if (opts.runtimeEnvPaths) {
     for (const p of opts.runtimeEnvPaths) {
       bind('ro-bind', p, p);
+    }
+  }
+
+  // 6d. Resolver bind (WK-0301) — only for jails that keep network. Every
+  // real caller sets `unshareNet` explicitly (host-validation.ts's setup
+  // step: `false`; every worker plan, pipeline.ts: `true`), so a plan that
+  // leaves `unshareNet` unset (test fixtures unrelated to networking) never
+  // triggers this check. Placed AFTER the unconditional `--tmpfs /tmp` at
+  // step 4 (deliberately, not grouped with the other step-1-adjacent system
+  // binds): a resolv target that happens to live under `/tmp` would
+  // otherwise be shadowed the moment bwrap mounts the fresh tmpfs over it,
+  // the same reason the clone bind below also comes after step 4.
+  if (opts.unshareNet === false) {
+    const target = resolveResolvBindTarget(opts.resolvConfPath ?? '/etc/resolv.conf', roots);
+    if (target !== null) {
+      bind('ro-bind-try', target, target);
     }
   }
 

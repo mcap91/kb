@@ -439,7 +439,10 @@ writable), built by the same generic jail layer the workers use. Nothing derived
 the host outside the jail. The env is an allowlist (`--clearenv`): `PATH` (runtime `bin/` dirs, then
 `/usr/local/bin:/usr/bin:/bin`), `HOME=/tmp`, `TMPDIR=/tmp`, and the registry `env`. No host variable
 reaches a step, whatever its name. Commands run with `--unshare-net`; bwrap brings loopback up, so local
-test servers work and egress fails. `.env` and `.claude/` in the clone are masked. stdout and stderr are
+test servers work and egress fails. Setup is the one step that keeps network, so it also gets the
+WK-0301 resolver bind: when the host's `/etc/resolv.conf` is a symlink whose target lies outside the
+jail's curated system roots (WSL2: `/mnt/wsl/resolv.conf`, never bound wholesale), the jail ro-binds
+exactly that resolved target file at the same path so DNS resolves. `.env` and `.claude/` in the clone are masked. stdout and stderr are
 each kept as a 16 KiB tail. On timeout the whole process group gets `SIGTERM`, then `SIGKILL` after 5 s,
 and the runner waits for the exit before it records the result.
 
