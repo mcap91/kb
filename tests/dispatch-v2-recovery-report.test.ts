@@ -28,6 +28,7 @@
  */
 import { describe, expect, it, beforeEach, afterEach } from 'vitest';
 import { assemblePrompt } from '../packages/dispatch-core/src/assemble.js';
+import { parseClaudeOutput } from '../packages/dispatch-core/src/adapters/claude.js';
 import { parseHandoffContent } from '../packages/dispatch-core/src/ho.js';
 import { readFileSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
@@ -316,5 +317,45 @@ Body.
       expect(text).not.toContain('`report`');
       expect(text).not.toContain('"report":');
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Live capture — claude -p --json-schema with a multi-KB report (WK-0251
+// rule-33 AC). tests/fixtures/claude-p-output-json-schema-report.json is a
+// real, unedited `claude -p --output-format json --json-schema "$SCHEMA"`
+// capture (2026-11-09, schema = contract/kb-dispatch-recovery.v1.schema.json)
+// proving constrained decoding carries a multi-KB markdown `report` intact
+// through the adapter and the recovery extractor.
+// ---------------------------------------------------------------------------
+
+describe('claude --json-schema live capture — multi-KB report survives end to end (WK-0251)', () => {
+  const captureStdout = readFileSync(
+    join(process.cwd(), 'tests', 'fixtures', 'claude-p-output-json-schema-report.json'),
+    'utf8',
+  );
+
+  it('parses through the claude adapter: schema-shaped JSON text is the final result', () => {
+    const parsed = parseClaudeOutput(captureStdout);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(parsed.data.outcome).toBe('completed');
+    const inner = JSON.parse(parsed.data.lastAssistantText);
+    expect(inner.schema_version).toBe(KB_DISPATCH_RECOVERY_VERSION);
+  });
+
+  it('extracts as a valid worker block whose report is multi-KB markdown', () => {
+    const parsed = parseClaudeOutput(captureStdout);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    const evidence = extractRecoveryBlock(parsed.data.lastAssistantText);
+    expect(evidence.valid).toBe(true);
+    expect(evidence.diagnostics).toEqual([]);
+    expect(evidence.result?.reported_role).toBe('worker');
+    expect(evidence.result?.reported_outcome).toBe('completed');
+    const report = evidence.result?.report;
+    expect(typeof report).toBe('string');
+    expect((report as string).length).toBeGreaterThan(4096);
+    expect(report).toContain('#');
   });
 });
