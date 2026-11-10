@@ -292,4 +292,47 @@ cat <&4
       expect(result.message).toContain('bwrap');
     });
   });
+
+  // ---------------------------------------------------------------------------
+  // WK-0297 — env-policy enforcement at the spawn boundary. bwrap's default
+  // env passthrough hands the spawn env to the jailed child, so whatever
+  // reaches the fake bwrap here is what a real worker would see.
+  // ---------------------------------------------------------------------------
+
+  describe('host env filtering (WK-0297)', () => {
+    it('drops secret-shaped host vars, keeps planned vars, and pins TMPDIR to /tmp', async () => {
+      await installFakeBwrap('#!/bin/sh\nenv\n');
+      process.env.KB_TEST_PLANTED_TOKEN = 'leaked-secret';
+      process.env.KB_TEST_HARMLESS_VAR = 'harmless';
+      try {
+        const result = await spawnIsolated(
+          planWithFakeBwrap({ PLANNED_VAR: 'planned-ok' }),
+          { timeoutMs: 5000 },
+        );
+
+        expect(result.ok).toBe(true);
+        if (!result.ok) return;
+        const lines = result.data.stdout.split('\n');
+        expect(lines).not.toContain('KB_TEST_PLANTED_TOKEN=leaked-secret');
+        expect(lines).toContain('KB_TEST_HARMLESS_VAR=harmless');
+        expect(lines).toContain('PLANNED_VAR=planned-ok');
+        expect(lines).toContain('TMPDIR=/tmp');
+      } finally {
+        delete process.env.KB_TEST_PLANTED_TOKEN;
+        delete process.env.KB_TEST_HARMLESS_VAR;
+      }
+    });
+
+    it('lets plan.env override the pinned TMPDIR, since plan.env is kb-built', async () => {
+      await installFakeBwrap('#!/bin/sh\nenv\n');
+      const result = await spawnIsolated(
+        planWithFakeBwrap({ TMPDIR: '/tmp/custom' }),
+        { timeoutMs: 5000 },
+      );
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.data.stdout.split('\n')).toContain('TMPDIR=/tmp/custom');
+    });
+  });
 });

@@ -20,6 +20,7 @@ import { spawn } from 'node:child_process';
 import { createWriteStream } from 'node:fs';
 
 import type { BwrapPlan } from './jail.js';
+import { buildWorkerEnv } from './env-policy.js';
 import type { DispatchResult } from './errors.js';
 import { fail, ok } from './errors.js';
 import { attachStreamErrorHandlers } from './stream-utils.js';
@@ -174,11 +175,18 @@ export async function spawnIsolated(
   const stdio: Array<'ignore' | 'pipe'> = ['ignore', 'pipe', 'pipe'];
   for (let i = 0; i < plan.injectedFiles.length; i += 1) stdio.push('pipe');
 
-  // kb's own precedent (wsl2.ts's execViaWsl2: `{ ...process.env, ...opts.env }`),
-  // not chassis's `--clearenv` + `--setenv` policy — env allow/deny-listing
-  // (D6 component 9) is separate future work; jail.ts's mount recipe is
-  // unchanged and still relies on bwrap's default env passthrough.
-  const env = { ...process.env, ...plan.env } as Record<string, string>;
+  // WK-0297: the inherited layer MUST pass the env-policy deny-list — bwrap's
+  // default env passthrough hands the spawn env to the jailed child, so a raw
+  // `...process.env` here leaks host secrets into every worker jail even when
+  // the caller filtered `plan.env` (empirical capture 2026-11-09, WK-0297).
+  // `buildWorkerEnv` keeps PATH/HOME and drops secret-shaped, posture, and
+  // behavior vars; TMPDIR is pinned to the jail's tmpfs /tmp so a host value
+  // pointing outside the mount set cannot leak through (DEC-0047 A1).
+  const env = {
+    ...buildWorkerEnv({}),
+    TMPDIR: '/tmp',
+    ...plan.env,
+  } as Record<string, string>;
 
   let child;
   try {

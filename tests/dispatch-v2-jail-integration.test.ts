@@ -165,6 +165,28 @@ describe.skipIf(!BWRAP_FUNCTIONAL)('real bwrap jail integration (WK-0159)', () =
       expect(existsSync(join(clonePath, 'src', 'testfile.txt'))).toBe(true);
     });
 
+    it('never exposes secret-shaped host env vars inside the jail, and pins TMPDIR to the jail tmpfs (WK-0297)', async () => {
+      process.env.KB_TEST_PLANTED_TOKEN = 'leaked-secret';
+      try {
+        const plan = buildBwrapPlan({
+          clonePath,
+          writeScope,
+          wikiShape: 'tracked',
+          mode: 'implement',
+          command: ['bash', '-c', 'env; echo "TMPDIR_IS=$TMPDIR"'],
+        });
+        const result = await spawnIsolated(plan, { timeoutMs: 10_000 });
+
+        expect(result.ok).toBe(true);
+        if (!result.ok) return;
+        expect(result.data.exitCode).toBe(0);
+        expect(result.data.stdout).not.toContain('KB_TEST_PLANTED_TOKEN');
+        expect(result.data.stdout).toContain('TMPDIR_IS=/tmp');
+      } finally {
+        delete process.env.KB_TEST_PLANTED_TOKEN;
+      }
+    });
+
     it('refuses a write into the ro-bound wiki dir (part of the whole-clone ro-bind, not in write_scope)', async () => {
       const plan = buildBwrapPlan({
         clonePath,
