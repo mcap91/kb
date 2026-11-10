@@ -281,14 +281,142 @@ describe('graph-explore', () => {
   // 8. Missing node handling
   // =========================================================================
   describe('missing node handling', () => {
-    it('referenced but non-existent files get exists: false', () => {
+    it('ID-valued edges to an existing record land on its path node, not a phantom bare-ID node', () => {
+      const graph = buildGraph(FIXTURE_DIR);
+      const nodeIds = graph.nodes.map(n => n.id);
+
+      // WK-0001 depends_on "WK-0002" -> resolves to the real path node
+      const depEdge = graph.edges.find(
+        e => e.source === 'wiki/issues/WK-0001.md' && e.relation === 'depends_on'
+      );
+      expect(depEdge?.target).toBe('wiki/issues/WK-0002.md');
+
+      // WK-0002 blocks "WK-0001" / related + initiative "IN-0001" -> resolve to path nodes
+      const blocksEdge = graph.edges.find(
+        e => e.source === 'wiki/issues/WK-0002.md' && e.relation === 'blocks'
+      );
+      expect(blocksEdge?.target).toBe('wiki/issues/WK-0001.md');
+
+      const relatedEdge = graph.edges.find(
+        e => e.source === 'wiki/issues/WK-0002.md' && e.relation === 'related'
+      );
+      expect(relatedEdge?.target).toBe('wiki/initiatives/IN-0001.md');
+
+      const initiativeEdge = graph.edges.find(
+        e => e.source === 'wiki/issues/WK-0002.md' && e.relation === 'initiative'
+      );
+      expect(initiativeEdge?.target).toBe('wiki/initiatives/IN-0001.md');
+
+      // WK-0001 area: "core" -> resolves to the area record's path node
+      const areaEdge = graph.edges.find(
+        e => e.source === 'wiki/issues/WK-0001.md' && e.relation === 'area'
+      );
+      expect(areaEdge?.target).toBe('wiki/areas/core.md');
+
+      // No bare-ID or bare-slug phantom nodes exist alongside the real ones
+      expect(nodeIds).not.toContain('WK-0002');
+      expect(nodeIds).not.toContain('WK-0001');
+      expect(nodeIds).not.toContain('IN-0001');
+      expect(nodeIds).not.toContain('core');
+
+      // The real path nodes exist and are marked exists: true
+      for (const id of [
+        'wiki/issues/WK-0001.md',
+        'wiki/issues/WK-0002.md',
+        'wiki/initiatives/IN-0001.md',
+        'wiki/areas/core.md',
+      ]) {
+        const node = graph.nodes.find(n => n.id === id);
+        expect(node).toBeDefined();
+        expect(node!.exists).toBe(true);
+      }
+    });
+
+    it('an edge to a truly missing ID yields exactly one exists: false node, even when several records reference it', () => {
+      const tmp = createTmpDir();
+      try {
+        writeFile(
+          tmp.dir,
+          'wiki/issues/WK-0010.md',
+          [
+            '---',
+            'id: "WK-0010"',
+            'title: "First referrer"',
+            'type: "bug"',
+            'status: "todo"',
+            'priority: "low"',
+            'owner: "dev"',
+            'created: "2026-01-01"',
+            'updated: "2026-01-01"',
+            'depends_on:',
+            '  - "WK-9999"',
+            '---',
+            '',
+            'Body.',
+            '',
+          ].join('\n')
+        );
+        writeFile(
+          tmp.dir,
+          'wiki/issues/WK-0011.md',
+          [
+            '---',
+            'id: "WK-0011"',
+            'title: "Second referrer"',
+            'type: "bug"',
+            'status: "todo"',
+            'priority: "low"',
+            'owner: "dev"',
+            'created: "2026-01-01"',
+            'updated: "2026-01-01"',
+            'depends_on:',
+            '  - "WK-9999"',
+            '---',
+            '',
+            'Body.',
+            '',
+          ].join('\n')
+        );
+
+        const graph = buildGraph(tmp.dir);
+
+        const missingNodes = graph.nodes.filter(n => n.id === 'WK-9999');
+        expect(missingNodes).toHaveLength(1);
+        expect(missingNodes[0].exists).toBe(false);
+
+        // Both referring records' edges point at the same single missing node
+        const edgesToMissing = graph.edges.filter(e => e.target === 'WK-9999');
+        expect(edgesToMissing).toHaveLength(2);
+        expect(edgesToMissing.map(e => e.source).sort()).toEqual([
+          'wiki/issues/WK-0010.md',
+          'wiki/issues/WK-0011.md',
+        ]);
+      } finally {
+        tmp.cleanup();
+      }
+    });
+
+    it('fixture smoke: no bare-ID/slug phantom nodes, orphan and missing counts match the fixture', () => {
       const graph = buildGraph(FIXTURE_DIR);
 
-      // WK-0001 depends_on WK-0002 (the string "WK-0002"), which is
-      // not a file path the scanner would find — it gets exists: false
-      const wk0002Ref = graph.nodes.find(n => n.id === 'WK-0002');
-      expect(wk0002Ref).toBeDefined();
-      expect(wk0002Ref!.exists).toBe(false);
+      // No node id is a bare wiki record ID or the bare area slug "core"
+      const bareIdPattern = /^(WK|IN|DEC|SRC|PLN|VAL)-\d+$/;
+      for (const node of graph.nodes) {
+        expect(bareIdPattern.test(node.id)).toBe(false);
+      }
+      expect(graph.nodes.map(n => n.id)).not.toContain('core');
+
+      // Fixture has 3 true orphans: README.md, lib/__init__.py, src/orphan.ts
+      expect(graph.orphans.sort()).toEqual(['README.md', 'lib/__init__.py', 'src/orphan.ts']);
+
+      // Fixture has 2 missing nodes, both pre-existing unresolved relative
+      // markdown links (unrelated to ID-valued overlay edges, which all
+      // resolve now that every referenced record exists in the fixture)
+      const missing = graph.nodes.filter(n => !n.exists);
+      expect(missing.map(n => n.id).sort()).toEqual([
+        '../../docs/guide.md',
+        '../../src/utils/math.ts',
+      ]);
     });
 
     it('scanned existing files have exists: true', () => {
