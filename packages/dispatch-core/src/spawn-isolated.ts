@@ -205,13 +205,14 @@ export async function spawnIsolated(
   const stdio: Array<'ignore' | 'pipe'> = ['ignore', 'pipe', 'pipe'];
   for (let i = 0; i < plan.injectedFiles.length; i += 1) stdio.push('pipe');
 
-  // WK-0297: the inherited layer MUST pass the env-policy deny-list — bwrap's
+  // WK-0297/WK-0298: the inherited layer MUST pass env-policy — bwrap's
   // default env passthrough hands the spawn env to the jailed child, so a raw
   // `...process.env` here leaks host secrets into every worker jail even when
   // the caller filtered `plan.env` (empirical capture 2026-11-09, WK-0297).
-  // `buildWorkerEnv` keeps PATH/HOME and drops secret-shaped, posture, and
-  // behavior vars; TMPDIR is pinned to the jail's tmpfs /tmp so a host value
-  // pointing outside the mount set cannot leak through (DEC-0047 A1).
+  // `buildWorkerEnv` mints only allowlisted names (PATH/HOME/USER/SHELL/TERM/
+  // LANG/LC_*) and runs the deny-list over them; TMPDIR is pinned to the
+  // jail's tmpfs /tmp so a host value pointing outside the mount set cannot
+  // leak through (DEC-0047 A1). plan.env stays last: kb-built vars win.
   const env = {
     ...buildWorkerEnv({}),
     TMPDIR: '/tmp',

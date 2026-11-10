@@ -1,11 +1,18 @@
 /**
- * Worker environment deny-list (D6 component 9; mid_project_review_rulings.md
+ * Worker environment policy (D6 component 9; mid_project_review_rulings.md
  * ruling 7 component table + ruling 7 V2 correction). Design-mirrored from
  * agent-chassis's `applyBwrapEnvPolicy` — ELv2: mirrored design, TypeScript
  * written from scratch, no copied code. Chassis source:
  * `launch-isolation-env-policy.mjs:84-144` (deny-list filter over three
  * classes of denied var: secret-shaped, posture, behavior-affecting — verified
  * against the checkout, not the prior two-class assumption).
+ *
+ * WK-0298: the deny-list runs over an env MINTED from an allowlist, not over
+ * the full inherited env — default-deny, design-mirrored from chassis's
+ * `workspace-agent-family-bwrap-plan.mjs` (`mintedEnv`: copy only allowlisted
+ * names, skip TMPDIR, then `envPolicy` runs its deny layer over the result).
+ * A secret whose name matches no deny pattern (`DATABASE_URL`) never reaches
+ * a worker, because nothing reaches a worker unless it is named below.
  *
  * kb-specific caveat (ruling 7 V2): kb's own tunnel (tunnel.ts:397-402)
  * deliberately SETS `HTTP_PROXY`/`HTTPS_PROXY` (plus lowercase variants) to
@@ -17,6 +24,21 @@
  * way around, or an operator's ambient `HTTP_PROXY` could silently survive
  * into the jail alongside (or instead of) kb's relay address.
  */
+
+/**
+ * Allowlist: the only inherited names a worker env is minted from. TMPDIR is
+ * deliberately absent — the spawn wrapper pins it to the jail tmpfs (DEC-0047
+ * A1), so a host value can never survive, even via a caller's own spread.
+ * Every addition carries a one-line comment naming the worker that needs it.
+ */
+const ALLOWED_EXACT_NAMES: ReadonlySet<string> = new Set(['PATH', 'HOME', 'USER', 'SHELL', 'TERM', 'LANG']);
+
+/** Allowlist: locale categories (`LC_ALL`, `LC_CTYPE`, ...), matched by prefix. */
+const ALLOWED_NAME_PREFIXES: readonly string[] = ['LC_'];
+
+function isAllowed(key: string): boolean {
+  return ALLOWED_EXACT_NAMES.has(key) || ALLOWED_NAME_PREFIXES.some((prefix) => key.startsWith(prefix));
+}
 
 /** Secret-shaped: name-shape patterns, matched case-insensitively against the whole key. */
 const SECRET_NAME_PATTERNS: readonly RegExp[] = [
@@ -75,12 +97,13 @@ function isDenied(key: string): boolean {
 }
 
 /**
- * Build the env a spawned worker should inherit from the orchestrator: start
- * from `inheritEnv` (defaults to `process.env`), drop every denied var
- * (secret-shaped / posture / behavior-affecting — see module docstring) and
- * every unset value, keep the survivors. Returns the filtered env only — it
- * never adds anything. Callers layer kb's own worker-specific vars (tunnel
- * proxy vars, credential injections) on top of this function's output.
+ * Build the env a spawned worker should inherit from the orchestrator: mint
+ * from `inheritEnv` (defaults to `process.env`) by copying only allowlisted
+ * names, then drop every denied var (secret-shaped / posture /
+ * behavior-affecting — see module docstring) and every unset value. Both
+ * layers always run. Returns the minted env only — it never adds anything.
+ * Callers layer kb's own worker-specific vars (TMPDIR pin, tunnel proxy vars,
+ * credential injections) on top of this function's output.
  */
 export function buildWorkerEnv(opts: { inheritEnv?: Record<string, string | undefined> }): Record<string, string> {
   const source = opts.inheritEnv ?? process.env;
@@ -88,6 +111,7 @@ export function buildWorkerEnv(opts: { inheritEnv?: Record<string, string | unde
 
   for (const [key, value] of Object.entries(source)) {
     if (value === undefined) continue;
+    if (!isAllowed(key)) continue;
     if (isDenied(key)) continue;
     out[key] = value;
   }

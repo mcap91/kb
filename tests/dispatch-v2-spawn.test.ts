@@ -401,12 +401,39 @@ cat <&4
         if (!result.ok) return;
         const lines = result.data.stdout.split('\n');
         expect(lines).not.toContain('KB_TEST_PLANTED_TOKEN=leaked-secret');
-        expect(lines).toContain('KB_TEST_HARMLESS_VAR=harmless');
+        // WK-0298: an unlisted host var never reaches the jail, harmless or not.
+        expect(lines).not.toContain('KB_TEST_HARMLESS_VAR=harmless');
         expect(lines).toContain('PLANNED_VAR=planned-ok');
         expect(lines).toContain('TMPDIR=/tmp');
       } finally {
         delete process.env.KB_TEST_PLANTED_TOKEN;
         delete process.env.KB_TEST_HARMLESS_VAR;
+      }
+    });
+
+    it('mints the host layer from the allowlist: an unrecognized-name secret is absent, HOME survives, plan.env wins (WK-0298)', async () => {
+      await installFakeBwrap('#!/bin/sh\nenv\n');
+      const hostHome = process.env.HOME;
+      expect(hostHome).toBeDefined();
+      process.env.KB_TEST_DATABASE_URL = 'postgres://admin:hunter2@db.internal/prod';
+      try {
+        const result = await spawnIsolated(
+          planWithFakeBwrap({ PLANNED_VAR: 'planned-ok' }),
+          { timeoutMs: 5000 },
+        );
+
+        expect(result.ok).toBe(true);
+        if (!result.ok) return;
+        const lines = result.data.stdout.split('\n');
+        expect(result.data.stdout).not.toContain('KB_TEST_DATABASE_URL');
+        expect(result.data.stdout).not.toContain('hunter2');
+        expect(lines).toContain(`HOME=${hostHome}`);
+        // plan.env's PATH (fake bwrap first) overrides the minted host PATH.
+        expect(lines).toContain(`PATH=${pathWithFakeBwrapFirst()}`);
+        expect(lines).toContain('PLANNED_VAR=planned-ok');
+        expect(lines).toContain('TMPDIR=/tmp');
+      } finally {
+        delete process.env.KB_TEST_DATABASE_URL;
       }
     });
 
