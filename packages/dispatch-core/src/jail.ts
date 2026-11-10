@@ -391,7 +391,7 @@ export interface BwrapPlan {
   mounts: readonly BwrapMount[];
   /** Files bwrap materializes inside the jail via `--file` (already reflected in `bwrapArgs`); `spawnIsolated` reads this to wire the matching pipes. */
   injectedFiles: readonly BwrapInjectedFile[];
-  /** Environment for the spawned bwrap process itself (`child_process.spawn`'s `env`) — NOT in-jail `--setenv` (D6 component 9, env-policy allow/deny-listing, is separate future work; this plan's mount recipe is unchanged from `buildJailArgs` and still relies on bwrap's default env passthrough into the sandboxed child). */
+  /** Environment for the spawned bwrap process itself (`child_process.spawn`'s `env`) — NOT in-jail `--setenv`; bwrap's default env passthrough hands it to the sandboxed child, which is why `spawnIsolated` composes it from env-policy's allowlist-minted, deny-filtered base (D6 component 9; WK-0297/WK-0298) before layering this plan's `env` on top. */
   env: Record<string, string>;
   /** Working directory inside the jail (mirrors the `--chdir` argument already baked into `bwrapArgs`). */
   cwd: string;
