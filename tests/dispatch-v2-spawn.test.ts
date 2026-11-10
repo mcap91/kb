@@ -149,6 +149,59 @@ describe.skipIf(process.platform === 'win32')('spawnIsolated (D6 Phase 3)', () =
   });
 
   // ---------------------------------------------------------------------------
+  // Group teardown (WK-0294, DEC-0047 A4.6)
+  // ---------------------------------------------------------------------------
+
+  describe('groupTeardown on a timeout', () => {
+    const planted: number[] = [];
+
+    afterEach(() => {
+      for (const pid of planted.splice(0)) {
+        try {
+          process.kill(pid, 'SIGKILL');
+        } catch {
+          // already reaped
+        }
+      }
+    });
+
+    // Why: a jail whose leader and descendant both ignore SIGTERM must still be gone when the runner returns —
+    // the default fire-and-forget SIGTERM leaves both alive.
+    it('escalates to SIGKILL on the whole process group and waits for the real exit', async () => {
+      const pidFile = join(workDir, 'pid');
+      const childPidFile = join(workDir, 'child-pid');
+      await installFakeBwrap(
+        [
+          '#!/bin/sh',
+          "trap '' TERM",
+          "( trap '' TERM; while :; do sleep 0.05; done ) &",
+          'echo $! > "$CHILDPID"',
+          'echo $$ > "$PIDFILE"',
+          'while :; do sleep 0.05; done',
+          '',
+        ].join('\n'),
+      );
+
+      const result = await spawnIsolated(planWithFakeBwrap({ PIDFILE: pidFile, CHILDPID: childPidFile }), {
+        timeoutMs: 300,
+        groupTeardown: { killGraceMs: 300 },
+      });
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      const pid = Number(readFileSync(pidFile, 'utf8').trim());
+      const childPid = Number(readFileSync(childPidFile, 'utf8').trim());
+      planted.push(pid, childPid);
+      expect(result.data.timedOut).toBe(true);
+      // Waited for the real exit: the leader died of the forced kill, not a synthesized null.
+      expect(result.data.signal).toBe('SIGKILL');
+      expect(isProcessAlive(pid)).toBe(false);
+      // The orphaned descendant is reparented and reaped by init; allow that reap only a short window.
+      expect(await waitUntil(() => !isProcessAlive(childPid), 300)).toBe(true);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
   // Stream-drain timeout
   // ---------------------------------------------------------------------------
 

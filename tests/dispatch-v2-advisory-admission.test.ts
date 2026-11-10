@@ -327,6 +327,15 @@ describe('WK-0272 full path — create/derive then dispatch with no manual commi
     );
     commitAll(repo, 'implement delivered');
     git(repo, 'branch', `dispatch/${implement.data.handoffId}`);
+    // The delivered run derive-review keys its evidence to (WK-0294); .agent-runs/ is runtime state, never committed.
+    await writeFile(join(repo, '.gitignore'), '.agent-runs/\n');
+    commitAll(repo, 'ignore run dirs');
+    const runDir = join(repo, '.agent-runs', 'runs', implement.data.handoffId, 'RUN-delivered');
+    await mkdir(runDir, { recursive: true });
+    await writeFile(
+      join(runDir, 'state.json'),
+      JSON.stringify({ schema_version: 2, status: 'delivered', outcome: 'delivered', branch: `dispatch/${implement.data.handoffId}`, completed_at: '2026-11-09T00:00:00.000Z' }),
+    );
 
     const derived = await deriveReview({ dir: repo, handoff_id: implement.data.handoffId });
     if (!derived.ok) throw new Error(derived.message);

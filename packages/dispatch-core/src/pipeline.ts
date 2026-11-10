@@ -52,12 +52,12 @@ import { buildInvocation as buildClaudeInvocation, parseClaudeOutput } from './a
 import { execBash } from './exec-direct.js';
 import {
   buildBwrapPlan,
-  buildSecretMaskArgs,
   classifyEntry,
   deriveDirectoryScopedMounts,
   deriveExactFileMounts,
   type BwrapPlan,
   type WikiShape,
+  withSecretMaskArgs,
 } from './jail.js';
 import { isMountableRoot } from './mountability.js';
 import { spawnIsolated, type SpawnResult } from './spawn-isolated.js';
@@ -76,6 +76,7 @@ import {
 } from './delivery.js';
 import { writeResponseDoc, buildProvenanceWriteBack, type WorkerUsageDetail } from './capture.js';
 import { commitArtifacts } from './commit-artifacts.js';
+import { stageReviewEvidence } from './host-validation.js';
 import { runPreflight } from './preflight.js';
 import { getRunDir } from './paths.js';
 import { loadProfilesConfig, loadBackendsTable, type BackendFamily, type EffortMapping } from './repo-config.js';
@@ -372,27 +373,8 @@ export function buildClaudeSettingsJson(writeScope: string[], clonePath: string,
   return JSON.stringify(settings, null, 2);
 }
 
-/**
- * Layer D2 ruling 2 item 5's `.env`/`.claude/` secret-mask args onto an
- * already-built bwrap plan, right before the `--chdir` terminator — bwrap
- * resolves LATER binds over EARLIER ones (jail.ts's own recipe-order
- * comment), so appending here means these masks win over anything
- * `buildBwrapPlan`'s own write_scope/data_mount binds already laid down for
- * the same clone. `buildBwrapPlan` itself stays unmodified (jail.ts's
- * additive-only contract) — this is pipeline.ts's own post-processing step,
- * applied uniformly to every family (Pi included: masking is dormant unless
- * the clone actually carries a `.env`/`.claude/` — see `buildSecretMaskArgs`).
- */
-export function withSecretMaskArgs(plan: BwrapPlan, clonePath: string): BwrapPlan {
-  const maskArgs = buildSecretMaskArgs(clonePath);
-  if (maskArgs.length === 0) return plan;
-  const chdirIdx = plan.bwrapArgs.indexOf('--chdir');
-  const insertAt = chdirIdx === -1 ? plan.bwrapArgs.length : chdirIdx;
-  return {
-    ...plan,
-    bwrapArgs: [...plan.bwrapArgs.slice(0, insertAt), ...maskArgs, ...plan.bwrapArgs.slice(insertAt)],
-  };
-}
+/** Moved to jail.ts (WK-0294: the host-validation runner shares it); re-exported for existing imports. */
+export { withSecretMaskArgs };
 
 /**
  * Build the run's forwarder allowlist (DEC-0011 ruling 2/3, WK-0104): Pi's
@@ -898,9 +880,19 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
   logVerbose(verbose, `bwrap available: version=${bwrapProbe.bwrapVersion} kernel=${bwrapProbe.kernelVersion} usernsSysctl=${bwrapProbe.usernsSysctl}`);
   const isolationBackend = 'bwrap';
 
+  // 6b. Derived review (WK-0294/WK-0295, DEC-0047 A3.3 + A4.1): copy the
+  // host validation evidence and the implement response into this run dir,
+  // already bound into the jail, so the reviewer reads them in both wiki
+  // shapes. The merge gate reads only the host original.
+  const stagedEvidence = await stageReviewEvidence({ dir, handoff, runDir });
+  if (!stagedEvidence.ok) return stagedEvidence;
+
   // 7. Assemble prompt
   logVerbose(verbose, 'assembling worker prompt');
-  const assembled = await assemblePrompt(handoff, dir, { family: model.family });
+  const assembled = await assemblePrompt(handoff, dir, {
+    family: model.family,
+    ...(stagedEvidence.data !== null ? { reviewEvidence: stagedEvidence.data } : {}),
+  });
   if (!assembled.ok) return assembled;
 
   // 7b. Context budget gate (§7.13) — runs post-assembly (not in admission.ts)

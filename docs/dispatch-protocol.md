@@ -380,14 +380,76 @@ state `cancelled`; an already-terminal run or an already-dead process is a no-op
 
 ### `derive-review`
 
-Creates a `code_review` HO from a delivered `implement` HO. Derivation: `mode=code_review`,
-`write_scope=[]` (the mode ceiling — never copied from implement), `base_ref=dispatch/<implement_id>`,
+Creates a `code_review` HO from a delivered `implement` HO, after running host validation against the
+delivery (see "Host Validation Evidence" below). Derivation: `mode=code_review`, `write_scope=[]` (the
+mode ceiling — never copied from implement), `base_ref=dispatch/<implement_id>`,
 `acceptance`/`validation`/`web`/`credentials`/`data_mounts`/`export_mounts`/`vars`/`work_item` copied
-from implement, `read_first` = implement's + response doc path, `title` = `Code review:
-<implement_title>`, `reviewed_run` stamped to the implement's latest terminal run id. Does NOT
-auto-dispatch — the orchestrator dispatches separately (two-step review chain).
+from implement, `read_first` = implement's only (the response reaches the reviewer through its run dir,
+never `read_first` — DEC-0047 A4.4), `title` = `Code review: <implement_title>`, `reviewed_run` stamped
+to the implement's latest run whose outcome is `delivered` and that left a delivery branch, and a
+`### Host Validation Evidence` section rendered from the evidence JSON into the HO's Context. Acceptance
+text is copied verbatim, never rewritten. Does NOT auto-dispatch — the orchestrator dispatches separately
+(two-step review chain).
 
-Refusals: implement not found, mode != implement, not delivered (response doc missing).
+Refusals: implement not found, mode != implement, not delivered (response doc missing), no delivered run
+with a delivery branch, delivery branch missing, malformed `validation.json`, or a validation run that
+could not be carried out at all (bad runtime path, clone or bwrap failure).
+
+### Host Validation Evidence (WK-0294, DEC-0047)
+
+Advisory workers never run the project toolchain. The host runs the operator's registered validation
+commands against the delivery commit and records what happened. The review judges the diff plus that
+evidence, and `merge-delivery` gates on it.
+
+**Registry.** `wiki/.dispatch/validation.json` is the only source of commands the host runs. HO
+`validation` entries stay worker instructions; the host never parses or executes them. The file is
+strict: an unknown key, a shell string instead of an argv array, or a missing timeout refuses with
+`BAD_RECORD`. With no file, there are no registered commands: the host runs nothing and the evidence
+records zero commands.
+
+```json
+{
+  "schema_version": 1,
+  "setup": { "argv": ["npm", "ci", "--ignore-scripts"], "timeout_ms": 600000 },
+  "commands": [
+    { "name": "typecheck", "argv": ["npm", "run", "typecheck"], "timeout_ms": 600000 },
+    { "name": "test", "argv": ["npm", "test"], "timeout_ms": 900000 }
+  ],
+  "env": { "FORCE_COLOR": "0" },
+  "runtime_paths": ["/opt/node-22"]
+}
+```
+
+| Key | Meaning |
+|---|---|
+| `setup` | Optional. Runs first and is the only step with network. npm lifecycle scripts are forced off (`npm_config_ignore_scripts=true`). If setup fails, no command runs. |
+| `commands[]` | `name` (`[A-Za-z0-9._-]+`, unique), `argv`, `timeout_ms`. They run in order, network-denied. |
+| `env` | Extra variables for every step. `PATH`, `HOME`, and `TMPDIR` are reserved. |
+| `runtime_paths` | Absolute runtime roots. Each must have `bin/`, live under `$HOME` or a system root, and not be `$HOME` itself. Each is bound read-only, and its `bin/` goes first on `PATH`. |
+
+**Confinement.** Each step runs in a bwrap jail over a fresh temp clone of the delivery sha (bound
+writable), built by the same generic jail layer the workers use. Nothing derived from the delivery runs on
+the host outside the jail. The env is an allowlist (`--clearenv`): `PATH` (runtime `bin/` dirs, then
+`/usr/local/bin:/usr/bin:/bin`), `HOME=/tmp`, `TMPDIR=/tmp`, and the registry `env`. No host variable
+reaches a step, whatever its name. Commands run with `--unshare-net`; bwrap brings loopback up, so local
+test servers work and egress fails. `.env` and `.claude/` in the clone are masked. stdout and stderr are
+each kept as a 16 KiB tail. On timeout the whole process group gets `SIGTERM`, then `SIGKILL` after 5 s,
+and the runner waits for the exit before it records the result.
+
+**Evidence.** `derive-review` writes `validation-evidence.json` into the delivered implement run's dir
+(`.agent-runs/runs/<implement_id>/<run_id>/`). It holds `handoff_id`, `run_id`, `delivery_branch`,
+`delivery_sha`, `registry_fingerprint` (sha256 of the effective registry), per-step `argv`, `exit_code`,
+`signal`, `timed_out`, `duration_ms`, `stdout_tail`, `stderr_tail`, `result`, and an overall `outcome`
+(`pass` only when setup and every command passed). A failing command is evidence, not an error: the
+review still derives. This JSON is the record; the review HO's evidence section renders from it.
+
+**Review dispatch.** A derived review is a `code_review` HO with a `dispatch/` `base_ref` and a
+`reviewed_run` stamp. Dispatching one copies the evidence JSON and
+`wiki/handoffs/<implement_id>.response.md` into the review's own run dir as `validation-evidence.json`
+and `implement-response.md`. The run dir is bound into every jail, so the reviewer reads both in either
+wiki shape. The prompt names the two paths and says that executing tests or the toolchain is out of
+scope. If the evidence or the response is gone, the dispatch refuses; re-run `derive-review`. The copies
+belong to the reviewer only: the merge gate never reads them.
 
 ### `merge-delivery`
 
@@ -407,7 +469,24 @@ Preconditions (checked in order, fail-closed):
    fields (all three absent — no legacy regex fallback) refuses outright.
 2. Working tree clean
 3. Delivery branch exists
-4. Merge succeeds (fast-forward or a real merge) — aborts and refuses on conflict
+4. Host validation evidence (WK-0294). The gate reads only the host original: the
+   `validation-evidence.json` in the implement run dir named by the review's `reviewed_run`, never the
+   reviewer's copy. It refuses when the review has no `reviewed_run`, the evidence is missing or
+   unreadable, the evidence belongs to another run, the evidence `outcome` is `fail`, or the
+   `registry_fingerprint` differs from the current `validation.json` (revalidate by re-running
+   `derive-review`). An override can clear each of these. A delivery branch whose head is not the evidence
+   `delivery_sha` always refuses, because the reviewed commit is not what would merge; no override applies.
+5. Merge succeeds (fast-forward or a real merge). The merge names the evidence sha, not the branch; it
+   aborts and refuses on conflict
+
+**Override (DEC-0047 A2 R8).** `override_reason` and `override_actor` (MCP; `override: { reason, actor,
+surface }` in the API) let an operator merge past a step-4 refusal. Both must be non-empty. Before the
+merge, dispatch writes `wiki/handoffs/<handoff_id>.merge-override.json` and commits it with the
+isolated-index pattern. The record holds the reason, the actor (with `actor_authenticated: false`: it is
+self-reported, because no identity exists on the MCP path), the call surface, the merged sha, the run id,
+the refusal reasons, and the per-command results. If that commit fails, the file is removed and the merge
+refuses. An orchestrator passes the override only on an explicit operator instruction. The result reports
+`gate: "evidence"` or `gate: "override"`, plus `mergedSha` and, for an override, `overrideRecord`.
 
 ### `cleanup`
 
@@ -425,7 +504,7 @@ orchestrator dispatches         → dispatch + watch
 pipeline executes + delivers    → automatic
 pipeline auto-commits artifacts → DEC-0038 (automatic)
 orchestrator reads result       → HO-XXXX.response.md
-orchestrator derives review     → derive-review
+orchestrator derives review     → derive-review (host runs validation.json, records evidence)
 orchestrator dispatches review  → dispatch + watch (same cycle)
 pipeline auto-commits review    → DEC-0038 (automatic)
 orchestrator reads review       → review response.md

@@ -15,6 +15,7 @@ import { join } from 'node:path';
 import type { DispatchResult } from './errors.js';
 import { ok } from './errors.js';
 import type { Handoff } from './ho.js';
+import type { StagedReviewEvidence } from './host-validation.js';
 import type { BackendFamily } from './repo-config.js';
 
 export interface AssembledPrompt {
@@ -253,8 +254,11 @@ function getModeParts(handoff: Handoff, opts: AssembleOpts): ModeParts {
           'Flag iterative fix-up patterns (multiple small patches to the same region, ' +
           'trial-and-error artifacts, debug residue) as a quality finding — do not auto-reject; ' +
           'the orchestrator decides disposition.\n\n' +
-          'For typecheck validation in the sandbox, use `tsc --build --noEmit` — the sandbox is ' +
-          'read-only and `tsc --build` needs write access for declaration files.\n\n' +
+          // DEC-0047: advisory workers never execute the toolchain; the host ran the registered
+          // validation commands and the evidence is attached (see "Host Validation Evidence").
+          'Executing tests, builds, or any project toolchain is out of scope for this review: the host ' +
+          'runs the registered validation commands against the delivery and attaches the results. Judge ' +
+          'the diff plus that evidence; do not try to reproduce a test run.\n\n' +
           'Your deliverable is a structured review outcome, not code changes. Do not modify any files.\n\n' +
           'If you cannot finish, end your final message stating exactly what you needed and why you stopped.',
         includeWriteScope: false,
@@ -310,6 +314,8 @@ function getModeParts(handoff: Handoff, opts: AssembleOpts): ModeParts {
 export interface AssembleOpts {
   /** Backend family of the resolved model; selects the implement response format (WK-0251). Absent = pi-style. */
   family?: BackendFamily;
+  /** Derived review only: the run-dir copies of the host evidence and implement response (WK-0294/WK-0295). */
+  reviewEvidence?: StagedReviewEvidence;
 }
 
 export async function assemblePrompt(
@@ -379,6 +385,17 @@ export async function assemblePrompt(
 
   if (modeParts.includeValidation) {
     sections.push(`### Validation\nRun these commands to verify your work:\n${bulletList(handoff.validation)}`);
+  }
+
+  if (opts.reviewEvidence) {
+    sections.push(
+      '### Host Validation Evidence\n' +
+        'The host recorded these for the delivery under review. They are in your run dir; read them, do not edit them:\n' +
+        bulletList([
+          `${opts.reviewEvidence.evidencePath} — host validation results (JSON: per-command argv, exit code, output tail, delivery sha, run id)`,
+          `${opts.reviewEvidence.responsePath} — the implement worker's response doc`,
+        ]),
+    );
   }
 
   const readFirstSection = `### Read First\nRead these files before starting:\n${bulletList(handoff.read_first)}`;

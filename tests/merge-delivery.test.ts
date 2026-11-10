@@ -1,9 +1,12 @@
 /**
  * WK-0132 Slice 3 — `mergeDelivery` tests.
  *
- * Covers the merge tool's four ordered, fail-closed preconditions (review
- * evidence passes -> working tree clean -> delivery branch exists -> merge
- * succeeds) plus the happy path (fast-forward merge + branch delete). Real
+ * Covers the merge tool's ordered, fail-closed preconditions (review
+ * evidence passes -> working tree clean -> delivery branch exists -> host
+ * validation evidence passes (WK-0294) -> merge succeeds) plus the happy path
+ * (fast-forward merge + branch delete). The shared fixtures model a derived
+ * review: the review HO carries `reviewed_run`, and `createDeliveryBranch`
+ * writes passing host evidence for the branch head into that run's dir. Real
  * git repos in temp dirs — no personal/absolute paths in fixtures (WK-0043
  * rule).
  */
@@ -16,6 +19,7 @@ import { promisify } from 'node:util';
 
 import { mergeDelivery, selectLatestReview } from '../packages/dispatch-core/src/merge-delivery.js';
 import type { Handoff } from '../packages/dispatch-core/src/ho.js';
+import { validationRegistryFingerprint } from '../packages/dispatch-core/src/repo-config.js';
 
 const execFile = promisify(execFileCallback);
 
@@ -25,6 +29,8 @@ async function initRepo(dir: string): Promise<void> {
   await execFile('git', ['config', 'user.name', 'Test'], { cwd: dir });
   await mkdir(join(dir, 'wiki', 'handoffs'), { recursive: true });
   await writeFile(join(dir, 'dummy.txt'), 'seed\n');
+  // Run dirs are runtime state, never committed (as in every real dispatch repo).
+  await writeFile(join(dir, '.gitignore'), '.agent-runs/\n');
   await execFile('git', ['add', '-A'], { cwd: dir });
   await execFile('git', ['commit', '-m', 'init'], { cwd: dir });
 }
@@ -59,6 +65,37 @@ async function createDeliveryBranch(dir: string, handoffId: string): Promise<voi
   await execFile('git', ['add', '-A'], { cwd: dir });
   await execFile('git', ['commit', '-m', `dispatch: ${handoffId}`], { cwd: dir });
   await execFile('git', ['checkout', baseBranch], { cwd: dir });
+  await writeEvidence(dir, handoffId, {});
+}
+
+const REVIEWED_RUN = 'RUN-0001';
+
+function evidencePath(dir: string, handoffId: string, runId = REVIEWED_RUN): string {
+  return join(dir, '.agent-runs', 'runs', handoffId, runId, 'validation-evidence.json');
+}
+
+/** Host validation evidence as derive-review writes it (WK-0294): passing, for the current branch head, no registry. */
+async function writeEvidence(dir: string, handoffId: string, overrides: Record<string, unknown>, runId = REVIEWED_RUN): Promise<void> {
+  const { stdout } = await execFile('git', ['rev-parse', `dispatch/${handoffId}`], { cwd: dir });
+  const path = evidencePath(dir, handoffId, runId);
+  await mkdir(join(path, '..'), { recursive: true });
+  await writeFile(
+    path,
+    JSON.stringify({
+      schema_version: 1,
+      handoff_id: handoffId,
+      run_id: runId,
+      delivery_branch: `dispatch/${handoffId}`,
+      delivery_sha: stdout.trim(),
+      registry_fingerprint: validationRegistryFingerprint(null),
+      started_at: '2026-11-09T00:00:00.000Z',
+      completed_at: '2026-11-09T00:00:01.000Z',
+      setup: null,
+      commands: [],
+      outcome: 'pass',
+      ...overrides,
+    }),
+  );
 }
 
 async function branchExists(dir: string, branchName: string): Promise<boolean> {
@@ -89,7 +126,7 @@ function makeImplementHO(id: string, title: string, workItem: string): string {
   ].join('\n');
 }
 
-function makeReviewHO(id: string, title: string, baseRef: string, workItem: string): string {
+function makeReviewHO(id: string, title: string, baseRef: string, workItem: string, reviewedRun: string | null = REVIEWED_RUN): string {
   return [
     '---',
     'schema_version: 1',
@@ -105,6 +142,7 @@ function makeReviewHO(id: string, title: string, baseRef: string, workItem: stri
     'status: draft',
     `work_item: "${workItem}"`,
     `base_ref: ${baseRef}`,
+    ...(reviewedRun !== null ? [`reviewed_run: "${reviewedRun}"`] : []),
     '---',
     '',
     `# ${id}: ${title}`,
@@ -771,5 +809,202 @@ describe('mergeDelivery (WK-0132 Slice 3)', () => {
     expect(result.error).toBe('ADMISSION_FAILED');
     expect(result.message).toContain('HO-0032');
     expect(await branchExists(repoDir, 'dispatch/HO-0030')).toBe(true);
+  });
+});
+
+describe('mergeDelivery host validation gate (WK-0294, DEC-0047 A1.2 / A2 R6 R8 / A4.1 A4.5)', () => {
+  async function setupReviewedDelivery(): Promise<void> {
+    await writeAndCommit(
+      repoDir,
+      {
+        'wiki/handoffs/HO-0001.md': makeImplementHO('HO-0001', 'Implement thing', 'WK-0001'),
+        'wiki/handoffs/HO-0002.md': makeReviewHO('HO-0002', 'Code review: Implement thing', 'dispatch/HO-0001', 'WK-0001'),
+        'wiki/handoffs/HO-0002.response.md': makeReviewResponse('no_findings', 'HO-0001', false),
+      },
+      'add implement + review HOs',
+    );
+    await createDeliveryBranch(repoDir, 'HO-0001');
+  }
+
+  const failingCommand = {
+    name: 'test',
+    argv: ['npm', 'test'],
+    network: false,
+    exit_code: 1,
+    signal: null,
+    timed_out: false,
+    duration_ms: 10,
+    stdout_tail: 'FAIL x.test.ts',
+    stderr_tail: '',
+    output_truncated: false,
+    result: 'fail',
+  };
+
+  it('gates a passing merge on evidence and merges the evidence sha', async () => {
+    await setupReviewedDelivery();
+    const branchSha = (await execFile('git', ['rev-parse', 'dispatch/HO-0001'], { cwd: repoDir })).stdout.trim();
+    const result = await mergeDelivery({ dir: repoDir, handoff_id: 'HO-0001' });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data).toMatchObject({ gate: 'evidence', mergedSha: branchSha });
+    expect(result.data.overrideRecord).toBeUndefined();
+  });
+
+  it('refuses when the evidence file is missing', async () => {
+    await setupReviewedDelivery();
+    await rm(evidencePath(repoDir, 'HO-0001'));
+    const result = await mergeDelivery({ dir: repoDir, handoff_id: 'HO-0001' });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toBe('ADMISSION_FAILED');
+    expect(result.message).toContain('no host validation evidence');
+    expect(await branchExists(repoDir, 'dispatch/HO-0001')).toBe(true);
+  });
+
+  it('refuses a review with no reviewed_run stamp', async () => {
+    await writeAndCommit(
+      repoDir,
+      {
+        'wiki/handoffs/HO-0001.md': makeImplementHO('HO-0001', 'Implement thing', 'WK-0001'),
+        'wiki/handoffs/HO-0002.md': makeReviewHO('HO-0002', 'Code review', 'dispatch/HO-0001', 'WK-0001', null),
+        'wiki/handoffs/HO-0002.response.md': makeReviewResponse('no_findings', 'HO-0001', false),
+      },
+      'add HOs',
+    );
+    await createDeliveryBranch(repoDir, 'HO-0001');
+    const result = await mergeDelivery({ dir: repoDir, handoff_id: 'HO-0001' });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.message).toContain('no reviewed_run stamp');
+  });
+
+  it('refuses evidence that belongs to a different run than the review reviewed', async () => {
+    await setupReviewedDelivery();
+    await writeEvidence(repoDir, 'HO-0001', { run_id: 'RUN-other' });
+    const result = await mergeDelivery({ dir: repoDir, handoff_id: 'HO-0001' });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.message).toContain('RUN-other');
+  });
+
+  it('refuses a failing command without an override, naming it', async () => {
+    await setupReviewedDelivery();
+    await writeEvidence(repoDir, 'HO-0001', { outcome: 'fail', commands: [failingCommand] });
+    const result = await mergeDelivery({ dir: repoDir, handoff_id: 'HO-0001' });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toBe('ADMISSION_FAILED');
+    expect(result.message).toContain('host validation failed (test)');
+  });
+
+  // Why: A4.1 — the reviewer can edit only its jail copy; the gate reads the host original.
+  it('ignores a tampered review-run copy of the evidence', async () => {
+    await setupReviewedDelivery();
+    await writeEvidence(repoDir, 'HO-0001', { outcome: 'fail', commands: [failingCommand] });
+    const copy = join(repoDir, '.agent-runs', 'runs', 'HO-0002', 'RUN-review', 'validation-evidence.json');
+    await mkdir(join(copy, '..'), { recursive: true });
+    await writeFile(copy, JSON.stringify({ outcome: 'pass' }));
+    const result = await mergeDelivery({ dir: repoDir, handoff_id: 'HO-0001' });
+    expect(result.ok).toBe(false);
+  });
+
+  it('refuses an override without a reason', async () => {
+    await setupReviewedDelivery();
+    await writeEvidence(repoDir, 'HO-0001', { outcome: 'fail', commands: [failingCommand] });
+    const result = await mergeDelivery({
+      dir: repoDir,
+      handoff_id: 'HO-0001',
+      override: { reason: '  ', actor: 'operator', surface: 'api' },
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toBe('BAD_RECORD');
+  });
+
+  // Why: A2 R8 — an override merge must leave committed provenance that a gated merge never has.
+  it('merges a failing delivery under an override and commits a provenance record first', async () => {
+    await setupReviewedDelivery();
+    await writeEvidence(repoDir, 'HO-0001', { outcome: 'fail', commands: [failingCommand] });
+    const result = await mergeDelivery({
+      dir: repoDir,
+      handoff_id: 'HO-0001',
+      override: { reason: 'flaky upstream test, tracked in WK-9999', actor: 'operator', surface: 'mcp' },
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.gate).toBe('override');
+    expect(result.data.overrideRecord).toBe('wiki/handoffs/HO-0001.merge-override.json');
+    const record = JSON.parse((await execFile('git', ['show', 'HEAD:wiki/handoffs/HO-0001.merge-override.json'], { cwd: repoDir })).stdout);
+    expect(record).toMatchObject({
+      handoff_id: 'HO-0001',
+      run_id: REVIEWED_RUN,
+      reason: 'flaky upstream test, tracked in WK-9999',
+      actor: 'operator',
+      actor_authenticated: false,
+      surface: 'mcp',
+      evidence: { outcome: 'fail', results: [{ name: 'test', result: 'fail', exit_code: 1, timed_out: false }] },
+    });
+    const log = (await execFile('git', ['log', '--format=%an %s'], { cwd: repoDir })).stdout;
+    expect(log).toContain('kb-dispatch chore: merge-delivery override for HO-0001');
+    expect((await execFile('git', ['status', '--porcelain'], { cwd: repoDir })).stdout.trim()).toBe('');
+  });
+
+  // Why: fail-closed — no committed provenance, no merge.
+  it('refuses the override merge when the provenance record cannot be committed', async () => {
+    await writeFile(join(repoDir, '.gitignore'), '.agent-runs/\n*.merge-override.json\n');
+    await setupReviewedDelivery();
+    await writeEvidence(repoDir, 'HO-0001', { outcome: 'fail', commands: [failingCommand] });
+    const before = await headSha(repoDir);
+    const result = await mergeDelivery({
+      dir: repoDir,
+      handoff_id: 'HO-0001',
+      override: { reason: 'try anyway', actor: 'operator', surface: 'api' },
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.message).toContain('fail-closed');
+    expect(await headSha(repoDir)).toBe(before);
+    expect(await branchExists(repoDir, 'dispatch/HO-0001')).toBe(true);
+  });
+
+  // Why: A2 R6 — the reviewed commit must be what merges; a moved branch is never mergeable, even with an override.
+  it('refuses a branch that moved after validation, even with an override', async () => {
+    await setupReviewedDelivery();
+    const base = (await execFile('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: repoDir })).stdout.trim();
+    await execFile('git', ['checkout', 'dispatch/HO-0001'], { cwd: repoDir });
+    await writeAndCommit(repoDir, { 'late.ts': 'export const late = 1;\n' }, 'unreviewed commit');
+    await execFile('git', ['checkout', base], { cwd: repoDir });
+    const result = await mergeDelivery({
+      dir: repoDir,
+      handoff_id: 'HO-0001',
+      override: { reason: 'please', actor: 'operator', surface: 'api' },
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.message).toContain('branch moved after validation');
+  });
+
+  // Why: A4.5 — evidence from a different registry is stale; revalidate or override.
+  it('refuses on a registry fingerprint mismatch and merges it under an override', async () => {
+    await setupReviewedDelivery();
+    await mkdir(join(repoDir, 'wiki', '.dispatch'), { recursive: true });
+    await writeAndCommit(
+      repoDir,
+      { 'wiki/.dispatch/validation.json': JSON.stringify({ schema_version: 1, commands: [{ name: 't', argv: ['true'], timeout_ms: 1000 }] }) },
+      'register a command',
+    );
+    const refused = await mergeDelivery({ dir: repoDir, handoff_id: 'HO-0001' });
+    expect(refused.ok).toBe(false);
+    if (refused.ok) return;
+    expect(refused.message).toContain('validation registry changed');
+
+    const overridden = await mergeDelivery({
+      dir: repoDir,
+      handoff_id: 'HO-0001',
+      override: { reason: 'registry change is unrelated to this delivery', actor: 'operator', surface: 'cli' },
+    });
+    expect(overridden.ok).toBe(true);
+    if (!overridden.ok) return;
+    expect(overridden.data.gate).toBe('override');
   });
 });

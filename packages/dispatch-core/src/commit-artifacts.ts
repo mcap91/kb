@@ -24,11 +24,88 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 
+import type { DispatchResult } from './errors.js';
+import { fail, ok } from './errors.js';
+
 const execFile = promisify(execFileCb);
 
 /** Mirrors pipeline.ts's local (unexported) `logVerbose` helper. */
 function logVerbose(verbose: boolean | undefined, message: string): void {
   if (verbose) process.stderr.write(`[dispatch] ${message}\n`);
+}
+
+/**
+ * Commit exactly `paths` to the repo that owns `cwd`, on its current branch,
+ * with the pinned `kb-dispatch <dispatch@kb.local>` identity, via the
+ * isolated-index plumbing described above. Fail-closed primitive (WK-0294:
+ * merge-delivery's override provenance must commit or the merge refuses):
+ * every git failure is returned as a `DispatchResult` failure, never thrown
+ * or swallowed. `ok(null)` means nothing differed from `HEAD` — no commit.
+ */
+export async function commitPaths(opts: {
+  /** Any directory inside the owning repo (DEC-0038 point 5). */
+  cwd: string;
+  /** Absolute paths to commit. */
+  paths: string[];
+  message: string;
+}): Promise<DispatchResult<string | null>> {
+  let indexTmpDir: string | undefined;
+  try {
+    const { stdout: topLevelOut } = await execFile('git', ['rev-parse', '--show-toplevel'], { cwd: opts.cwd });
+    const repoRoot = topLevelOut.trim();
+
+    // Cheap pre-check: if no path has changes, no-op without touching any index at all.
+    const { stdout: statusOut } = await execFile('git', ['status', '--porcelain', '--', ...opts.paths], { cwd: repoRoot });
+    if (statusOut.trim() === '') return ok(null);
+
+    // Isolated-index plumbing (mirrors delivery.ts:buildDeliveryScript): a
+    // throwaway index seeded from HEAD, never the real index, so only the
+    // named paths enter the commit regardless of what else is staged or
+    // dirty in the working tree.
+    indexTmpDir = await mkdtemp(join(tmpdir(), 'kb-dispatch-commit-'));
+    const indexFile = join(indexTmpDir, 'index');
+    const indexEnv = { ...process.env, GIT_INDEX_FILE: indexFile };
+
+    await execFile('git', ['read-tree', 'HEAD'], { cwd: repoRoot, env: indexEnv });
+    await execFile('git', ['add', '--', ...opts.paths], { cwd: repoRoot, env: indexEnv });
+    const { stdout: treeOut } = await execFile('git', ['write-tree'], { cwd: repoRoot, env: indexEnv });
+    const tree = treeOut.trim();
+
+    const { stdout: headOut } = await execFile('git', ['rev-parse', 'HEAD'], { cwd: repoRoot });
+    const head = headOut.trim();
+
+    const { stdout: headTreeOut } = await execFile('git', ['rev-parse', 'HEAD^{tree}'], { cwd: repoRoot });
+    if (tree === headTreeOut.trim()) return ok(null); // no-op: staged content matches HEAD exactly
+
+    const commitEnv = {
+      ...indexEnv,
+      GIT_COMMITTER_NAME: 'kb-dispatch',
+      GIT_COMMITTER_EMAIL: 'dispatch@kb.local',
+      GIT_AUTHOR_NAME: 'kb-dispatch',
+      GIT_AUTHOR_EMAIL: 'dispatch@kb.local',
+    };
+    const { stdout: commitOut } = await execFile('git', ['commit-tree', tree, '-p', head, '-m', opts.message], {
+      cwd: repoRoot,
+      env: commitEnv,
+    });
+    const commit = commitOut.trim();
+
+    // Normal advance (not a force-reset) — HEAD moves to the new commit the
+    // same way an ordinary commit would.
+    await execFile('git', ['update-ref', 'HEAD', commit], { cwd: repoRoot });
+
+    // Sync the real index: the isolated-index commit advanced HEAD but left
+    // the real index stale. Without this, `git status` still reports the
+    // paths as dirty and the next dispatch hits DIRTY_REPO.
+    await execFile('git', ['reset', 'HEAD', '--', ...opts.paths], { cwd: repoRoot });
+    return ok(commit);
+  } catch (err) {
+    return fail('FILE_WRITE_ERROR', `Failed to commit ${opts.paths.join(', ')}: ${err}`, err);
+  } finally {
+    if (indexTmpDir !== undefined) {
+      await rm(indexTmpDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }
 }
 
 /**
@@ -39,9 +116,9 @@ function logVerbose(verbose: boolean | undefined, message: string): void {
  *
  * Never throws: every failure path (missing git repo, nothing to stage,
  * commit-tree failure) is either silently no-op'd (nothing to commit) or
- * caught and warned via `logVerbose` (an actual error) — this is a
- * best-effort post-run step, not a gate. `DIRTY_REPO` on the next dispatch
- * stays the fail-loud backstop for anything this can't commit.
+ * warned via `logVerbose` (an actual error) — this is a best-effort post-run
+ * step, not a gate. `DIRTY_REPO` / `UNCOMMITTED_READ_FIRST` on the next
+ * dispatch stay the fail-loud backstops for anything this can't commit.
  */
 export async function commitArtifacts(opts: {
   /** Target repo dir passed to the pipeline (may not itself be the repo root). */
@@ -55,76 +132,15 @@ export async function commitArtifacts(opts: {
   verbose?: boolean;
 }): Promise<void> {
   const { dir, handoffId, outcome, model, verbose } = opts;
-  let indexTmpDir: string | undefined;
-
-  try {
-    // Owning repo (DEC-0038 point 5): resolve from the artifact directory,
-    // never assume `dir` is itself the repo root.
-    const handoffsDir = join(dir, 'wiki', 'handoffs');
-    const responsePath = join(handoffsDir, `${handoffId}.response.md`);
-    const hoPath = join(handoffsDir, `${handoffId}.md`);
-
-    const { stdout: topLevelOut } = await execFile('git', ['rev-parse', '--show-toplevel'], {
-      cwd: handoffsDir,
-    });
-    const repoRoot = topLevelOut.trim();
-
-    // Cheap pre-check: if neither artifact path has changes, no-op without
-    // touching any index at all.
-    const { stdout: statusOut } = await execFile(
-      'git',
-      ['status', '--porcelain', '--', responsePath, hoPath],
-      { cwd: repoRoot },
-    );
-    if (statusOut.trim() === '') return;
-
-    // Isolated-index plumbing (mirrors delivery.ts:buildDeliveryScript): a
-    // throwaway index seeded from HEAD, never the real index, so only the
-    // two named paths enter the commit regardless of what else is staged or
-    // dirty in the working tree.
-    indexTmpDir = await mkdtemp(join(tmpdir(), 'kb-dispatch-commit-'));
-    const indexFile = join(indexTmpDir, 'index');
-    const indexEnv = { ...process.env, GIT_INDEX_FILE: indexFile };
-
-    await execFile('git', ['read-tree', 'HEAD'], { cwd: repoRoot, env: indexEnv });
-    await execFile('git', ['add', '--', responsePath, hoPath], { cwd: repoRoot, env: indexEnv });
-    const { stdout: treeOut } = await execFile('git', ['write-tree'], { cwd: repoRoot, env: indexEnv });
-    const tree = treeOut.trim();
-
-    const { stdout: headOut } = await execFile('git', ['rev-parse', 'HEAD'], { cwd: repoRoot });
-    const head = headOut.trim();
-
-    const { stdout: headTreeOut } = await execFile('git', ['rev-parse', 'HEAD^{tree}'], { cwd: repoRoot });
-    if (tree === headTreeOut.trim()) return; // no-op: staged content matches HEAD exactly
-
-    const message = `chore: dispatch ${handoffId} ${outcome} (${model})`;
-    const commitEnv = {
-      ...indexEnv,
-      GIT_COMMITTER_NAME: 'kb-dispatch',
-      GIT_COMMITTER_EMAIL: 'dispatch@kb.local',
-      GIT_AUTHOR_NAME: 'kb-dispatch',
-      GIT_AUTHOR_EMAIL: 'dispatch@kb.local',
-    };
-    const { stdout: commitOut } = await execFile(
-      'git',
-      ['commit-tree', tree, '-p', head, '-m', message],
-      { cwd: repoRoot, env: commitEnv },
-    );
-    const commit = commitOut.trim();
-
-    // Normal advance (not a force-reset) — HEAD moves to the new commit the
-    // same way an ordinary commit would.
-    await execFile('git', ['update-ref', 'HEAD', commit], { cwd: repoRoot });
-
-    // Sync the real index: the isolated-index commit advanced HEAD but left
-    // the real index stale. Without this, `git status` still reports the two
-    // paths as dirty and the next dispatch hits DIRTY_REPO.
-    await execFile('git', ['reset', 'HEAD', '--', responsePath, hoPath], { cwd: repoRoot });
-  } catch (err) {
-    logVerbose(verbose, `warning: could not auto-commit dispatch artifacts for ${handoffId}: ${err}`);
-  } finally {
-    if (indexTmpDir !== undefined) {
-      await rm(indexTmpDir, { recursive: true, force: true }).catch(() => {});
-    }
+  // Owning repo (DEC-0038 point 5): resolve from the artifact directory,
+  // never assume `dir` is itself the repo root.
+  const handoffsDir = join(dir, 'wiki', 'handoffs');
+  const committed = await commitPaths({
+    cwd: handoffsDir,
+    paths: [join(handoffsDir, `${handoffId}.response.md`), join(handoffsDir, `${handoffId}.md`)],
+    message: `chore: dispatch ${handoffId} ${outcome} (${model})`,
+  });
+  if (!committed.ok) {
+    logVerbose(verbose, `warning: could not auto-commit dispatch artifacts for ${handoffId}: ${committed.message}`);
   }
 }

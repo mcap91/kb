@@ -27,10 +27,21 @@
  *      three fields absent) refuses.
  *   2. The working tree is clean (`git status --porcelain` empty).
  *   3. Branch `dispatch/<handoff_id>` exists as a local branch.
+ *   3b. Host validation evidence (WK-0294, DEC-0047 A1 ruling 2, A2 R6/R8,
+ *      A4.1/A4.5): the evidence JSON in the implement run dir named by the
+ *      review's `reviewed_run` stamp — the host original, never a jail copy
+ *      — exists, belongs to that run, carries the branch head's sha, passed,
+ *      and was produced by the current registry (fingerprint). A branch that
+ *      moved past the evidence sha always refuses. Missing, failing, or
+ *      stale-registry evidence refuses unless the caller passes an
+ *      `override` with a reason; the override's provenance is committed
+ *      fail-closed (isolated index) before the merge, so an override merge
+ *      is distinguishable from a gated one in history.
  *   4. The merge succeeds (fast-forward or a real merge) with no conflict —
- *      a conflicting merge is aborted and surfaced to the operator.
+ *      a conflicting merge is aborted and surfaced to the operator. The
+ *      merge names the gated sha, never the branch name.
  *
- * Only after all four pass is the delivery branch deleted. Git behavior
+ * Only after all of these pass is the delivery branch deleted. Git behavior
  * relied on here (plain non-fast-forward `git merge <branch>` with no `-m`
  * completes without invoking an interactive editor when spawned with no TTY;
  * `git branch -d` succeeds immediately after the branch that authored it has
@@ -38,19 +49,35 @@
  * assumed — see WK-0132 Slice 3 implementation notes.
  */
 import { execFile as execFileCb } from 'node:child_process';
-import { readFile, readdir } from 'node:fs/promises';
+import { readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 
+import { commitPaths } from './commit-artifacts.js';
 import { parseHandoffContent, type Handoff } from './ho.js';
 import type { DispatchResult } from './errors.js';
 import { ok, fail } from './errors.js';
+import { VALIDATION_EVIDENCE_FILE, readValidationEvidence, type ValidationEvidence } from './host-validation.js';
+import { getRunDir } from './paths.js';
+import { loadValidationRegistry, validationRegistryFingerprint } from './repo-config.js';
 
 const execFile = promisify(execFileCb);
+
+/**
+ * Operator override of the host-validation gate (DEC-0047 A2 R8). `actor` is
+ * self-reported and NOT authenticated — no identity exists on the MCP path —
+ * and is recorded as such alongside the call surface.
+ */
+export interface MergeOverride {
+  reason: string;
+  actor: string;
+  surface: 'mcp' | 'cli' | 'api';
+}
 
 export interface MergeDeliveryOpts {
   dir: string;
   handoff_id: string;
+  override?: MergeOverride;
 }
 
 export interface MergeDeliveryResult {
@@ -65,6 +92,12 @@ export interface MergeDeliveryResult {
    * compatibility with callers written before this field existed.
    */
   verdict?: 'structured' | 'advisory';
+  /** WK-0294: `evidence` when host validation gated the merge; `override` when an operator override did. */
+  gate: 'evidence' | 'override';
+  /** The sha that was merged — the evidence sha (or the branch head under an override with no evidence). */
+  mergedSha: string;
+  /** Repo-relative path of the committed override provenance record; set only when `gate` is `override`. */
+  overrideRecord?: string;
 }
 
 /** `FindingsOutcome` values that gate a merge open (recovery-block.ts's `FINDINGS_OUTCOMES` minus `changes_requested`). */
@@ -155,7 +188,7 @@ export function selectLatestReview(candidates: Handoff[]): Handoff | null {
 async function checkReviewEvidence(
   dir: string,
   branchName: string,
-): Promise<DispatchResult<{ reviewId: string; outcome: string; verdict: 'structured' | 'advisory' }>> {
+): Promise<DispatchResult<{ reviewId: string; outcome: string; verdict: 'structured' | 'advisory'; reviewedRun: string | undefined }>> {
   const handoffsDir = join(dir, 'wiki', 'handoffs');
 
   let files: string[];
@@ -188,6 +221,7 @@ async function checkReviewEvidence(
     return fail('ADMISSION_FAILED', `No code_review HO found with base_ref: ${branchName}`);
   }
   const reviewId = reviewHandoff.id;
+  const reviewedRun = reviewHandoff.reviewed_run;
 
   const reviewResponsePath = join(handoffsDir, `${reviewId}.response.md`);
   let reviewResponseContent: string;
@@ -212,7 +246,7 @@ async function checkReviewEvidence(
 
   if (recoveryValid === true) {
     if (recoveryOutcome !== undefined && PASSING_OUTCOMES.includes(recoveryOutcome)) {
-      return ok({ reviewId, outcome: recoveryOutcome, verdict: 'structured' as const });
+      return ok({ reviewId, outcome: recoveryOutcome, verdict: 'structured' as const, reviewedRun });
     }
     return fail('ADMISSION_FAILED', `Review ${reviewId} outcome is "${recoveryOutcome}" — merge blocked`);
   }
@@ -222,10 +256,133 @@ async function checkReviewEvidence(
   // as the response doc has real review content; only a genuinely empty report (no
   // evidence a review ran at all) fails closed.
   if ((workerReportChars ?? 0) > 0) {
-    return ok({ reviewId, outcome: 'advisory', verdict: 'advisory' as const });
+    return ok({ reviewId, outcome: 'advisory', verdict: 'advisory' as const, reviewedRun });
   }
 
   return fail('ADMISSION_FAILED', `Review ${reviewId} response is empty — no evidence of a completed review`);
+}
+
+interface ValidationGate {
+  /** Sha to merge: the evidence sha, or the branch head when there is no usable evidence. */
+  sha: string;
+  /** Overridable gate failures; empty = the evidence gates the merge open. */
+  problems: string[];
+  evidence: ValidationEvidence | null;
+}
+
+/**
+ * Host-validation gate (WK-0294). Reads only the host original in the
+ * implement run dir (A4.1). A branch head that differs from the evidence sha
+ * is a hard refusal — the reviewed commit is not what would merge; re-derive.
+ */
+async function checkValidationEvidence(
+  dir: string,
+  handoffId: string,
+  reviewId: string,
+  reviewedRun: string | undefined,
+  branchSha: string,
+): Promise<DispatchResult<ValidationGate>> {
+  if (reviewedRun === undefined) {
+    return ok({
+      sha: branchSha,
+      evidence: null,
+      problems: [`review ${reviewId} carries no reviewed_run stamp, so no host validation evidence is bound to it (derive the review with derive-review)`],
+    });
+  }
+
+  const evidencePath = join(getRunDir(dir, handoffId, reviewedRun), VALIDATION_EVIDENCE_FILE);
+  const read = await readValidationEvidence(evidencePath);
+  if (!read.ok) return ok({ sha: branchSha, evidence: null, problems: [`host validation evidence is unreadable: ${read.message}`] });
+  const evidence = read.data;
+  if (evidence === null) {
+    return ok({ sha: branchSha, evidence: null, problems: [`no host validation evidence at ${evidencePath} (run derive-review)`] });
+  }
+  if (evidence.run_id !== reviewedRun) {
+    return ok({
+      sha: branchSha,
+      evidence: null,
+      problems: [`evidence belongs to run ${evidence.run_id}, but review ${reviewId} reviewed run ${reviewedRun}`],
+    });
+  }
+  if (evidence.delivery_sha !== branchSha) {
+    return fail(
+      'ADMISSION_FAILED',
+      `dispatch/${handoffId} is at ${branchSha}, but host validation evidence (and review ${reviewId}) cover ${evidence.delivery_sha} — the branch moved after validation. Re-run derive-review and review again; an override cannot merge an unreviewed head.`,
+      { branchSha, evidenceSha: evidence.delivery_sha },
+    );
+  }
+
+  const problems: string[] = [];
+  if (evidence.outcome !== 'pass') {
+    const failed = [evidence.setup, ...evidence.commands].filter((c) => c !== null && c.result === 'fail').map((c) => c?.name);
+    problems.push(`host validation failed (${failed.join(', ')})`);
+  }
+  const registry = await loadValidationRegistry(dir);
+  if (!registry.ok) return registry;
+  const current = validationRegistryFingerprint(registry.data);
+  if (current !== evidence.registry_fingerprint) {
+    problems.push(
+      `validation registry changed since the evidence was recorded (evidence ${evidence.registry_fingerprint}, current ${current}); re-run derive-review to revalidate`,
+    );
+  }
+  return ok({ sha: evidence.delivery_sha, evidence, problems });
+}
+
+/**
+ * Write and commit the override provenance record (A2 R8) before merging.
+ * Fail-closed: if the record cannot be committed, the file is removed and
+ * the merge is refused.
+ */
+async function commitOverrideRecord(
+  dir: string,
+  handoffId: string,
+  reviewId: string,
+  override: MergeOverride,
+  gate: ValidationGate,
+): Promise<DispatchResult<string>> {
+  const relativePath = `wiki/handoffs/${handoffId}.merge-override.json`;
+  const path = join(dir, relativePath);
+  const record = {
+    schema_version: 1,
+    handoff_id: handoffId,
+    review_id: reviewId,
+    merged_sha: gate.sha,
+    run_id: gate.evidence?.run_id ?? null,
+    reason: override.reason,
+    actor: override.actor,
+    actor_authenticated: false,
+    surface: override.surface,
+    problems: gate.problems,
+    evidence:
+      gate.evidence === null
+        ? null
+        : {
+            outcome: gate.evidence.outcome,
+            registry_fingerprint: gate.evidence.registry_fingerprint,
+            results: [gate.evidence.setup, ...gate.evidence.commands]
+              .filter((c) => c !== null)
+              .map((c) => ({ name: c?.name, result: c?.result, exit_code: c?.exit_code, timed_out: c?.timed_out })),
+          },
+    recorded_at: new Date().toISOString(),
+  };
+  try {
+    await writeFile(path, `${JSON.stringify(record, null, 2)}\n`, 'utf8');
+  } catch (err) {
+    return fail('FILE_WRITE_ERROR', `Failed to write override record ${relativePath}; merge refused.`, err);
+  }
+  const committed = await commitPaths({
+    cwd: join(dir, 'wiki', 'handoffs'),
+    paths: [path],
+    message: `chore: merge-delivery override for ${handoffId} (${override.surface}, actor self-reported: ${override.actor})`,
+  });
+  if (!committed.ok || committed.data === null) {
+    await rm(path, { force: true }).catch(() => {});
+    return fail(
+      'FILE_WRITE_ERROR',
+      `Override record ${relativePath} could not be committed; merge refused (fail-closed). ${committed.ok ? 'Nothing was staged.' : committed.message}`,
+    );
+  }
+  return ok(relativePath);
 }
 
 /**
@@ -241,7 +398,7 @@ export async function mergeDelivery(opts: MergeDeliveryOpts): Promise<DispatchRe
   // 1. Review evidence must exist and report a passing outcome.
   const reviewCheck = await checkReviewEvidence(dir, branchName);
   if (!reviewCheck.ok) return reviewCheck;
-  const { reviewId, outcome, verdict } = reviewCheck.data;
+  const { reviewId, outcome, verdict, reviewedRun } = reviewCheck.data;
 
   // 2. Working tree must be clean.
   let statusOut: string;
@@ -258,15 +415,39 @@ export async function mergeDelivery(opts: MergeDeliveryOpts): Promise<DispatchRe
   }
 
   // 3. Delivery branch must exist.
+  let branchSha: string;
   try {
-    await execFile('git', ['rev-parse', '--verify', `refs/heads/${branchName}`], { cwd: dir });
+    const { stdout } = await execFile('git', ['rev-parse', '--verify', `refs/heads/${branchName}^{commit}`], { cwd: dir });
+    branchSha = stdout.trim();
   } catch {
     return fail('BAD_RECORD', `Branch ${branchName} does not exist`);
   }
 
-  // 4. Merge — fast-forward if possible, a real merge if needed, abort + refuse on conflict.
+  // 3b. Host validation evidence (WK-0294) — or an audited override.
+  const gateCheck = await checkValidationEvidence(dir, handoff_id, reviewId, reviewedRun, branchSha);
+  if (!gateCheck.ok) return gateCheck;
+  const gate = gateCheck.data;
+  let overrideRecord: string | undefined;
+  if (gate.problems.length > 0) {
+    const override = opts.override;
+    if (override === undefined) {
+      return fail(
+        'ADMISSION_FAILED',
+        `Host validation gate refused merge of ${branchName}: ${gate.problems.join('; ')}. Fix and re-derive, or merge with an override carrying a reason.`,
+        { problems: gate.problems },
+      );
+    }
+    if (override.reason.trim() === '' || override.actor.trim() === '') {
+      return fail('BAD_RECORD', 'A merge override requires a non-empty reason and actor.');
+    }
+    const recorded = await commitOverrideRecord(dir, handoff_id, reviewId, override, gate);
+    if (!recorded.ok) return recorded;
+    overrideRecord = recorded.data;
+  }
+
+  // 4. Merge the gated sha — fast-forward if possible, a real merge if needed, abort + refuse on conflict.
   try {
-    await execFile('git', ['merge', branchName], { cwd: dir });
+    await execFile('git', ['merge', gate.sha], { cwd: dir });
   } catch {
     await execFile('git', ['merge', '--abort'], { cwd: dir }).catch(() => {});
     return fail('ADMISSION_FAILED', `Merge conflict with ${branchName} — surface to operator`);
@@ -285,5 +466,14 @@ export async function mergeDelivery(opts: MergeDeliveryOpts): Promise<DispatchRe
   // construction fully merged; swallow defensively rather than throw.
   await execFile('git', ['branch', '-d', branchName], { cwd: dir }).catch(() => {});
 
-  return ok({ mergedBranch: branchName, mergeSha, reviewId, reviewOutcome: outcome, verdict });
+  return ok({
+    mergedBranch: branchName,
+    mergeSha,
+    reviewId,
+    reviewOutcome: outcome,
+    verdict,
+    gate: overrideRecord === undefined ? 'evidence' : 'override',
+    mergedSha: gate.sha,
+    ...(overrideRecord !== undefined ? { overrideRecord } : {}),
+  });
 }
