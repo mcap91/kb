@@ -166,6 +166,15 @@ export interface RecoveryBlockPayload {
   reviewed_controls: ReviewedControl[];
   /** kb extension (divergence 2 above). Always `null` for reviewer/redteam/researcher. */
   kind: RecoveryKind | null;
+  /**
+   * WK-0251: the full human-readable implementation report (markdown).
+   * Required in `contract/kb-dispatch-recovery.v1.schema.json` — the schema
+   * handed to claude/codex implement constrained decoding, where the final
+   * message cannot carry prose alongside this block — but optional+nullable
+   * HERE, same treatment as `summary`/`kind`: reviewer/redteam/researcher/
+   * explorer/pi blocks never see that schema and stay valid without it.
+   */
+  report: string | null;
 }
 
 export interface RecoveryDiagnostic {
@@ -233,8 +242,13 @@ const TOP_LEVEL_REQUIRED_FIELDS: readonly string[] = [
   'finding_counts',
   'reviewed_controls',
 ];
-/** `kind` (divergence 2) rides alongside `summary` as a top-level optional field. */
-const TOP_LEVEL_OPTIONAL_FIELDS: readonly string[] = ['summary', 'kind'];
+/**
+ * `kind` (divergence 2) rides alongside `summary` as a top-level optional
+ * field. `report` (WK-0251) joins them: required in the schema file handed
+ * to claude/codex implement runs, but optional+nullable here so every other
+ * role/family's block stays valid without it.
+ */
+const TOP_LEVEL_OPTIONAL_FIELDS: readonly string[] = ['summary', 'kind', 'report'];
 const FINDING_REQUIRED_FIELDS: readonly string[] = ['id', 'title', 'severity', 'blocking', 'affected_paths'];
 const FINDING_OPTIONAL_FIELDS: readonly string[] = ['control_id'];
 const AFFECTED_PATH_FIELDS: readonly string[] = ['path', 'line'];
@@ -781,6 +795,7 @@ function buildPayload(payload: Record<string, unknown>): RecoveryBlockPayload {
   const isWorker = payload.reported_role === 'worker';
   const kind = isWorker && isRecoveryKind(payload.kind) ? payload.kind : null;
   const summary = typeof payload.summary === 'string' ? payload.summary : null;
+  const report = typeof payload.report === 'string' ? payload.report : null;
 
   return {
     schema_version: KB_DISPATCH_RECOVERY_VERSION,
@@ -795,6 +810,7 @@ function buildPayload(payload: Record<string, unknown>): RecoveryBlockPayload {
       result: raw.result as 'pass' | 'fail',
     })),
     kind,
+    report,
   };
 }
 
@@ -853,6 +869,10 @@ export function validateRecoveryPayload(payload: unknown): RecoveryBlockEvidence
 
   if (hasOwn(payload, 'summary') && payload.summary !== null && typeof payload.summary !== 'string') {
     add('invalid_summary', 'summary must be a string or null when present', '$.summary');
+  }
+
+  if (hasOwn(payload, 'report') && payload.report !== null && typeof payload.report !== 'string') {
+    add('invalid_report', 'report must be a string or null when present', '$.report');
   }
 
   const findings = validateFindings(payload.findings, add);

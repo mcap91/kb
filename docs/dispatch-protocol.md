@@ -292,6 +292,14 @@ structured evidence (outcome, findings, kind) extracted from the worker's own la
 never changes the run's verdict; for `code_review`/`redteam` the block *is* the deliverable, and a
 missing or invalid block drives the response doc's verdict to `failed` (`missing_review_artifact`).
 
+WK-0251: the schema handed to claude/codex implement runs for constrained decoding (DEC-0037) requires a
+`report` field — the full human-readable report — because those backends' final message IS this JSON
+block, with no separate chat message left for prose. `## Worker Report` renders a valid block's non-empty
+`report` when present, falling back to the worker's raw final message otherwise (pi implement and every
+reviewer/redteam/explorer/research run, none of which populate `report`, are unaffected). `report` is
+optional+nullable in recovery-block.ts's validator for every role/family — only this one schema file
+requires it.
+
 The response doc's own frontmatter also stamps three fields distilled from that evidence (WK-0166), so
 downstream consumers (e.g. `merge-delivery`) can read a fact instead of re-parsing the rendered
 `## Worker Report` markdown:
@@ -299,8 +307,10 @@ downstream consumers (e.g. `merge-delivery`) can read a fact instead of re-parsi
 - `recovery_outcome` — the block's `reported_outcome` string (e.g. `passed_no_blocking_or_medium_findings`)
   when a valid block was extracted; empty string otherwise.
 - `recovery_valid` — boolean; whether a valid `kb-dispatch-recovery.v1` block was extracted at all.
-- `worker_report_chars` — the trimmed length of the worker's final assistant message; the fail-closed
-  "did a review/run actually happen" fact, independent of whether it carried a parseable block.
+- `worker_report_chars` — the trimmed length of what `## Worker Report` actually renders (a valid block's
+  `report` field when present, else the worker's final assistant message — WK-0251, same resolution the
+  section itself uses); the fail-closed "did a review/run actually happen" fact, independent of whether
+  it carried a parseable block.
 
 A response doc written before this change carries none of these three fields — consumers must refuse
 loudly on that absence rather than falling back to parsing the markdown body.

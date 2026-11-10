@@ -900,7 +900,7 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
 
   // 7. Assemble prompt
   logVerbose(verbose, 'assembling worker prompt');
-  const assembled = await assemblePrompt(handoff, dir);
+  const assembled = await assemblePrompt(handoff, dir, { family: model.family });
   if (!assembled.ok) return assembled;
 
   // 7b. Context budget gate (§7.13) — runs post-assembly (not in admission.ts)

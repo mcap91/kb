@@ -15,6 +15,7 @@ import { join } from 'node:path';
 import type { DispatchResult } from './errors.js';
 import { ok } from './errors.js';
 import type { Handoff } from './ho.js';
+import type { BackendFamily } from './repo-config.js';
 
 export interface AssembledPrompt {
   text: string;
@@ -146,7 +147,7 @@ const IMPLEMENT_FRAMING =
   'Do not run `git add`/`git commit` — `.git` is read-only; dispatch captures and commits ' +
   'your changes after you finish.';
 
-const WORKER_RECOVERY_EXAMPLE = recoveryBlockExample({
+const WORKER_RECOVERY_FIELDS = {
   schema_version: 'kb-dispatch-recovery.v1',
   reported_role: 'worker',
   reported_subject: '<handoff id>',
@@ -155,9 +156,9 @@ const WORKER_RECOVERY_EXAMPLE = recoveryBlockExample({
   findings: [],
   finding_counts: { total: 0, blocking: 0, critical: 0, high: 0, medium: 0, low: 0, info: 0 },
   reviewed_controls: [],
-});
+};
 
-const IMPLEMENT_RESPONSE_FORMAT =
+const IMPLEMENT_RESPONSE_FORMAT_BASE =
   'If you cannot finish, end your final message stating exactly what you needed and why you ' +
   'stopped.\n\n' +
   '## Recovery Signal\n\n' +
@@ -171,8 +172,29 @@ const IMPLEMENT_RESPONSE_FORMAT =
   '`dependency_missing` | `spec_unclear` | `partial_progress` | `resource_limit`. `findings`, ' +
   '`finding_counts`, and `reviewed_controls` are required fields but MAY be populated with ' +
   'real observations from your work (e.g. a pre-existing bug you noticed) — they are ' +
-  'evidence, not a verdict on your own work.\n\n' +
-  WORKER_RECOVERY_EXAMPLE;
+  'evidence, not a verdict on your own work.\n\n';
+
+/** Pi implement (no constrained decoding): prose and block share the final message, as before WK-0251. */
+const IMPLEMENT_RESPONSE_FORMAT = IMPLEMENT_RESPONSE_FORMAT_BASE + recoveryBlockExample(WORKER_RECOVERY_FIELDS);
+
+/**
+ * Claude/codex implement (WK-0251): DEC-0037 constrained decoding makes the
+ * final message schema-only JSON, so the report has no channel but the
+ * block's `report` field (required in contract/kb-dispatch-recovery.v1.schema.json).
+ */
+const CONSTRAINED_IMPLEMENT_RESPONSE_FORMAT =
+  IMPLEMENT_RESPONSE_FORMAT_BASE +
+  'Your final message IS this JSON block — there is no separate chat message for prose — so put ' +
+  'your full human-readable report in `report` (a markdown string): what you changed, ' +
+  'before/after quotes, the validation commands you ran with their output tails, and anything ' +
+  "this task's Expected Output asked for. `report` is the only place that report reaches the operator.\n\n" +
+  recoveryBlockExample({
+    ...WORKER_RECOVERY_FIELDS,
+    report:
+      '<the full human-readable report for this handoff: what changed, before/after quotes, ' +
+      "the validation commands you ran with their output tails, and anything this task's " +
+      'Expected Output asked for>',
+  });
 
 const REDTEAM_FRAMING =
   'Focus on the full adversarial surface: security holes, unhandled edge cases, spec gaps, ' +
@@ -208,7 +230,7 @@ const SIMPLE_RESPONSE_FORMAT =
 const CODE_REVIEW_RESPONSE_FORMAT = reviewerRecoveryFormat('reviewer');
 
 /** Mode framings are subagent profiles (posture), never guardrails — s6-rulings.md ruling 2. */
-function getModeParts(handoff: Handoff): ModeParts {
+function getModeParts(handoff: Handoff, opts: AssembleOpts): ModeParts {
   switch (handoff.mode) {
     case 'implement':
       return {
@@ -217,7 +239,9 @@ function getModeParts(handoff: Handoff): ModeParts {
         includeWriteScope: true,
         includeAcceptance: true,
         includeValidation: true,
-        responseFormat: IMPLEMENT_RESPONSE_FORMAT,
+        // pipeline.ts hands claude/codex implement runs the recovery schema (DEC-0037); pi gets none.
+        responseFormat:
+          opts.family !== undefined && opts.family !== 'pi' ? CONSTRAINED_IMPLEMENT_RESPONSE_FORMAT : IMPLEMENT_RESPONSE_FORMAT,
       };
     case 'code_review':
       return {
@@ -283,7 +307,16 @@ function getModeParts(handoff: Handoff): ModeParts {
  * missing/unreadable HO markdown file itself (the source of Context) fails the
  * assembly.
  */
-export async function assemblePrompt(handoff: Handoff, repoRoot: string): Promise<DispatchResult<AssembledPrompt>> {
+export interface AssembleOpts {
+  /** Backend family of the resolved model; selects the implement response format (WK-0251). Absent = pi-style. */
+  family?: BackendFamily;
+}
+
+export async function assemblePrompt(
+  handoff: Handoff,
+  repoRoot: string,
+  opts: AssembleOpts = {},
+): Promise<DispatchResult<AssembledPrompt>> {
   const hoPath = join(repoRoot, 'wiki', 'handoffs', `${handoff.id}.md`);
 
   let context: string;
@@ -294,7 +327,7 @@ export async function assemblePrompt(handoff: Handoff, repoRoot: string): Promis
     return fail(`Failed to read handoff markdown for context: ${hoPath}`, err);
   }
 
-  const modeParts = getModeParts(handoff);
+  const modeParts = getModeParts(handoff, opts);
 
   const sections: string[] = [
     modeParts.introLine,
