@@ -171,9 +171,56 @@ async function checkUncapturableWriteScope(handoff: Handoff, repoRoot: string): 
   return ok(null);
 }
 
-/** §7.5 `missing_read_first` — every declared read_first path must exist. */
+/**
+ * True when a non-wiki read_first entry resolves against the base_ref tree
+ * rather than the mother repo's working tree (WK-0258): a chained HO's clone is
+ * cut from base_ref, so that tree is the world its worker reads. Wiki entries
+ * always resolve against the wiki working tree.
+ */
+function resolvesAgainstBaseRef(handoff: Handoff, entry: string): boolean {
+  return handoff.base_ref !== null && !isWikiPath(entry);
+}
+
+/**
+ * §7.5 `missing_read_first` — every declared read_first path must exist where
+ * the worker will read it (WK-0258, DEC-0047 A3.4). Precedence: (1) wiki
+ * entries resolve against the wiki working tree; (2) a chained HO's non-wiki
+ * entries resolve against the base_ref tree (`git cat-file -e`), so a
+ * branch-only file is admitted and a main-only file — absent from the clone —
+ * is refused with guidance; nothing is copied into the clone; (3) every other
+ * entry resolves against the working tree. An unresolvable base_ref skips (2)
+ * so `checkBaseRef` refuses with its own BAD_BASE_REF.
+ */
 async function checkMissingReadFirst(handoff: Handoff, repoRootResolved: string): Promise<DispatchResult<null>> {
+  let baseRefResolvable = false;
+  // Only a dispatch-owned ref is resolved here; anything else is checkBaseRef's refusal.
+  if (handoff.base_ref !== null && handoff.base_ref.startsWith('dispatch/')) {
+    try {
+      await execFile('git', ['rev-parse', '--verify', '--quiet', `${handoff.base_ref}^{commit}`], { cwd: repoRootResolved });
+      baseRefResolvable = true;
+    } catch {
+      // Left to checkBaseRef, which names the bad ref precisely.
+    }
+  }
+
   for (const entry of handoff.read_first) {
+    if (resolvesAgainstBaseRef(handoff, entry)) {
+      if (!baseRefResolvable) continue;
+      const treePath = entry.replace(/\/+$/, '');
+      try {
+        await execFile('git', ['cat-file', '-e', `${handoff.base_ref}:${treePath}`], { cwd: repoRootResolved });
+      } catch {
+        return fail(
+          'MISSING_READ_FIRST',
+          `Handoff ${handoff.id} read_first entry "${entry}" does not exist in the base_ref tree (${handoff.base_ref}), ` +
+            `which is where the worker's clone is cut from. A file that exists only on main is not visible there: ` +
+            `dispatch artifacts (the implement response, validation evidence) reach the worker through the run-dir ` +
+            `evidence channel, and other content belongs in the HO context.`,
+          { entry, base_ref: handoff.base_ref },
+        );
+      }
+      continue;
+    }
     const resolved = resolve(repoRootResolved, entry);
     if (!(await pathExists(resolved))) {
       return fail('MISSING_READ_FIRST', `Handoff ${handoff.id} read_first entry "${entry}" does not exist.`, { entry });
@@ -236,7 +283,8 @@ async function porcelainPaths(cwd: string, paths: string[]): Promise<string[]> {
 
 /**
  * `uncommitted_read_first` (WK-0272, DEC-0047 A2 R9): every declared
- * read_first input the worker reads from a working tree must be committed.
+ * read_first input the worker reads from a working tree must be committed
+ * (a chained HO's non-wiki entries resolve against base_ref instead, WK-0258).
  * The clone is cut from a commit, so uncommitted code-repo bytes never reach
  * the worker; the nested-private wiki is bound live (DEC-0039), so its
  * uncommitted bytes reach the worker but no commit records them (the
@@ -248,7 +296,8 @@ async function porcelainPaths(cwd: string, paths: string[]): Promise<string[]> {
  * HO carries no stamp, so a commit is enough.
  */
 async function checkUncommittedReadFirst(handoff: Handoff, repoRoot: string): Promise<DispatchResult<null>> {
-  const entries = handoff.read_first;
+  // A base_ref-tree entry is committed by construction; the working tree is not what the worker reads.
+  const entries = handoff.read_first.filter((entry) => !resolvesAgainstBaseRef(handoff, entry));
   if (entries.length === 0) return ok(null);
 
   const wikiEntries = entries.filter(isWikiPath);

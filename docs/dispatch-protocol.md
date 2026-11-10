@@ -48,7 +48,7 @@ pipeline after the run (see "Capture and Provenance").
 | `credentials` | string[] | Names from `wiki/.dispatch/profiles.json`. Mutually exclusive with `web: true` |
 | `data_mounts` / `export_mounts` | string[] | Absolute host paths *outside* the repo root, bound `ro` / `rw` into the jail. Must already exist |
 | `runtime_envs` | string[] | Absolute paths to pre-installed runtime env roots (e.g. a conda/mamba env), implement-mode only (WK-0201) — see "Runtime Env Projection" below |
-| `read_first` | string[] | Repo-relative paths; each must exist at dispatch time (`MISSING_READ_FIRST`) |
+| `read_first` | string[] | Repo-relative paths; each must exist where the worker reads it at dispatch time (`MISSING_READ_FIRST`; see "Where read_first resolves") |
 | `vars` | string[] | `"KEY=value"` non-secret literal env for the worker |
 | `fixup_context` | string | Prior review findings injected verbatim on a re-dispatch |
 | `work_item` | string | `WK-####`; required for `mode: implement`, and its `wiki/issues/<id>.md` must exist |
@@ -86,7 +86,7 @@ here is a persisted review state — it all re-runs, every time, against the liv
 | `write_scope` empty outside `implement`, or `web: true` for `code_review`/`redteam` | `ENVELOPE_EXCEEDS_MODE` |
 | `implement` with empty `write_scope` | `MISSING_WRITE_SCOPE` |
 | Every `write_scope` entry is repo-relative, resolves inside the repo, and it or its parent exists | `STALE_WRITE_SCOPE` |
-| Every `read_first` entry exists | `MISSING_READ_FIRST` |
+| Every `read_first` entry exists — in the `base_ref` tree for a chained HO's non-wiki entries, else in the working tree | `MISSING_READ_FIRST` |
 | Repo is clean (`git status --porcelain` over `write_scope` paths only; with an empty `write_scope` — every advisory mode — the scan is skipped and declared-path staleness is covered by the base-drift gate) | `DIRTY_REPO` |
 | Every `read_first` entry is committed — no modified, staged, or untracked file under it (wiki entries checked in the wiki repo when nested-private); checked before base drift | `UNCOMMITTED_READ_FIRST` (see below) |
 | `base_ref`, if set, starts with `dispatch/` and exists | `BAD_BASE_REF` |
@@ -96,6 +96,20 @@ here is a persisted review state — it all re-runs, every time, against the liv
 | No `runtime_envs` entry overlaps a `export_mounts` entry in either direction | `RUNTIME_EXPORT_OVERLAP` |
 | `implement` declares a `work_item` whose `wiki/issues/<id>.md` exists | `WORK_ITEM_NOT_FOUND` |
 | Fresh-HEAD HOs: declared paths haven't changed since `base_sha`/`base_wiki_sha` | `BASE_DRIFT` (see below) |
+
+### Where read_first resolves (WK-0258)
+
+The worker's clone is cut from `base_ref` (or HEAD when it is null), so admission checks each `read_first`
+entry where the worker will read it:
+
+1. `wiki/…` entries resolve against the wiki working tree, in both wiki shapes.
+2. For a chained HO (`base_ref` set), every other entry resolves against the `base_ref` tree
+   (`git cat-file -e <base_ref>:<path>`). A file that exists only on that branch is admitted. A file
+   that exists only on `main` is not in the clone, so admission refuses `MISSING_READ_FIRST` with
+   guidance: dispatch artifacts (the implement response, validation evidence) reach the worker through
+   the run-dir evidence channel, and other content belongs in the HO context. Nothing is copied into the
+   clone.
+3. For an HO with `base_ref` null, every other entry resolves against the working tree.
 
 A few checks need facts the admission gate doesn't have yet and run later in the same `dispatch` call,
 still before any worker spawns: `MODEL_NOT_FOUND` / `EFFORT_UNSUPPORTED` (model+backend resolution),
@@ -326,7 +340,9 @@ For the wiki stamp, substitute `base_wiki_sha` / `git -C wiki rev-parse HEAD`. W
 **The fix.** Re-read the listed changes against the HO and its WK, fix and commit anything stale, then set the stamp to the current HEAD printed in the message and re-dispatch.
 
 **Uncommitted read_first inputs (WK-0272, DEC-0047 A2 R9).** Before the base-drift check, admission
-refuses `UNCOMMITTED_READ_FIRST` when any `read_first` entry has uncommitted changes, in either wiki shape.
+refuses `UNCOMMITTED_READ_FIRST` when any `read_first` entry the worker reads from a working tree has
+uncommitted changes, in either wiki shape. A chained HO's non-wiki entries resolve against `base_ref`
+(committed by construction) and are not checked.
 The clone is cut from a commit, so uncommitted code-repo bytes never reach the worker; a nested-private
 wiki is bound live, so its uncommitted bytes reach the worker, but the response's `wiki_commit` does not
 record them. The message names the files and the remedy:

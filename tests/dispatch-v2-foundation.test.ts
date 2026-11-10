@@ -305,6 +305,55 @@ describe('admission.ts — S0 admission checks', () => {
     expect(result.ok).toBe(true);
   });
 
+  it('admits a chained HO whose read_first file exists only on the base branch — WK-0258: the check must use the base_ref tree', async () => {
+    const defaultBranch = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: repoRoot }).toString().trim();
+    execFileSync('git', ['checkout', '-b', 'dispatch/HO-0001'], { cwd: repoRoot });
+    await mkdir(join(repoRoot, 'src'), { recursive: true });
+    await writeFile(join(repoRoot, 'src', 'branch-only.ts'), 'export const x = 1;\n', 'utf8');
+    execFileSync('git', ['add', '-A'], { cwd: repoRoot });
+    execFileSync('git', ['commit', '-m', 'branch-only file'], { cwd: repoRoot });
+    const branchSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repoRoot }).toString().trim();
+    execFileSync('git', ['checkout', defaultBranch], { cwd: repoRoot });
+
+    const result = await checkAdmission(
+      makeHandoff({
+        mode: 'code_review',
+        write_scope: [],
+        validation: ['review only'],
+        base_ref: 'dispatch/HO-0001',
+        base_sha: branchSha,
+        read_first: ['src/branch-only.ts'],
+      }),
+      repoRoot,
+    );
+    expect(result.ok).toBe(true);
+  });
+
+  it('refuses a chained HO whose read_first file exists only on main (absent from the base_ref tree), naming the evidence channel — WK-0258 / DEC-0047 A3.4', async () => {
+    execFileSync('git', ['branch', 'dispatch/HO-0001'], { cwd: repoRoot });
+    const branchSha = execFileSync('git', ['rev-parse', 'dispatch/HO-0001'], { cwd: repoRoot }).toString().trim();
+    await writeFile(join(repoRoot, 'main-only.md'), 'committed to main after the branch was cut\n', 'utf8');
+    execFileSync('git', ['add', 'main-only.md'], { cwd: repoRoot });
+    execFileSync('git', ['commit', '-m', 'main-only file'], { cwd: repoRoot });
+
+    const result = await checkAdmission(
+      makeHandoff({
+        mode: 'code_review',
+        write_scope: [],
+        validation: ['review only'],
+        base_ref: 'dispatch/HO-0001',
+        base_sha: branchSha,
+        read_first: ['main-only.md'],
+      }),
+      repoRoot,
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toBe('MISSING_READ_FIRST');
+    expect(result.message).toContain('base_ref tree');
+    expect(result.message).toContain('evidence channel');
+  });
+
   it('still refuses an implement handoff whose dirty file is inside write_scope', async () => {
     await mkdir(join(repoRoot, 'src'), { recursive: true });
     const dirtyFile = join(repoRoot, 'src', 'in-scope.txt');
