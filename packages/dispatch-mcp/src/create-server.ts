@@ -108,6 +108,8 @@ const INSTRUCTIONS = [
   '',
   '**`BASE_DRIFT` refusal:** declared files (write_scope, read_first, the WK) changed since the HO\'s `base_sha` (or `base_wiki_sha` in nested-private repos), or the stamp is missing. Re-read the listed changes against the HO and WK, fix and commit anything stale, then set the named field to the current HEAD printed in the message and re-dispatch. Update the stamp last, after committing fixes. This is autonomous, not an operator escalation.',
   '',
+  '**`REVIEWED_SHA_MISMATCH` refusal:** a derived code_review HO names the delivery head it was derived for (`reviewed_sha`), and its `base_ref` no longer points there. Do not edit the stamp. Re-run `derive-review` for the implement HO and dispatch the new review it creates.',
+  '',
   '**Autonomy boundary:** the orchestrator returns to the operator ONLY for: completion report, failure past fix-up budget, gate refusal requiring operator action, dead credential, or a genuine new design decision. Everything else is autonomous.',
   '',
   "**Session hygiene:** at session end, verify `git branch --list 'dispatch/*'` is empty. Failed-run branches persist as crime scene until operator disposition.",

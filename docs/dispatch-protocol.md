@@ -43,8 +43,8 @@ pipeline after the run (see "Capture and Provenance").
 |-------|------|-------|
 | `base_ref` | string \| null | `null` = fresh HEAD; otherwise must start with `dispatch/` and name an existing ref (chained review/fix-up HOs) |
 | `base_sha` / `base_wiki_sha` | string | Authoring-time commit stamps (WK-0152) — see "Base Drift Gate" |
-| `reviewed_run` | string | Run id a `code_review` HO targets (WK-0153 discharge evidence) |
-| `reviewed_sha` | string | Delivery-branch commit a derived `code_review` HO was derived for; `merge-delivery` requires the branch head to equal it (WK-0294) |
+| `reviewed_run` | string | Run id a `code_review` HO targets (WK-0153 discharge evidence). Must be a dispatch run id (`RUN-<uuid>`); anything else is `BAD_RECORD` at parse |
+| `reviewed_sha` | string | Delivery-branch commit a derived `code_review` HO was derived for (full sha; anything else is `BAD_RECORD` at parse). Dispatch refuses unless `base_ref` resolves to it; `merge-delivery` requires the branch head to equal it (WK-0294) |
 | `web` | boolean | Default `false`. Never allowed for `code_review`/`redteam` |
 | `credentials` | string[] | Names from `wiki/.dispatch/profiles.json`. Mutually exclusive with `web: true` |
 | `data_mounts` / `export_mounts` | string[] | Absolute host paths *outside* the repo root, bound `ro` / `rw` into the jail. Must already exist |
@@ -96,6 +96,7 @@ here is a persisted review state — it all re-runs, every time, against the liv
 | Every `runtime_envs` entry canonicalizes (realpath) to an absolute, existing, mountable path that is not `$HOME` itself and has a `bin/` dir | `BAD_RUNTIME_ENV` |
 | No `runtime_envs` entry overlaps a `export_mounts` entry in either direction | `RUNTIME_EXPORT_OVERLAP` |
 | `implement` declares a `work_item` whose `wiki/issues/<id>.md` exists | `WORK_ITEM_NOT_FOUND` |
+| An HO carrying `reviewed_sha`: the commit it would clone (`base_ref`, else HEAD) is that sha — a derived review runs only against the head it was derived for | `REVIEWED_SHA_MISMATCH` |
 | Fresh-HEAD HOs: declared paths haven't changed since `base_sha`/`base_wiki_sha` | `BASE_DRIFT` (see below) |
 
 ### Where read_first resolves (WK-0258)
@@ -525,7 +526,7 @@ is the source list; a test fails if this table and that list disagree:
 | Phase | Codes |
 |-------|-------|
 | Handoff shape | `BAD_RECORD` |
-| Admission (repo-local) | `MISSING_WRITE_SCOPE`, `ENVELOPE_EXCEEDS_MODE`, `STALE_WRITE_SCOPE`, `WRITE_SCOPE_UNCAPTURABLE`, `MISSING_READ_FIRST`, `DIRTY_REPO`, `UNCOMMITTED_READ_FIRST`, `BAD_BASE_REF`, `BAD_DATA_MOUNT`, `BAD_RUNTIME_ENV`, `RUNTIME_EXPORT_OVERLAP`, `WORK_ITEM_NOT_FOUND`, `BASE_DRIFT`, `ADMISSION_FAILED` |
+| Admission (repo-local) | `MISSING_WRITE_SCOPE`, `ENVELOPE_EXCEEDS_MODE`, `STALE_WRITE_SCOPE`, `WRITE_SCOPE_UNCAPTURABLE`, `MISSING_READ_FIRST`, `DIRTY_REPO`, `UNCOMMITTED_READ_FIRST`, `BAD_BASE_REF`, `BAD_DATA_MOUNT`, `BAD_RUNTIME_ENV`, `RUNTIME_EXPORT_OVERLAP`, `WORK_ITEM_NOT_FOUND`, `REVIEWED_SHA_MISMATCH`, `BASE_DRIFT`, `ADMISSION_FAILED` |
 | Model/backend resolution | `MODEL_NOT_FOUND`, `EFFORT_UNSUPPORTED`, `NO_MODEL_DEFAULT`, `AMBIGUOUS_MODEL_DEFAULT`, `AMBIGUOUS_BACKEND` |
 | Credentials | `CREDENTIALS_WITH_WEB`, `UNKNOWN_PROFILE`, `CREDENTIAL_NOT_CONFIGURED` |
 | Host / prompt budget | `PREFLIGHT_FAILED`, `NO_ISOLATION_ROUTE`, `CLI_PATH_NOT_MOUNTABLE`, `CONTEXT_BUDGET_EXCEEDED` |

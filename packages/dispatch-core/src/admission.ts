@@ -23,7 +23,7 @@ import { promisify } from 'node:util';
 
 import type { DispatchResult } from './errors.js';
 import { fail, ok } from './errors.js';
-import type { Handoff, HandoffMode } from './ho.js';
+import { FULL_SHA, type Handoff, type HandoffMode } from './ho.js';
 import { probeWikiSource } from './wiki-source.js';
 import { validateWriteScopeChain } from './write-scope-chain.js';
 import { isMountableRoot } from './mountability.js';
@@ -540,7 +540,6 @@ export async function checkWorkItemExists(
   return ok(null);
 }
 
-const FULL_SHA = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 const MAX_LISTED_COMMITS = 20;
 
 function isWikiPath(entry: string): boolean {
@@ -741,6 +740,16 @@ export async function checkAdmission(handoff: Handoff, repoRoot: string): Promis
         ? `Failed to resolve base_ref "${handoff.base_ref}" via "git rev-parse --verify" in ${repoRoot}.`
         : `Failed to resolve HEAD via "git rev-parse HEAD" in ${repoRoot}.`,
       err,
+    );
+  }
+
+  // WK-0294 (HO-0220 F2): a derived review runs only against the head it was derived for.
+  if (handoff.reviewed_sha !== undefined && handoff.reviewed_sha !== baseSha) {
+    return fail(
+      'REVIEWED_SHA_MISMATCH',
+      `Handoff ${handoff.id} was derived for ${handoff.reviewed_sha}, but ${handoff.base_ref ?? 'HEAD'} is at ${baseSha}. ` +
+        'Re-run derive-review for the current head and dispatch the new review.',
+      { reviewed_sha: handoff.reviewed_sha, base_sha: baseSha },
     );
   }
 

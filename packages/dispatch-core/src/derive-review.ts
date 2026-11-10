@@ -27,6 +27,7 @@ import type { CreateHandoffOpts } from './types.js';
 import type { DispatchResult } from './errors.js';
 import { ok, fail } from './errors.js';
 import { renderValidationEvidence, runHostValidation, type ValidationEvidence } from './host-validation.js';
+import { isRunId } from './paths.js';
 import { loadValidationRegistry } from './repo-config.js';
 
 const execFile = promisify(execFileCb);
@@ -87,6 +88,7 @@ export async function deriveReview(opts: DeriveReviewOpts): Promise<DispatchResu
   }
   let latestCompletedAt = '';
   for (const runId of runIds) {
+    if (!isRunId(runId)) continue; // not a dispatch-minted run dir; never stamped (HO-0220 F1)
     try {
       const stateRaw = await readFile(join(runsDir, runId, 'state.json'), 'utf-8');
       const state = JSON.parse(stateRaw) as Record<string, unknown>;

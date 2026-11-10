@@ -31,13 +31,29 @@ import type { DispatchResult } from './errors.js';
 import { fail, ok } from './errors.js';
 import { buildBwrapPlan, withSecretMaskArgs } from './jail.js';
 import { isMountableRoot } from './mountability.js';
-import { getRunDir } from './paths.js';
+import { getRunDir, isRunId } from './paths.js';
 import { validationRegistryFingerprint, type ValidationRegistry } from './repo-config.js';
 import { writeJsonAtomic } from './run-state.js';
 import { spawnIsolated } from './spawn-isolated.js';
 
 /** File name of the authoritative evidence JSON inside a run dir. */
 export const VALIDATION_EVIDENCE_FILE = 'validation-evidence.json';
+
+/**
+ * Host-original evidence path for a run (WK-0294, HO-0220 F1). Every reader
+ * and writer builds the path here, and each refuses unless the handoff id is
+ * one path component and the run id is a dispatch-minted run id, so a forged
+ * stamp can never point the gate at another run's (worker-writable) dir.
+ */
+export function validationEvidencePath(dir: string, handoffId: string, runId: string): DispatchResult<string> {
+  if (handoffId === '' || handoffId === '.' || handoffId === '..' || /[/\\]/.test(handoffId)) {
+    return fail('BAD_RECORD', `Refusing evidence path for handoff id ${JSON.stringify(handoffId)}: not a single path component.`);
+  }
+  if (!isRunId(runId)) {
+    return fail('BAD_RECORD', `Refusing evidence path for run id ${JSON.stringify(runId)}: not a dispatch run id (RUN-<uuid>).`);
+  }
+  return ok(join(getRunDir(dir, handoffId, runId), VALIDATION_EVIDENCE_FILE));
+}
 
 /** Per-stream output tail kept in the evidence (bytes). */
 const OUTPUT_TAIL_BYTES = 16_384;
@@ -238,7 +254,9 @@ export async function runHostValidation(opts: RunHostValidationOpts): Promise<Di
     outcome: failed ? 'fail' : 'pass',
   };
 
-  const evidencePath = join(getRunDir(opts.dir, opts.handoffId, opts.runId), VALIDATION_EVIDENCE_FILE);
+  const pathCheck = validationEvidencePath(opts.dir, opts.handoffId, opts.runId);
+  if (!pathCheck.ok) return pathCheck;
+  const evidencePath = pathCheck.data;
   try {
     await writeJsonAtomic(evidencePath, evidence);
   } catch (err) {
@@ -314,7 +332,9 @@ export async function stageReviewEvidence(opts: {
   if (handoff.base_ref === null || !handoff.base_ref.startsWith('dispatch/')) return ok(null);
   const implementId = handoff.base_ref.slice('dispatch/'.length);
 
-  const source = join(getRunDir(opts.dir, implementId, handoff.reviewed_run), VALIDATION_EVIDENCE_FILE);
+  const sourceCheck = validationEvidencePath(opts.dir, implementId, handoff.reviewed_run);
+  if (!sourceCheck.ok) return sourceCheck;
+  const source = sourceCheck.data;
   const evidence = await readValidationEvidence(source);
   if (!evidence.ok) return evidence;
   if (evidence.data === null) {

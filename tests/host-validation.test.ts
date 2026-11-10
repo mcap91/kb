@@ -53,7 +53,7 @@ function git(cwd: string, ...args: string[]): string {
 }
 
 const HANDOFF_ID = 'HO-9294';
-const RUN_ID = 'RUN-9294';
+const RUN_ID = 'RUN-00000000-0000-4000-8000-000000000001';
 
 function registry(overrides: Partial<ValidationRegistry> = {}): ValidationRegistry {
   return { setup: null, commands: [], env: {}, runtime_paths: [], ...overrides };
@@ -385,7 +385,7 @@ describe.skipIf(!BWRAP_FUNCTIONAL)('derive-review -> merge-delivery with a real 
     git(repo, 'commit', '-q', '-m', `dispatch: ${id}`);
     const deliverySha = git(repo, 'rev-parse', 'HEAD');
     git(repo, 'checkout', '-q', '-');
-    const runDir = join(repo, '.agent-runs', 'runs', id, 'RUN-impl');
+    const runDir = join(repo, '.agent-runs', 'runs', id, RUN_ID);
     await mkdir(runDir, { recursive: true });
     await writeFile(
       join(runDir, 'state.json'),
@@ -395,7 +395,7 @@ describe.skipIf(!BWRAP_FUNCTIONAL)('derive-review -> merge-delivery with a real 
     const derived = await deriveReview({ dir: repo, handoff_id: id });
     expect(derived.ok).toBe(true);
     if (!derived.ok) return;
-    expect(derived.data.validation).toMatchObject({ delivery_sha: deliverySha, run_id: 'RUN-impl', outcome: 'fail' });
+    expect(derived.data.validation).toMatchObject({ delivery_sha: deliverySha, run_id: RUN_ID, outcome: 'fail' });
     expect(derived.data.validation.commands.map((c) => [c.name, c.result, c.exit_code])).toEqual([
       ['passes', 'pass', 0],
       ['fails', 'fail', 4],

@@ -330,7 +330,7 @@ describe('WK-0272 full path — create/derive then dispatch with no manual commi
     // The delivered run derive-review keys its evidence to (WK-0294); .agent-runs/ is runtime state, never committed.
     await writeFile(join(repo, '.gitignore'), '.agent-runs/\n');
     commitAll(repo, 'ignore run dirs');
-    const runDir = join(repo, '.agent-runs', 'runs', implement.data.handoffId, 'RUN-delivered');
+    const runDir = join(repo, '.agent-runs', 'runs', implement.data.handoffId, 'RUN-00000000-0000-4000-8000-000000000001');
     await mkdir(runDir, { recursive: true });
     await writeFile(
       join(runDir, 'state.json'),

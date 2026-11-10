@@ -57,7 +57,7 @@ function commitAll(dir: string, message: string): void {
 
 const IMPL = 'HO-9295';
 const REVIEW = 'HO-9296';
-const IMPL_RUN = 'RUN-impl';
+const IMPL_RUN = 'RUN-00000000-0000-4000-8000-000000000001';
 const RESPONSE_MARKER = 'IMPLEMENT-RESPONSE-BODY-9295';
 
 const REVIEW_HO = `---

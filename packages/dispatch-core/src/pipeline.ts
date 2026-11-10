@@ -78,7 +78,7 @@ import { writeResponseDoc, buildProvenanceWriteBack, type WorkerUsageDetail } fr
 import { commitArtifacts } from './commit-artifacts.js';
 import { stageReviewEvidence } from './host-validation.js';
 import { runPreflight } from './preflight.js';
-import { getRunDir } from './paths.js';
+import { getRunDir, isRunId } from './paths.js';
 import { loadProfilesConfig, loadBackendsTable, type BackendFamily, type EffortMapping } from './repo-config.js';
 import {
   resolveCredentials,
@@ -126,8 +126,6 @@ const CODEX_VENDOR_HOSTS: readonly string[] = [
 
 const WORKER_TIMEOUT_SECS = 1800;
 const WORKER_TIMEOUT_MS = WORKER_TIMEOUT_SECS * 1000;
-
-const VALID_RUN_ID = /^RUN-[0-9a-f-]{36}$/i;
 
 /**
  * WK-0125/DEC-0037: kb-owned location of the `kb-dispatch-recovery.v1` JSON
@@ -807,7 +805,7 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
 
   // 5. Run ID — injected by the background controller, or minted here for standalone callers.
   const runId = opts.runId ?? `RUN-${randomUUID()}`;
-  if (!VALID_RUN_ID.test(runId)) {
+  if (!isRunId(runId)) {
     return fail('PIPELINE_FAILED', `Invalid run id format: ${runId}`);
   }
 

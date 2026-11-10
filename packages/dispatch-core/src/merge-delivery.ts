@@ -60,8 +60,7 @@ import { commitPaths } from './commit-artifacts.js';
 import { parseHandoffContent, type Handoff } from './ho.js';
 import type { DispatchResult } from './errors.js';
 import { ok, fail } from './errors.js';
-import { VALIDATION_EVIDENCE_FILE, readValidationEvidence, type ValidationEvidence } from './host-validation.js';
-import { getRunDir } from './paths.js';
+import { readValidationEvidence, validationEvidencePath, type ValidationEvidence } from './host-validation.js';
 import { loadValidationRegistry, validationRegistryFingerprint } from './repo-config.js';
 
 const execFile = promisify(execFileCb);
@@ -319,7 +318,9 @@ async function checkValidationEvidence(
     return unbound(`review ${reviewId} carries no reviewed_sha stamp, so it is not bound to a delivery commit (derive the review with derive-review)`);
   }
 
-  const evidencePath = join(getRunDir(dir, handoffId, reviewedRun), VALIDATION_EVIDENCE_FILE);
+  const pathCheck = validationEvidencePath(dir, handoffId, reviewedRun);
+  if (!pathCheck.ok) return pathCheck;
+  const evidencePath = pathCheck.data;
   const read = await readValidationEvidence(evidencePath);
   if (!read.ok) return unbound(`host validation evidence is unreadable: ${read.message}`);
   const evidence = read.data;

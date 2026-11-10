@@ -81,7 +81,7 @@ async function createDeliveryBranch(dir: string, handoffId: string): Promise<voi
   await writeEvidence(dir, handoffId, {});
 }
 
-const REVIEWED_RUN = 'RUN-0001';
+const REVIEWED_RUN = 'RUN-00000000-0000-4000-8000-000000000001';
 /** Replaced with the delivery sha by `createDeliveryBranch`, which runs after the review HO is written. */
 const REVIEWED_SHA_STAMP = '__REVIEWED_SHA__';
 
@@ -551,6 +551,8 @@ describe('mergeDelivery (WK-0132 Slice 3)', () => {
           'Code review: Implement thing without a branch',
           'dispatch/HO-0006',
           'WK-0004',
+          REVIEWED_RUN,
+          'a'.repeat(40), // derived for a head whose branch is since gone
         ),
         'wiki/handoffs/HO-0007.response.md': makeReviewResponse('no_findings', 'HO-0006', false),
       },
@@ -1094,6 +1096,29 @@ describe('mergeDelivery host validation gate (WK-0294, DEC-0047 A1.2 / A2 R6 R8 
     if (result.ok) return;
     expect(result.error).toBe('ADMISSION_FAILED');
     expect(result.message).toContain('no reviewed_sha stamp');
+  });
+
+  // Why: HO-0220 F1 — a forged reviewed_run must never point the gate at another run's worker-writable dir.
+  it('refuses a traversal reviewed_run aimed at planted passing evidence, with no override record', async () => {
+    const planted = '../HO-0003/RUN-00000000-0000-4000-8000-000000000002';
+    await writeAndCommit(
+      repoDir,
+      {
+        'wiki/handoffs/HO-0001.md': makeImplementHO('HO-0001', 'Implement thing', 'WK-0001'),
+        'wiki/handoffs/HO-0002.md': makeReviewHO('HO-0002', 'Code review', 'dispatch/HO-0001', 'WK-0001', planted),
+        'wiki/handoffs/HO-0002.response.md': makeReviewResponse('no_findings', 'HO-0001', false),
+      },
+      'add HOs',
+    );
+    await createDeliveryBranch(repoDir, 'HO-0001');
+    await writeEvidence(repoDir, 'HO-0001', { outcome: 'fail', commands: [failingCommand] });
+    // Lands in .agent-runs/runs/HO-0003/<run>/ — a run dir another HO's worker can write.
+    await writeEvidence(repoDir, 'HO-0001', { run_id: planted }, planted);
+    const before = await headSha(repoDir);
+    const result = await mergeDelivery({ dir: repoDir, handoff_id: 'HO-0001' });
+    expect(result.ok).toBe(false);
+    expect(await headSha(repoDir)).toBe(before);
+    expect(await branchExists(repoDir, 'dispatch/HO-0001')).toBe(true);
   });
 
   // Why: review F3 — the override record must name the run the review was bound to even when its evidence is gone.
