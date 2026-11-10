@@ -58,9 +58,10 @@ read-only. Budget: at most four search subagents.
 
 Invoking `/resolve` is the operator's approval for these read-only subagents and the one in
 step 5; they are not pipeline work, so a rule against spawning subagents does not cover
-them — unless the repo or operator says otherwise, in which case that rule wins and you
-route via kb-dispatch. If kb-dispatch is installed, you may run them as kb-dispatch handoffs
-instead: `explore_code` for code, `research` for the web.
+them — unless the repo or operator says otherwise, in which case that rule wins. If
+kb-dispatch is installed, run them as kb-dispatch handoffs by default: `explore_code` for
+code, `research` for the web. In-session subagents are the fallback for repos without
+kb-dispatch.
 
 /resolve is for host-side interactive seats (planner, interactive orchestrator, overseer);
 jailed workers and the headless orchestrator do not invoke it.
