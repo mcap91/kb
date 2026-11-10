@@ -246,6 +246,23 @@ printf '${tailMarker}'
       expect(retainedBytes).toBeGreaterThanOrEqual(1_048_576);
       expect(retainedBytes).toBeLessThan(fillerBytes);
     });
+
+    // Why: same class as review F2 — a head cap is a bound; one write larger than the cap must not slip through whole.
+    it('bounds a single chunk larger than the cap to its first cap bytes (head mode)', async () => {
+      const cap = 16_384;
+      const headMarker = 'HEAD_MARKER_SINGLE_WRITE_BEGIN';
+      // One 64 KiB write() — node reads a pipe in 64 KiB chunks, so the capture sees a chunk far larger than the cap.
+      await installFakeBwrap(`#!${process.execPath}
+process.stdout.write('${headMarker}' + 'A'.repeat(65_536 - ${headMarker.length}));
+`);
+      const result = await spawnIsolated(planWithFakeBwrap(), { timeoutMs: 5000, maxCaptureBytes: cap });
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.data.truncated).toBe(true);
+      expect(result.data.stdout.startsWith(headMarker)).toBe(true);
+      expect(Buffer.byteLength(result.data.stdout, 'utf8')).toBe(cap);
+    });
   });
 
   // ---------------------------------------------------------------------------

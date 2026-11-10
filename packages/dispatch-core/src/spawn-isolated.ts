@@ -96,8 +96,19 @@ function boundedHeadCapture(cap: number) {
         truncated = true;
         return;
       }
+      const bytes = Buffer.from(str, 'utf8');
+      const room = cap - retained;
+      if (bytes.length > room) {
+        // The chunk crosses the cap: keep only its first `room` bytes, ending on a UTF-8 character boundary.
+        let end = room;
+        while (end > 0 && ((bytes[end] ?? 0) & 0xc0) === 0x80) end -= 1;
+        chunks.push(bytes.subarray(0, end).toString('utf8'));
+        retained = cap; // closed: nothing after the cut may be appended, even if a boundary step left room
+        truncated = true;
+        return;
+      }
       chunks.push(str);
-      retained += Buffer.byteLength(str, 'utf8');
+      retained += bytes.length;
       if (retained >= cap) truncated = true;
     },
     text: (): string => chunks.join(''),
