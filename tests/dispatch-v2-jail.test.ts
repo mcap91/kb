@@ -1012,6 +1012,14 @@ describe('buildJailArgs / buildBwrapPlan — resolver bind for networked jails (
   let resolvSymlink: string;
   let regularFile: string;
   let danglingSymlink: string;
+  // Hermetic "no bind expected" baseline target for every comparison below: a
+  // path inside the fixture dir that is deliberately never created, so
+  // `resolveResolvBindTarget`'s `lstatSync` always throws ENOENT and returns
+  // null (no bind) — never falling through to the production default of the
+  // host's real /etc/resolv.conf (WK-0301 fix-up: that default coupled every
+  // "no extra bind" comparison to whatever the host's layout happened to be,
+  // e.g. an out-of-root symlink on WSL2).
+  let noBindBaseline: string;
 
   beforeEach(async () => {
     fixtureDir = await mkdtemp(join(tmpdir(), 'kb-resolv-fixture-'));
@@ -1027,6 +1035,8 @@ describe('buildJailArgs / buildBwrapPlan — resolver bind for networked jails (
 
     danglingSymlink = join(fixtureDir, 'dangling-resolv.conf');
     await symlink(join(fixtureDir, 'does-not-exist', 'resolv.conf'), danglingSymlink);
+
+    noBindBaseline = join(fixtureDir, 'no-resolv-here.conf'); // never created
   });
 
   afterEach(async () => {
@@ -1051,7 +1061,7 @@ describe('buildJailArgs / buildBwrapPlan — resolver bind for networked jails (
 
   it('regular-file layout: a jail that keeps network adds no extra bind and is otherwise unchanged', () => {
     const withResolv = buildJailArgs({ clonePath, unshareNet: false, resolvConfPath: regularFile });
-    const withoutResolv = buildJailArgs({ clonePath, unshareNet: false });
+    const withoutResolv = buildJailArgs({ clonePath, unshareNet: false, resolvConfPath: noBindBaseline });
     expect(withResolv.argv).toEqual(withoutResolv.argv);
   });
 
@@ -1071,7 +1081,7 @@ describe('buildJailArgs / buildBwrapPlan — resolver bind for networked jails (
 
   it('dangling target on the host: no bind is added, so bwrap itself is never asked to fail on it', () => {
     const withDangling = buildJailArgs({ clonePath, unshareNet: false, resolvConfPath: danglingSymlink });
-    const withoutResolv = buildJailArgs({ clonePath, unshareNet: false });
+    const withoutResolv = buildJailArgs({ clonePath, unshareNet: false, resolvConfPath: noBindBaseline });
     expect(withDangling.argv).toEqual(withoutResolv.argv);
   });
 
@@ -1082,7 +1092,7 @@ describe('buildJailArgs / buildBwrapPlan — resolver bind for networked jails (
     const underRootSymlink = join(fixtureDir, 'under-root-resolv.conf');
     await symlink(target, underRootSymlink);
     const withResolv = buildJailArgs({ clonePath, unshareNet: false, resolvConfPath: underRootSymlink });
-    const withoutResolv = buildJailArgs({ clonePath, unshareNet: false });
+    const withoutResolv = buildJailArgs({ clonePath, unshareNet: false, resolvConfPath: noBindBaseline });
     expect(withResolv.argv).toEqual(withoutResolv.argv);
   });
 });
