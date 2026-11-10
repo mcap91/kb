@@ -37,6 +37,7 @@ export interface Handoff {
   base_sha?: string; // WK-0152: commit this fresh-HEAD HO was checked against; admission's base-drift gate diffs declared paths from here
   base_wiki_sha?: string; // WK-0152: nested-private wiki repo's commit this HO was checked against
   reviewed_run?: string; // Run id this review targets (WK-0153 discharge evidence)
+  reviewed_sha?: string; // Delivery-branch commit this review was derived for; merge requires it to equal the branch head (WK-0294 F1)
   web: boolean;
   credentials: string[];
   data_mounts: string[];
@@ -287,6 +288,7 @@ export function parseHandoffContent(content: string, filename: string): Dispatch
   if (typeof raw.branch === 'string') handoff.branch = raw.branch;
   if (typeof raw.response === 'string') handoff.response = raw.response;
   if (typeof raw.reviewed_run === 'string') handoff.reviewed_run = raw.reviewed_run;
+  if (typeof raw.reviewed_sha === 'string') handoff.reviewed_sha = raw.reviewed_sha;
 
   return ok(handoff);
 }

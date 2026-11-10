@@ -151,6 +151,7 @@ export async function deriveReview(opts: DeriveReviewOpts): Promise<DispatchResu
     base_ref: `dispatch/${implement.id}`,
     vars: implement.vars,
     reviewed_run: reviewedRunId,
+    reviewed_sha: deliverySha,
     context: `### Host Validation Evidence\n\n${renderValidationEvidence(validation.data)}`,
   };
 

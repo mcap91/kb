@@ -274,6 +274,10 @@ describe('deriveReview — WK-0132 Slice 2', () => {
       const content = await readFile(result.data.reviewPath, 'utf8');
       expect(content).toContain('### Host Validation Evidence');
       expect(content).toContain(sha);
+      // Review F1: the review is bound to the head it was derived for; merge requires the branch to still be there.
+      const parsed = await parseHandoff(result.data.reviewPath);
+      if (!parsed.ok) throw new Error(parsed.message);
+      expect(parsed.data.reviewed_sha).toBe(sha);
     });
 
     // Why: HO validation strings are untrusted input — the host never runs them (A1 ruling 1, A2 R6).

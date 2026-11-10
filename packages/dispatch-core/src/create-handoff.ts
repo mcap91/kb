@@ -123,6 +123,7 @@ export function renderHandoff(id: string, opts: CreateHandoffOpts, stamps: Hando
     ...listField('runtime_envs', opts.runtime_envs ?? []),
     ...listField('vars', opts.vars ?? []),
     ...(opts.reviewed_run ? [`reviewed_run: ${quote(opts.reviewed_run)}`] : []),
+    ...(opts.reviewed_sha ? [`reviewed_sha: ${quote(opts.reviewed_sha)}`] : []),
     '---',
     '',
     `# ${id}: ${opts.title}`,

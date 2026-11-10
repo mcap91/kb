@@ -271,6 +271,23 @@ printf '${tailMarker}' 1>&2
       expect(result.data.stderr.endsWith(tailMarker)).toBe(true);
       expect(Buffer.byteLength(result.data.stderr, 'utf8')).toBeLessThan(fillerBytes);
     });
+
+    // Why: WK-0294 review F2 — a tail cap is a bound; one write larger than the cap must not slip through whole.
+    it('bounds a single chunk larger than the cap to its last cap bytes (tail mode)', async () => {
+      const cap = 16_384;
+      const tailMarker = 'TAIL_MARKER_SINGLE_WRITE_END';
+      // One 64 KiB write() — node reads a pipe in 64 KiB chunks, so the capture sees a chunk far larger than the cap.
+      await installFakeBwrap(`#!${process.execPath}
+process.stdout.write('A'.repeat(65_536 - ${tailMarker.length}) + '${tailMarker}');
+`);
+      const result = await spawnIsolated(planWithFakeBwrap(), { timeoutMs: 5000, maxCaptureBytes: cap, stdoutCapture: 'tail' });
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.data.truncated).toBe(true);
+      expect(result.data.stdout.endsWith(tailMarker)).toBe(true);
+      expect(Buffer.byteLength(result.data.stdout, 'utf8')).toBe(cap);
+    });
   });
 
   // ---------------------------------------------------------------------------

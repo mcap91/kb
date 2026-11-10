@@ -28,12 +28,15 @@
  *   2. The working tree is clean (`git status --porcelain` empty).
  *   3. Branch `dispatch/<handoff_id>` exists as a local branch.
  *   3b. Host validation evidence (WK-0294, DEC-0047 A1 ruling 2, A2 R6/R8,
- *      A4.1/A4.5): the evidence JSON in the implement run dir named by the
- *      review's `reviewed_run` stamp — the host original, never a jail copy
- *      — exists, belongs to that run, carries the branch head's sha, passed,
- *      and was produced by the current registry (fingerprint). A branch that
- *      moved past the evidence sha always refuses. Missing, failing, or
- *      stale-registry evidence refuses unless the caller passes an
+ *      A4.1/A4.5): the review's `reviewed_sha` stamp equals the branch head,
+ *      and the evidence JSON in the implement run dir named by the review's
+ *      `reviewed_run` stamp — the host original, never a jail copy — exists,
+ *      belongs to that run, carries the same sha, passed, and was produced by
+ *      the current registry (fingerprint). A branch head that differs from
+ *      the review's sha or the evidence sha always refuses: re-validating the
+ *      same run for a new head overwrites its evidence, so the evidence alone
+ *      cannot prove which head a review saw. Missing stamps, or missing,
+ *      failing, or stale-registry evidence, refuse unless the caller passes an
  *      `override` with a reason; the override's provenance is committed
  *      fail-closed (isolated index) before the merge, so an override merge
  *      is distinguishable from a gated one in history.
@@ -188,7 +191,15 @@ export function selectLatestReview(candidates: Handoff[]): Handoff | null {
 async function checkReviewEvidence(
   dir: string,
   branchName: string,
-): Promise<DispatchResult<{ reviewId: string; outcome: string; verdict: 'structured' | 'advisory'; reviewedRun: string | undefined }>> {
+): Promise<
+  DispatchResult<{
+    reviewId: string;
+    outcome: string;
+    verdict: 'structured' | 'advisory';
+    reviewedRun: string | undefined;
+    reviewedSha: string | undefined;
+  }>
+> {
   const handoffsDir = join(dir, 'wiki', 'handoffs');
 
   let files: string[];
@@ -222,6 +233,7 @@ async function checkReviewEvidence(
   }
   const reviewId = reviewHandoff.id;
   const reviewedRun = reviewHandoff.reviewed_run;
+  const reviewedSha = reviewHandoff.reviewed_sha;
 
   const reviewResponsePath = join(handoffsDir, `${reviewId}.response.md`);
   let reviewResponseContent: string;
@@ -246,7 +258,7 @@ async function checkReviewEvidence(
 
   if (recoveryValid === true) {
     if (recoveryOutcome !== undefined && PASSING_OUTCOMES.includes(recoveryOutcome)) {
-      return ok({ reviewId, outcome: recoveryOutcome, verdict: 'structured' as const, reviewedRun });
+      return ok({ reviewId, outcome: recoveryOutcome, verdict: 'structured' as const, reviewedRun, reviewedSha });
     }
     return fail('ADMISSION_FAILED', `Review ${reviewId} outcome is "${recoveryOutcome}" — merge blocked`);
   }
@@ -256,7 +268,7 @@ async function checkReviewEvidence(
   // as the response doc has real review content; only a genuinely empty report (no
   // evidence a review ran at all) fails closed.
   if ((workerReportChars ?? 0) > 0) {
-    return ok({ reviewId, outcome: 'advisory', verdict: 'advisory' as const, reviewedRun });
+    return ok({ reviewId, outcome: 'advisory', verdict: 'advisory' as const, reviewedRun, reviewedSha });
   }
 
   return fail('ADMISSION_FAILED', `Review ${reviewId} response is empty — no evidence of a completed review`);
@@ -268,41 +280,52 @@ interface ValidationGate {
   /** Overridable gate failures; empty = the evidence gates the merge open. */
   problems: string[];
   evidence: ValidationEvidence | null;
+  /** The review's `reviewed_run` stamp, recorded in an override whether or not evidence was found. */
+  reviewedRun: string | null;
 }
 
 /**
  * Host-validation gate (WK-0294). Reads only the host original in the
- * implement run dir (A4.1). A branch head that differs from the evidence sha
- * is a hard refusal — the reviewed commit is not what would merge; re-derive.
+ * implement run dir (A4.1). A branch head that differs from the review's
+ * `reviewed_sha` or the evidence sha is a hard refusal — the reviewed commit
+ * is not what would merge; re-derive.
  */
 async function checkValidationEvidence(
   dir: string,
   handoffId: string,
   reviewId: string,
-  reviewedRun: string | undefined,
+  reviewed: { run: string | undefined; sha: string | undefined },
   branchSha: string,
 ): Promise<DispatchResult<ValidationGate>> {
+  if (reviewed.sha !== undefined && reviewed.sha !== branchSha) {
+    return fail(
+      'ADMISSION_FAILED',
+      `dispatch/${handoffId} is at ${branchSha}, but review ${reviewId} was derived for ${reviewed.sha} — the branch moved after the review was derived. Re-run derive-review and review again; an override cannot merge an unreviewed head.`,
+      { branchSha, reviewedSha: reviewed.sha },
+    );
+  }
+  const reviewedRun = reviewed.run;
   if (reviewedRun === undefined) {
     return ok({
       sha: branchSha,
       evidence: null,
+      reviewedRun: null,
       problems: [`review ${reviewId} carries no reviewed_run stamp, so no host validation evidence is bound to it (derive the review with derive-review)`],
     });
+  }
+  const unbound = (problem: string): DispatchResult<ValidationGate> =>
+    ok({ sha: branchSha, evidence: null, reviewedRun, problems: [problem] });
+  if (reviewed.sha === undefined) {
+    return unbound(`review ${reviewId} carries no reviewed_sha stamp, so it is not bound to a delivery commit (derive the review with derive-review)`);
   }
 
   const evidencePath = join(getRunDir(dir, handoffId, reviewedRun), VALIDATION_EVIDENCE_FILE);
   const read = await readValidationEvidence(evidencePath);
-  if (!read.ok) return ok({ sha: branchSha, evidence: null, problems: [`host validation evidence is unreadable: ${read.message}`] });
+  if (!read.ok) return unbound(`host validation evidence is unreadable: ${read.message}`);
   const evidence = read.data;
-  if (evidence === null) {
-    return ok({ sha: branchSha, evidence: null, problems: [`no host validation evidence at ${evidencePath} (run derive-review)`] });
-  }
+  if (evidence === null) return unbound(`no host validation evidence at ${evidencePath} (run derive-review)`);
   if (evidence.run_id !== reviewedRun) {
-    return ok({
-      sha: branchSha,
-      evidence: null,
-      problems: [`evidence belongs to run ${evidence.run_id}, but review ${reviewId} reviewed run ${reviewedRun}`],
-    });
+    return unbound(`evidence belongs to run ${evidence.run_id}, but review ${reviewId} reviewed run ${reviewedRun}`);
   }
   if (evidence.delivery_sha !== branchSha) {
     return fail(
@@ -325,7 +348,7 @@ async function checkValidationEvidence(
       `validation registry changed since the evidence was recorded (evidence ${evidence.registry_fingerprint}, current ${current}); re-run derive-review to revalidate`,
     );
   }
-  return ok({ sha: evidence.delivery_sha, evidence, problems });
+  return ok({ sha: evidence.delivery_sha, evidence, reviewedRun, problems });
 }
 
 /**
@@ -347,7 +370,7 @@ async function commitOverrideRecord(
     handoff_id: handoffId,
     review_id: reviewId,
     merged_sha: gate.sha,
-    run_id: gate.evidence?.run_id ?? null,
+    run_id: gate.reviewedRun,
     reason: override.reason,
     actor: override.actor,
     actor_authenticated: false,
@@ -398,7 +421,7 @@ export async function mergeDelivery(opts: MergeDeliveryOpts): Promise<DispatchRe
   // 1. Review evidence must exist and report a passing outcome.
   const reviewCheck = await checkReviewEvidence(dir, branchName);
   if (!reviewCheck.ok) return reviewCheck;
-  const { reviewId, outcome, verdict, reviewedRun } = reviewCheck.data;
+  const { reviewId, outcome, verdict, reviewedRun, reviewedSha } = reviewCheck.data;
 
   // 2. Working tree must be clean.
   let statusOut: string;
@@ -424,7 +447,7 @@ export async function mergeDelivery(opts: MergeDeliveryOpts): Promise<DispatchRe
   }
 
   // 3b. Host validation evidence (WK-0294) — or an audited override.
-  const gateCheck = await checkValidationEvidence(dir, handoff_id, reviewId, reviewedRun, branchSha);
+  const gateCheck = await checkValidationEvidence(dir, handoff_id, reviewId, { run: reviewedRun, sha: reviewedSha }, branchSha);
   if (!gateCheck.ok) return gateCheck;
   const gate = gateCheck.data;
   let overrideRecord: string | undefined;

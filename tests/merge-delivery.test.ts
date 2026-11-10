@@ -6,13 +6,15 @@
  * validation evidence passes (WK-0294) -> merge succeeds) plus the happy path
  * (fast-forward merge + branch delete). The shared fixtures model a derived
  * review: the review HO carries `reviewed_run`, and `createDeliveryBranch`
- * writes passing host evidence for the branch head into that run's dir. Real
+ * stamps the branch head into it as `reviewed_sha` (committed on the base,
+ * so these merges are real merges, as in a tracked-wiki repo) and writes
+ * passing host evidence for that head into the run's dir. Real
  * git repos in temp dirs — no personal/absolute paths in fixtures (WK-0043
  * rule).
  */
 import { describe, expect, it, beforeEach, afterEach } from 'vitest';
 import { execFile as execFileCallback } from 'node:child_process';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -51,10 +53,10 @@ async function writeAndCommit(dir: string, files: Record<string, string>, messag
 /**
  * Branches off the current HEAD (captured as the base branch to return to),
  * adds a delivered file, commits it as the "worker" commit, then checks back
- * out. Branching off current HEAD (rather than an earlier commit) keeps the
- * base branch a strict ancestor of the delivery branch, so the merge is
- * fast-forwardable — matches how `delivery.ts` lands worker commits in the
- * real pipeline.
+ * out — as `delivery.ts` lands worker commits in the real pipeline. Then
+ * does derive-review's part: stamps the delivery sha into every review HO
+ * for this branch (the `REVIEWED_SHA_STAMP` placeholder), commits that on
+ * the base, and writes passing host evidence for the delivery sha.
  */
 async function createDeliveryBranch(dir: string, handoffId: string): Promise<void> {
   const branchName = `dispatch/${handoffId}`;
@@ -64,11 +66,24 @@ async function createDeliveryBranch(dir: string, handoffId: string): Promise<voi
   await writeFile(join(dir, 'delivered-file.ts'), 'export const x = 1;\n');
   await execFile('git', ['add', '-A'], { cwd: dir });
   await execFile('git', ['commit', '-m', `dispatch: ${handoffId}`], { cwd: dir });
+  const deliverySha = (await execFile('git', ['rev-parse', 'HEAD'], { cwd: dir })).stdout.trim();
   await execFile('git', ['checkout', baseBranch], { cwd: dir });
+  const handoffsDir = join(dir, 'wiki', 'handoffs');
+  for (const file of await readdir(handoffsDir)) {
+    const content = await readFile(join(handoffsDir, file), 'utf8');
+    if (content.includes(`base_ref: ${branchName}\n`) && content.includes(REVIEWED_SHA_STAMP)) {
+      await writeFile(join(handoffsDir, file), content.replace(REVIEWED_SHA_STAMP, deliverySha));
+    }
+  }
+  if ((await execFile('git', ['status', '--porcelain'], { cwd: dir })).stdout.trim() !== '') {
+    await execFile('git', ['commit', '-a', '-m', `derive-review stamps for ${handoffId}`], { cwd: dir });
+  }
   await writeEvidence(dir, handoffId, {});
 }
 
 const REVIEWED_RUN = 'RUN-0001';
+/** Replaced with the delivery sha by `createDeliveryBranch`, which runs after the review HO is written. */
+const REVIEWED_SHA_STAMP = '__REVIEWED_SHA__';
 
 function evidencePath(dir: string, handoffId: string, runId = REVIEWED_RUN): string {
   return join(dir, '.agent-runs', 'runs', handoffId, runId, 'validation-evidence.json');
@@ -126,7 +141,14 @@ function makeImplementHO(id: string, title: string, workItem: string): string {
   ].join('\n');
 }
 
-function makeReviewHO(id: string, title: string, baseRef: string, workItem: string, reviewedRun: string | null = REVIEWED_RUN): string {
+function makeReviewHO(
+  id: string,
+  title: string,
+  baseRef: string,
+  workItem: string,
+  reviewedRun: string | null = REVIEWED_RUN,
+  reviewedSha: string | null = REVIEWED_SHA_STAMP,
+): string {
   return [
     '---',
     'schema_version: 1',
@@ -143,6 +165,7 @@ function makeReviewHO(id: string, title: string, baseRef: string, workItem: stri
     `work_item: "${workItem}"`,
     `base_ref: ${baseRef}`,
     ...(reviewedRun !== null ? [`reviewed_run: "${reviewedRun}"`] : []),
+    ...(reviewedSha !== null ? [`reviewed_sha: "${reviewedSha}"`] : []),
     '---',
     '',
     `# ${id}: ${title}`,
@@ -411,7 +434,7 @@ afterEach(async () => {
 });
 
 describe('mergeDelivery (WK-0132 Slice 3)', () => {
-  it('merges a fast-forwardable delivery branch and deletes it after a passing review', async () => {
+  it('merges a delivery branch and deletes it after a passing review', async () => {
     await writeAndCommit(
       repoDir,
       {
@@ -441,6 +464,41 @@ describe('mergeDelivery (WK-0132 Slice 3)', () => {
 
     // The delivery branch must be gone.
     expect(await branchExists(repoDir, 'dispatch/HO-0001')).toBe(false);
+  });
+
+  // The derived review's stamps live in the wiki repo, so the code repo's base is still an ancestor of the delivery.
+  it('fast-forwards a delivery in the nested-private wiki shape', async () => {
+    await writeFile(join(repoDir, '.gitignore'), '.agent-runs/\nwiki/\n');
+    await execFile('git', ['commit', '-q', '-a', '-m', 'ignore nested wiki'], { cwd: repoDir });
+    const wikiDir = join(repoDir, 'wiki');
+    await execFile('git', ['init', '-q', wikiDir]);
+    await execFile('git', ['config', 'user.email', 'test@test.com'], { cwd: wikiDir });
+    await execFile('git', ['config', 'user.name', 'Test'], { cwd: wikiDir });
+    await writeAndCommit(
+      wikiDir,
+      {
+        'handoffs/HO-0001.md': makeImplementHO('HO-0001', 'Implement thing', 'WK-0001'),
+        'handoffs/HO-0002.md': makeReviewHO('HO-0002', 'Code review: Implement thing', 'dispatch/HO-0001', 'WK-0001'),
+        'handoffs/HO-0002.response.md': makeReviewResponse('no_findings', 'HO-0001', false),
+      },
+      'add implement + review HOs',
+    );
+    const branchName = 'dispatch/HO-0001';
+    const base = (await execFile('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: repoDir })).stdout.trim();
+    await execFile('git', ['checkout', '-q', '-b', branchName], { cwd: repoDir });
+    await writeAndCommit(repoDir, { 'delivered-file.ts': 'export const x = 1;\n' }, 'dispatch: HO-0001');
+    const deliverySha = await headSha(repoDir);
+    await execFile('git', ['checkout', '-q', base], { cwd: repoDir });
+    const reviewPath = join(repoDir, 'wiki', 'handoffs', 'HO-0002.md');
+    await writeFile(reviewPath, (await readFile(reviewPath, 'utf8')).replace(REVIEWED_SHA_STAMP, deliverySha));
+    await execFile('git', ['commit', '-q', '-a', '-m', 'stamp'], { cwd: wikiDir });
+    await writeEvidence(repoDir, 'HO-0001', {});
+
+    const result = await mergeDelivery({ dir: repoDir, handoff_id: 'HO-0001' });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(`expected ok, got: ${result.error}: ${result.message}`);
+    expect(result.data.mergeSha).toBe(deliverySha);
+    expect(await branchExists(repoDir, branchName)).toBe(false);
   });
 
   it('refuses to merge when the review reports changes_requested', async () => {
@@ -968,7 +1026,7 @@ describe('mergeDelivery host validation gate (WK-0294, DEC-0047 A1.2 / A2 R6 R8 
   });
 
   // Why: A2 R6 — the reviewed commit must be what merges; a moved branch is never mergeable, even with an override.
-  it('refuses a branch that moved after validation, even with an override', async () => {
+  it('refuses a branch that moved after the review was derived, even with an override', async () => {
     await setupReviewedDelivery();
     const base = (await execFile('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: repoDir })).stdout.trim();
     await execFile('git', ['checkout', 'dispatch/HO-0001'], { cwd: repoDir });
@@ -981,7 +1039,77 @@ describe('mergeDelivery host validation gate (WK-0294, DEC-0047 A1.2 / A2 R6 R8 
     });
     expect(result.ok).toBe(false);
     if (result.ok) return;
+    expect(result.message).toContain('branch moved after the review was derived');
+  });
+
+  // Why: review F1 — re-validating the same run for a new head overwrites its evidence; the review must stay bound to the head it saw.
+  it('refuses head B under a passing review of head A after B was re-validated for the same run', async () => {
+    await setupReviewedDelivery();
+    const shaA = (await execFile('git', ['rev-parse', 'dispatch/HO-0001'], { cwd: repoDir })).stdout.trim();
+    const base = (await execFile('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: repoDir })).stdout.trim();
+    await execFile('git', ['checkout', 'dispatch/HO-0001'], { cwd: repoDir });
+    await writeAndCommit(repoDir, { 'late.ts': 'export const late = 1;\n' }, 'unreviewed commit B');
+    await execFile('git', ['checkout', base], { cwd: repoDir });
+    // A second derive-review of the same delivered run writes passing evidence for B over A's (derive-review then
+    // failed before writing its HO, or that HO was discarded) — the review of A stays the latest.
+    await writeEvidence(repoDir, 'HO-0001', {});
+    const before = await headSha(repoDir);
+    for (const override of [undefined, { reason: 'please', actor: 'operator', surface: 'api' as const }]) {
+      const result = await mergeDelivery({ dir: repoDir, handoff_id: 'HO-0001', ...(override ? { override } : {}) });
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error).toBe('ADMISSION_FAILED');
+      expect(result.message).toContain(`review HO-0002 was derived for ${shaA}`);
+    }
+    expect(await headSha(repoDir)).toBe(before);
+    expect(await branchExists(repoDir, 'dispatch/HO-0001')).toBe(true);
+  });
+
+  it('refuses evidence for a different sha than the review and branch head, even with an override', async () => {
+    await setupReviewedDelivery();
+    await writeEvidence(repoDir, 'HO-0001', { delivery_sha: 'f'.repeat(40) });
+    const result = await mergeDelivery({
+      dir: repoDir,
+      handoff_id: 'HO-0001',
+      override: { reason: 'please', actor: 'operator', surface: 'api' },
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
     expect(result.message).toContain('branch moved after validation');
+  });
+
+  it('refuses a review with no reviewed_sha stamp', async () => {
+    await writeAndCommit(
+      repoDir,
+      {
+        'wiki/handoffs/HO-0001.md': makeImplementHO('HO-0001', 'Implement thing', 'WK-0001'),
+        'wiki/handoffs/HO-0002.md': makeReviewHO('HO-0002', 'Code review', 'dispatch/HO-0001', 'WK-0001', REVIEWED_RUN, null),
+        'wiki/handoffs/HO-0002.response.md': makeReviewResponse('no_findings', 'HO-0001', false),
+      },
+      'add HOs',
+    );
+    await createDeliveryBranch(repoDir, 'HO-0001');
+    const result = await mergeDelivery({ dir: repoDir, handoff_id: 'HO-0001' });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toBe('ADMISSION_FAILED');
+    expect(result.message).toContain('no reviewed_sha stamp');
+  });
+
+  // Why: review F3 — the override record must name the run the review was bound to even when its evidence is gone.
+  it('records the reviewed run in an override over missing evidence', async () => {
+    await setupReviewedDelivery();
+    await rm(evidencePath(repoDir, 'HO-0001'));
+    const result = await mergeDelivery({
+      dir: repoDir,
+      handoff_id: 'HO-0001',
+      override: { reason: 'evidence dir was cleaned up', actor: 'operator', surface: 'api' },
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.gate).toBe('override');
+    const record = JSON.parse((await execFile('git', ['show', 'HEAD:wiki/handoffs/HO-0001.merge-override.json'], { cwd: repoDir })).stdout);
+    expect(record).toMatchObject({ run_id: REVIEWED_RUN, evidence: null });
   });
 
   // Why: A4.5 — evidence from a different registry is stale; revalidate or override.

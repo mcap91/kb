@@ -135,7 +135,15 @@ function boundedTailCapture(cap: number) {
         const dropped = chunks.shift();
         if (dropped !== undefined) bytes -= Buffer.byteLength(dropped, 'utf8');
       }
-      if (bytes > cap) truncated = true;
+      if (bytes > cap) {
+        // One chunk alone exceeds the cap: keep its last `cap` bytes, starting on a UTF-8 character boundary.
+        truncated = true;
+        const sole = Buffer.from(chunks[0] ?? '', 'utf8');
+        let start = sole.length - cap;
+        while (start < sole.length && ((sole[start] ?? 0) & 0xc0) === 0x80) start += 1;
+        chunks[0] = sole.subarray(start).toString('utf8');
+        bytes = sole.length - start;
+      }
     },
     text: (): string => chunks.join(''),
     get truncated(): boolean {

@@ -183,6 +183,7 @@ export interface CreateHandoffOpts {
   base_ref?: string;
   vars?: string[];
   reviewed_run?: string;  // Run id this review targets (WK-0153 discharge evidence)
+  reviewed_sha?: string;  // Delivery-branch commit this review was derived for (WK-0294 F1)
   verbose?: boolean;
 }
 

@@ -44,6 +44,7 @@ pipeline after the run (see "Capture and Provenance").
 | `base_ref` | string \| null | `null` = fresh HEAD; otherwise must start with `dispatch/` and name an existing ref (chained review/fix-up HOs) |
 | `base_sha` / `base_wiki_sha` | string | Authoring-time commit stamps (WK-0152) — see "Base Drift Gate" |
 | `reviewed_run` | string | Run id a `code_review` HO targets (WK-0153 discharge evidence) |
+| `reviewed_sha` | string | Delivery-branch commit a derived `code_review` HO was derived for; `merge-delivery` requires the branch head to equal it (WK-0294) |
 | `web` | boolean | Default `false`. Never allowed for `code_review`/`redteam` |
 | `credentials` | string[] | Names from `wiki/.dispatch/profiles.json`. Mutually exclusive with `web: true` |
 | `data_mounts` / `export_mounts` | string[] | Absolute host paths *outside* the repo root, bound `ro` / `rw` into the jail. Must already exist |
@@ -386,7 +387,8 @@ mode ceiling — never copied from implement), `base_ref=dispatch/<implement_id>
 `acceptance`/`validation`/`web`/`credentials`/`data_mounts`/`export_mounts`/`vars`/`work_item` copied
 from implement, `read_first` = implement's only (the response reaches the reviewer through its run dir,
 never `read_first` — DEC-0047 A4.4), `title` = `Code review: <implement_title>`, `reviewed_run` stamped
-to the implement's latest run whose outcome is `delivered` and that left a delivery branch, and a
+to the implement's latest run whose outcome is `delivered` and that left a delivery branch,
+`reviewed_sha` stamped to the delivery branch head that was validated, and a
 `### Host Validation Evidence` section rendered from the evidence JSON into the HO's Context. Acceptance
 text is copied verbatim, never rewritten. Does NOT auto-dispatch — the orchestrator dispatches separately
 (two-step review chain).
@@ -471,11 +473,14 @@ Preconditions (checked in order, fail-closed):
 3. Delivery branch exists
 4. Host validation evidence (WK-0294). The gate reads only the host original: the
    `validation-evidence.json` in the implement run dir named by the review's `reviewed_run`, never the
-   reviewer's copy. It refuses when the review has no `reviewed_run`, the evidence is missing or
-   unreadable, the evidence belongs to another run, the evidence `outcome` is `fail`, or the
+   reviewer's copy. It refuses when the review has no `reviewed_run` or `reviewed_sha`, the evidence is
+   missing or unreadable, the evidence belongs to another run, the evidence `outcome` is `fail`, or the
    `registry_fingerprint` differs from the current `validation.json` (revalidate by re-running
-   `derive-review`). An override can clear each of these. A delivery branch whose head is not the evidence
-   `delivery_sha` always refuses, because the reviewed commit is not what would merge; no override applies.
+   `derive-review`). An override can clear each of these. A delivery branch whose head is not the review's
+   `reviewed_sha` or the evidence `delivery_sha` always refuses, because the reviewed commit is not what
+   would merge; no override applies. The review's own stamp is the binding: re-running `derive-review`
+   for the same run overwrites that run's evidence, so evidence for a new head says nothing about which
+   head an older review saw.
 5. Merge succeeds (fast-forward or a real merge). The merge names the evidence sha, not the branch; it
    aborts and refuses on conflict
 
