@@ -1210,8 +1210,9 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
     const fingerprintExec = await execBash({ scriptContent: fingerprintLines.join('\n'), timeoutMs: 10_000 });
     const fingerprint = fingerprintExec.ok ? parseFingerprintOutput(fingerprintExec.data.stdout) : null;
 
-    // 12b. Worker env (D6 component 9: env-policy deny-list as the base,
-    // credential/vars/proxy vars layered on top — never the other way
+    // 12b. Worker env (D6 component 9, WK-0298: env-policy's allowlist-minted,
+    // deny-filtered host env as the base, credential/vars/proxy vars
+    // layered on top — never the other way
     // around, so an operator's own ambient HTTP_PROXY can never silently
     // survive into the jail alongside kb's relay address). PI_* vars are
     // Pi-only (T33) — codex/claude have no equivalent config-dir/offline env

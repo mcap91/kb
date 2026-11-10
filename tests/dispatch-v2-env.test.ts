@@ -78,18 +78,38 @@ describe('buildWorkerEnv — behavior-affecting', () => {
   });
 });
 
-describe('buildWorkerEnv — safe vars preserved', () => {
-  it('keeps ordinary shell/session vars, values included', () => {
-    const safeEnv = {
+describe('buildWorkerEnv — allowlisted vars preserved', () => {
+  it('keeps allowlisted shell/session vars, values included, and drops an unlisted EDITOR', () => {
+    const allowlisted = {
       HOME: '/home/worker',
       PATH: '/usr/local/bin:/usr/bin',
       USER: 'worker',
       LANG: 'en_US.UTF-8',
+      LC_ALL: 'en_US.UTF-8',
       TERM: 'xterm-256color',
       SHELL: '/bin/bash',
-      EDITOR: 'vim',
     };
-    expect(buildWorkerEnv({ inheritEnv: safeEnv })).toEqual(safeEnv);
+    expect(buildWorkerEnv({ inheritEnv: { ...allowlisted, EDITOR: 'vim' } })).toEqual(allowlisted);
+  });
+});
+
+describe('buildWorkerEnv — minted from the allowlist (WK-0298)', () => {
+  it('drops a secret whose name matches no deny pattern, and any other unlisted var', () => {
+    const result = buildWorkerEnv({
+      inheritEnv: {
+        DATABASE_URL: 'postgres://admin:hunter2@db.internal/prod',
+        MY_SERVICE_CONN: 'Server=db;Uid=admin;Pwd=hunter2',
+        HOME: '/home/worker',
+        PATH: '/usr/bin',
+      },
+    });
+    expect(result).toEqual({ HOME: '/home/worker', PATH: '/usr/bin' });
+  });
+
+  it('never mints TMPDIR — the caller pins it to the jail tmpfs', () => {
+    expect(buildWorkerEnv({ inheritEnv: { TMPDIR: '/host/tmp', HOME: '/home/worker' } })).toEqual({
+      HOME: '/home/worker',
+    });
   });
 });
 

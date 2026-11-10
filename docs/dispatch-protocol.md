@@ -138,6 +138,10 @@ HO's declared `data_mounts`/`export_mounts`. There is no whole-root bind and no 
   exactly what was declared.
 - **Secret masking** — a clone's own `.env` is masked to `/dev/null` and `.claude/` to a fresh tmpfs,
   so a committed secret or agent config in the mother repo's working tree never reaches the jail.
+- **Worker env** — minted from an allowlist: only `PATH`, `HOME`, `USER`, `SHELL`, `TERM`, `LANG`, and
+  `LC_*` are copied from the host, then secret-shaped, posture, and proxy names are dropped. `TMPDIR`
+  is pinned to the jail's `/tmp`. kb adds its own vars on top (credentials, HO `vars`, tunnel proxy).
+  Any other host variable, such as `DATABASE_URL`, never reaches the worker.
 - Every family runs under `--unshare-net` — no network namespace at all inside the jail.
 
 ### Runtime Env Projection (WK-0201)

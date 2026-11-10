@@ -187,6 +187,30 @@ describe.skipIf(!BWRAP_FUNCTIONAL)('real bwrap jail integration (WK-0159)', () =
       }
     });
 
+    it('never exposes an unrecognized-name host secret inside the jail; PATH and HOME survive (WK-0298)', async () => {
+      process.env.KB_TEST_DATABASE_URL = 'postgres://admin:hunter2@db.internal/prod';
+      try {
+        const plan = buildBwrapPlan({
+          clonePath,
+          writeScope,
+          wikiShape: 'tracked',
+          mode: 'implement',
+          command: ['bash', '-c', 'env; echo "PATH_IS=$PATH"; echo "HOME_IS=$HOME"'],
+        });
+        const result = await spawnIsolated(plan, { timeoutMs: 10_000 });
+
+        expect(result.ok).toBe(true);
+        if (!result.ok) return;
+        expect(result.data.exitCode).toBe(0);
+        expect(result.data.stdout).not.toContain('KB_TEST_DATABASE_URL');
+        expect(result.data.stdout).not.toContain('hunter2');
+        expect(result.data.stdout).toContain(`PATH_IS=${process.env.PATH}`);
+        expect(result.data.stdout).toContain(`HOME_IS=${process.env.HOME}`);
+      } finally {
+        delete process.env.KB_TEST_DATABASE_URL;
+      }
+    });
+
     it('refuses a write into the ro-bound wiki dir (part of the whole-clone ro-bind, not in write_scope)', async () => {
       const plan = buildBwrapPlan({
         clonePath,
