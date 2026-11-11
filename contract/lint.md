@@ -81,9 +81,11 @@ mutate a record.
 ### OPEN_CHILD_UNDER_TERMINAL_PARENT (warning)
 
 A WK record's `initiative` points at an initiative whose status is `done` or `cancelled` (a
-terminal parent), but the WK's own status is not `done`, `cancelled`, or `parked`. Flagged on
-the **child** WK's file, naming the parent initiative. `parked` is deliberately excluded from
-the actionable set — a parked child under a terminal parent is expected, not drift.
+terminal parent), but the WK's own status is not a closed status (`done`, `cancelled`,
+`deprecated`, `duplicate`, `superseded`, `wont_do`) or `parked`. Flagged on the **child** WK's
+file, naming the parent initiative. The non-actionable set is derived from the closed-status
+set plus `parked` so the two cannot drift apart — a closed or parked child under a terminal
+parent is expected, not drift.
 
 ### INITIATIVE_READY_TO_CLOSE (warning)
 
