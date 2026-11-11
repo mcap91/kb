@@ -22,6 +22,7 @@ import { promisify } from 'node:util';
 import { mergeDelivery, selectLatestReview } from '../packages/dispatch-core/src/merge-delivery.js';
 import type { Handoff } from '../packages/dispatch-core/src/ho.js';
 import { validationRegistryFingerprint } from '../packages/dispatch-core/src/repo-config.js';
+import { JAIL_HERMETICITY_TEACHING_SENTENCE } from '../packages/dispatch-core/src/host-validation.js';
 
 const execFile = promisify(execFileCallback);
 
@@ -918,7 +919,20 @@ describe('mergeDelivery host validation gate (WK-0294, DEC-0047 A1.2 / A2 R6 R8 
     if (result.ok) return;
     expect(result.error).toBe('ADMISSION_FAILED');
     expect(result.message).toContain('no host validation evidence');
+    // WK-0306 Resolution 1: missing evidence means no command ran — the jail
+    // hermeticity teaching sentence does not apply to this refusal kind.
+    expect(result.message).not.toContain(JAIL_HERMETICITY_TEACHING_SENTENCE);
     expect(await branchExists(repoDir, 'dispatch/HO-0001')).toBe(true);
+  });
+
+  it('refuses unreadable (malformed) evidence, without the jail hermeticity teaching sentence', async () => {
+    await setupReviewedDelivery();
+    await writeFile(evidencePath(repoDir, 'HO-0001'), '{ not valid json');
+    const result = await mergeDelivery({ dir: repoDir, handoff_id: 'HO-0001' });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.message).toContain('unreadable');
+    expect(result.message).not.toContain(JAIL_HERMETICITY_TEACHING_SENTENCE);
   });
 
   it('refuses a review with no reviewed_run stamp', async () => {
@@ -945,9 +959,10 @@ describe('mergeDelivery host validation gate (WK-0294, DEC-0047 A1.2 / A2 R6 R8 
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.message).toContain('RUN-other');
+    expect(result.message).not.toContain(JAIL_HERMETICITY_TEACHING_SENTENCE);
   });
 
-  it('refuses a failing command without an override, naming it', async () => {
+  it('refuses a failing command without an override, naming it and carrying the jail hermeticity teaching sentence', async () => {
     await setupReviewedDelivery();
     await writeEvidence(repoDir, 'HO-0001', { outcome: 'fail', commands: [failingCommand] });
     const result = await mergeDelivery({ dir: repoDir, handoff_id: 'HO-0001' });
@@ -955,6 +970,9 @@ describe('mergeDelivery host validation gate (WK-0294, DEC-0047 A1.2 / A2 R6 R8 
     if (result.ok) return;
     expect(result.error).toBe('ADMISSION_FAILED');
     expect(result.message).toContain('host validation failed (test)');
+    // WK-0306 Resolution 1: a registered command failed, so the refusal
+    // teaches the loop — fix the host dependency or add a capability probe.
+    expect(result.message).toContain(JAIL_HERMETICITY_TEACHING_SENTENCE);
   });
 
   // Why: A4.1 — the reviewer can edit only its jail copy; the gate reads the host original.
@@ -1150,6 +1168,9 @@ describe('mergeDelivery host validation gate (WK-0294, DEC-0047 A1.2 / A2 R6 R8 
     expect(refused.ok).toBe(false);
     if (refused.ok) return;
     expect(refused.message).toContain('validation registry changed');
+    // WK-0306 Resolution 1: a stale-registry refusal has no failing command
+    // (the recorded evidence itself passed) — no teaching sentence.
+    expect(refused.message).not.toContain(JAIL_HERMETICITY_TEACHING_SENTENCE);
 
     const overridden = await mergeDelivery({
       dir: repoDir,

@@ -67,7 +67,31 @@ import { parsePreflightOutput } from '../packages/dispatch-core/src/preflight.js
 import * as preflightModule from '../packages/dispatch-core/src/preflight.js';
 import * as tierModule from '../packages/dispatch-core/src/tier.js';
 import * as spawnIsolatedModule from '../packages/dispatch-core/src/spawn-isolated.js';
+import * as execDirectModule from '../packages/dispatch-core/src/exec-direct.js';
+import { ok as dispatchOk } from '../packages/dispatch-core/src/errors.js';
 import { runDispatch } from '../packages/dispatch-core/src/pipeline.js';
+
+/**
+ * Stub the one host dependency `resolveToolchainPaths` (pipeline.ts) has:
+ * `command -v <cliName>` via exec-direct.ts's `execBash`, used to resolve
+ * the claude/codex CLI's real absolute path. On a dev host with the CLI
+ * installed this resolves for real; inside the validation jail's
+ * allowlisted PATH it does not (WK-0306) — a host fact unrelated to what
+ * these mocked-spawnIsolated tests actually check (exec-line splicing,
+ * schema injection, response-doc fields). Intercepts only the exact
+ * `command -v <cliName>` probe and lets every other `execBash` call
+ * (fingerprinting, enumerate, delivery, preflight) run for real, preserving
+ * this file's "mostly real runDispatch()" contract.
+ */
+function stubCliOnPath(cliName: string, cliPath: string): void {
+  const real = execDirectModule.execBash;
+  vi.spyOn(execDirectModule, 'execBash').mockImplementation(async (opts) => {
+    if (opts.scriptContent === `command -v ${cliName} 2>/dev/null`) {
+      return dispatchOk({ stdout: cliPath, stderr: '', exitCode: 0 });
+    }
+    return real(opts);
+  });
+}
 
 function readFixtureFile(name: string): string {
   return readFileSync(join(__dirname, 'fixtures', name), 'utf8');
@@ -817,6 +841,17 @@ describe('dispatch v2 e2e (fake-tier) — S3 wave 3 harness version gate (mocked
 // gate with an unconditional, directly-probed boolean gate, so mocking
 // `runPreflight` alone no longer reaches it; `runPreflight` runs for real
 // here and is expected to pass on any host with working bwrap).
+//
+// WK-0306 (HO-0233 F3): the fixture uses a CLAUDE backend/model, not
+// `setupS3Repo()`'s pi-family default. `runPreflight` running for real means
+// `gatePiPresence` also runs for real for a pi-family model, which refuses
+// `PREFLIGHT_FAILED` whenever the `pi` CLI is absent from PATH (true inside
+// the validation jail's allowlisted PATH) — masking the very
+// `NO_ISOLATION_ROUTE` refusal this test exists to prove reachable. Claude
+// needs no such CLI presence check at the preflight gate (`gatePiPresence`
+// is a no-op for `family !== 'pi'`), so preflight genuinely only exercises
+// the bwrap-presence/unshare-user probe it documents above, and the
+// mocked-unavailable `probeBwrap()` is reached for real either way.
 // ---------------------------------------------------------------------------
 
 describe('dispatch v2 e2e (fake-tier) — isolation route (mocked bwrap probe)', () => {
@@ -833,13 +868,20 @@ describe('dispatch v2 e2e (fake-tier) — isolation route (mocked bwrap probe)',
       usernsSysctl: null,
     });
 
-    const repoRoot = await setupS3Repo();
+    const repoRoot = await setupS3Repo({
+      backends: {
+        'claude-saas': { family: 'claude', base_url: null, api_key_env: null, secrets_file: null },
+      },
+      models: {
+        'claude-sonnet-5': { available_on: ['claude-saas'], model_id: 'claude-sonnet-5' },
+      },
+    });
     try {
       const result = await runDispatch({
         dir: repoRoot,
         handoff: 'wiki/handoffs/HO-S3TEST.md',
-        model: 'deepseek',
-        backend: 'openrouter',
+        model: 'claude-sonnet-5',
+        backend: 'claude-saas',
       });
       expect(result.ok).toBe(false);
       if (result.ok) return;
@@ -925,6 +967,7 @@ describe('dispatch v2 e2e (fake-tier) — WK-0122 effort passthrough (mocked spa
       },
     });
     const { getInnerScript } = mockSpawnIsolated(readFixtureFile('claude-p-output.txt'));
+    stubCliOnPath('claude', '/usr/bin/claude');
     try {
       const result = await runDispatch({
         dir: repoRoot,
@@ -973,6 +1016,7 @@ describe('dispatch v2 e2e (fake-tier) — WK-0122 effort passthrough (mocked spa
       },
     });
     const { getInnerScript } = mockSpawnIsolated(readFixtureFile('codex-exec-output-stream-json.jsonl'));
+    stubCliOnPath('codex', '/usr/bin/codex');
     try {
       const result = await runDispatch({
         dir: repoRoot,
@@ -1014,6 +1058,7 @@ describe('dispatch v2 e2e (fake-tier) — WK-0122 effort passthrough (mocked spa
       },
     });
     const { getInnerScript } = mockSpawnIsolated(readFixtureFile('claude-p-output.txt'));
+    stubCliOnPath('claude', '/usr/bin/claude');
     try {
       const result = await runDispatch({
         dir: repoRoot,
@@ -1133,6 +1178,7 @@ describe('dispatch v2 e2e (fake-tier) — WK-0156 relay cleanup (mocked spawnIso
       },
     });
     const { getInnerScript } = mockSpawnIsolated(readFixtureFile('claude-p-output.txt'));
+    stubCliOnPath('claude', '/usr/bin/claude');
     try {
       const result = await runDispatch({
         dir: repoRoot,
@@ -1180,6 +1226,7 @@ describe('dispatch v2 e2e (fake-tier) — WK-0156 relay cleanup (mocked spawnIso
       },
     });
     const { getInnerScript } = mockSpawnIsolated(readFixtureFile('codex-exec-output-stream-json.jsonl'));
+    stubCliOnPath('codex', '/usr/bin/codex');
     try {
       const result = await runDispatch({
         dir: repoRoot,
@@ -1413,6 +1460,7 @@ describe('dispatch v2 e2e (fake-tier) — WK-0125 implement-mode constrained dec
   it('implement + claude: --json-schema "$SCHEMA" is spliced into the exec line (schema read via $(cat <injected-path>), same convention as $PROMPT), and the REAL contract schema content is injected into the jail', async () => {
     const repoRoot = await setupS3Repo({ backends: CLAUDE_BACKENDS, models: CLAUDE_MODELS, mode: 'implement' });
     const { getInnerScript, getInjectedFiles } = mockSpawnIsolatedCapturePlan(readFixtureFile('claude-p-output.txt'));
+    stubCliOnPath('claude', '/usr/bin/claude');
     try {
       const result = await runDispatch({
         dir: repoRoot,
@@ -1449,6 +1497,7 @@ describe('dispatch v2 e2e (fake-tier) — WK-0125 implement-mode constrained dec
     const { getInnerScript, getInjectedFiles } = mockSpawnIsolatedCapturePlan(
       readFixtureFile('codex-exec-output-stream-json.jsonl'),
     );
+    stubCliOnPath('codex', '/usr/bin/codex');
     try {
       const result = await runDispatch({
         dir: repoRoot,
@@ -1504,6 +1553,7 @@ describe('dispatch v2 e2e (fake-tier) — WK-0125 implement-mode constrained dec
   it('code_review (advisory mode) + claude: NO schema flag and NO schema injection even though claude supports constrained decoding — advisory modes stay opportunistic prose (DEC-0037 part 2)', async () => {
     const repoRoot = await setupS3Repo({ backends: CLAUDE_BACKENDS, models: CLAUDE_MODELS, mode: 'code_review' });
     const { getInnerScript, getInjectedFiles } = mockSpawnIsolatedCapturePlan(readFixtureFile('claude-p-output.txt'));
+    stubCliOnPath('claude', '/usr/bin/claude');
     try {
       const result = await runDispatch({
         dir: repoRoot,
@@ -1532,6 +1582,7 @@ describe('dispatch v2 e2e (fake-tier) — WK-0125 implement-mode constrained dec
     const { getInnerScript, getInjectedFiles } = mockSpawnIsolatedCapturePlan(
       readFixtureFile('codex-exec-output-stream-json.jsonl'),
     );
+    stubCliOnPath('codex', '/usr/bin/codex');
     try {
       const result = await runDispatch({
         dir: repoRoot,

@@ -113,11 +113,42 @@ function diff(before: Snapshot, after: Snapshot): { added: string[]; removed: st
   return { added, removed, changed };
 }
 
+/**
+ * `.mcp.json`'s generated server entries embed this checkout's OWN absolute
+ * kb root path (mcp-config.ts's `resolveKbPaths`), which inside the
+ * validation jail's temp clone sits under `.kb-dispatch/clones/<run>/` — an
+ * incidental path substring, not a registered `kb-dispatch` MCP server
+ * (WK-0306, HO-0233 F2). The isolation fact for this one file is a
+ * registered server KEY, so check the parsed `mcpServers` keys instead of
+ * raw content for the `kb-dispatch` term; every other term still runs over
+ * the raw content (nothing else in this generated file collides).
+ */
+function mcpJsonViolations(content: string): string[] {
+  const violations: string[] = [];
+  let parsed: { mcpServers?: Record<string, unknown> };
+  try {
+    parsed = JSON.parse(content);
+  } catch {
+    violations.push('malformed JSON');
+    return violations;
+  }
+  if (Object.keys(parsed.mcpServers ?? {}).includes('kb-dispatch')) violations.push('kb-dispatch');
+  for (const [term, re] of ISOLATION_TERMS) {
+    if (term === 'kb-dispatch') continue;
+    if (re.test(content)) violations.push(term);
+  }
+  return violations;
+}
+
 function isolationViolations(dir: string): string[] {
   const violations: string[] = [];
   for (const rel of listFiles(dir)) {
     if (ISOLATION_EXCEPTIONS.has(rel)) continue;
     const content = fs.readFileSync(path.join(dir, rel), 'utf-8');
+    if (rel === '.mcp.json') {
+      for (const term of mcpJsonViolations(content)) violations.push(`${rel}: ${term}`);
+      continue;
+    }
     for (const [term, re] of ISOLATION_TERMS) {
       if (re.test(content)) violations.push(`${rel}: ${term}`);
     }
@@ -179,6 +210,22 @@ describe('install layers over the whole repo tree (WK-0261)', () => {
     expect(isolationViolations(tmp.dir)).toEqual(['wiki/index.md: /planner']);
 
     fs.writeFileSync(indexPath, original);
+    expect(isolationViolations(tmp.dir)).toEqual([]);
+  });
+
+  it('AC 1: the isolation grep bites on a real kb-dispatch server entry in .mcp.json, not just the incidental path substring', async () => {
+    tmp = createTmpDir();
+    expect((await bootstrap({ dir: tmp.dir, repo: 'test/wiki-only' })).ok).toBe(true);
+    expect(isolationViolations(tmp.dir)).toEqual([]);
+
+    const mcpPath = path.join(tmp.dir, '.mcp.json');
+    const original = fs.readFileSync(mcpPath, 'utf-8');
+    const planted = JSON.parse(original);
+    planted.mcpServers['kb-dispatch'] = { type: 'stdio', command: 'node', args: [], env: {} };
+    fs.writeFileSync(mcpPath, JSON.stringify(planted, null, 2) + '\n');
+    expect(isolationViolations(tmp.dir)).toEqual(['.mcp.json: kb-dispatch']);
+
+    fs.writeFileSync(mcpPath, original);
     expect(isolationViolations(tmp.dir)).toEqual([]);
   });
 

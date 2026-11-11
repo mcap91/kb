@@ -60,7 +60,12 @@ import { commitPaths } from './commit-artifacts.js';
 import { parseHandoffContent, type Handoff } from './ho.js';
 import type { DispatchResult } from './errors.js';
 import { ok, fail } from './errors.js';
-import { readValidationEvidence, validationEvidencePath, type ValidationEvidence } from './host-validation.js';
+import {
+  readValidationEvidence,
+  validationEvidencePath,
+  JAIL_HERMETICITY_TEACHING_SENTENCE,
+  type ValidationEvidence,
+} from './host-validation.js';
 import { loadValidationRegistry, validationRegistryFingerprint } from './repo-config.js';
 
 const execFile = promisify(execFileCb);
@@ -455,9 +460,16 @@ export async function mergeDelivery(opts: MergeDeliveryOpts): Promise<DispatchRe
   if (gate.problems.length > 0) {
     const override = opts.override;
     if (override === undefined) {
+      // WK-0306 (Resolution 1): the teaching sentence rides only a REGISTERED
+      // COMMAND failure (never a setup-only failure, never the other refusal
+      // kinds below — missing/unreadable/other-run/stale-registry evidence —
+      // where no command ran to teach anything about).
+      const teaching = gate.evidence !== null && gate.evidence.commands.some((c) => c.result === 'fail')
+        ? ` ${JAIL_HERMETICITY_TEACHING_SENTENCE}.`
+        : '';
       return fail(
         'ADMISSION_FAILED',
-        `Host validation gate refused merge of ${branchName}: ${gate.problems.join('; ')}. Fix and re-derive, or merge with an override carrying a reason.`,
+        `Host validation gate refused merge of ${branchName}: ${gate.problems.join('; ')}. Fix and re-derive, or merge with an override carrying a reason.${teaching}`,
         { problems: gate.problems },
       );
     }

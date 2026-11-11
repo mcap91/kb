@@ -23,10 +23,13 @@ import { createHandoff } from '../packages/dispatch-core/src/create-handoff.js';
 import { deriveReview } from '../packages/dispatch-core/src/derive-review.js';
 import { mergeDelivery } from '../packages/dispatch-core/src/merge-delivery.js';
 import {
+  JAIL_HERMETICITY_TEACHING_SENTENCE,
   VALIDATION_EVIDENCE_FILE,
   readValidationEvidence,
   renderValidationEvidence,
   runHostValidation,
+  type ValidationEvidence,
+  type ValidationStepResult,
 } from '../packages/dispatch-core/src/host-validation.js';
 import {
   loadValidationRegistry,
@@ -256,6 +259,63 @@ describe('readValidationEvidence (WK-0294)', () => {
     const bad = await readValidationEvidence(join(dir, 'x', 'bad.json'));
     expect(bad.ok).toBe(false);
     expect(await readFile(join(dir, 'x', 'bad.json'), 'utf8')).toContain('maybe');
+  });
+});
+
+describe('renderValidationEvidence teaching sentence (WK-0306, Resolution 1)', () => {
+  function step(overrides: Partial<ValidationStepResult>): ValidationStepResult {
+    return {
+      name: 'x',
+      argv: ['x'],
+      network: false,
+      exit_code: 0,
+      signal: null,
+      timed_out: false,
+      duration_ms: 1,
+      stdout_tail: '',
+      stderr_tail: '',
+      output_truncated: false,
+      result: 'pass',
+      ...overrides,
+    };
+  }
+
+  function evidence(overrides: Partial<ValidationEvidence>): ValidationEvidence {
+    return {
+      schema_version: 1,
+      handoff_id: 'HO-9306',
+      run_id: RUN_ID,
+      delivery_branch: 'dispatch/HO-9306',
+      delivery_sha: 'abc123',
+      registry_fingerprint: 'fp',
+      started_at: '2026-11-10T00:00:00.000Z',
+      completed_at: '2026-11-10T00:00:01.000Z',
+      setup: null,
+      commands: [],
+      outcome: 'pass',
+      ...overrides,
+    };
+  }
+
+  // Why: Resolution 1 — the sentence rides a registered command failure only.
+  it('is present when a command fails', () => {
+    const rendered = renderValidationEvidence(
+      evidence({ commands: [step({ name: 'test', exit_code: 1, result: 'fail' })], outcome: 'fail' }),
+    );
+    expect(rendered).toContain(JAIL_HERMETICITY_TEACHING_SENTENCE);
+  });
+
+  it('is absent when every command passes', () => {
+    const rendered = renderValidationEvidence(evidence({ commands: [step({ name: 'test' })], outcome: 'pass' }));
+    expect(rendered).not.toContain(JAIL_HERMETICITY_TEACHING_SENTENCE);
+  });
+
+  // Why: Resolution 1 — a setup-only failure means no command ran, so the hermeticity remedy does not apply.
+  it('is absent on a setup-only failure (no command ran)', () => {
+    const rendered = renderValidationEvidence(
+      evidence({ setup: step({ name: 'setup', network: true, exit_code: 1, result: 'fail' }), commands: [], outcome: 'fail' }),
+    );
+    expect(rendered).not.toContain(JAIL_HERMETICITY_TEACHING_SENTENCE);
   });
 });
 

@@ -446,6 +446,26 @@ exactly that resolved target file at the same path so DNS resolves. `.env` and `
 each kept as a 16 KiB tail. On timeout the whole process group gets `SIGTERM`, then `SIGKILL` after 5 s,
 and the runner waits for the exit before it records the result.
 
+**Jail hermeticity contract (WK-0306).** The Confinement paragraph above states the jail's shape; this
+is the contract a repo's own test suite writes to when it runs as a registered `commands[]` step.
+*Validation commands* are network-denied (`--unshare-net`; bwrap still brings loopback up, so local test
+servers work) and run with a `--clearenv` allowlisted env — `PATH` (runtime `bin/` dirs, then
+`/usr/local/bin:/usr/bin:/bin`), `HOME=/tmp`, `TMPDIR=/tmp`, and the registry's own `env` — inside a fresh
+temp clone of the delivery sha whose absolute path the suite does not control and must not assume. The
+*optional setup step* is the one exception: it DOES get network (so `npm ci` etc. can reach the registry),
+with npm lifecycle scripts forced off. A suite that depends on something outside this contract — a host
+binary not on the allowlisted `PATH`, a real absolute path, an env var the registry does not declare —
+fails inside the jail even when it passes on the host unconfined.
+
+The fix is never a skip list, a jail marker env var, or a `wiki/.dispatch/validation.json` exclusion —
+each of those hides the gap instead of closing it. A test that needs a capability the jail may not have
+probes that capability directly (never a proxy, never "any error occurred") and self-skips on that probe
+alone, with `describe.skipIf`/`it.skipIf` and a reason naming the capability; a jail-skipped test still
+runs on the host gate, so it never goes dark everywhere. Most failures are not even a missing capability —
+they are a test accidentally depending on real host state (an installed CLI, a real file, a real network
+service) that the hermetic jail does not carry; the fix there is to make the test's dependency a fixture at
+its own public seam, not a skip.
+
 **Evidence.** `derive-review` writes `validation-evidence.json` into the delivered implement run's dir
 (`.agent-runs/runs/<implement_id>/<run_id>/`). It holds `handoff_id`, `run_id`, `delivery_branch`,
 `delivery_sha`, `registry_fingerprint` (sha256 of the effective registry), per-step `argv`, `exit_code`,

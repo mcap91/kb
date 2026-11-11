@@ -10,6 +10,9 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { ok } from '../evals/result.js';
+import type { HostPaths } from '../evals/paths.js';
+
 import {
   allPassed,
   buildJailSmokeChecks,
@@ -127,6 +130,7 @@ describe('--jail-smoke CLI path forwards bwrap stderr', () => {
   afterEach(() => {
     vi.restoreAllMocks();
     vi.doUnmock('node:child_process');
+    vi.doUnmock('../evals/paths.js');
     vi.resetModules();
   });
 
@@ -137,6 +141,29 @@ describe('--jail-smoke CLI path forwards bwrap stderr', () => {
       return {
         ...actual,
         spawnSync: vi.fn(() => ({ error: undefined, stdout: allPassStdout, stderr: 'bwrap: synthetic diagnostic\n' })),
+      };
+    });
+    // This test mocks the bwrap spawn itself (above), but `performJailSmoke`
+    // calls `discoverHostPaths()` BEFORE that spawn even runs, and that real
+    // probe needs `claude` on PATH (evals/paths.ts) — a host dependency this
+    // test has nothing to do with (it is only proving stderr forwarding).
+    // Fixture it at its own public seam so this assertion runs the same way
+    // whether or not `claude` happens to be on PATH (WK-0306 HO-0233 F1).
+    const syntheticHostPaths: HostPaths = {
+      kbRoot: '/synthetic/kb',
+      testKb: '/synthetic/test_kb',
+      testKbData: '/synthetic/test_kb_data',
+      credentialsFile: '/synthetic/home/.claude/.credentials.json',
+      cliPackageDir: '/synthetic/claude-pkg',
+      cliBinaryRelPath: 'bin/claude',
+      claudeRealpath: '/synthetic/claude-pkg/bin/claude',
+      resolvConfRealpath: null,
+    };
+    vi.doMock('../evals/paths.js', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('../evals/paths.js')>();
+      return {
+        ...actual,
+        discoverHostPaths: vi.fn(() => ok(syntheticHostPaths)),
       };
     });
 

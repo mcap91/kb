@@ -389,6 +389,18 @@ function renderStep(step: ValidationStepResult): string[] {
 }
 
 /**
+ * WK-0306 (Resolution 1): the one teaching sentence shared by
+ * `renderValidationEvidence` below and `merge-delivery.ts`'s failed-evidence
+ * refusal. Triggers only when at least one registered `commands[]` step has
+ * `result: 'fail'` — never on a command name, never on a setup-only failure
+ * (no command ran, so a test-hermeticity remedy does not apply). Defined
+ * once here (rule 65: one source of truth) and imported by merge-delivery.ts
+ * rather than duplicated.
+ */
+export const JAIL_HERMETICITY_TEACHING_SENTENCE =
+  "failures may be jail-only: fix the test's host dependency or add a capability probe (jail hermeticity contract, docs/dispatch-protocol.md), then re-run derive-review";
+
+/**
  * Render the evidence as markdown for the review HO (rule 45: rendered from
  * the JSON, output tails verbatim). Acceptance text is never touched (A1.5).
  */
@@ -405,5 +417,8 @@ export function renderValidationEvidence(evidence: ValidationEvidence): string {
     lines.push('Setup failed, so no registered command ran.', '');
   }
   for (const command of evidence.commands) lines.push(...renderStep(command));
+  if (evidence.commands.some((c) => c.result === 'fail')) {
+    lines.push(`_${JAIL_HERMETICITY_TEACHING_SENTENCE}_`, '');
+  }
   return lines.join('\n').trimEnd();
 }
