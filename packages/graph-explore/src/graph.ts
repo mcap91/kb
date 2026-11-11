@@ -39,7 +39,18 @@ export function buildGraph(repoRoot: string): GraphExport {
   const wikiRecords = scannedNodes
     .filter(n => n.kind === 'wiki_record')
     .map(n => n.id);
-  const wikiEdges = extractAllWikiEdges(wikiRecords, repoRoot);
+
+  // Map each wiki record's ID (or, for AREA, slug) to its scanned path node,
+  // so ID-valued frontmatter edges (depends_on/blocks/related/initiative/area)
+  // resolve to the record's real node instead of a bare-ID phantom.
+  const idToPath = new Map<string, string>();
+  for (const node of scannedNodes) {
+    if (node.kind === 'wiki_record' && node.title) {
+      idToPath.set(node.title, node.id);
+    }
+  }
+
+  const wikiEdges = extractAllWikiEdges(wikiRecords, repoRoot, idToPath);
 
   // 4. Combine all edges
   const allEdges = [...importEdges, ...wikiEdges];

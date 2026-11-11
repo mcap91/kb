@@ -23,6 +23,21 @@ const FRONTMATTER_EDGE_MAP: Record<string, EdgeRelation> = {
   initiative: 'initiative',
 };
 
+/**
+ * Relations whose frontmatter values are record IDs (WK/IN/DEC/SRC/PLN/VAL)
+ * or area slugs, rather than repo-relative paths. Edge targets for these
+ * relations are resolved against an ID/slug -> scanned path map when one is
+ * supplied, so the edge lands on the record's actual node instead of a bare
+ * ID string.
+ */
+const ID_VALUED_RELATIONS = new Set<EdgeRelation>([
+  'depends_on',
+  'blocks',
+  'related',
+  'area',
+  'initiative',
+]);
+
 // ---------------------------------------------------------------------------
 // Simple YAML frontmatter parser
 // ---------------------------------------------------------------------------
@@ -163,6 +178,7 @@ export function extractMarkdownLinks(body: string): string[] {
 export function extractWikiEdges(
   recordRelPath: string,
   repoRoot: string,
+  idToPath?: Map<string, string>,
 ): GraphEdge[] {
   const absPath = path.join(repoRoot, recordRelPath);
   let content: string;
@@ -185,12 +201,16 @@ export function extractWikiEdges(
     for (const target of targets) {
       const targetStr = String(target).replace(/\\/g, '/');
       if (!targetStr) continue;
-      const edgeKey = `${relation}:${targetStr}`;
+      const resolvedTarget =
+        idToPath && ID_VALUED_RELATIONS.has(relation)
+          ? idToPath.get(targetStr) ?? targetStr
+          : targetStr;
+      const edgeKey = `${relation}:${resolvedTarget}`;
       if (!seen.has(edgeKey)) {
         seen.add(edgeKey);
         edges.push({
           source: recordRelPath,
-          target: targetStr,
+          target: resolvedTarget,
           relation,
         });
       }
@@ -220,10 +240,11 @@ export function extractWikiEdges(
 export function extractAllWikiEdges(
   wikiRecords: string[],
   repoRoot: string,
+  idToPath?: Map<string, string>,
 ): GraphEdge[] {
   const edges: GraphEdge[] = [];
   for (const record of wikiRecords) {
-    edges.push(...extractWikiEdges(record, repoRoot));
+    edges.push(...extractWikiEdges(record, repoRoot, idToPath));
   }
   return edges;
 }
