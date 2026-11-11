@@ -32,9 +32,10 @@
  *                                     checked but status has not advanced past an open state
  *   - UNCHECKED_CHECKLIST           — (error) closed/terminal-status record has unchecked
  *                                     items in its "## Acceptance criteria" section
- *   - OPEN_CHILD_UNDER_TERMINAL_PARENT — (warning, cross-record, WK-0114) a WK's
+ *   - OPEN_CHILD_UNDER_TERMINAL_PARENT — (warning, cross-record, WK-0114/WK-0195) a WK's
  *                                     initiative has a terminal status (done/cancelled) but
- *                                     the WK's own status is not done/cancelled/parked
+ *                                     the WK's own status is not in CLOSED_STATUSES plus
+ *                                     parked
  *   - INITIATIVE_READY_TO_CLOSE     — (warning, cross-record, WK-0114) an initiative has
  *                                     >=1 WK child, is not itself closed, and every child
  *                                     is closed — advisory only, never auto-closes
@@ -1252,15 +1253,16 @@ export async function lint(opts: LintOpts): Promise<Result<LintResult>> {
     // since a deprecated/superseded/wont_do initiative doesn't imply its children
     // should have stopped.
     const TERMINAL_PARENT_STATUSES = new Set(['done', 'cancelled']);
-    // A child is "actionable" (and so drift-worthy under a terminal parent) unless its
-    // status is one of these. `parked` is deliberately excluded — a parked child under
-    // a terminal parent is expected, not drift.
-    const CHILD_NOT_ACTIONABLE_STATUSES = new Set(['done', 'cancelled', 'parked']);
     // kb CLOSED_STATUSES = upstream's set minus `expired` (not a kb status — confirmed
     // against contract/manifest.json).
     const CLOSED_STATUSES = new Set([
       'done', 'cancelled', 'deprecated', 'duplicate', 'superseded', 'wont_do',
     ]);
+    // A child is "actionable" (and so drift-worthy under a terminal parent) unless its
+    // status is closed or parked. Derived from CLOSED_STATUSES so the two sets cannot
+    // drift (WK-0195); `parked` is added on top since a parked child under a terminal
+    // parent is expected, not drift.
+    const CHILD_NOT_ACTIONABLE_STATUSES = new Set([...CLOSED_STATUSES, 'parked']);
     const ACTIVE_STATUSES = new Set(['in_progress', 'blocked', 'review']);
     const STALE_THRESHOLD_DAYS = 14;
     const MS_PER_DAY = 24 * 60 * 60 * 1000;

@@ -3742,6 +3742,83 @@ describe('lint WK-0114 cross-record status-coherence', () => {
     }
   });
 
+  it.each(['superseded', 'wont_do', 'duplicate', 'deprecated'] as const)(
+    'OPEN_CHILD_UNDER_TERMINAL_PARENT excluded: done initiative + %s child produces no finding',
+    async childStatus => {
+      tmp = await createBootstrappedRepo();
+
+      writeRecord(tmp.dir, 'wiki/initiatives/IN-0001.md', {
+        id: 'IN-0001',
+        title: 'Closed initiative',
+        status: 'done',
+        priority: 'medium',
+        owner: 'test',
+        created: '2025-01-01',
+        updated: '2025-01-01',
+      });
+      writeRecord(tmp.dir, 'wiki/issues/WK-0001.md', {
+        id: 'WK-0001',
+        title: 'Closed-status child',
+        type: 'task',
+        status: childStatus,
+        priority: 'medium',
+        owner: 'test',
+        created: '2025-01-01',
+        updated: '2025-01-01',
+        initiative: 'IN-0001',
+      });
+
+      const result = await lint({ dir: tmp.dir });
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        const diags = result.data.diagnostics.filter(
+          d => d.code === 'OPEN_CHILD_UNDER_TERMINAL_PARENT',
+        );
+        expect(diags).toEqual([]);
+      }
+    },
+  );
+
+  it.each(['inbox', 'todo'] as const)(
+    'OPEN_CHILD_UNDER_TERMINAL_PARENT: done initiative + %s child still warns',
+    async childStatus => {
+      tmp = await createBootstrappedRepo();
+
+      writeRecord(tmp.dir, 'wiki/initiatives/IN-0001.md', {
+        id: 'IN-0001',
+        title: 'Closed initiative',
+        status: 'done',
+        priority: 'medium',
+        owner: 'test',
+        created: '2025-01-01',
+        updated: '2025-01-01',
+      });
+      writeRecord(tmp.dir, 'wiki/issues/WK-0001.md', {
+        id: 'WK-0001',
+        title: 'Still open child',
+        type: 'task',
+        status: childStatus,
+        priority: 'medium',
+        owner: 'test',
+        created: '2025-01-01',
+        updated: '2025-01-01',
+        initiative: 'IN-0001',
+      });
+
+      const result = await lint({ dir: tmp.dir });
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        const diags = result.data.diagnostics.filter(
+          d => d.code === 'OPEN_CHILD_UNDER_TERMINAL_PARENT',
+        );
+        expect(diags.length).toBe(1);
+        expect(diags[0].file).toBe('wiki/issues/WK-0001.md');
+        expect(diags[0].severity).toBe('warning');
+        expect(diags[0].message).toContain('IN-0001');
+      }
+    },
+  );
+
   it('INITIATIVE_READY_TO_CLOSE: in_progress initiative with all children done warns on the initiative and does not modify it', async () => {
     tmp = await createBootstrappedRepo();
 
