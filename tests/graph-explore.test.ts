@@ -333,6 +333,8 @@ describe('graph-explore', () => {
     });
 
     it('an edge to a truly missing ID yields exactly one exists: false node, even when several records reference it', () => {
+      // Lock-in, not a bite test: this locks in WK-0278 AC2. Pre-fix code already
+      // deduplicated missing-ID nodes via Map.set, so this test cannot fail on pre-fix code.
       const tmp = createTmpDir();
       try {
         writeFile(
