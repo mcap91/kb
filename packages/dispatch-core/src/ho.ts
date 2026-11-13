@@ -50,6 +50,8 @@ export interface Handoff {
   read_first: string[];
   vars: string[]; // Array of "KEY=value" strings; non-secret literal env for the worker
   fixup_context?: string; // Prior review findings injected verbatim as coordination context (s6-rulings.md ruling 3)
+  area?: string; // WK-0270 Specification 3: copied verbatim from the head implement HO into a derived review
+  initiative?: string; // WK-0270 Specification 3: copied verbatim from the head implement HO into a derived review
   work_item?: string; // WK-#### this HO's work traces to; required for mode=implement, whose initiative must resolve to a real IN-#### (WK-0116 / IN-0006)
   acceptance: string[];
   validation: string[];
@@ -253,6 +255,14 @@ export function parseHandoffContent(content: string, filename: string): Dispatch
     return fail('Handoff fixup_context must be a string.');
   }
 
+  if (raw.area !== undefined && raw.area !== null && typeof raw.area !== 'string') {
+    return fail('Handoff area must be a string.');
+  }
+
+  if (raw.initiative !== undefined && raw.initiative !== null && typeof raw.initiative !== 'string') {
+    return fail('Handoff initiative must be a string.');
+  }
+
   // WK-0294 (HO-0220 F1): these stamps name a run dir and a commit; anything else is refused, never path-joined.
   if (raw.reviewed_run !== undefined && (typeof raw.reviewed_run !== 'string' || !isRunId(raw.reviewed_run))) {
     return fail(`Handoff reviewed_run must be a dispatch run id (RUN-<uuid>); got: ${String(raw.reviewed_run)}`);
@@ -286,6 +296,8 @@ export function parseHandoffContent(content: string, filename: string): Dispatch
   };
 
   if (typeof raw.fixup_context === 'string') handoff.fixup_context = raw.fixup_context;
+  if (typeof raw.area === 'string' && raw.area !== '') handoff.area = raw.area;
+  if (typeof raw.initiative === 'string' && raw.initiative !== '') handoff.initiative = raw.initiative;
   if (typeof raw.work_item === 'string') handoff.work_item = raw.work_item;
   if (typeof raw.base_sha === 'string' && raw.base_sha !== '') handoff.base_sha = raw.base_sha;
   if (typeof raw.base_wiki_sha === 'string' && raw.base_wiki_sha !== '') handoff.base_wiki_sha = raw.base_wiki_sha;

@@ -196,6 +196,25 @@ describe('ho.ts — §5 HO frontmatter parsing', () => {
     expect(result.data.mode).toBe('redteam');
   });
 
+  // Why: WK-0270 Specification 3 — a derived review's initiative/area/work_item come from
+  // the head implement HO; deriveReview can only copy area/initiative once ho.ts parses them.
+  it('parses area and initiative as optional strings', () => {
+    const content = HO_0002_CONTENT.replace('base_ref: null', 'base_ref: null\narea: dispatch\ninitiative: IN-0007');
+    const result = parseHandoffContent(content, 'HO-0002.md');
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.area).toBe('dispatch');
+    expect(result.data.initiative).toBe('IN-0007');
+  });
+
+  it('leaves area and initiative undefined when absent', () => {
+    const result = parseHandoffContent(HO_0002_CONTENT, 'HO-0002.md');
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.area).toBeUndefined();
+    expect(result.data.initiative).toBeUndefined();
+  });
+
   it('rejects an id/filename mismatch', () => {
     const result = parseHandoffContent(HO_0002_CONTENT, 'HO-0003.md');
     expect(result.ok).toBe(false);
