@@ -10,6 +10,7 @@ dist-tests/
 .worktrees/
 *.tsbuildinfo
 wiki/
+eval/
 docs/superpowers/
 kb.code-workspace
 .mcp.json

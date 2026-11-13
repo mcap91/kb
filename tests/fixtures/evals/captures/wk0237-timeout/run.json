@@ -1,8 +1,0 @@
-{
-  "exitCode": null,
-  "signal": "SIGTERM",
-  "timedOut": true,
-  "wallTimeMs": 15004,
-  "baselineSha": "8f1f98e42106a5d7a5ef56085f1908b7e8da30aa",
-  "cliVersion": "2.1.281 (Claude Code)"
-}
