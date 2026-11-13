@@ -260,6 +260,11 @@ A handoff may declare `timeout_secs` to override the pipeline's default 1800s wo
 `limits.json`'s `max_worker_timeout_secs` caps how high that override may go; a declared value
 above the effective cap is refused at admission (`WORKER_TIMEOUT_EXCEEDS_CAP`, naming the
 requested value, the cap, and the `wiki/.dispatch/limits.json` path to raise it) — never clamped.
+When the watchdog fires, the run's `state.json` carries three named fields so the kill is
+diagnosable from the run state alone (WK-0244/WK-0260): `configured_limit_secs` (the effective
+timeout in effect at the kill), `elapsed_secs` (seconds since `started_at`), and
+`heartbeat_age_secs` (age, in seconds, of the last `heartbeat_at` at the moment of the kill). A
+run that ends any other way writes none of the three.
 
 A local model (Ollama, vLLM, …) is just a `pi`-family backend entry with a `base_url` pointing at the
 local server and `api_key_env: null` — there is no separate pluggable-agent-wrapper mechanism. Codex

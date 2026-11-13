@@ -59,6 +59,12 @@ export interface V2RunState {
   error: string | null;
   /** WK-0136: captured stderr tail (spawn-isolated.ts's `SpawnResult.stderr`) from a worker-exit failure. Optional — absent on `running` state and on older run bundles predating this field. */
   error_detail?: string | null;
+  /** WK-0244/WK-0260: watchdog-kill diagnostics (record AC4) — the effective per-HO timeout in effect at the kill, in seconds. Present only on a watchdog-timeout terminal write; absent for every other outcome. */
+  configured_limit_secs?: number;
+  /** WK-0244/WK-0260: elapsed seconds between `started_at` and the kill. Present only alongside `configured_limit_secs`. */
+  elapsed_secs?: number;
+  /** WK-0244/WK-0260: age in seconds of the last `heartbeat_at` at the moment of the kill, before this terminal write's own `heartbeat_at` touch-up. Present only alongside `configured_limit_secs`. */
+  heartbeat_age_secs?: number;
 }
 
 export interface ControllerArgv {
@@ -151,6 +157,25 @@ export interface TerminalFields {
   error: string | null;
   /** WK-0136: captured stderr tail, extracted from a `fail()` detail payload shaped like `SpawnResult`. Omitted (rather than null) when no such detail was captured, so existing exact-shape assertions of the pre-WK-0136 fields stay unaffected. */
   error_detail?: string | null;
+  /** WK-0244/WK-0260: record AC4's kill diagnostics — see `TerminalTiming`'s doc below. Omitted, like `error_detail`, when not applicable. */
+  configured_limit_secs?: number;
+  elapsed_secs?: number;
+  heartbeat_age_secs?: number;
+}
+
+/**
+ * Wall-clock inputs `deriveTerminalFields` needs to compute the AC4 kill
+ * diagnostics — supplied by `main()` from its own in-memory `startedAt` and
+ * last-written `state.heartbeat_at` (neither of which `pipeline.ts` can see;
+ * WK-0244's response explains why). Optional on `deriveTerminalFields`
+ * itself so every pre-existing 2-arg call site/test keeps working unchanged
+ * (rule 25) — timing is only needed on the watchdog-kill path, detected via
+ * `extractConfiguredLimitSecs` below.
+ */
+export interface TerminalTiming {
+  startedAt: string;
+  heartbeatAt: string;
+  now: string;
 }
 
 /**
@@ -168,6 +193,26 @@ function extractStderrTail(detail: unknown): string | null {
   if (typeof detail !== 'object' || detail === null || !('stderr' in detail)) return null;
   const { stderr } = detail as { stderr: unknown };
   return typeof stderr === 'string' && stderr.length > 0 ? stderr : null;
+}
+
+/**
+ * Extract the effective watchdog limit (seconds) from a `fail()` call's
+ * `detail` payload (WK-0244/WK-0260). Every watchdog-timeout `fail(
+ * 'PIPELINE_FAILED', ...)` in pipeline.ts attaches `configured_limit_secs`
+ * onto its detail object; no other failure does. Duck-typed like
+ * `extractStderrTail` above, for the same reason — `detail` is `unknown`.
+ * A non-null return is this function's way of telling `deriveTerminalFields`
+ * "this is a watchdog kill", not just "there happens to be a number here".
+ */
+function extractConfiguredLimitSecs(detail: unknown): number | null {
+  if (typeof detail !== 'object' || detail === null || !('configured_limit_secs' in detail)) return null;
+  const { configured_limit_secs } = detail as { configured_limit_secs: unknown };
+  return typeof configured_limit_secs === 'number' ? configured_limit_secs : null;
+}
+
+/** Whole seconds between two ISO timestamps, `later` minus `earlier`. */
+function secondsBetween(earlier: string, later: string): number {
+  return Math.round((new Date(later).getTime() - new Date(earlier).getTime()) / 1000);
 }
 
 /**
@@ -193,10 +238,16 @@ function extractStderrTail(detail: unknown): string | null {
  * this wave) or parsing the response doc back off disk. Left as a known gap
  * for a later wave; `outcome` is still always populated (never silently
  * dropped) so the field is forward-compatible once that gap closes.
+ *
+ * `timing` (WK-0244/WK-0260, record AC4) supplies the wall-clock inputs for
+ * the kill diagnostics; it is only consulted on the watchdog-timeout path
+ * (`extractConfiguredLimitSecs(result.detail)` non-null) and is otherwise
+ * ignored, so omitting it is correct for every other outcome.
  */
 export function deriveTerminalFields(
   result: DispatchResult<DispatchResult2> | null,
   thrown: unknown,
+  timing?: TerminalTiming,
 ): TerminalFields {
   if (thrown !== null && thrown !== undefined) {
     const message = thrown instanceof Error ? thrown.message : String(thrown);
@@ -223,6 +274,12 @@ export function deriveTerminalFields(
     };
     const stderrTail = extractStderrTail(result.detail);
     if (stderrTail !== null) terminal.error_detail = stderrTail;
+    const configuredLimitSecs = extractConfiguredLimitSecs(result.detail);
+    if (configuredLimitSecs !== null && timing) {
+      terminal.configured_limit_secs = configuredLimitSecs;
+      terminal.elapsed_secs = secondsBetween(timing.startedAt, timing.now);
+      terminal.heartbeat_age_secs = secondsBetween(timing.heartbeatAt, timing.now);
+    }
     return terminal;
   }
 
@@ -330,8 +387,13 @@ async function main(): Promise<void> {
     shuttingDown = true;
     clearInterval(heartbeatTimer);
 
-    const terminal = deriveTerminalFields(pipelineResult, thrown);
     const now = new Date().toISOString();
+    // Capture the last heartbeat BEFORE this terminal write's own heartbeat_at
+    // touch-up below overwrites it — WK-0244/WK-0260's heartbeat_age_secs is
+    // the age of that last heartbeat at the moment of the kill, not of the
+    // terminal write itself.
+    const lastHeartbeatAt = state.heartbeat_at;
+    const terminal = deriveTerminalFields(pipelineResult, thrown, { startedAt, heartbeatAt: lastHeartbeatAt, now });
     writeState({
       ...state,
       status: terminal.status,
@@ -342,6 +404,9 @@ async function main(): Promise<void> {
       branch: terminal.branch,
       error: terminal.error,
       error_detail: terminal.error_detail,
+      configured_limit_secs: terminal.configured_limit_secs,
+      elapsed_secs: terminal.elapsed_secs,
+      heartbeat_age_secs: terminal.heartbeat_age_secs,
     });
     // Await the chain so the terminal write completes before exit — an
     // in-flight heartbeat write that started before shuttingDown=true will

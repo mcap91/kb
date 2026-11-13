@@ -1549,6 +1549,13 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
     // stdout capture file is still named worker-output.log for every family
     // (spawnIsolated's stdoutLogPath, wired at step 13/14 above) — only the
     // parser consulted below differs.
+    //
+    // WK-0260: every watchdog-timeout `fail()` below attaches
+    // `configured_limit_secs: effectiveTimeoutSecs` onto its `detail` payload
+    // — dispatch-controller-entry.ts's `deriveTerminalFields` duck-types that
+    // field back out (mirroring `error_detail`/`extractStderrTail`) to tell a
+    // watchdog kill apart from any other failure and to compute the
+    // run-record kill diagnostics (AC4).
     const piOutputLogPath = join(runDir, 'worker-output.log');
     let piOutputContent: string;
     try {
@@ -1573,13 +1580,13 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       const piParsed = parsePiOutput(piOutputContent);
       if (!piParsed.ok) {
         if (spawnData.timedOut) {
-          return fail('PIPELINE_FAILED', `Worker timed out after ${effectiveTimeoutSecs}s (watchdog fired; no parseable output).`, spawnData);
+          return fail('PIPELINE_FAILED', `Worker timed out after ${effectiveTimeoutSecs}s (watchdog fired; no parseable output).`, { ...spawnData, configured_limit_secs: effectiveTimeoutSecs });
         }
         return piParsed;
       }
 
       if (spawnData.timedOut && !piParsed.data.hasAgentEnd) {
-        return fail('PIPELINE_FAILED', `Worker timed out after ${effectiveTimeoutSecs}s (watchdog fired).`, { timedOut: true, piOutcome: piParsed.data.outcome });
+        return fail('PIPELINE_FAILED', `Worker timed out after ${effectiveTimeoutSecs}s (watchdog fired).`, { timedOut: true, piOutcome: piParsed.data.outcome, configured_limit_secs: effectiveTimeoutSecs });
       }
 
       if (spawnData.timedOut) {
@@ -1608,7 +1615,7 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       accumulatedText = piParsed.data.accumulatedText;
     } else if (model.family === 'codex') {
       if (spawnData.timedOut) {
-        return fail('PIPELINE_FAILED', `Worker timed out after ${effectiveTimeoutSecs}s (watchdog fired).`, spawnData);
+        return fail('PIPELINE_FAILED', `Worker timed out after ${effectiveTimeoutSecs}s (watchdog fired).`, { ...spawnData, configured_limit_secs: effectiveTimeoutSecs });
       }
       const codexParsed = parseCodexOutput(piOutputContent);
       if (!codexParsed.ok) return codexParsed;
@@ -1632,7 +1639,7 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       stopReason = codexParsed.data.stopReason;
     } else {
       if (spawnData.timedOut) {
-        return fail('PIPELINE_FAILED', `Worker timed out after ${effectiveTimeoutSecs}s (watchdog fired).`, spawnData);
+        return fail('PIPELINE_FAILED', `Worker timed out after ${effectiveTimeoutSecs}s (watchdog fired).`, { ...spawnData, configured_limit_secs: effectiveTimeoutSecs });
       }
       const claudeParsed = parseClaudeOutput(piOutputContent);
       if (!claudeParsed.ok) return claudeParsed;

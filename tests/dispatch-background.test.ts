@@ -11,7 +11,7 @@
  * in fixtures (WK-0043 rule); all filesystem tests use temp dirs.
  */
 import { describe, expect, it, beforeEach, afterEach } from 'vitest';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -27,6 +27,7 @@ import {
 import { ok, fail, type DispatchResult } from '../packages/dispatch-core/src/errors.js';
 import type { DeliveryOutcome } from '../packages/dispatch-core/src/delivery.js';
 import type { DispatchResult2 } from '../packages/dispatch-core/src/pipeline.js';
+import { writeJsonAtomic } from '../packages/dispatch-core/src/run-state.js';
 
 // An implausibly large pid: reliably not a live process on any real host,
 // used to simulate "controller is dead" / "recorded pid is dead" without
@@ -366,5 +367,140 @@ describe('deriveTerminalFields', () => {
       branch: null,
       error: 'Pipeline produced no result.',
     });
+  });
+
+  // WK-0244/WK-0260 (record AC4): a watchdog kill's terminal state.json must
+  // carry configured_limit_secs / elapsed_secs / heartbeat_age_secs, computed
+  // from fixed/injected timestamps — never a real 30-minute wait.
+  it('a watchdog-timeout failure carries configured_limit_secs, elapsed_secs and heartbeat_age_secs, computed from injected timing', () => {
+    const result: DispatchResult<DispatchResult2> = fail(
+      'PIPELINE_FAILED',
+      'Worker timed out after 3600s (watchdog fired).',
+      { stdout: '', stderr: '', exitCode: null, signal: 'SIGTERM', truncated: false, timedOut: true, streamDrainTimedOut: false, configured_limit_secs: 3600 },
+    );
+    const terminal = deriveTerminalFields(result, null, {
+      startedAt: '2026-11-12T00:00:00.000Z',
+      heartbeatAt: '2026-11-12T00:58:00.000Z',
+      now: '2026-11-12T01:00:00.000Z',
+    });
+    expect(terminal).toEqual({
+      status: 'failed',
+      outcome: null,
+      delivery_status: null,
+      branch: null,
+      error: 'PIPELINE_FAILED: Worker timed out after 3600s (watchdog fired).',
+      configured_limit_secs: 3600,
+      elapsed_secs: 3600,
+      heartbeat_age_secs: 120,
+    });
+  });
+
+  it('a non-timeout failure carries none of the three AC4 fields, even when timing is supplied', () => {
+    const result: DispatchResult<DispatchResult2> = fail('PREFLIGHT_FAILED', 'bwrap userns unavailable');
+    const terminal = deriveTerminalFields(result, null, {
+      startedAt: '2026-11-12T00:00:00.000Z',
+      heartbeatAt: '2026-11-12T00:58:00.000Z',
+      now: '2026-11-12T01:00:00.000Z',
+    });
+    expect(terminal).not.toHaveProperty('configured_limit_secs');
+    expect(terminal).not.toHaveProperty('elapsed_secs');
+    expect(terminal).not.toHaveProperty('heartbeat_age_secs');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// WK-0244/WK-0260 record AC4 — the controller's terminal state.json write
+// ---------------------------------------------------------------------------
+
+describe('controller terminal state.json write (AC4 kill diagnostics)', () => {
+  it('carries the three named fields through writeState on a watchdog kill, with fixed timestamps', async () => {
+    const statePath = join(repoRoot, 'state.json');
+    const startedAt = '2026-11-12T00:00:00.000Z';
+    const lastHeartbeatAt = '2026-11-12T00:58:00.000Z';
+    const now = '2026-11-12T01:00:00.000Z';
+
+    const runningState = buildRunningState({
+      runId: 'RUN-wd1',
+      handoffId: 'HO-0260',
+      model: 'claude-sonnet-5',
+      pid: 1234,
+      startedAt,
+      heartbeatAt: lastHeartbeatAt,
+    });
+
+    const timeoutResult: DispatchResult<DispatchResult2> = fail(
+      'PIPELINE_FAILED',
+      'Worker timed out after 3600s (watchdog fired).',
+      { stdout: '', stderr: '', exitCode: null, signal: 'SIGTERM', truncated: false, timedOut: true, streamDrainTimedOut: false, configured_limit_secs: 3600 },
+    );
+    const terminal = deriveTerminalFields(timeoutResult, null, { startedAt, heartbeatAt: lastHeartbeatAt, now });
+
+    const terminalState = {
+      ...runningState,
+      status: terminal.status,
+      heartbeat_at: now,
+      completed_at: now,
+      outcome: terminal.outcome,
+      delivery_status: terminal.delivery_status,
+      branch: terminal.branch,
+      error: terminal.error,
+      error_detail: terminal.error_detail,
+      configured_limit_secs: terminal.configured_limit_secs,
+      elapsed_secs: terminal.elapsed_secs,
+      heartbeat_age_secs: terminal.heartbeat_age_secs,
+    };
+    await writeJsonAtomic(statePath, terminalState);
+
+    const written = JSON.parse(await readFile(statePath, 'utf-8'));
+    expect(written.configured_limit_secs).toBe(3600);
+    expect(written.elapsed_secs).toBe(3600);
+    expect(written.heartbeat_age_secs).toBe(120);
+  });
+
+  it('a non-timeout terminal state has none of the three AC4 fields', async () => {
+    const statePath = join(repoRoot, 'state.json');
+    const startedAt = '2026-11-12T00:00:00.000Z';
+    const lastHeartbeatAt = '2026-11-12T00:58:00.000Z';
+    const now = '2026-11-12T01:00:00.000Z';
+
+    const runningState = buildRunningState({
+      runId: 'RUN-wd2',
+      handoffId: 'HO-0260',
+      model: 'claude-sonnet-5',
+      pid: 1234,
+      startedAt,
+      heartbeatAt: lastHeartbeatAt,
+    });
+
+    const deliveredResult: DispatchResult<DispatchResult2> = ok({
+      runId: 'RUN-wd2',
+      handoffId: 'HO-0260',
+      model: 'claude-sonnet-5',
+      delivery: { status: 'delivered', branch: 'dispatch/HO-0260', commitSha: 'abc123', changedFiles: ['src/a.ts'] },
+      responsePath: '/run/HO-0260.response.md',
+      runDir: '/run',
+    });
+    const terminal = deriveTerminalFields(deliveredResult, null, { startedAt, heartbeatAt: lastHeartbeatAt, now });
+
+    const terminalState = {
+      ...runningState,
+      status: terminal.status,
+      heartbeat_at: now,
+      completed_at: now,
+      outcome: terminal.outcome,
+      delivery_status: terminal.delivery_status,
+      branch: terminal.branch,
+      error: terminal.error,
+      error_detail: terminal.error_detail,
+      configured_limit_secs: terminal.configured_limit_secs,
+      elapsed_secs: terminal.elapsed_secs,
+      heartbeat_age_secs: terminal.heartbeat_age_secs,
+    };
+    await writeJsonAtomic(statePath, terminalState);
+
+    const written = JSON.parse(await readFile(statePath, 'utf-8'));
+    expect(written).not.toHaveProperty('configured_limit_secs');
+    expect(written).not.toHaveProperty('elapsed_secs');
+    expect(written).not.toHaveProperty('heartbeat_age_secs');
   });
 });
