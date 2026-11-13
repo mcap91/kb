@@ -330,6 +330,66 @@ describe('deriveReview — WK-0132 Slice 2', () => {
       const admitted = await checkAdmission(parsed.data, tempDir);
       expect(admitted.ok).toBe(true);
     });
+
+    // Why: HO-0258 F2 — every existing chain fixture gives each member the same read_first
+    // list, so no test can distinguish "head first, then older members" from any other union
+    // order. This gives A and B distinct, non-overlapping entries (plus a shared README.md and
+    // AGENTS.md) and asserts the exact derived order (WK-0270 Specification 4).
+    it('two-HO chain (B on A) with distinct read_first lists: derives head (B) first, then A\'s entries not already present, then AGENTS.md, deduplicated', async () => {
+      await writeFile(join(tempDir, 'AGENTS.md'), '# rules\n', 'utf-8');
+      await mkdir(join(tempDir, 'docs'), { recursive: true });
+      await writeFile(join(tempDir, 'docs', 'a-only.md'), 'a only\n', 'utf-8');
+      await writeFile(join(tempDir, 'docs', 'b-only.md'), 'b only\n', 'utf-8');
+
+      const a = await createHandoff(
+        baseImplementOpts({
+          dir: tempDir,
+          work_item: 'WK-0001',
+          acceptance: ['AC-A1: a does x'],
+          read_first: ['README.md', 'docs/a-only.md'],
+        }),
+      );
+      if (!a.ok) throw new Error(a.message);
+      execFileSync('git', ['add', '-A'], { cwd: tempDir });
+      execFileSync('git', ['commit', '-q', '-m', 'author A'], { cwd: tempDir });
+      await deliverChainCommit(tempDir, a.data.handoffId, 'HEAD');
+
+      const b = await createHandoff(
+        baseImplementOpts({
+          dir: tempDir,
+          work_item: 'WK-0002',
+          acceptance: ['AC-B1: b does y'],
+          base_ref: `dispatch/${a.data.handoffId}`,
+          read_first: ['README.md', 'docs/b-only.md'],
+        }),
+      );
+      if (!b.ok) throw new Error(b.message);
+      await writeResponseDoc(tempDir, b.data.handoffId);
+      execFileSync('git', ['add', '-A'], { cwd: tempDir });
+      execFileSync('git', ['commit', '-q', '-m', 'author B'], { cwd: tempDir });
+      await deliverChainCommit(tempDir, b.data.handoffId, `dispatch/${a.data.handoffId}`);
+
+      await writeRunState(join(tempDir, '.agent-runs', 'runs', b.data.handoffId, DELIVERED_RUN), {
+        run_id: DELIVERED_RUN,
+        handoff_id: b.data.handoffId,
+        status: 'delivered',
+        outcome: 'delivered',
+        branch: `dispatch/${b.data.handoffId}`,
+        completed_at: '2026-09-25T10:00:00.000Z',
+      });
+
+      const result = await deriveReview({ dir: tempDir, handoff_id: b.data.handoffId });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      expect(result.data.droppedReadFirst).toEqual([]);
+
+      const parsed = await parseHandoff(result.data.reviewPath);
+      expect(parsed.ok).toBe(true);
+      if (!parsed.ok) return;
+      // Specification 4: head (B) first, then A's entries not already present, then AGENTS.md.
+      expect(parsed.data.read_first).toEqual(['README.md', 'docs/b-only.md', 'docs/a-only.md', 'AGENTS.md']);
+    });
   });
 
   describe('chain walk, Objective/Expected Output, and acceptance union (WK-0270 Specification 1, 2, 5)', () => {

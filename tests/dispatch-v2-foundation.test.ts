@@ -567,6 +567,23 @@ describe('assemble.ts — mechanical prompt assembly', () => {
     expect(result.data.text).not.toContain('Range under review');
     expect(result.data.text).not.toContain('AGENTS.md rules');
   });
+
+  // Why: HO-0258 F1 — `assemblePrompt` renders `## Framing` (sections[1]) before `### Context`
+  // (sections[3], which embeds the Objective), so the Range line sits below the framing, never
+  // above it. The framing must not claim a direction that contradicts that section order.
+  it('code_review framing does not claim the Range under review line is above the framing (HO-0258 F1)', async () => {
+    const content = HO_0002_CONTENT.replace('mode: implement', 'mode: code_review');
+    await writeFile(join(repoRoot, 'wiki', 'handoffs', 'HO-0002.md'), content, 'utf8');
+    const parsed = parseHandoffContent(content, 'HO-0002.md');
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+
+    const result = await assemblePrompt(parsed.data, repoRoot);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.text).not.toContain('line above');
+    expect(result.data.text).toContain("Objective's `Range under review:` line");
+  });
 });
 
 // ---------------------------------------------------------------------------

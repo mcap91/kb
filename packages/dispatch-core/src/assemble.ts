@@ -265,7 +265,7 @@ function getModeParts(handoff: Handoff, opts: AssembleOpts): ModeParts {
           // review that names no such line falls back to the single-commit default, which
           // keeps tests/dispatch-v2-base-drift.test.ts passing unchanged.
           `Review the change delivered on \`${handoff.base_ref}\`. Your checkout is that branch's tip. ` +
-          "Judge the range on the Objective's `Range under review:` line above. When the Objective names " +
+          "Judge the range on the Objective's `Range under review:` line. When the Objective names " +
           'no such line (a hand-authored review), the default is `git diff HEAD~1 HEAD` — the single ' +
           'commit each delivery adds on its base.\n\n' +
           "Check the change against the repository's AGENTS.md rules as well as the acceptance criteria " +
