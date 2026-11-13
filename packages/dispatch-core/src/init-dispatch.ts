@@ -1,11 +1,10 @@
 /**
- * `init-dispatch` — scaffold `wiki/.dispatch/` (PLN-0004 S3 ruling 11 + D2/D4
- * freeze correction; write-once README per WK-0133 D2 / WK-0134). Creates the
- * repo-local `wiki/.dispatch/` dir, blank `models.json`/`backends.json`/
+ * `init-dispatch` — scaffold `wiki/.dispatch/`. Creates the repo-local
+ * `wiki/.dispatch/` dir, blank `models.json`/`backends.json`/
  * `profiles.json` tables, and a `README.md` — every file, including the
  * README, is written only if absent and never touched again on a re-run.
  * Does NOT stamp AGENTS.md or `.mcp.json` — those are already wiki-core
- * bootstrap/sync-contract jobs that cover kb-dispatch (ruling 11).
+ * bootstrap/sync-contract jobs that cover kb-dispatch.
  */
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -26,8 +25,8 @@ const BLANK_MODELS = '{}';
 const BLANK_BACKENDS = '{}';
 const BLANK_PROFILES = JSON.stringify({ schema_version: 1 }, null, 2);
 
-// README content — write-once (WK-0133 D2 / WK-0134): written only if absent,
-// never edited again on a re-run.
+// README content — write-once: written only if absent, never edited again on
+// a re-run.
 const README_CONTENT = `# wiki/.dispatch/ — Dispatch Configuration
 
 This directory holds the repo-local dispatch configuration tables. Edit the JSON files
@@ -40,8 +39,8 @@ to configure models and backends for your repository.
 | \`models.json\` | Model slug → available backends + provider model_id | \`{}\` |
 | \`backends.json\` | Backend name → family, base_url, api_key_env, secrets_file | \`{}\` |
 | \`profiles.json\` | Credential profiles (schema_version 1, inject + optional endpoints) | \`{"schema_version": 1}\` |
-| \`validation.json\` | Optional, not scaffolded: commands the host runs against a delivery before review (WK-0294; docs/dispatch-protocol.md "Host Validation Evidence") | absent = none |
-| \`limits.json\` | Optional, not scaffolded: the operator cap on a handoff's \`timeout_secs\` (WK-0244) | absent = 1800s cap |
+| \`validation.json\` | Optional, not scaffolded: commands the host runs against a delivery before review (docs/dispatch-protocol.md "Host Validation Evidence") | absent = none |
+| \`limits.json\` | Optional, not scaffolded: the operator cap on a handoff's \`timeout_secs\` | absent = 1800s cap |
 
 ## Example models.json
 
@@ -87,7 +86,7 @@ OpenAI, a proxy, a local Ollama/vLLM server).
 
 ## rate_key_prefix (optional)
 
-An optional string on a backend entry (WK-0266). The vendored
+An optional string on a backend entry. The vendored
 \`contract/token-rates.json\` rate table is keyed by LiteLLM canonical id, which for
 OpenRouter is \`openrouter/<model_id>\`, not the bare \`model_id\`. The \`est_cost_usd\`
 rate-table lookup key is exactly \`rate_key_prefix + model_id\` — there is no fallback
@@ -135,8 +134,8 @@ DeepSeek is the model vendor, not an inference provider for that model.
 
 ## limits.json (optional, not scaffolded)
 
-A handoff may declare \`timeout_secs\` to override the pipeline's default 1800s worker watchdog
-(WK-0244). The operator caps how high that override may go with \`wiki/.dispatch/limits.json\`:
+A handoff may declare \`timeout_secs\` to override the pipeline's default 1800s worker watchdog.
+The operator caps how high that override may go with \`wiki/.dispatch/limits.json\`:
 
 \`\`\`json
 {
@@ -154,8 +153,8 @@ written by \`init-dispatch\` or by a worker.
 
 kb opportunistically records which inference provider served each run, and (for OpenRouter)
 what it billed. The forwarder taps every relayed response — no configuration needed — and
-writes one JSON line per response to the run dir's \`provider-usage.jsonl\` (WK-0266; this
-replaced the older per-run provenance file, which no longer exists). Each line carries \`status\`,
+writes one JSON line per response to the run dir's \`provider-usage.jsonl\` (this replaced the
+older per-run provenance file, which no longer exists). Each line carries \`status\`,
 \`content_type\`, \`generation_id\`, \`providers\` (distinct, first-seen order, read from every data
 chunk — not just the first), \`header_provider\` (the \`x-inference-provider\` response header, kept
 for the HuggingFace path below), \`cost\` (the \`usage.cost\` figure from the last data line that

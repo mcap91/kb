@@ -490,6 +490,7 @@ All three must pass. The gate must be green on Linux (WSL2 ext4).
 - **Do not describe features that do not exist.** No semantic search, no embeddings, no function-level graphs.
 - **Do not modify files under `scratch_space/`.** That directory is for planning and reference only.
 - **Do not use git worktrees.** Multiple agents share this checkout. Worktrees cause branch switches, stash collisions, and lost work. Work on one branch at a time; if branches diverge, rebase and merge — never create parallel worktrees.
+- **No wiki language outside the wiki (operator rule 2026-11-13).** Wiki record ids (WK, IN, DEC, SRC, PLN, VAL, AREA, HO) and ruling/slice references never appear in code, comments, docs, scripts, or scaffolded output. Provenance lives in git history and the wiki records — cite them in the commit message and the record, not the artifact. Exceptions: format specs (e.g. the `work_item` field documents the literal shape `WK-####`), and captured outputs quoted as evidence (never edit a capture).
 
 ## kb-autoshop Design Item Discipline (IN-0011)
 
