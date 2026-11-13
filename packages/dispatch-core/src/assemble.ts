@@ -122,6 +122,17 @@ function reviewerRecoveryFormat(role: 'reviewer' | 'redteam' | 'researcher' | 'e
   );
 }
 
+/**
+ * WK-0273 (operator ruling (a), 2026-11-12): the managed block's "search the kb wiki first"
+ * step cannot run inside the jail — no kb MCP server and no kb checkout are mounted there.
+ * This line overrides that step for every mode's worker prompt from one place in shared
+ * assembly code (see `assemblePrompt`'s Framing section), rather than being pasted into each
+ * mode's framing constant.
+ */
+const JAIL_RETRIEVAL_LINE =
+  'In this jail, read the wiki as plain files; the `read_first` list in this task is your ' +
+  'retrieval set. Do not look for a kb MCP server or kb CLI — neither is mounted here.';
+
 interface ModeParts {
   introLine: string;
   framing: string;
@@ -337,7 +348,7 @@ export async function assemblePrompt(
 
   const sections: string[] = [
     modeParts.introLine,
-    `## Framing\n${modeParts.framing}`,
+    `## Framing\n${modeParts.framing}\n\n${JAIL_RETRIEVAL_LINE}`,
     `## Task: ${handoff.title}`,
     `### Context\n${context}`,
   ];
