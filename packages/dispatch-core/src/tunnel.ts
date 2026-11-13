@@ -118,7 +118,7 @@ export function buildTunnelScripts(config: TunnelConfig): TunnelScripts {
 // ever touches a real network interface for egress.
 //
 // Self-contained: Node.js built-ins only, no npm packages.
-// Usage: node forwarder.js <socketPath> <targetUrl> <webEnabled:true|false> <logPath> <allowedHostsJson> [provenancePath]
+// Usage: node forwarder.js <socketPath> <targetUrl> <webEnabled:true|false> <logPath> <allowedHostsJson> [providerUsagePath]
 
 const http = require('node:http');
 const https = require('node:https');
@@ -131,23 +131,135 @@ const TARGET_URL = process.argv[3];
 const WEB_ENABLED_ARG = process.argv[4];
 const LOG_PATH = process.argv[5];
 const ALLOWED_HOSTS_JSON = process.argv[6];
-const PROVENANCE_PATH = process.argv[7];
+const PROVIDER_USAGE_PATH = process.argv[7];
 
 if (!SOCKET_PATH || !TARGET_URL || !WEB_ENABLED_ARG || !LOG_PATH) {
-  console.error('usage: node forwarder.js <socketPath> <targetUrl> <webEnabled:true|false> <logPath> <allowedHostsJson> [provenancePath]');
+  console.error('usage: node forwarder.js <socketPath> <targetUrl> <webEnabled:true|false> <logPath> <allowedHostsJson> [providerUsagePath]');
   process.exit(1);
 }
 
-let provenanceWritten = false;
-function writeProvenance(provider, source) {
-  if (provenanceWritten || !PROVENANCE_PATH) return;
-  provenanceWritten = true;
+// Provider-usage tap (WK-0266 rulings 1-3, 6, 8): one JSON line per relayed
+// HTTP response (never a CONNECT-tunnelled one -- that traffic is opaque TLS,
+// out of scope per WK-0266) appended to PROVIDER_USAGE_PATH. The tap never
+// touches the RELAYED bytes themselves -- upstreamRes.pipe(res) below is
+// unmodified, never setEncoding()'d. The tap adds its OWN 'data' listener and
+// keeps its OWN decode state (a persistent TextDecoder across chunks, so a
+// multibyte character split across chunk boundaries decodes correctly), so a
+// parse failure or an over-long line here can never change what the client
+// actually receives.
+const MAX_PENDING_LINE_BYTES = 1024 * 1024; // 1 MiB cap (ruling 2)
+const openUsageRecords = new Set();
+
+function newUsageRecord(statusCode, contentType, headerProvider) {
+  return {
+    status: statusCode,
+    content_type: contentType || '',
+    generation_id: null,
+    providers: [],
+    header_provider: headerProvider || null,
+    cost: null,
+    cost_details: null,
+    ended: false,
+    dropped_lines: 0,
+    parse_errors: 0,
+    recorded: false,
+    pending: '',
+    decoder: new TextDecoder('utf-8'),
+  };
+}
+
+// Writes the record exactly once (ruling 3: "every response that started
+// gets exactly one record") -- a late duplicate call (e.g. 'close' firing
+// after 'end' already recorded it) is a no-op. ended:false always forces
+// cost:null, even if a usage line had already been parsed, because the
+// spec's own early-close case is defined that way (ruling 3).
+function writeUsageRecord(record, ended) {
+  if (record.recorded) return;
+  record.recorded = true;
+  record.ended = ended;
+  if (!ended) record.cost = null;
+  openUsageRecords.delete(record);
+  if (!PROVIDER_USAGE_PATH) return;
+  const line = JSON.stringify({
+    status: record.status,
+    content_type: record.content_type,
+    generation_id: record.generation_id,
+    providers: record.providers,
+    header_provider: record.header_provider,
+    cost: record.cost,
+    cost_details: record.cost_details,
+    ended: record.ended,
+    dropped_lines: record.dropped_lines,
+    parse_errors: record.parse_errors,
+  }) + '\\n';
   try {
-    fs.writeFileSync(PROVENANCE_PATH, JSON.stringify({ inference_provider: provider, source: source }) + '\\n');
-  } catch (e) {
-    // best-effort — never block a request on a provenance write failure
+    fs.appendFileSync(PROVIDER_USAGE_PATH, line);
+  } catch (err) {
+    // Best-effort, like every other write in this forwarder -- a failure
+    // here must never crash the process or block the relayed response. The
+    // pipeline's own n/k coverage math treats a response with no line in the
+    // file as uncovered, never as silently fully covered (rule 24).
   }
 }
+
+// SSE line parser (ruling 2): skips ':'-prefixed comment lines (OpenRouter's
+// "OPENROUTER PROCESSING" keepalives) and 'data: [DONE]'; a JSON parse
+// failure on a data line increments parse_errors and is never thrown.
+function processUsageLine(record, rawLine) {
+  const line = rawLine.length > 0 && rawLine.charAt(rawLine.length - 1) === '\\r' ? rawLine.slice(0, -1) : rawLine;
+  if (line.length === 0) return;
+  if (line.charAt(0) === ':') return;
+  if (line.slice(0, 5) !== 'data:') return;
+  const payload = line.slice(5).trim();
+  if (payload === '[DONE]') return;
+  let parsed;
+  try {
+    parsed = JSON.parse(payload);
+  } catch (err) {
+    record.parse_errors += 1;
+    return;
+  }
+  if (parsed && typeof parsed.id === 'string') {
+    record.generation_id = parsed.id;
+  }
+  if (parsed && typeof parsed.provider === 'string' && record.providers.indexOf(parsed.provider) === -1) {
+    record.providers.push(parsed.provider);
+  }
+  if (parsed && parsed.usage && typeof parsed.usage.cost === 'number') {
+    record.cost = parsed.usage.cost;
+    record.cost_details = parsed.usage.cost_details !== undefined ? parsed.usage.cost_details : null;
+  }
+}
+
+// Feeds one raw Buffer chunk into the tap's own decode/line-buffer state.
+// record.pending holds only the partial TRAILING line (ruling 2) -- every
+// complete line is parsed and discarded immediately. If the still-incomplete
+// tail ever exceeds the 1 MiB cap, it is dropped and counted rather than
+// grown without bound.
+function feedUsageTap(record, chunk) {
+  record.pending += record.decoder.decode(chunk, { stream: true });
+  let newlineIndex;
+  while ((newlineIndex = record.pending.indexOf('\\n')) !== -1) {
+    const rawLine = record.pending.slice(0, newlineIndex);
+    record.pending = record.pending.slice(newlineIndex + 1);
+    processUsageLine(record, rawLine);
+  }
+  if (record.pending.length > MAX_PENDING_LINE_BYTES) {
+    record.dropped_lines += 1;
+    record.pending = '';
+  }
+}
+
+// On SIGTERM (pipeline.ts kills this process once the worker exits): flush a
+// record for every response still open BEFORE exiting (ruling 3) -- the
+// pipeline waits, with a bounded timeout, for this exit before it reads the
+// file.
+process.on('SIGTERM', () => {
+  for (const record of Array.from(openUsageRecords)) {
+    writeUsageRecord(record, false);
+  }
+  process.exit(0);
+});
 
 const WEB_ENABLED = WEB_ENABLED_ARG === 'true';
 const TARGET = new URL(TARGET_URL);
@@ -252,28 +364,32 @@ const server = http.createServer((req, res) => {
       headers: outHeaders,
     },
     (upstreamRes) => {
-      if (!provenanceWritten && PROVENANCE_PATH) {
-        const headerProv = (upstreamRes.headers['x-inference-provider'] || '').toString();
-        upstreamRes.on('data', function onChunk(chunk) {
-          if (provenanceWritten) return;
-          upstreamRes.removeListener('data', onChunk);
-          const text = chunk.toString('utf8', 0, Math.min(chunk.length, 2048));
-          const m = text.match(/"provider"\\s*:\\s*"([^"]+)"/);
-          if (m) {
-            writeProvenance(m[1], 'body');
-          } else if (headerProv) {
-            writeProvenance(headerProv, 'header');
-          }
-        });
-        upstreamRes.on('end', () => {
-          if (!provenanceWritten) {
-            if (headerProv) {
-              writeProvenance(headerProv, 'header');
-            } else {
-              writeProvenance('unknown', 'unknown');
-            }
-          }
-        });
+      if (PROVIDER_USAGE_PATH) {
+        const headerProviderRaw = upstreamRes.headers['x-inference-provider'];
+        const headerProvider = typeof headerProviderRaw === 'string'
+          ? headerProviderRaw
+          : (Array.isArray(headerProviderRaw) ? headerProviderRaw[0] : undefined);
+        const contentTypeRaw = upstreamRes.headers['content-type'];
+        const contentType = typeof contentTypeRaw === 'string'
+          ? contentTypeRaw
+          : (Array.isArray(contentTypeRaw) ? contentTypeRaw[0] : '');
+        const usageRecord = newUsageRecord(upstreamRes.statusCode || 0, contentType, headerProvider);
+        openUsageRecords.add(usageRecord);
+        // The tap's OWN listener, added NEXT TO the relay pipe below (ruling
+        // 2) -- never setEncoding() on upstreamRes itself, which would change
+        // what EVERY listener (including the relay pipe) receives. The tap
+        // keeps its own TextDecoder instead, fed the identical raw chunks.
+        upstreamRes.on('data', (chunk) => feedUsageTap(usageRecord, chunk));
+        upstreamRes.on('end', () => writeUsageRecord(usageRecord, true));
+        upstreamRes.on('aborted', () => writeUsageRecord(usageRecord, false));
+        upstreamRes.on('error', () => writeUsageRecord(usageRecord, false));
+        // Client (worker) disconnect: 'close' on the CLIENT-facing response
+        // fires before upstream's own 'end' in that case, so this path wins
+        // the race and records ended:false (ruling 3). A normal completion
+        // already recorded ended:true via 'end' above by the time 'close'
+        // eventually fires here too -- writeUsageRecord's one-shot guard
+        // makes that second call a no-op.
+        res.on('close', () => writeUsageRecord(usageRecord, false));
       }
       res.writeHead(upstreamRes.statusCode || 502, upstreamRes.headers);
       upstreamRes.pipe(res);

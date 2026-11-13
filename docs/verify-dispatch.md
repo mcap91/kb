@@ -181,17 +181,22 @@ The minimal repeatable case: one file, one line, all nine pipeline stages.
 | 1 | create-handoff | `wiki/handoffs/HO-XXXX.md` exists; frontmatter has `base_sha` |
 | 2 | admission | `RD/state.json` exists; `.error` is `null` |
 | 3 | jail (bwrap) | `RD/worker-output.log` exists; response frontmatter `isolation_backend: bwrap` |
-| 4 | tunnel/relay | `RD/relay.js`, `RD/forwarder.js`, `RD/forwarder.log`, `RD/tunnel-destinations.log` all exist |
+| 4 | tunnel/relay | `RD/relay.js`, `RD/forwarder.js`, `RD/forwarder.log`, `RD/tunnel-destinations.log`, `RD/provider-usage.jsonl` all exist |
 | 5 | adapter | `RD/prompt.txt` exists; response frontmatter has `model`, `backend`, `backend_fingerprint` |
-| 6 | worker execution | `RD/worker-output.log` non-empty; response frontmatter has `total_tokens`/`cost_usd` |
+| 6 | worker execution | `RD/worker-output.log` non-empty; response frontmatter has `total_tokens`/`cost_usd`; for a pi-family backend, the response doc's `## Token Detail` table has `rate_key` (the exact rate-table key looked up, WK-0266 s1) and `provider_cost_coverage` (`k/n` 2xx responses from `RD/provider-usage.jsonl` that carried a cost, WK-0266 s2) rows |
 | 7 | delivery | `git rev-parse --verify refs/heads/dispatch/HO-XXXX` resolves; its tip commit's author/committer is `kb-dispatch <dispatch@kb.local>`, message `dispatch: HO-XXXX`; `RD/state.json` has `delivery_status: "delivered"` |
 | 8 | auto-commit | A commit on the branch you dispatched from, by `kb-dispatch <dispatch@kb.local>`, message `chore: dispatch HO-XXXX <outcome> (<backend>/<model>)`, touching `HO-XXXX.md` + `HO-XXXX.response.md` |
 | 9 | response doc | `wiki/handoffs/HO-XXXX.response.md` frontmatter has `handoff_id`, `outcome`, `branch`, `wiki_commit`; the HO's own frontmatter gains `run_id`, `response`, `agent`, `branch` |
 
-`RD/provenance.json` may also appear (best-effort, provider-dependent) — its absence is not a
-failure. Do not assert anything against the ephemeral worker clone; it is torn down
-unconditionally once the run ends. Stages 3-6 evidence lives entirely in `RD` and the response
-frontmatter; stages 1, 7-9 live in the consuming repo itself.
+`RD/provider-usage.jsonl` (WK-0266) is the host-side forwarder's own tap: one JSON line per
+relayed HTTP response (`status`, `content_type`, `generation_id`, `providers`, `header_provider`,
+`cost`, `cost_details`, `ended`, `dropped_lines`, `parse_errors`) for every pi-family request —
+`provenance.json` no longer exists anywhere in `packages/`; this file is the sole source for
+`cost_usd` and `inference_provider` now. codex/claude traffic is CONNECT-tunnelled TLS, so the
+tap never produces a record for those families — the file may be empty or absent for them, which
+is expected, not a failure. Do not assert anything against the ephemeral worker clone; it is torn
+down unconditionally once the run ends. Stages 3-6 evidence lives entirely in `RD` and the
+response frontmatter; stages 1, 7-9 live in the consuming repo itself.
 
 ### Review chain fixture (code_review)
 

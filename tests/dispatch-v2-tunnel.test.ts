@@ -15,7 +15,8 @@
  * suite, per the task's no-live-networking instruction.
  */
 import { describe, expect, it } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 
 import {
@@ -433,5 +434,142 @@ describe('DEC-0011 per-family forwarder policy assertions', () => {
     const pipelineSrc = readFileSync(join(process.cwd(), 'packages', 'dispatch-core', 'src', 'pipeline.ts'), 'utf8');
     expect(pipelineSrc).toContain('unshareNet: true,');
     expect(pipelineSrc).not.toMatch(/unshareNet:\s*(model\.family|family\s*===|handoff\.web|opts\.web)/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// WK-0266 ruling 8 — provenance.json retired; the forwarder's argv and the
+// provider-usage tap replace it. buildTunnelScripts()/buildTunnelBashLines()
+// script-text assertions only (the real tap's byte-level behavior is covered
+// by dispatch-v2-tunnel-integration.test.ts's real-process tests).
+// ---------------------------------------------------------------------------
+
+describe('WK-0266 ruling 8 — provenance.json retired from the generated forwarder', () => {
+  it('the generated forwarder never references provenance.json / PROVENANCE_PATH / writeProvenance', () => {
+    const { forwarderScript } = buildTunnelScripts(baseConfig);
+    expect(forwarderScript).not.toMatch(/provenance/i);
+  });
+
+  it('argv[7] is named/documented as the provider-usage path, not a provenance path', () => {
+    const { forwarderScript } = buildTunnelScripts(baseConfig);
+    expect(forwarderScript).toContain('PROVIDER_USAGE_PATH = process.argv[7]');
+    expect(forwarderScript).toContain('providerUsagePath');
+  });
+
+  it('buildTunnelBashLines keeps its own forwarder invocation argv unchanged (allowedHostsJson is still the LAST quoted arg -- no 6th provider-usage path appended) — ruling 8', () => {
+    const lines = buildTunnelBashLines(baseConfig, runDirWsl);
+    const forwarderLine = lines.preJailLines.find((l) => l.trim().startsWith('node ') && l.includes('forwarder.js'));
+    expect(forwarderLine).toBeDefined();
+    const expectedAllowedHostsJson = `'${JSON.stringify(baseConfig.allowedHosts)}'`; // mirrors tunnel.ts's private shQuote (no special chars in this fixture)
+    const beforeRedirect = forwarderLine!.split('<')[0];
+    expect(beforeRedirect.trim().endsWith(expectedAllowedHostsJson)).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// WK-0266 ruling 1/2 — the generated forwarder's provider-usage tap (script
+// text only; real byte-level/process behavior is
+// dispatch-v2-tunnel-integration.test.ts's job).
+// ---------------------------------------------------------------------------
+
+describe('WK-0266 ruling 1/2 — provider-usage tap generated into the forwarder script', () => {
+  const { forwarderScript } = buildTunnelScripts(baseConfig);
+
+  it('never calls setEncoding on the upstream response (ruling 2: the tap must not change the relayed stream)', () => {
+    // Comments ABOUT not calling it are fine; only an actual call (a
+    // `.setEncoding(` invocation) would change what every listener,
+    // including the relay pipe, receives.
+    expect(forwarderScript).not.toMatch(/\.setEncoding\(/);
+  });
+
+  it('still pipes the upstream response to the client unmodified (the tap listens NEXT TO the pipe, not instead of it)', () => {
+    expect(forwarderScript).toContain('upstreamRes.pipe(res)');
+  });
+
+  it('adds its own data listener alongside the pipe, decoding its own copy with a persistent TextDecoder (survives a multibyte split across chunks)', () => {
+    expect(forwarderScript).toContain("upstreamRes.on('data', (chunk) => feedUsageTap(usageRecord, chunk))");
+    expect(forwarderScript).toContain('new TextDecoder(');
+    expect(forwarderScript).toContain("decode(chunk, { stream: true })");
+  });
+
+  it('caps the pending partial line at 1 MiB and counts an over-long line as dropped rather than growing without bound', () => {
+    expect(forwarderScript).toContain('MAX_PENDING_LINE_BYTES = 1024 * 1024');
+    expect(forwarderScript).toContain('dropped_lines += 1');
+  });
+
+  it('skips SSE comment lines (":" prefix) and "data: [DONE]"', () => {
+    expect(forwarderScript).toContain("line.charAt(0) === ':'");
+    expect(forwarderScript).toContain("payload === '[DONE]'");
+  });
+
+  it('counts a JSON parse failure on a data line rather than throwing', () => {
+    expect(forwarderScript).toMatch(/catch \(err\) \{\s*record\.parse_errors \+= 1;/);
+  });
+
+  it('records distinct providers in first-seen order and the x-inference-provider header as a fallback field', () => {
+    expect(forwarderScript).toContain('record.providers.indexOf(parsed.provider) === -1');
+    expect(forwarderScript).toContain("headers['x-inference-provider']");
+  });
+
+  it('writes exactly one record per response (a one-shot guard) and forces cost:null whenever ended is false', () => {
+    expect(forwarderScript).toContain('if (record.recorded) return;');
+    expect(forwarderScript).toContain('if (!ended) record.cost = null;');
+  });
+
+  it('flushes every still-open response on SIGTERM before exiting (ruling 3)', () => {
+    expect(forwarderScript).toContain("process.on('SIGTERM'");
+    expect(forwarderScript).toMatch(/for \(const record of Array\.from\(openUsageRecords\)\)/);
+    expect(forwarderScript).toContain('process.exit(0)');
+  });
+
+  it('appends to the provider-usage file with fs.appendFileSync (never buffers records in memory for a later single write)', () => {
+    expect(forwarderScript).toContain('fs.appendFileSync(PROVIDER_USAGE_PATH, line)');
+  });
+
+  it('a write failure is caught, never thrown (rule 24: counted/logged, not swallowed into a crash)', () => {
+    expect(forwarderScript).toMatch(/fs\.appendFileSync\(PROVIDER_USAGE_PATH, line\);\s*\} catch \(err\) \{/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// WK-0266 golden fixtures — copied unedited from the read-only data mount
+// (tests/fixtures/openrouter-sse/). A hand edit to any of the 5 copied
+// stream_*.sse files fails this test; SHA256SUMS itself is copied whole and
+// unedited, but only the 5 copied files' lines are checked here (its other
+// listed files were never copied — rule 33).
+// ---------------------------------------------------------------------------
+
+describe('WK-0266 golden fixtures (tests/fixtures/openrouter-sse/) match SHA256SUMS', () => {
+  const fixturesDir = join(process.cwd(), 'tests', 'fixtures', 'openrouter-sse');
+  const copiedFiles = [
+    'stream_morph.sse',
+    'stream_openai.sse',
+    'stream_openai_reasoning.sse',
+    'stream_parasail.sse',
+    'stream_parasail_utf8.sse',
+  ];
+
+  it('SHA256SUMS is present, copied whole and unedited', () => {
+    expect(existsSync(join(fixturesDir, 'SHA256SUMS'))).toBe(true);
+  });
+
+  it.each(copiedFiles)('%s sha256 matches its SHA256SUMS line', (filename) => {
+    const sums = readFileSync(join(fixturesDir, 'SHA256SUMS'), 'utf8');
+    const line = sums.split('\n').find((l) => l.trim().endsWith(filename));
+    expect(line, `no SHA256SUMS line for ${filename}`).toBeDefined();
+    const expectedHash = line!.trim().split(/\s+/)[0];
+
+    const actualHash = createHash('sha256').update(readFileSync(join(fixturesDir, filename))).digest('hex');
+    expect(actualHash).toBe(expectedHash);
+  });
+
+  it('a hand edit to a copied fixture fails the hash check (bite proof)', () => {
+    const real = readFileSync(join(fixturesDir, 'stream_morph.sse'));
+    const tampered = Buffer.concat([real, Buffer.from('\n')]);
+    const sums = readFileSync(join(fixturesDir, 'SHA256SUMS'), 'utf8');
+    const line = sums.split('\n').find((l) => l.trim().endsWith('stream_morph.sse'));
+    const expectedHash = line!.trim().split(/\s+/)[0];
+    const tamperedHash = createHash('sha256').update(tampered).digest('hex');
+    expect(tamperedHash).not.toBe(expectedHash);
   });
 });

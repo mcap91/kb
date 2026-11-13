@@ -250,7 +250,7 @@ is written only if absent):
 | File | Contents |
 |------|----------|
 | `models.json` | slug → `available_on` (backend names) + provider `model_id` |
-| `backends.json` | name → `family` (`pi` \| `codex` \| `claude`), `base_url`, `api_key_env`, `secrets_file`, optional `effort_mapping` |
+| `backends.json` | name → `family` (`pi` \| `codex` \| `claude`), `base_url`, `api_key_env`, `secrets_file`, optional `effort_mapping`, optional `rate_key_prefix` |
 | `profiles.json` | credential profiles — see "Credentials" |
 
 A local model (Ollama, vLLM, …) is just a `pi`-family backend entry with a `base_url` pointing at the

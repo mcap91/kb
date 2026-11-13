@@ -24,7 +24,7 @@
  * `spawnIsolated`) — mirrors agent-chassis's direct-spawn architecture
  * (ELv2: design mirrored only, no chassis code copied).
  */
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import { closeSync, constants as fsConstants, existsSync, openSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises';
@@ -74,7 +74,7 @@ import {
   parseDeliveryOutput,
   type DeliveryOutcome,
 } from './delivery.js';
-import { writeResponseDoc, buildProvenanceWriteBack, type WorkerUsageDetail } from './capture.js';
+import { writeResponseDoc, buildProvenanceWriteBack, type WorkerUsageDetail, type ProviderCostCoverage } from './capture.js';
 import { commitArtifacts } from './commit-artifacts.js';
 import { stageReviewEvidence } from './host-validation.js';
 import { runPreflight } from './preflight.js';
@@ -126,6 +126,17 @@ const CODEX_VENDOR_HOSTS: readonly string[] = [
 
 const WORKER_TIMEOUT_SECS = 1800;
 const WORKER_TIMEOUT_MS = WORKER_TIMEOUT_SECS * 1000;
+
+/**
+ * Bounded wait for the host-side tunnel forwarder to exit after being
+ * killed (WK-0266 ruling 3/Resolutions row 17) — `forwarderChild.kill()`
+ * alone does not wait, so a SIGTERM flush (tunnel.ts's own handler, which
+ * writes a record for every still-open response before exiting) can land
+ * AFTER the pipeline has already read `provider-usage.jsonl`, silently
+ * undercounting `n`. 5s is generous for a synchronous
+ * `fs.appendFileSync`-only flush of whatever responses are still open.
+ */
+export const FORWARDER_EXIT_TIMEOUT_MS = 5_000;
 
 /**
  * WK-0125/DEC-0037: kb-owned location of the `kb-dispatch-recovery.v1` JSON
@@ -194,6 +205,146 @@ function shQuote(value: string): string {
 
 function logVerbose(verbose: boolean | undefined, message: string): void {
   if (verbose) process.stderr.write(`[dispatch] ${message}\n`);
+}
+
+/**
+ * Waits for `child` to exit, bounded by `timeoutMs` (WK-0266 ruling 3 /
+ * Resolutions row 17 — `FORWARDER_EXIT_TIMEOUT_MS` above). Resolves `true`
+ * once the process has actually exited (including "already exited before
+ * this call"), `false` if the timeout elapsed first — the caller treats a
+ * `false` as "the forwarder's SIGTERM flush may not have landed yet" and
+ * degrades coverage accordingly rather than trusting the file as complete.
+ */
+export function waitForChildExit(child: ChildProcess, timeoutMs: number): Promise<boolean> {
+  return new Promise((resolvePromise) => {
+    if (child.exitCode !== null || child.signalCode !== null) {
+      resolvePromise(true);
+      return;
+    }
+    const timer = setTimeout(() => resolvePromise(false), timeoutMs);
+    child.once('exit', () => {
+      clearTimeout(timer);
+      resolvePromise(true);
+    });
+  });
+}
+
+/**
+ * One line of `<runDir>/provider-usage.jsonl` (WK-0266 ruling 1) — the
+ * forwarder tap's own record shape (tunnel.ts's `newUsageRecord`/
+ * `writeUsageRecord`). Kept here, not in tunnel.ts, because tunnel.ts only
+ * emits STRINGS (it generates script text, never runs anything itself —
+ * module doc at the top of that file); this is the shape the generated
+ * script's own JSON.stringify call produces, read back by the pipeline.
+ */
+export interface ProviderUsageRecord {
+  status: number;
+  content_type: string;
+  generation_id: string | null;
+  providers: string[];
+  header_provider: string | null;
+  cost: number | null;
+  cost_details: unknown;
+  ended: boolean;
+  dropped_lines: number;
+  parse_errors: number;
+}
+
+/** One synthetic "uncovered" 2xx record — used both for a line that failed to parse (resolution 16: a SIGKILL-cut final write) and for a forwarder-exit timeout (resolution 17) — never silently treated as a full-coverage response (rule 24). */
+function uncoveredRecord(): ProviderUsageRecord {
+  return {
+    status: 200,
+    content_type: '',
+    generation_id: null,
+    providers: [],
+    header_provider: null,
+    cost: null,
+    cost_details: null,
+    ended: false,
+    dropped_lines: 0,
+    parse_errors: 0,
+  };
+}
+
+/**
+ * Reads and parses `<runDir>/provider-usage.jsonl` (WK-0266 ruling 8: the
+ * sole source for cost/provider facts now that the older per-run
+ * provenance file is retired). Never throws: a missing file (no request
+ * was ever relayed, or the run crashed before any) degrades to zero
+ * records; a line that fails
+ * to parse (resolution 16 — a write cut mid-line by SIGKILL) is logged with
+ * its 1-based line number and counted as one uncovered 2xx record rather
+ * than dropped. `forwarderTimedOut` (resolution 17) appends one further
+ * uncovered 2xx record when the forwarder did not exit within
+ * `FORWARDER_EXIT_TIMEOUT_MS` — its SIGTERM flush may not have reached the
+ * file yet, so coverage must not read as complete.
+ */
+export async function readProviderUsageFile(
+  path: string,
+  forwarderTimedOut: boolean,
+  verbose: boolean | undefined,
+): Promise<ProviderUsageRecord[]> {
+  let content: string;
+  try {
+    content = await readFile(path, 'utf8');
+  } catch {
+    content = '';
+  }
+  const lines = content.split('\n').filter((line) => line.trim().length > 0);
+  const records: ProviderUsageRecord[] = [];
+  lines.forEach((line, index) => {
+    try {
+      records.push(JSON.parse(line) as ProviderUsageRecord);
+    } catch (err) {
+      logVerbose(
+        verbose,
+        `warning: provider-usage.jsonl line ${index + 1} failed to parse (counted as one uncovered 2xx record): ${(err as Error).message}`,
+      );
+      records.push(uncoveredRecord());
+    }
+  });
+  if (forwarderTimedOut) {
+    logVerbose(
+      verbose,
+      `warning: tunnel forwarder did not exit within ${FORWARDER_EXIT_TIMEOUT_MS}ms; its SIGTERM flush may be missing from provider-usage.jsonl (counted as one uncovered 2xx record)`,
+    );
+    records.push(uncoveredRecord());
+  }
+  return records;
+}
+
+/**
+ * Summary of a run's provider-usage records (WK-0266 rulings 3 and 6):
+ * `coverage` feeds `capture.ts`'s `provider_cost_coverage` row and the
+ * `cost_usd` override below; `inferenceProvider` is the distinct providers
+ * across all 2xx records, in first-seen order, header-fallback per record,
+ * `unknown` when neither a body nor a header provider ever appeared.
+ */
+export interface ProviderUsageSummary {
+  inferenceProvider: string;
+  coverage: ProviderCostCoverage;
+}
+
+export function summarizeProviderUsage(records: ProviderUsageRecord[]): ProviderUsageSummary {
+  const twoxx = records.filter((r) => r.status >= 200 && r.status < 300);
+  const n = twoxx.length;
+  const numericCostRecords = twoxx.filter((r) => typeof r.cost === 'number');
+  const k = numericCostRecords.length;
+  const billedPartialSum = numericCostRecords.reduce((sum, r) => sum + (r.cost as number), 0);
+  // Ruling 3: all-or-nothing — a partial sum is never written as cost_usd,
+  // only shown separately (billedPartialSum) in the coverage row.
+  const costUsd = n > 0 && k === n ? billedPartialSum : 0;
+
+  const seenProviders: string[] = [];
+  for (const record of twoxx) {
+    const perRecordProviders = record.providers.length > 0 ? record.providers : (record.header_provider ? [record.header_provider] : []);
+    for (const provider of perRecordProviders) {
+      if (!seenProviders.includes(provider)) seenProviders.push(provider);
+    }
+  }
+  const inferenceProvider = seenProviders.length > 0 ? seenProviders.join(', ') : 'unknown';
+
+  return { inferenceProvider, coverage: { n, k, costUsd, billedPartialSum } };
 }
 
 /**
@@ -1321,11 +1472,14 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
     // only process in the whole run that ever touches a real network
     // interface for egress. Runs for the worker's lifetime; killed below.
     logVerbose(verbose, 'starting tunnel forwarder');
-    const provenancePath = join(runDir, 'provenance.json');
+    // WK-0266 ruling 1/8: replaces the retired older per-run provenance
+    // file — one JSON line per relayed response, written by the
+    // forwarder's own tap (tunnel.ts).
+    const providerUsagePath = join(runDir, 'provider-usage.jsonl');
     const forwarderLogFd = openSync(forwarderLogPath, 'a');
     const forwarderChild = spawn(
       'node',
-      [forwarderScriptPath, tunnelSocketPath, resolvedTargetUrl, handoff.web ? 'true' : 'false', tunnelDestinationsLogPath, JSON.stringify(allowedHosts), provenancePath],
+      [forwarderScriptPath, tunnelSocketPath, resolvedTargetUrl, handoff.web ? 'true' : 'false', tunnelDestinationsLogPath, JSON.stringify(allowedHosts), providerUsagePath],
       { stdio: ['ignore', forwarderLogFd, forwarderLogFd] },
     );
     closeSync(forwarderLogFd);
@@ -1344,6 +1498,14 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       // since it runs outside bwrap and --die-with-parent doesn't reach it.
       forwarderChild.kill();
     }
+
+    // WK-0266 ruling 3/Resolutions row 17: wait for the forwarder to actually
+    // exit (bounded — FORWARDER_EXIT_TIMEOUT_MS) BEFORE reading
+    // provider-usage.jsonl, since its SIGTERM handler flushes a record for
+    // every still-open response before exiting. `kill()` alone (above) does
+    // not wait; reading immediately after it risked a race where that flush
+    // lands after the read, silently undercounting n.
+    const forwarderExited = await waitForChildExit(forwarderChild, FORWARDER_EXIT_TIMEOUT_MS);
 
     // Exit/signal interpretation (D6 ruling 7 component 8; chassis
     // deriveTerminalStatus: `code === 0 && !signal` -> succeeded — native
@@ -1501,17 +1663,30 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       logVerbose(verbose, `recovery block invalid: ${recoveryEvidence.diagnostics.map((d) => d.code).join(', ')}`);
     }
 
-    // 15c. Read opportunistic provenance (forwarder writes provenance.json).
+    // 15c. Read provider-usage.jsonl (forwarder tap; WK-0266 rulings 1, 3, 6,
+    // 8 — the sole source now that the older per-run provenance file is
+    // retired). Scoped to the `pi` family only: codex/claude traffic is
+    // CONNECT-tunnelled TLS, so the forwarder's plain-HTTP tap never
+    // produces a record for it (WK-0266 Scope "Out") — their own
+    // adapter-reported `costUsd` (set at step 15 above) is left untouched,
+    // and no `provider_cost_coverage` row renders for them (capture.ts's
+    // `formatProviderCostCoverage` omits it when `providerCostCoverage` is
+    // undefined).
     let inferenceProvider: string | undefined;
-    try {
-      const provenanceContent = await readFile(provenancePath, 'utf8');
-      const provenanceData = JSON.parse(provenanceContent) as Record<string, unknown>;
-      if (typeof provenanceData.inference_provider === 'string') {
-        inferenceProvider = provenanceData.inference_provider;
-        logVerbose(verbose, `inference provider: ${inferenceProvider}`);
-      }
-    } catch {
-      // best-effort — provenance.json may not exist for local backends or short runs
+    let providerCostCoverage: ProviderCostCoverage | undefined;
+    if (model.family === 'pi') {
+      const providerUsageRecords = await readProviderUsageFile(providerUsagePath, !forwarderExited, verbose);
+      const summary = summarizeProviderUsage(providerUsageRecords);
+      inferenceProvider = summary.inferenceProvider;
+      providerCostCoverage = summary.coverage;
+      // Ruling 3: Pi's own usage.cost is never used as cost_usd — the
+      // forwarder's all-or-nothing billed sum (summarizeProviderUsage above)
+      // replaces whatever parsePiOutput reported at step 15.
+      workerUsage.costUsd = summary.coverage.costUsd;
+      logVerbose(
+        verbose,
+        `inference provider: ${inferenceProvider}; provider_cost_coverage ${summary.coverage.k}/${summary.coverage.n}`,
+      );
     }
 
     // 16. Enumerate changes / advisory delivery branch (S6a T30,
@@ -1695,6 +1870,7 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       modelId: model.modelId,
       billing,
       rateKeyPrefix,
+      providerCostCoverage,
       isolationBackend,
       lastAssistantText,
       accumulatedText,

@@ -132,15 +132,36 @@ inference provider names (DeepInfra, Fireworks, Relace), NOT model vendor names
 (DeepSeek). A misconfigured \`"only": ["DeepSeek"]\` will 404 every request because
 DeepSeek is the model vendor, not an inference provider for that model.
 
-## Provenance
+## Provenance (provider-usage.jsonl)
 
-kb opportunistically records which inference provider served each run. The forwarder
-captures this from the API response — no configuration needed:
-- OpenRouter: body \`"provider"\` field (always present)
+kb opportunistically records which inference provider served each run, and (for OpenRouter)
+what it billed. The forwarder taps every relayed response — no configuration needed — and
+writes one JSON line per response to the run dir's \`provider-usage.jsonl\` (WK-0266; this
+replaced the older per-run provenance file, which no longer exists). Each line carries \`status\`,
+\`content_type\`, \`generation_id\`, \`providers\` (distinct, first-seen order, read from every data
+chunk — not just the first), \`header_provider\` (the \`x-inference-provider\` response header, kept
+for the HuggingFace path below), \`cost\` (the \`usage.cost\` figure from the last data line that
+carries it, or \`null\`), \`cost_details\`, \`ended\` (\`true\` only on a normal stream end), and
+\`dropped_lines\`/\`parse_errors\` (never thrown, always counted).
+
+- OpenRouter: body \`"provider"\` field (always present, even on streams that open with
+  \`: OPENROUTER PROCESSING\` keepalive comments before the first data line)
 - HuggingFace: \`x-inference-provider\` response header (always present)
 - Local backends: \`"unknown"\` (no routing)
 
-The captured provider name appears in the response doc's \`inference_provider\` field.
+The pipeline derives two response-doc facts from this file, never from Pi's own reported cost:
+
+- \`inference_provider\` (frontmatter) — the distinct providers across the run's 2xx records,
+  first-seen order, joined with \`", "\`; \`"unknown"\` when no record carries either a body or
+  header provider.
+- \`cost_usd\` (frontmatter) and the \`## Token Detail\` table's additive \`provider_cost_coverage\`
+  row (\`k/n\` 2xx responses that carried a cost; shown as \`k/n ($X billed)\` when \`k < n\`) — a run
+  is only billed as \`cost_usd\` when EVERY 2xx response carried a cost; otherwise \`cost_usd\` is 0
+  and \`est_cost_usd\` falls back to the rate table (see \`rate_key_prefix\` above), with the known
+  partial dollars still visible in \`provider_cost_coverage\`.
+
+\`## Token Detail\` also carries the \`rate_key\` row (the exact rate-table key looked up, from
+\`rate_key_prefix\` above) alongside \`provider_cost_coverage\`.
 
 ## Example profiles.json
 

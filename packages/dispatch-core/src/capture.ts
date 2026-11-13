@@ -194,6 +194,40 @@ function formatTokenCount(value: number | null): string {
 }
 
 /**
+ * Per-run coverage of the forwarder's provider-usage tap (WK-0266 rulings 1,
+ * 3, 7) — `n` is the number of 2xx `provider-usage.jsonl` records for the
+ * run, `k` is how many of those carry a numeric `cost`, `costUsd` is the
+ * billed `cost_usd` figure the WK-0123 precedence rule (ruling 4, unchanged)
+ * actually used (the full sum when `k === n`, otherwise `0`), and
+ * `billedPartialSum` is the sum of just the `k` known costs — shown in the
+ * `provider_cost_coverage` row when `k < n` so the known dollars stay
+ * visible even though the total undercounts (ruling 3).
+ */
+export interface ProviderCostCoverage {
+  n: number;
+  k: number;
+  costUsd: number;
+  billedPartialSum: number;
+}
+
+/**
+ * Render the `provider_cost_coverage` row value (WK-0266 ruling 7): `k/n`
+ * when every 2xx record carried a cost, else `k/n ($X billed)` with `X` the
+ * sum of the known costs — the example in the WK is `49/50 ($1.2345
+ * billed)`. Returns `undefined` (row omitted) when the caller has no
+ * coverage data at all (non-pi families, whose traffic is CONNECT-tunnelled
+ * and never reaches the forwarder's tap — WK-0266 Scope "Out").
+ */
+function formatProviderCostCoverage(coverage: ProviderCostCoverage | undefined): string | undefined {
+  if (!coverage) return undefined;
+  const { n, k, billedPartialSum } = coverage;
+  // n === 0 (no 2xx records at all) always has k === n (0 === 0), so it
+  // falls through to the plain "k/n" branch below without a special case.
+  if (k === n) return `${k}/${n}`;
+  return `${k}/${n} ($${billedPartialSum.toFixed(4)} billed)`;
+}
+
+/**
  * Render the `## Token Detail` section (WK-0123): the full per-field
  * breakdown a family reports (nulls render as `—`), plus both the
  * provider-reported `cost_usd` and the rate-table-derived `est_cost_usd`.
@@ -205,6 +239,7 @@ function formatTokenDetailSection(
   modelId: string | undefined,
   billing: 'seat' | 'api' | undefined,
   rateKeyPrefix: string | undefined,
+  providerCostCoverage: ProviderCostCoverage | undefined,
 ): string[] {
   if (!rawUsage) return [];
   const usage = normalizeUsage(rawUsage);
@@ -223,6 +258,10 @@ function formatTokenDetailSection(
     // including when a billed cost makes the rate-table lookup unnecessary.
     ['rate_key', rateKey ?? formatTokenCount(null)],
   ];
+  const coverageValue = formatProviderCostCoverage(providerCostCoverage);
+  if (coverageValue !== undefined) {
+    rows.push(['provider_cost_coverage', coverageValue]);
+  }
   return [
     '## Token Detail',
     '',
@@ -264,6 +303,14 @@ export interface CaptureOpts {
    * rate-table lookup. Defaults to `''` when absent (unchanged lookup).
    */
   rateKeyPrefix?: string;
+  /**
+   * Forwarder provider-usage-tap coverage for this run (WK-0266 ruling 7) —
+   * threaded only for the `pi` family (pipeline.ts's call site), since that
+   * is the only traffic the forwarder's plain-HTTP tap can read (codex/claude
+   * are CONNECT-tunnelled TLS — WK-0266 Scope "Out"). Absent renders no
+   * `provider_cost_coverage` row at all, rather than a misleading `0/0`.
+   */
+  providerCostCoverage?: ProviderCostCoverage;
   /** Compaction statistics from parsePiOutput (T33 Phase 3). */
   compaction?: PiCompaction;
   /** Model used */
@@ -801,7 +848,7 @@ export async function writeResponseDoc(opts: CaptureOpts): Promise<DispatchResul
     '## Usage',
     formatUsageSection(piResult, opts.billing),
     '',
-    ...formatTokenDetailSection(piResult?.usage, opts.modelId, opts.billing, opts.rateKeyPrefix),
+    ...formatTokenDetailSection(piResult?.usage, opts.modelId, opts.billing, opts.rateKeyPrefix, opts.providerCostCoverage),
     '## Worker Report (evidence, not verdict)',
     '',
     formatWorkerReportSection(workerReportText),

@@ -114,11 +114,42 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { buildTunnelBashLines, buildTunnelScripts, TUNNEL_RELAY_PORT, type TunnelConfig } from '../packages/dispatch-core/src/tunnel.js';
-import { buildPiBaseUrl, runDispatch } from '../packages/dispatch-core/src/pipeline.js';
+import { buildPiBaseUrl, runDispatch, summarizeProviderUsage, type ProviderUsageRecord } from '../packages/dispatch-core/src/pipeline.js';
 import * as spawnIsolatedModule from '../packages/dispatch-core/src/spawn-isolated.js';
 
 function readFixtureFile(name: string): string {
   return readFileSync(join(__dirname, 'fixtures', name), 'utf8');
+}
+
+function readFixtureBuffer(name: string): Buffer {
+  return readFileSync(join(__dirname, 'fixtures', 'openrouter-sse', name));
+}
+
+/** Reads every parsed line of a provider-usage.jsonl file (WK-0266 ruling 1). */
+async function readProviderUsageRecords(path: string): Promise<ProviderUsageRecord[]> {
+  const content = await readFile(path, 'utf8');
+  return content
+    .split('\n')
+    .filter((line) => line.trim().length > 0)
+    .map((line) => JSON.parse(line) as ProviderUsageRecord);
+}
+
+/**
+ * Writes `buffer` to `res` in pieces split at `splitPoints` (byte offsets),
+ * yielding the event loop (a short `setTimeout`, mirroring this file's own
+ * "SSE/streaming passthrough" test above) between writes so each piece
+ * arrives as its own 'data' event on the receiving side rather than being
+ * coalesced by the kernel — the real-world shape AC5 exercises (a stream
+ * split across network reads, not a single buffered write).
+ */
+async function writeChunked(res: ServerResponse, buffer: Buffer, splitPoints: number[]): Promise<void> {
+  const offsets = [0, ...splitPoints, buffer.length];
+  for (let i = 0; i < offsets.length - 1; i++) {
+    const piece = buffer.slice(offsets[i], offsets[i + 1]);
+    if (piece.length > 0) res.write(piece);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  res.end();
 }
 
 // ---------------------------------------------------------------------------
@@ -262,6 +293,8 @@ interface TunnelHarness {
   forwarder: ChildProcess;
   relay: ChildProcess;
   config: TunnelConfig;
+  /** WK-0266: the forwarder's provider-usage.jsonl path, when requested via `opts.providerUsage`. */
+  providerUsagePath?: string;
 }
 
 /**
@@ -274,6 +307,8 @@ async function startTunnelHarness(opts: {
   requestHandler: (req: IncomingMessage, res: ServerResponse) => void;
   webEnabled?: boolean;
   allowedHosts?: string[];
+  /** WK-0266: when true, pass a provider-usage.jsonl path as the forwarder's 6th argv so its tap is active. */
+  providerUsage?: boolean;
 }): Promise<TunnelHarness> {
   const tmpDir = await createTempDir('tunnel-integration-');
   const stubHost = '127.0.0.2';
@@ -300,18 +335,17 @@ async function startTunnelHarness(opts: {
   await writeFile(forwarderPath, forwarderScript, 'utf8');
   await writeFile(relayPath, relayScript, 'utf8');
 
-  const forwarder = spawn(
-    process.execPath,
-    [forwarderPath, socketPath, config.targetUrl, config.webEnabled ? 'true' : 'false', logPath, JSON.stringify(config.allowedHosts)],
-    { stdio: ['ignore', 'pipe', 'pipe'] },
-  );
+  const providerUsagePath = opts.providerUsage ? join(tmpDir, 'provider-usage.jsonl') : undefined;
+  const forwarderArgs = [forwarderPath, socketPath, config.targetUrl, config.webEnabled ? 'true' : 'false', logPath, JSON.stringify(config.allowedHosts)];
+  if (providerUsagePath) forwarderArgs.push(providerUsagePath);
+  const forwarder = spawn(process.execPath, forwarderArgs, { stdio: ['ignore', 'pipe', 'pipe'] });
   await waitForListen(socketPath);
 
   const relayPort = await getFreePort();
   const relay = spawn(process.execPath, [relayPath, String(relayPort), socketPath], { stdio: ['ignore', 'pipe', 'pipe'] });
   await waitForListen(relayPort);
 
-  return { tmpDir, stub, stubHost, stubPort, relayPort, forwarder, relay, config };
+  return { tmpDir, stub, stubHost, stubPort, relayPort, forwarder, relay, config, providerUsagePath };
 }
 
 function killAndWait(child: ChildProcess, timeoutMs = 2000): Promise<void> {
@@ -590,6 +624,239 @@ describe.skipIf(process.platform === 'win32')('WK-0160: real forwarder+relay+stu
         expect(status).toBe(200);
         expect(received).toHaveLength(1);
         expect(received[0].url).toBe('/v1/direct');
+      },
+      10_000,
+    );
+  });
+
+  // -------------------------------------------------------------------------
+  // WK-0266 s2 — forwarder provider-usage tap, driven through the REAL
+  // generated forwarder (never hand-written) against a local HTTP server
+  // replaying real golden-fixture bytes (tests/fixtures/openrouter-sse/),
+  // per the WK's own slice-s2 instruction.
+  // -------------------------------------------------------------------------
+  describe('WK-0266 ruling 1/3/6: provider-usage.jsonl tap (real forwarder process)', () => {
+    let harness: TunnelHarness | undefined;
+
+    afterEach(async () => {
+      if (harness) await stopTunnelHarness(harness);
+      harness = undefined;
+    });
+
+    it(
+      'AC3: replaying stream_openai_reasoning.sse (opens with 4 ": OPENROUTER PROCESSING" keepalives before any data: line) through the real forwarder yields inference_provider "OpenAI", not "unknown"',
+      async () => {
+        const fixture = readFixtureBuffer('stream_openai_reasoning.sse');
+        // Split so the FIRST network chunk the forwarder's tap ever sees is
+        // only the first keepalive comment (no "provider" field at all) --
+        // the real shape SRC-0047 captured (keepalives arrive as separate
+        // reads before the first data: line). A single unsplit res.end()
+        // would let Node deliver the whole (small) fixture in one chunk over
+        // loopback, which would NOT reproduce the bug a first-chunk-only
+        // sniff has (confirmed empirically while writing this test).
+        const firstKeepaliveEnd = fixture.toString('utf8').indexOf('\n\n') + 2;
+        harness = await startTunnelHarness({
+          providerUsage: true,
+          requestHandler: (_req, res) => {
+            res.writeHead(200, { 'content-type': 'text/event-stream' });
+            void writeChunked(res, fixture, [firstKeepaliveEnd]);
+          },
+        });
+        const h = harness;
+
+        const body = await new Promise<Buffer>((resolve, reject) => {
+          const req = httpRequest({ host: '127.0.0.1', port: h.relayPort, path: '/v1/reasoning', method: 'GET' }, (res) => {
+            const chunks: Buffer[] = [];
+            res.on('data', (d) => chunks.push(d));
+            res.on('end', () => resolve(Buffer.concat(chunks)));
+          });
+          req.on('error', reject);
+          req.end();
+        });
+        expect(body.equals(fixture)).toBe(true);
+
+        await new Promise((resolve) => setTimeout(resolve, 200)); // let the tap's own 'end' handler flush
+        const records = await readProviderUsageRecords(h.providerUsagePath!);
+        expect(records).toHaveLength(1);
+        expect(records[0].providers).toEqual(['OpenAI']);
+        expect(records[0].ended).toBe(true);
+        expect(summarizeProviderUsage(records).inferenceProvider).toBe('OpenAI');
+      },
+      10_000,
+    );
+
+    it(
+      'AC5 transparency: stream_openai_reasoning.sse fed in chunks split inside the usage line, with each keepalive comment arriving as its own chunk, relays byte-identical and yields the same record as feeding it whole',
+      async () => {
+        const fixture = readFixtureBuffer('stream_openai_reasoning.sse');
+        const text = fixture.toString('utf8');
+        const usageIdx = text.lastIndexOf('"usage"');
+        expect(usageIdx).toBeGreaterThan(0);
+        // Split points: after each of the 4 keepalive comments (so each is
+        // its own chunk) and once INSIDE the usage line's JSON text.
+        const keepaliveEnd = text.indexOf('\n\n', text.lastIndexOf(': OPENROUTER PROCESSING')) + 2;
+        const splitPoints = [
+          text.indexOf('\n\n') + 2,
+          text.indexOf('\n\n', text.indexOf('\n\n') + 2) + 2,
+          text.indexOf('\n\n', text.indexOf('\n\n', text.indexOf('\n\n') + 2) + 2) + 2,
+          keepaliveEnd,
+          usageIdx + 20, // inside the usage object's own text
+        ].sort((a, b) => a - b);
+
+        harness = await startTunnelHarness({
+          providerUsage: true,
+          requestHandler: (_req, res) => {
+            res.writeHead(200, { 'content-type': 'text/event-stream' });
+            void writeChunked(res, fixture, splitPoints);
+          },
+        });
+        const h = harness;
+
+        const body = await new Promise<Buffer>((resolve, reject) => {
+          const req = httpRequest({ host: '127.0.0.1', port: h.relayPort, path: '/v1/chunked', method: 'GET' }, (res) => {
+            const chunks: Buffer[] = [];
+            res.on('data', (d) => chunks.push(d));
+            res.on('end', () => resolve(Buffer.concat(chunks)));
+          });
+          req.on('error', reject);
+          req.end();
+        });
+        expect(body.equals(fixture)).toBe(true);
+
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        const records = await readProviderUsageRecords(h.providerUsagePath!);
+        expect(records).toHaveLength(1);
+        // Identical record to the whole-fixture case above (same generation_id/providers/cost/ended).
+        expect(records[0]).toEqual({
+          status: 200,
+          content_type: 'text/event-stream',
+          generation_id: 'gen-1794541380-kjmcqInsEBXadn9yDYOt',
+          providers: ['OpenAI'],
+          header_provider: null,
+          cost: 0.001732,
+          cost_details: {
+            upstream_inference_cost: 0.001732,
+            upstream_inference_prompt_cost: 0.000112,
+            upstream_inference_completions_cost: 0.00162,
+          },
+          ended: true,
+          dropped_lines: 0,
+          parse_errors: 0,
+        });
+      },
+      10_000,
+    );
+
+    it(
+      'AC5 transparency: stream_parasail_utf8.sse fed with a split inside a multibyte UTF-8 character relays byte-identical and yields the same record as feeding it whole',
+      async () => {
+        const fixture = readFixtureBuffer('stream_parasail_utf8.sse');
+        // Byte 478 is 0xC3, the first byte of the 2-byte UTF-8 sequence for
+        // "é" (0xC3 0xA9) -- splitting here cuts the multibyte char in half.
+        expect(fixture[478]).toBe(0xc3);
+        expect(fixture[479]).toBe(0xa9);
+
+        harness = await startTunnelHarness({
+          providerUsage: true,
+          requestHandler: (_req, res) => {
+            res.writeHead(200, { 'content-type': 'text/event-stream' });
+            void writeChunked(res, fixture, [479]);
+          },
+        });
+        const h = harness;
+
+        const body = await new Promise<Buffer>((resolve, reject) => {
+          const req = httpRequest({ host: '127.0.0.1', port: h.relayPort, path: '/v1/utf8', method: 'GET' }, (res) => {
+            const chunks: Buffer[] = [];
+            res.on('data', (d) => chunks.push(d));
+            res.on('end', () => resolve(Buffer.concat(chunks)));
+          });
+          req.on('error', reject);
+          req.end();
+        });
+        expect(body.equals(fixture)).toBe(true); // byte-identical even though the split landed mid-character
+
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        const records = await readProviderUsageRecords(h.providerUsagePath!);
+        expect(records).toHaveLength(1);
+        expect(records[0].providers).toEqual(['Parasail']);
+        expect(records[0].cost).toBeCloseTo(0.00000824, 10);
+        expect(records[0].ended).toBe(true);
+        expect(records[0].parse_errors).toBe(0); // the split never broke JSON parsing of the surrounding data: line
+      },
+      10_000,
+    );
+
+    it(
+      'AC6 case 1: a client that disconnects mid-stream yields a record with ended:false and cost:null (never whatever usage.cost happened to arrive before the disconnect)',
+      async () => {
+        harness = await startTunnelHarness({
+          providerUsage: true,
+          requestHandler: (_req, res) => {
+            res.writeHead(200, { 'content-type': 'text/event-stream' });
+            res.write('data: {"id":"gen-disconnect","object":"chat.completion.chunk","provider":"Morph","choices":[]}\n\n');
+            // Never ends -- the client below disconnects before this stream completes.
+          },
+        });
+        const h = harness;
+
+        await new Promise<void>((resolve, reject) => {
+          const req = httpRequest({ host: '127.0.0.1', port: h.relayPort, path: '/v1/disconnect', method: 'GET' }, (res) => {
+            res.once('data', () => {
+              req.destroy(); // client disconnects mid-stream
+              resolve();
+            });
+          });
+          req.on('error', () => resolve()); // destroy() can itself surface as a request error -- either way is the disconnect
+          req.end();
+        });
+
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        const records = await readProviderUsageRecords(h.providerUsagePath!);
+        expect(records).toHaveLength(1);
+        expect(records[0].ended).toBe(false);
+        expect(records[0].cost).toBeNull(); // forced null on an early close, even though no usage line had arrived anyway
+        expect(records[0].providers).toEqual(['Morph']); // the provider seen before the disconnect is still recorded
+      },
+      10_000,
+    );
+
+    it(
+      'AC6 case 2: a response still open when the forwarder receives SIGTERM still produces a record (ended:false, cost:null), and the forwarder actually exits',
+      async () => {
+        harness = await startTunnelHarness({
+          providerUsage: true,
+          requestHandler: (_req, res) => {
+            res.writeHead(200, { 'content-type': 'text/event-stream' });
+            res.write('data: {"id":"gen-sigterm","object":"chat.completion.chunk","provider":"Together","choices":[]}\n\n');
+            // Never ends -- still open when SIGTERM below arrives.
+          },
+        });
+        const h = harness;
+
+        // Open the request and wait for the first chunk, then leave it open.
+        await new Promise<void>((resolve, reject) => {
+          const req = httpRequest({ host: '127.0.0.1', port: h.relayPort, path: '/v1/sigterm', method: 'GET' });
+          req.on('response', (res) => res.once('data', () => resolve()));
+          req.on('error', reject);
+          req.end();
+        });
+
+        const exited = await new Promise<boolean>((resolve) => {
+          const timer = setTimeout(() => resolve(false), 3_000);
+          h.forwarder.once('exit', () => {
+            clearTimeout(timer);
+            resolve(true);
+          });
+          h.forwarder.kill('SIGTERM');
+        });
+        expect(exited).toBe(true); // the forwarder's SIGTERM handler flushes open records, then exits -- it must not hang
+
+        const records = await readProviderUsageRecords(h.providerUsagePath!);
+        expect(records).toHaveLength(1);
+        expect(records[0].ended).toBe(false);
+        expect(records[0].cost).toBeNull();
+        expect(records[0].providers).toEqual(['Together']);
       },
       10_000,
     );

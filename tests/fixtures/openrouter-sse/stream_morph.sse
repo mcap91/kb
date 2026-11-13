@@ -1,0 +1,14 @@
+data: {"id":"gen-1794541351-ou8WA20817RsZLbGR55v","object":"chat.completion.chunk","created":1794541351,"model":"deepseek/deepseek-v4.1-flash","provider":"Morph","choices":[{"index":0,"delta":{"content":"","role":"assistant","reasoning":"We","reasoning_details":[{"type":"reasoning.text","text":"We","format":"unknown","index":0}]},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1794541351-ou8WA20817RsZLbGR55v","object":"chat.completion.chunk","created":1794541351,"model":"deepseek/deepseek-v4.1-flash","provider":"Morph","choices":[{"index":0,"delta":{"content":"","role":"assistant","reasoning":" need answer single word ok","reasoning_details":[{"type":"reasoning.text","text":" need answer single word ok","format":"unknown","index":0}]},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1794541351-ou8WA20817RsZLbGR55v","object":"chat.completion.chunk","created":1794541351,"model":"deepseek/deepseek-v4.1-flash","provider":"Morph","choices":[{"index":0,"delta":{"content":"","role":"assistant","reasoning":". Need comply.","reasoning_details":[{"type":"reasoning.text","text":". Need comply.","format":"unknown","index":0}]},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1794541351-ou8WA20817RsZLbGR55v","object":"chat.completion.chunk","created":1794541351,"model":"deepseek/deepseek-v4.1-flash","provider":"Morph","choices":[{"index":0,"delta":{"content":"ok","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1794541351-ou8WA20817RsZLbGR55v","object":"chat.completion.chunk","created":1794541351,"model":"deepseek/deepseek-v4.1-flash","provider":"Morph","choices":[{"index":0,"delta":{"content":"","role":"assistant","reasoning":null},"finish_reason":"stop","native_finish_reason":"stop"}]}
+
+data: {"id":"gen-1794541351-ou8WA20817RsZLbGR55v","object":"chat.completion.chunk","created":1794541351,"model":"deepseek/deepseek-v4.1-flash","provider":"Morph","service_tier":null,"choices":[{"index":0,"delta":{"content":"","role":"assistant"},"finish_reason":"stop","native_finish_reason":"stop"}],"usage":{"prompt_tokens":37,"completion_tokens":13,"total_tokens":50,"cost":0.00000928,"is_byok":false,"prompt_tokens_details":{"cached_tokens":0,"cache_write_tokens":0,"audio_tokens":0,"video_tokens":0},"cost_details":{"upstream_inference_cost":0.00000928,"upstream_inference_prompt_cost":0.00000148,"upstream_inference_completions_cost":0.0000078},"completion_tokens_details":{"reasoning_tokens":13,"image_tokens":0,"audio_tokens":0}}}
+
+data: [DONE]
+
