@@ -515,6 +515,54 @@ describe('repo-config.ts — wiki/.dispatch/ table loaders', () => {
       expect(result.error).toBe('BAD_RECORD');
       expect(result.message).toContain('effort_mapping.flag');
     });
+
+    // WK-0266 ruling 5: rate_key_prefix backend field.
+    it('accepts a string rate_key_prefix on a backend entry, and carries it on the validated BackendEntry', async () => {
+      await writeDispatchConfig(
+        dir,
+        'backends.json',
+        JSON.stringify({
+          'openrouter-openai': {
+            family: 'pi',
+            base_url: 'https://openrouter.ai/api/v1',
+            api_key_env: 'OPENROUTER_API_KEY',
+            secrets_file: null,
+            rate_key_prefix: 'openrouter/',
+          },
+          'claude-saas': { family: 'claude', base_url: null, api_key_env: null, secrets_file: null },
+        }),
+      );
+
+      const result = await loadBackendsTable(dir);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.data['openrouter-openai'].rate_key_prefix).toBe('openrouter/');
+      // Absent on a backend without it — no stray field invented.
+      expect('rate_key_prefix' in result.data['claude-saas']).toBe(false);
+    });
+
+    it('refuses a non-string rate_key_prefix, naming the backend and the field', async () => {
+      await writeDispatchConfig(
+        dir,
+        'backends.json',
+        JSON.stringify({
+          'openrouter-openai': {
+            family: 'pi',
+            base_url: 'https://openrouter.ai/api/v1',
+            api_key_env: 'OPENROUTER_API_KEY',
+            secrets_file: null,
+            rate_key_prefix: 42,
+          },
+        }),
+      );
+
+      const result = await loadBackendsTable(dir);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error).toBe('BAD_RECORD');
+      expect(result.message).toContain('openrouter-openai');
+      expect(result.message).toContain('rate_key_prefix');
+    });
   });
 
   describe('loadProfilesConfig', () => {

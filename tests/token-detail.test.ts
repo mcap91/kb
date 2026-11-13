@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { parseCodexOutput } from '../packages/dispatch-core/src/adapters/codex.js';
 import { parseClaudeOutput } from '../packages/dispatch-core/src/adapters/claude.js';
 import { parsePiOutput } from '../packages/dispatch-core/src/adapters/pi.js';
-import { writeResponseDoc, computeEstCostUsd, loadTokenRates, type WorkerUsageDetail } from '../packages/dispatch-core/src/capture.js';
+import { writeResponseDoc, computeEstCostUsd, loadTokenRates, resolveRateKey, type WorkerUsageDetail } from '../packages/dispatch-core/src/capture.js';
 import { loadBackendsTable } from '../packages/dispatch-core/src/repo-config.js';
 import type { DeliveryOutcome } from '../packages/dispatch-core/src/delivery.js';
 
@@ -343,5 +343,144 @@ describe('repo-config.ts — BackendEntry.billing (WK-0123)', () => {
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// WK-0266 — rate_key_prefix: exact prefixed rate lookup (AC2, AC4 bite)
+// ---------------------------------------------------------------------------
+
+describe('WK-0266 — rate_key_prefix: exact prefixed rate lookup (AC2, AC4 bite)', () => {
+  const OPENROUTER_PREFIX = 'openrouter/';
+
+  const ONE_MILLION_SPLIT_USAGE = (): WorkerUsageDetail => ({
+    inputTokens: 1_000_000,
+    outputTokens: 1_000_000,
+    cacheReadTokens: 1_000_000,
+    cacheWriteTokens: null,
+    reasoningTokens: null,
+    totalTokens: 2_000_000,
+    costUsd: 0,
+  });
+
+  it.each([
+    ['deepseek/deepseek-v4.1-flash', '$0.6662'],
+    ['qwen/qwen3-coder-next', '$0.9900'],
+    ['openai/gpt-6-sol', '$12.2000'],
+  ])('resolves est_cost_usd for "%s" via its openrouter/-prefixed rate-table row', (modelId, expected) => {
+    // No bare-id row exists — only the prefixed key does (real vendored table).
+    expect(loadTokenRates()[modelId]).toBeUndefined();
+    expect(loadTokenRates()[OPENROUTER_PREFIX + modelId]).toBeDefined();
+
+    const usage = ONE_MILLION_SPLIT_USAGE();
+    expect(computeEstCostUsd(usage, modelId, 'api', OPENROUTER_PREFIX)).toBe(expected);
+  });
+
+  it('resolveRateKey: exact prefix + model_id, default "", undefined passthrough for no modelId', () => {
+    expect(resolveRateKey('deepseek/deepseek-v4.1-flash', 'openrouter/')).toBe('openrouter/deepseek/deepseek-v4.1-flash');
+    expect(resolveRateKey('claude-sonnet-5', undefined)).toBe('claude-sonnet-5');
+    expect(resolveRateKey('claude-sonnet-5', '')).toBe('claude-sonnet-5');
+    expect(resolveRateKey(undefined, 'openrouter/')).toBeUndefined();
+  });
+
+  it('a mismatched prefix misses even though the model exists under a different prefix (no pattern/alias matching)', () => {
+    const usage = ONE_MILLION_SPLIT_USAGE();
+    expect(computeEstCostUsd(usage, 'deepseek/deepseek-v4.1-flash', 'api', 'azure_ai/')).toBe('unavailable');
+  });
+
+  it('a backend with no rate_key_prefix behaves identically whether the 4th arg is undefined or omitted', () => {
+    const usage: WorkerUsageDetail = {
+      inputTokens: 6,
+      outputTokens: 583,
+      cacheReadTokens: 100374,
+      cacheWriteTokens: 7638,
+      reasoningTokens: null,
+      totalTokens: 589,
+      costUsd: 0,
+    };
+    expect(computeEstCostUsd(usage, 'claude-sonnet-5', 'api', undefined)).toBe(computeEstCostUsd(usage, 'claude-sonnet-5', 'api'));
+  });
+
+  let runDir: string | undefined;
+  afterEach(async () => {
+    if (runDir) await rm(runDir, { recursive: true, force: true });
+    runDir = undefined;
+  });
+
+  it('writeResponseDoc renders the rate_key row alongside the correct est_cost_usd', async () => {
+    const usage = ONE_MILLION_SPLIT_USAGE();
+    runDir = await createTempDir('kb-token-detail-rate-key-');
+    const result = await writeResponseDoc({
+      runDir,
+      handoff: { id: 'HO-9999', title: 'rate_key row', mode: 'implement' },
+      delivery: NO_OP_DELIVERY,
+      piResult: { outcome: 'completed', usage },
+      model: 'openrouter-zdr-morph/deepseek/deepseek-v4.1-flash',
+      modelId: 'deepseek/deepseek-v4.1-flash',
+      billing: 'api',
+      rateKeyPrefix: OPENROUTER_PREFIX,
+      isolationBackend: 'bwrap',
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.data.responseContent).toContain('| rate_key | openrouter/deepseek/deepseek-v4.1-flash |');
+    expect(result.data.responseContent).toContain('| est_cost_usd | $0.6662 |');
+  });
+
+  it('writeResponseDoc renders the rate_key row even when a non-zero billed cost_usd makes the rate-table lookup unnecessary', async () => {
+    const usage: WorkerUsageDetail = {
+      inputTokens: 1000,
+      outputTokens: 500,
+      cacheReadTokens: null,
+      cacheWriteTokens: null,
+      reasoningTokens: null,
+      totalTokens: 1500,
+      costUsd: 0.5,
+    };
+    runDir = await createTempDir('kb-token-detail-rate-key-billed-');
+    const result = await writeResponseDoc({
+      runDir,
+      handoff: { id: 'HO-9999', title: 'rate_key row, billed', mode: 'implement' },
+      delivery: NO_OP_DELIVERY,
+      piResult: { outcome: 'completed', usage },
+      model: 'openrouter-openai/openai/gpt-6-sol',
+      modelId: 'openai/gpt-6-sol',
+      billing: 'api',
+      rateKeyPrefix: OPENROUTER_PREFIX,
+      isolationBackend: 'bwrap',
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.data.responseContent).toContain('| rate_key | openrouter/openai/gpt-6-sol |');
+    expect(result.data.responseContent).toContain('| est_cost_usd | $0.5000 |');
+  });
+
+  it('writeResponseDoc with no modelId at all renders the unknown marker for rate_key', async () => {
+    const usage: WorkerUsageDetail = {
+      inputTokens: 1000,
+      outputTokens: 500,
+      cacheReadTokens: null,
+      cacheWriteTokens: null,
+      reasoningTokens: null,
+      totalTokens: 1500,
+      costUsd: 0,
+    };
+    runDir = await createTempDir('kb-token-detail-rate-key-nomodel-');
+    const result = await writeResponseDoc({
+      runDir,
+      handoff: { id: 'HO-9999', title: 'rate_key row, no model id', mode: 'implement' },
+      delivery: NO_OP_DELIVERY,
+      piResult: { outcome: 'completed', usage },
+      model: 'openrouter-openai/unknown',
+      billing: 'api',
+      rateKeyPrefix: OPENROUTER_PREFIX,
+      isolationBackend: 'bwrap',
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.data.responseContent).toContain('| rate_key | — |');
   });
 });

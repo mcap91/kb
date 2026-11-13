@@ -70,6 +70,7 @@ OpenAI, a proxy, a local Ollama/vLLM server).
     "base_url": "https://openrouter.ai/api/v1",
     "api_key_env": "OPENROUTER_API_KEY",
     "secrets_file": "/home/user/.secrets/dispatch.env",
+    "rate_key_prefix": "openrouter/",
     "request_params": {
       "provider": { "only": ["DeepInfra"], "data_collection": "deny" }
     }
@@ -82,6 +83,24 @@ OpenAI, a proxy, a local Ollama/vLLM server).
   }
 }
 \`\`\`
+
+## rate_key_prefix (optional)
+
+An optional string on a backend entry (WK-0266). The vendored
+\`contract/token-rates.json\` rate table is keyed by LiteLLM canonical id, which for
+OpenRouter is \`openrouter/<model_id>\`, not the bare \`model_id\`. The \`est_cost_usd\`
+rate-table lookup key is exactly \`rate_key_prefix + model_id\` — there is no fallback
+to the bare model id and no pattern or alias matching. A backend without
+\`rate_key_prefix\` behaves exactly as before (empty-string default).
+
+A lookup miss (no row at that exact key) renders \`est_cost_usd: unavailable\`, same as
+today. The exact key looked up is always shown as the response doc's \`## Token
+Detail\` \`rate_key\` row, so a misconfigured prefix is visible rather than silently
+wrong.
+
+Example: a backend with \`"rate_key_prefix": "openrouter/"\` running
+\`deepseek/deepseek-v4.1-flash\` looks up \`openrouter/deepseek/deepseek-v4.1-flash\` in
+the rate table, and the response doc shows \`| rate_key | openrouter/deepseek/deepseek-v4.1-flash |\`.
 
 ## request_params (optional)
 

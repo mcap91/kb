@@ -131,10 +131,22 @@ function normalizeUsage(usage: WorkerUsageDetail): WorkerUsageDetail {
   };
 }
 
+/**
+ * Rate-table lookup key (WK-0266 ruling 5): exactly `rateKeyPrefix + modelId`,
+ * no fallback to the bare id and no pattern matching. `rateKeyPrefix`
+ * defaults to `''`, so a backend without one (e.g. claude-saas) behaves
+ * exactly as before. `undefined` when there is no `modelId` at all.
+ */
+export function resolveRateKey(modelId: string | undefined, rateKeyPrefix: string | undefined): string | undefined {
+  if (!modelId) return undefined;
+  return (rateKeyPrefix ?? '') + modelId;
+}
+
 export function computeEstCostUsd(
   rawUsage: WorkerUsageDetail,
   modelId: string | undefined,
   billing: 'seat' | 'api' | undefined,
+  rateKeyPrefix?: string,
 ): string {
   const usage = normalizeUsage(rawUsage);
   const useRateTable = billing === 'seat' || usage.costUsd === 0;
@@ -142,7 +154,8 @@ export function computeEstCostUsd(
     return `$${usage.costUsd.toFixed(4)}`;
   }
 
-  const rate = modelId ? loadTokenRates()[modelId] : undefined;
+  const rateKey = resolveRateKey(modelId, rateKeyPrefix);
+  const rate = rateKey ? loadTokenRates()[rateKey] : undefined;
   if (!rate) return 'unavailable';
 
   const hasSplit = usage.inputTokens !== null && usage.outputTokens !== null;
@@ -191,10 +204,12 @@ function formatTokenDetailSection(
   rawUsage: WorkerUsageDetail | undefined,
   modelId: string | undefined,
   billing: 'seat' | 'api' | undefined,
+  rateKeyPrefix: string | undefined,
 ): string[] {
   if (!rawUsage) return [];
   const usage = normalizeUsage(rawUsage);
-  const estCostUsd = computeEstCostUsd(usage, modelId, billing);
+  const estCostUsd = computeEstCostUsd(usage, modelId, billing, rateKeyPrefix);
+  const rateKey = resolveRateKey(modelId, rateKeyPrefix);
   const rows: Array<[string, string]> = [
     ['input_tokens', formatTokenCount(usage.inputTokens)],
     ['output_tokens', formatTokenCount(usage.outputTokens)],
@@ -204,6 +219,9 @@ function formatTokenDetailSection(
     ['total_tokens', formatTokenCount(usage.totalTokens)],
     ['cost_usd', `$${(billing === 'seat' ? 0 : usage.costUsd).toFixed(4)}`],
     ['est_cost_usd', estCostUsd],
+    // WK-0266 ruling 7: additive row, shown whenever Token Detail renders,
+    // including when a billed cost makes the rate-table lookup unnecessary.
+    ['rate_key', rateKey ?? formatTokenCount(null)],
   ];
   return [
     '## Token Detail',
@@ -240,6 +258,12 @@ export interface CaptureOpts {
   modelId?: string;
   /** Backend billing kind (`repo-config.ts`'s `BackendEntry.billing`; WK-0123) — defaults to `api` when absent. */
   billing?: 'seat' | 'api';
+  /**
+   * Rate-table key namespace (`repo-config.ts`'s `BackendEntry.rate_key_prefix`;
+   * WK-0266 ruling 5) — the exact string prepended to `modelId` for the
+   * rate-table lookup. Defaults to `''` when absent (unchanged lookup).
+   */
+  rateKeyPrefix?: string;
   /** Compaction statistics from parsePiOutput (T33 Phase 3). */
   compaction?: PiCompaction;
   /** Model used */
@@ -777,7 +801,7 @@ export async function writeResponseDoc(opts: CaptureOpts): Promise<DispatchResul
     '## Usage',
     formatUsageSection(piResult, opts.billing),
     '',
-    ...formatTokenDetailSection(piResult?.usage, opts.modelId, opts.billing),
+    ...formatTokenDetailSection(piResult?.usage, opts.modelId, opts.billing, opts.rateKeyPrefix),
     '## Worker Report (evidence, not verdict)',
     '',
     formatWorkerReportSection(workerReportText),

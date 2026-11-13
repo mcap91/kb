@@ -55,6 +55,15 @@ export interface BackendEntry {
    * existing backends.json entry needs to be updated for this field to work.
    */
   billing?: 'seat' | 'api';
+  /**
+   * Rate-table key namespace (WK-0266 ruling 5): the vendored
+   * `contract/token-rates.json` is keyed by LiteLLM canonical id, and for
+   * OpenRouter that id is `openrouter/<model_id>`, not the bare model id.
+   * The rate lookup key is exactly `rate_key_prefix + model_id`, no fallback
+   * to the bare id and no pattern matching. Absent defaults to `''`
+   * (unchanged lookup for backends like claude-saas).
+   */
+  rate_key_prefix?: string;
 }
 
 export interface ModelTableEntry {
@@ -128,7 +137,7 @@ function warnUnknownKeys(entry: Record<string, unknown>, knownKeys: ReadonlySet<
   }
 }
 
-const BACKEND_ENTRY_KNOWN_KEYS = new Set(['family', 'base_url', 'api_key_env', 'secrets_file', 'notes', 'serving', 'effort_mapping', 'request_params', 'billing']);
+const BACKEND_ENTRY_KNOWN_KEYS = new Set(['family', 'base_url', 'api_key_env', 'secrets_file', 'notes', 'serving', 'effort_mapping', 'request_params', 'billing', 'rate_key_prefix']);
 
 const EFFORT_MAPPING_STYLES: readonly EffortMapping['style'][] = ['flag_value', 'key_equals_value'];
 
@@ -206,6 +215,10 @@ function validateBackendEntry(name: string, raw: unknown): DispatchResult<Backen
     );
   }
 
+  if (raw.rate_key_prefix !== undefined && typeof raw.rate_key_prefix !== 'string') {
+    return fail('BAD_RECORD', `Backend "${name}" in backends.json: "rate_key_prefix" must be a string when present.`);
+  }
+
   const entry: BackendEntry = {
     family: raw.family as BackendFamily,
     base_url: raw.base_url as string | null,
@@ -224,6 +237,7 @@ function validateBackendEntry(name: string, raw: unknown): DispatchResult<Backen
   if (effortMapping) entry.effort_mapping = effortMapping;
   if (isPlainObject(raw.request_params)) entry.request_params = raw.request_params as Record<string, unknown>;
   if (typeof raw.billing === 'string') entry.billing = raw.billing as BackendEntry['billing'];
+  if (typeof raw.rate_key_prefix === 'string') entry.rate_key_prefix = raw.rate_key_prefix;
   return ok(entry);
 }
 

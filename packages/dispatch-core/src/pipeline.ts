@@ -754,6 +754,8 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
   // fail; ok() defaults to 'api' (repo-config.ts's BackendEntry doc comment).
   const backendsForBilling = await loadBackendsTable(dir);
   const billing = backendsForBilling.ok ? backendsForBilling.data[model.backend]?.billing ?? 'api' : 'api';
+  // WK-0266 ruling 5: same table load, no second file read.
+  const rateKeyPrefix = backendsForBilling.ok ? backendsForBilling.data[model.backend]?.rate_key_prefix : undefined;
 
   // 3b. Effort gate (S3 ruling 9; WK-0122 — keyed on effort_mapping existence,
   // not the old supportsEffort boolean: the mapping IS the capability
@@ -1692,6 +1694,7 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       model: canonicalModel,
       modelId: model.modelId,
       billing,
+      rateKeyPrefix,
       isolationBackend,
       lastAssistantText,
       accumulatedText,
