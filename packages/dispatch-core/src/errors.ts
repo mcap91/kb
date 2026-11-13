@@ -72,6 +72,8 @@ export type DispatchErrorCode =
   | 'NO_ISOLATION_ROUTE'
   // --- v2 work-item existence gate (IN-0006 WK-0116; narrowed by DEC-0036 WK-0121) ---
   | 'WORK_ITEM_NOT_FOUND'
+  // --- v2 per-HO worker timeout cap (WK-0244) ---
+  | 'WORKER_TIMEOUT_EXCEEDS_CAP'
   // --- v2 structured review response header (PLN-0004 S6a, ruling 3) ---
   | 'REVIEW_PARSE_FAILED'
   // --- v2 native spawn pipeline (PLN-0004 D6 — mid_project_review_rulings.md ruling 7) ---
@@ -122,6 +124,7 @@ export const V2_REFUSAL_CODES = [
   'NO_ISOLATION_ROUTE',
   'CLI_PATH_NOT_MOUNTABLE',
   'WORK_ITEM_NOT_FOUND',
+  'WORKER_TIMEOUT_EXCEEDS_CAP',
   'CLAUDE_PERMISSION_PROBE_FAILED',
   'BASE_DRIFT',
   'UNCOMMITTED_READ_FIRST',

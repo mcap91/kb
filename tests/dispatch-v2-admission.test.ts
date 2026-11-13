@@ -304,6 +304,60 @@ describe('admission.ts — S4 full admission gate (new refusal codes)', () => {
       expect(result.message).toContain('write_scope');
     });
   });
+
+  describe('WORKER_TIMEOUT_EXCEEDS_CAP (WK-0244, Resolutions rows 2-3)', () => {
+    it('refuses a timeout_secs above the default 1800s cap when limits.json is absent, naming the value, the cap, and the limits.json path', async () => {
+      const result = await checkAdmission(makeHandoff({ timeout_secs: 3600 }), tempDir);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error).toBe('WORKER_TIMEOUT_EXCEEDS_CAP');
+      expect(result.message).toContain('3600');
+      expect(result.message).toContain('1800');
+      expect(result.message).toContain('wiki/.dispatch/limits.json');
+    });
+
+    it('refuses a timeout_secs above an operator-configured cap, naming the value, the cap, and the limits.json path', async () => {
+      await mkdir(join(tempDir, 'wiki', '.dispatch'), { recursive: true });
+      await writeFile(
+        join(tempDir, 'wiki', '.dispatch', 'limits.json'),
+        JSON.stringify({ schema_version: 1, max_worker_timeout_secs: 2000 }),
+        'utf8',
+      );
+
+      const result = await checkAdmission(makeHandoff({ timeout_secs: 2500 }), tempDir);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error).toBe('WORKER_TIMEOUT_EXCEEDS_CAP');
+      expect(result.message).toContain('2500');
+      expect(result.message).toContain('2000');
+      expect(result.message).toContain('wiki/.dispatch/limits.json');
+    });
+
+    // The fixture handoff declares no work_item, so a timeout_secs that clears
+    // this cap check falls through to WORK_ITEM_NOT_FOUND (the next §-ordered
+    // check) rather than ok:true — proving this gate admitted it, same idiom
+    // as the STALE_WRITE_SCOPE "admits" case above.
+    it('admits a timeout_secs at or below an operator-configured cap', async () => {
+      await mkdir(join(tempDir, 'wiki', '.dispatch'), { recursive: true });
+      await writeFile(
+        join(tempDir, 'wiki', '.dispatch', 'limits.json'),
+        JSON.stringify({ schema_version: 1, max_worker_timeout_secs: 3600 }),
+        'utf8',
+      );
+
+      const result = await checkAdmission(makeHandoff({ timeout_secs: 3600 }), tempDir);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error).toBe('WORK_ITEM_NOT_FOUND');
+    });
+
+    it('skips the cap check entirely when timeout_secs is absent (existing handoffs unaffected)', async () => {
+      const result = await checkAdmission(makeHandoff(), tempDir);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error).toBe('WORK_ITEM_NOT_FOUND');
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------

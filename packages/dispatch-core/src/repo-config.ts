@@ -398,6 +398,50 @@ export async function loadProfilesConfig(dir: string): Promise<DispatchResult<Pr
 }
 
 // ---------------------------------------------------------------------------
+// Worker timeout cap (WK-0244, Resolutions rows 2-3): wiki/.dispatch/limits.json
+// ---------------------------------------------------------------------------
+
+/** Operator cap on a handoff's declared `timeout_secs` (WK-0244 Resolutions row 3). */
+export const DEFAULT_MAX_WORKER_TIMEOUT_SECS = 1800;
+
+export interface LimitsConfig {
+  maxWorkerTimeoutSecs: number;
+}
+
+const LIMITS_FILE = 'limits.json';
+const LIMITS_KNOWN_KEYS = new Set(['schema_version', 'max_worker_timeout_secs']);
+
+/**
+ * Load `wiki/.dispatch/limits.json` (WK-0244 Resolutions row 2): the sole
+ * operator-owned cap on a handoff's `timeout_secs`. Absent file = valid,
+ * defaulting to `DEFAULT_MAX_WORKER_TIMEOUT_SECS` (1800s — "every existing
+ * handoff behaves exactly as today," Resolutions row 3). Validated like its
+ * models.json/backends.json siblings: malformed JSON or a bad value refuses
+ * naming the file; an unrecognized key warns rather than refuses.
+ */
+export async function loadLimitsConfig(dir: string): Promise<DispatchResult<LimitsConfig>> {
+  const loaded = await loadJsonFile(dispatchConfigPath(dir, LIMITS_FILE), LIMITS_FILE);
+  if (!loaded.ok) return loaded;
+  if (loaded.data === undefined) return ok({ maxWorkerTimeoutSecs: DEFAULT_MAX_WORKER_TIMEOUT_SECS });
+
+  if (!isPlainObject(loaded.data)) {
+    return fail('BAD_RECORD', `${LIMITS_FILE} must be a JSON object.`);
+  }
+  warnUnknownKeys(loaded.data, LIMITS_KNOWN_KEYS, LIMITS_FILE);
+
+  if (loaded.data.schema_version !== 1) {
+    return fail('BAD_RECORD', `${LIMITS_FILE} "schema_version" must be 1; got: ${JSON.stringify(loaded.data.schema_version)}`);
+  }
+
+  const raw = loaded.data.max_worker_timeout_secs;
+  if (typeof raw !== 'number' || !Number.isInteger(raw) || raw <= 0) {
+    return fail('BAD_RECORD', `${LIMITS_FILE}: "max_worker_timeout_secs" must be a positive integer.`);
+  }
+
+  return ok({ maxWorkerTimeoutSecs: raw });
+}
+
+// ---------------------------------------------------------------------------
 // Host validation registry (WK-0294, DEC-0047 A1 ruling 1 / A2 R5-R6 / A4)
 // ---------------------------------------------------------------------------
 

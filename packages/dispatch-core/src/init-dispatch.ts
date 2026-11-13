@@ -41,6 +41,7 @@ to configure models and backends for your repository.
 | \`backends.json\` | Backend name → family, base_url, api_key_env, secrets_file | \`{}\` |
 | \`profiles.json\` | Credential profiles (schema_version 1, inject + optional endpoints) | \`{"schema_version": 1}\` |
 | \`validation.json\` | Optional, not scaffolded: commands the host runs against a delivery before review (WK-0294; docs/dispatch-protocol.md "Host Validation Evidence") | absent = none |
+| \`limits.json\` | Optional, not scaffolded: the operator cap on a handoff's \`timeout_secs\` (WK-0244) | absent = 1800s cap |
 
 ## Example models.json
 
@@ -131,6 +132,23 @@ extra fields: edit the JSON, no code change needed.
 inference provider names (DeepInfra, Fireworks, Relace), NOT model vendor names
 (DeepSeek). A misconfigured \`"only": ["DeepSeek"]\` will 404 every request because
 DeepSeek is the model vendor, not an inference provider for that model.
+
+## limits.json (optional, not scaffolded)
+
+A handoff may declare \`timeout_secs\` to override the pipeline's default 1800s worker watchdog
+(WK-0244). The operator caps how high that override may go with \`wiki/.dispatch/limits.json\`:
+
+\`\`\`json
+{
+  "schema_version": 1,
+  "max_worker_timeout_secs": 7200
+}
+\`\`\`
+
+Absent file means a cap of 1800s — a handoff's \`timeout_secs\` above that is refused at admission
+(\`WORKER_TIMEOUT_EXCEEDS_CAP\`), never clamped. Raise the cap by creating this file (or editing
+\`max_worker_timeout_secs\` in it) and re-dispatching; this file is operator-owned config, never
+written by \`init-dispatch\` or by a worker.
 
 ## Provenance (provider-usage.jsonl)
 

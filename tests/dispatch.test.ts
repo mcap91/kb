@@ -1,5 +1,5 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { execSync } from 'node:child_process';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { execFileSync, execSync } from 'node:child_process';
 import {
   chmod,
   mkdtemp,
@@ -16,6 +16,10 @@ import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import type { BwrapProbeResult, Handoff, V2HandoffMode } from '@kb/dispatch-core';
 import { assemblePrompt, parseHandoffContent } from '@kb/dispatch-core';
+import * as spawnIsolatedModule from '../packages/dispatch-core/src/spawn-isolated.js';
+import * as execDirectModule from '../packages/dispatch-core/src/exec-direct.js';
+import { ok as dispatchOk } from '../packages/dispatch-core/src/errors.js';
+import { runDispatch } from '../packages/dispatch-core/src/pipeline.js';
 
 const TESTS_DIR = resolve(process.cwd(), 'tests');
 
@@ -753,6 +757,198 @@ describe('runProcess timeout guard', () => {
     expect(result.code).not.toBe(0);
     expect(result.stderr.toLowerCase()).toContain('timeout');
   }, 8000);
+});
+
+// ---------------------------------------------------------------------------
+// pipeline.ts — WK-0244 per-HO worker timeout.
+//
+// Stubbed-clock seam: spawn-isolated.ts's `spawnIsolated` is mocked (the same
+// established technique as tests/dispatch-v2-e2e.test.ts's WK-0122
+// effort-passthrough suite) rather than waiting out a real 1800s/3600s timer.
+// The mock captures the `timeoutMs` pipeline.ts actually hands it — the real
+// watchdog kill boundary spawn-isolated.ts's own kill timer fires on — and
+// separately controls whether the simulated worker is reported as killed
+// (`timedOut: true`, an empty worker-output.log — WK-0244's own incidents all
+// show a 0-byte worker-output.log on a watchdog kill). Proving "runs past
+// 1800s without being killed" this way means proving the pipeline requested
+// a LARGER bound than 1800s from the one clock spawn-isolated.ts owns, not
+// literally waiting past 1800s of wall time.
+// ---------------------------------------------------------------------------
+
+function stubClaudeCliOnPath(): void {
+  const real = execDirectModule.execBash;
+  vi.spyOn(execDirectModule, 'execBash').mockImplementation(async (opts) => {
+    if (opts.scriptContent === 'command -v claude 2>/dev/null') {
+      return dispatchOk({ stdout: '/usr/bin/claude', stderr: '', exitCode: 0 });
+    }
+    return real(opts);
+  });
+}
+
+interface TimeoutRepoOpts {
+  /** Extra frontmatter line (e.g. `timeout_secs: 3600`) spliced into the fixture HO. */
+  timeoutSecsLine?: string;
+  /** When set, written as wiki/.dispatch/limits.json before the initial commit. */
+  limitsJson?: Record<string, unknown>;
+}
+
+/** A clean, committed temp repo with an implement-mode HO fixture + wiki/.dispatch/ tables (claude-saas backend — no credential profile needed). */
+async function setupTimeoutRepo(opts: TimeoutRepoOpts = {}): Promise<string> {
+  const repoRoot = await makeTempDir('kb-dispatch-timeout-');
+  execFileSync('git', ['init'], { cwd: repoRoot });
+  execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: repoRoot });
+  execFileSync('git', ['config', 'user.name', 'Test User'], { cwd: repoRoot });
+
+  const timeoutLine = opts.timeoutSecsLine ? `\n${opts.timeoutSecsLine}` : '';
+  const hoContent = `---
+id: HO-TIMEOUT
+title: WK-0244 watchdog fixture
+mode: implement
+write_scope: ["src/"]
+base_ref: null
+web: false
+credentials: []
+data_mounts: []
+read_first: []
+work_item: WK-9244${timeoutLine}
+acceptance:
+  - "AC-1: placeholder — spawnIsolated is mocked, so this HO is never actually dispatched to a worker"
+validation: ["node --test test/"]
+status: draft
+---
+
+## Task
+Placeholder fixture for the WK-0244 watchdog test; spawnIsolated is mocked so this body is never read by a worker.
+`;
+
+  await mkdir(join(repoRoot, 'wiki', 'handoffs'), { recursive: true });
+  await writeFile(join(repoRoot, 'wiki', 'handoffs', 'HO-TIMEOUT.md'), hoContent, 'utf8');
+  await writeFile(join(repoRoot, 'README.md'), 'kb-dispatch-timeout-fixture\n', 'utf8');
+
+  await mkdir(join(repoRoot, 'wiki', 'issues'), { recursive: true });
+  await writeFile(
+    join(repoRoot, 'wiki', 'issues', 'WK-9244.md'),
+    '---\nid: "WK-9244"\ntitle: "Fixture WK"\nstatus: todo\ninitiative: IN-9244\n---\n\n# WK-9244: Fixture\n',
+    'utf8',
+  );
+  await mkdir(join(repoRoot, 'wiki', 'initiatives'), { recursive: true });
+  await writeFile(
+    join(repoRoot, 'wiki', 'initiatives', 'IN-9244.md'),
+    '---\nid: "IN-9244"\ntitle: "Fixture initiative"\nstatus: todo\n---\n\n# IN-9244: Fixture\n',
+    'utf8',
+  );
+
+  await mkdir(join(repoRoot, 'wiki', '.dispatch'), { recursive: true });
+  await writeFile(
+    join(repoRoot, 'wiki', '.dispatch', 'backends.json'),
+    JSON.stringify({ 'claude-saas': { family: 'claude', base_url: null, api_key_env: null, secrets_file: null } }, null, 2),
+    'utf8',
+  );
+  await writeFile(
+    join(repoRoot, 'wiki', '.dispatch', 'models.json'),
+    JSON.stringify({ 'claude-sonnet-5': { available_on: ['claude-saas'], model_id: 'claude-sonnet-5' } }, null, 2),
+    'utf8',
+  );
+  await writeFile(join(repoRoot, 'wiki', '.dispatch', 'profiles.json'), JSON.stringify({ schema_version: 1 }), 'utf8');
+  if (opts.limitsJson) {
+    await writeFile(join(repoRoot, 'wiki', '.dispatch', 'limits.json'), JSON.stringify(opts.limitsJson), 'utf8');
+  }
+
+  execFileSync('git', ['add', '-A'], { cwd: repoRoot });
+  execFileSync('git', ['commit', '-m', 'initial commit'], { cwd: repoRoot });
+
+  // WK-0152: stamp base_sha = HEAD so the base-drift gate admits this fresh-HEAD HO.
+  const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repoRoot }).toString().trim();
+  const hoPath = join(repoRoot, 'wiki', 'handoffs', 'HO-TIMEOUT.md');
+  const stamped = (await readFile(hoPath, 'utf8')).replace('base_ref: null\n', `base_ref: null\nbase_sha: "${head}"\n`);
+  await writeFile(hoPath, stamped, 'utf8');
+  execFileSync('git', ['add', '-A'], { cwd: repoRoot });
+  execFileSync('git', ['commit', '-m', 'stamp'], { cwd: repoRoot });
+
+  return repoRoot;
+}
+
+/**
+ * Mock spawnIsolated: capture the `timeoutMs` pipeline.ts requested, and
+ * resolve as either a watchdog kill (`timedOut: true`, empty worker-output.log
+ * — WK-0244's real incidents all show 0 bytes there) or a clean, immediate
+ * completion. Mirrors dispatch-v2-e2e.test.ts's `mockSpawnIsolated`.
+ */
+function mockSpawnIsolatedForTimeout(behavior: 'timed_out' | 'completes'): { getTimeoutMs: () => number | undefined } {
+  let capturedTimeoutMs: number | undefined;
+  vi.spyOn(spawnIsolatedModule, 'spawnIsolated').mockImplementation(async (_plan, opts) => {
+    capturedTimeoutMs = opts?.timeoutMs;
+    if (opts?.stdoutLogPath) {
+      await writeFile(opts.stdoutLogPath, '', 'utf8');
+    }
+    return dispatchOk({
+      stdout: '',
+      stderr: '',
+      exitCode: behavior === 'timed_out' ? null : 0,
+      signal: behavior === 'timed_out' ? ('SIGTERM' as const) : null,
+      truncated: false,
+      timedOut: behavior === 'timed_out',
+      streamDrainTimedOut: false,
+    });
+  });
+  return { getTimeoutMs: () => capturedTimeoutMs };
+}
+
+describe('pipeline.ts — WK-0244 per-HO worker timeout (stubbed-clock seam: mocked spawnIsolated, no real wait)', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('AC2 regression: no timeout_secs keeps the 1800s default watchdog bound, and the kill message reports 1800s', async () => {
+    const repoRoot = await setupTimeoutRepo();
+    stubClaudeCliOnPath();
+    const { getTimeoutMs } = mockSpawnIsolatedForTimeout('timed_out');
+    try {
+      const result = await runDispatch({
+        dir: repoRoot,
+        handoff: 'wiki/handoffs/HO-TIMEOUT.md',
+        model: 'claude-sonnet-5',
+        backend: 'claude-saas',
+        preflight: false,
+      });
+      expect(getTimeoutMs()).toBe(1800 * 1000);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error).toBe('PIPELINE_FAILED');
+      expect(result.message).toContain('Worker timed out after 1800s');
+    } finally {
+      await rm(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('AC1: timeout_secs: 3600 (cap raised to 3600 in limits.json) sets the watchdog bound to 3600s — never the 1800s constant — and the kill message reports 3600s', async () => {
+    const repoRoot = await setupTimeoutRepo({
+      timeoutSecsLine: 'timeout_secs: 3600',
+      limitsJson: { schema_version: 1, max_worker_timeout_secs: 3600 },
+    });
+    stubClaudeCliOnPath();
+    const { getTimeoutMs } = mockSpawnIsolatedForTimeout('timed_out');
+    try {
+      const result = await runDispatch({
+        dir: repoRoot,
+        handoff: 'wiki/handoffs/HO-TIMEOUT.md',
+        model: 'claude-sonnet-5',
+        backend: 'claude-saas',
+        preflight: false,
+      });
+      // spawn-isolated.ts's own kill timer only fires at the `timeoutMs` it is
+      // handed — asserting 3600000 here is the stubbed-clock proof that a
+      // worker still running at 1800s is NOT killed under this HO.
+      expect(getTimeoutMs()).toBe(3600 * 1000);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error).toBe('PIPELINE_FAILED');
+      expect(result.message).toContain('Worker timed out after 3600s');
+      expect(result.message).not.toContain('1800s');
+    } finally {
+      await rm(repoRoot, { recursive: true, force: true });
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
