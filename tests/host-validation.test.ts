@@ -13,7 +13,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import { createServer, type Server } from 'node:net';
+import { connect, createServer, type Server } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -106,6 +106,14 @@ describe.skipIf(!BWRAP_FUNCTIONAL)('runHostValidation (WK-0294) — real bwrap',
     connections = 0;
     server = createServer((socket) => {
       connections += 1;
+      // WK-0316: the bash /dev/tcp probe (and this file's own reset test below) can close or
+      // reset the connection before reading `hello\n`. The kernel then sends RST, and Node
+      // surfaces that as ECONNRESET here — an expected early close, not a production fault.
+      // Any other code is unexpected and must still fail the run (AGENTS.md rule 24).
+      socket.on('error', (err: NodeJS.ErrnoException) => {
+        if (err.code === 'ECONNRESET') return;
+        throw err;
+      });
       socket.end('hello\n');
     });
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -236,6 +244,21 @@ describe.skipIf(!BWRAP_FUNCTIONAL)('runHostValidation (WK-0294) — real bwrap',
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.data).toMatchObject({ setup: null, commands: [], outcome: 'pass', registry_fingerprint: validationRegistryFingerprint(null) });
+  });
+
+  // Why: WK-0316 AC2 — a deterministic reset of the probe connection (unlike the timing-dependent
+  // bash /dev/tcp early close) must raise ECONNRESET on the server socket every time; with the
+  // listener in place that is expected and must not crash the run.
+  it('survives a client resetting the probe connection (WK-0316)', async () => {
+    await new Promise<void>((resolve, reject) => {
+      const client = connect(port, '127.0.0.1', () => {
+        client.resetAndDestroy();
+        resolve();
+      });
+      client.on('error', reject);
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(connections).toBe(1);
   });
 });
 
