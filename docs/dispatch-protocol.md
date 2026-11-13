@@ -53,6 +53,7 @@ pipeline after the run (see "Capture and Provenance").
 | `vars` | string[] | `"KEY=value"` non-secret literal env for the worker |
 | `fixup_context` | string | Prior review findings injected verbatim on a re-dispatch |
 | `work_item` | string | `WK-####`; required for `mode: implement`, and its `wiki/issues/<id>.md` must exist |
+| `timeout_secs` | integer | Positive integer; overrides the pipeline's default 1800s worker watchdog (WK-0244). Absent = 1800s. Refused above the operator cap (`WORKER_TIMEOUT_EXCEEDS_CAP`; see "Model and Backend Configuration") — never clamped |
 
 ### Written back by the pipeline after a run
 
@@ -95,6 +96,7 @@ here is a persisted review state — it all re-runs, every time, against the liv
 | `runtime_envs` only declared for `mode: implement` | `ENVELOPE_EXCEEDS_MODE` |
 | Every `runtime_envs` entry canonicalizes (realpath) to an absolute, existing, mountable path that is not `$HOME` itself and has a `bin/` dir | `BAD_RUNTIME_ENV` |
 | No `runtime_envs` entry overlaps a `export_mounts` entry in either direction | `RUNTIME_EXPORT_OVERLAP` |
+| `timeout_secs`, if declared, does not exceed the operator cap (`wiki/.dispatch/limits.json`'s `max_worker_timeout_secs`; absent = 1800s) | `WORKER_TIMEOUT_EXCEEDS_CAP` |
 | `implement` declares a `work_item` whose `wiki/issues/<id>.md` exists | `WORK_ITEM_NOT_FOUND` |
 | An HO carrying `reviewed_sha`: the commit it would clone (`base_ref`, else HEAD) is that sha — a derived review runs only against the head it was derived for | `REVIEWED_SHA_MISMATCH` |
 | Fresh-HEAD HOs: declared paths haven't changed since `base_sha`/`base_wiki_sha` | `BASE_DRIFT` (see below) |
@@ -252,6 +254,17 @@ is written only if absent):
 | `models.json` | slug → `available_on` (backend names) + provider `model_id` |
 | `backends.json` | name → `family` (`pi` \| `codex` \| `claude`), `base_url`, `api_key_env`, `secrets_file`, optional `effort_mapping`, optional `rate_key_prefix` |
 | `profiles.json` | credential profiles — see "Credentials" |
+| `limits.json` | optional, not scaffolded: operator cap on a handoff's `timeout_secs` (WK-0244) — `{ "schema_version": 1, "max_worker_timeout_secs": <positive integer> }`; absent = 1800s cap |
+
+A handoff may declare `timeout_secs` to override the pipeline's default 1800s worker watchdog.
+`limits.json`'s `max_worker_timeout_secs` caps how high that override may go; a declared value
+above the effective cap is refused at admission (`WORKER_TIMEOUT_EXCEEDS_CAP`, naming the
+requested value, the cap, and the `wiki/.dispatch/limits.json` path to raise it) — never clamped.
+When the watchdog fires, the run's `state.json` carries three named fields so the kill is
+diagnosable from the run state alone (WK-0244/WK-0260): `configured_limit_secs` (the effective
+timeout in effect at the kill), `elapsed_secs` (seconds since `started_at`), and
+`heartbeat_age_secs` (age, in seconds, of the last `heartbeat_at` at the moment of the kill). A
+run that ends any other way writes none of the three.
 
 A local model (Ollama, vLLM, …) is just a `pi`-family backend entry with a `base_url` pointing at the
 local server and `api_key_env: null` — there is no separate pluggable-agent-wrapper mechanism. Codex
@@ -598,7 +611,7 @@ is the source list; a test fails if this table and that list disagree:
 | Phase | Codes |
 |-------|-------|
 | Handoff shape | `BAD_RECORD` |
-| Admission (repo-local) | `MISSING_WRITE_SCOPE`, `ENVELOPE_EXCEEDS_MODE`, `STALE_WRITE_SCOPE`, `WRITE_SCOPE_UNCAPTURABLE`, `MISSING_READ_FIRST`, `DIRTY_REPO`, `UNCOMMITTED_READ_FIRST`, `BAD_BASE_REF`, `BAD_DATA_MOUNT`, `BAD_RUNTIME_ENV`, `RUNTIME_EXPORT_OVERLAP`, `WORK_ITEM_NOT_FOUND`, `REVIEWED_SHA_MISMATCH`, `BASE_DRIFT`, `ADMISSION_FAILED` |
+| Admission (repo-local) | `MISSING_WRITE_SCOPE`, `ENVELOPE_EXCEEDS_MODE`, `STALE_WRITE_SCOPE`, `WRITE_SCOPE_UNCAPTURABLE`, `MISSING_READ_FIRST`, `DIRTY_REPO`, `UNCOMMITTED_READ_FIRST`, `BAD_BASE_REF`, `BAD_DATA_MOUNT`, `BAD_RUNTIME_ENV`, `RUNTIME_EXPORT_OVERLAP`, `WORKER_TIMEOUT_EXCEEDS_CAP`, `WORK_ITEM_NOT_FOUND`, `REVIEWED_SHA_MISMATCH`, `BASE_DRIFT`, `ADMISSION_FAILED` |
 | Model/backend resolution | `MODEL_NOT_FOUND`, `EFFORT_UNSUPPORTED`, `NO_MODEL_DEFAULT`, `AMBIGUOUS_MODEL_DEFAULT`, `AMBIGUOUS_BACKEND` |
 | Credentials | `CREDENTIALS_WITH_WEB`, `UNKNOWN_PROFILE`, `CREDENTIAL_NOT_CONFIGURED` |
 | Host / prompt budget | `PREFLIGHT_FAILED`, `NO_ISOLATION_ROUTE`, `CLI_PATH_NOT_MOUNTABLE`, `CONTEXT_BUDGET_EXCEEDED` |

@@ -47,6 +47,7 @@ export interface Handoff {
   data_mounts: string[];
   export_mounts: string[];
   runtime_envs: string[]; // WK-0201: operator-declared runtime env roots, ro-bound + PATH-injected — implement-mode only
+  timeout_secs?: number; // WK-0244: per-HO worker watchdog override (seconds); absent = pipeline.ts's 1800s default. Admission refuses a value above the operator cap (wiki/.dispatch/limits.json).
   read_first: string[];
   vars: string[]; // Array of "KEY=value" strings; non-secret literal env for the worker
   fixup_context?: string; // Prior review findings injected verbatim as coordination context (s6-rulings.md ruling 3)
@@ -277,6 +278,14 @@ export function parseHandoffContent(content: string, filename: string): Dispatch
     }
   }
 
+  // WK-0244: timeout_secs is optional; when present it must be a positive integer.
+  // Absent means the pipeline's 1800s default — every existing handoff is unaffected.
+  if (raw.timeout_secs !== undefined && raw.timeout_secs !== null) {
+    if (typeof raw.timeout_secs !== 'number' || !Number.isInteger(raw.timeout_secs) || raw.timeout_secs <= 0) {
+      return fail(`Handoff timeout_secs must be a positive integer; got: ${String(raw.timeout_secs)}`);
+    }
+  }
+
   const handoff: Handoff = {
     id,
     title,
@@ -299,6 +308,7 @@ export function parseHandoffContent(content: string, filename: string): Dispatch
   if (typeof raw.area === 'string' && raw.area !== '') handoff.area = raw.area;
   if (typeof raw.initiative === 'string' && raw.initiative !== '') handoff.initiative = raw.initiative;
   if (typeof raw.work_item === 'string') handoff.work_item = raw.work_item;
+  if (typeof raw.timeout_secs === 'number') handoff.timeout_secs = raw.timeout_secs;
   if (typeof raw.base_sha === 'string' && raw.base_sha !== '') handoff.base_sha = raw.base_sha;
   if (typeof raw.base_wiki_sha === 'string' && raw.base_wiki_sha !== '') handoff.base_wiki_sha = raw.base_wiki_sha;
   if (typeof raw.run_id === 'string') handoff.run_id = raw.run_id;

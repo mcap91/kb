@@ -12,7 +12,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { V2_REFUSAL_CODES, type DispatchErrorCode } from '../packages/dispatch-core/src/errors.js';
-import { loadModelsTable, loadBackendsTable, loadProfilesConfig } from '../packages/dispatch-core/src/repo-config.js';
+import {
+  loadModelsTable,
+  loadBackendsTable,
+  loadProfilesConfig,
+  loadLimitsConfig,
+  DEFAULT_MAX_WORKER_TIMEOUT_SECS,
+} from '../packages/dispatch-core/src/repo-config.js';
 import { parseHandoffContent } from '../packages/dispatch-core/src/ho.js';
 
 async function createTempDir(prefix: string): Promise<string> {
@@ -67,6 +73,7 @@ describe('errors.ts — V2_REFUSAL_CODES', () => {
       'NO_MODEL_DEFAULT',
       'AMBIGUOUS_MODEL_DEFAULT',
       'AMBIGUOUS_BACKEND',
+      'WORKER_TIMEOUT_EXCEEDS_CAP',
     ];
     expect([...V2_REFUSAL_CODES].sort()).toEqual([...expected].sort());
   });
@@ -738,6 +745,75 @@ describe('repo-config.ts — wiki/.dispatch/ table loaders', () => {
       expect(result.message).toContain('HF_TOKEN');
     });
   });
+
+  describe('loadLimitsConfig (WK-0244)', () => {
+    let dir: string;
+
+    beforeEach(async () => {
+      dir = await createTempDir('kb-repo-config-limits-');
+    });
+
+    afterEach(async () => {
+      await rm(dir, { recursive: true, force: true });
+    });
+
+    it('defaults to DEFAULT_MAX_WORKER_TIMEOUT_SECS (1800) when limits.json is absent', async () => {
+      const result = await loadLimitsConfig(dir);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.data).toEqual({ maxWorkerTimeoutSecs: DEFAULT_MAX_WORKER_TIMEOUT_SECS });
+      expect(DEFAULT_MAX_WORKER_TIMEOUT_SECS).toBe(1800);
+    });
+
+    it('parses a valid limits.json', async () => {
+      await writeDispatchConfig(dir, 'limits.json', JSON.stringify({ schema_version: 1, max_worker_timeout_secs: 7200 }));
+
+      const result = await loadLimitsConfig(dir);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.data).toEqual({ maxWorkerTimeoutSecs: 7200 });
+    });
+
+    it('refuses malformed JSON, naming the file', async () => {
+      await writeDispatchConfig(dir, 'limits.json', '{ not valid json');
+
+      const result = await loadLimitsConfig(dir);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error).toBe('BAD_RECORD');
+      expect(result.message).toContain('limits.json');
+    });
+
+    it('refuses a schema_version other than 1', async () => {
+      await writeDispatchConfig(dir, 'limits.json', JSON.stringify({ schema_version: 2, max_worker_timeout_secs: 3600 }));
+
+      const result = await loadLimitsConfig(dir);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error).toBe('BAD_RECORD');
+      expect(result.message).toContain('schema_version');
+    });
+
+    it('refuses a non-positive-integer max_worker_timeout_secs', async () => {
+      await writeDispatchConfig(dir, 'limits.json', JSON.stringify({ schema_version: 1, max_worker_timeout_secs: 0 }));
+
+      const result = await loadLimitsConfig(dir);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error).toBe('BAD_RECORD');
+      expect(result.message).toContain('max_worker_timeout_secs');
+    });
+
+    it('refuses a non-numeric max_worker_timeout_secs', async () => {
+      await writeDispatchConfig(dir, 'limits.json', JSON.stringify({ schema_version: 1, max_worker_timeout_secs: '3600' }));
+
+      const result = await loadLimitsConfig(dir);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error).toBe('BAD_RECORD');
+      expect(result.message).toContain('max_worker_timeout_secs');
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -787,5 +863,45 @@ describe('ho.ts — vars frontmatter field (PLN-0004 S3)', () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.data.vars).toEqual([]);
+  });
+});
+
+describe('ho.ts — timeout_secs frontmatter field (WK-0244)', () => {
+  it('parses a positive integer timeout_secs', () => {
+    const content = makeHoContent('timeout_secs: 3600');
+    const result = parseHandoffContent(content, 'HO-0002.md');
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.timeout_secs).toBe(3600);
+  });
+
+  it('leaves timeout_secs undefined when absent from frontmatter (existing handoffs unaffected)', () => {
+    const content = makeHoContent();
+    const result = parseHandoffContent(content, 'HO-0002.md');
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.timeout_secs).toBeUndefined();
+  });
+
+  it.each([
+    ['zero', 'timeout_secs: 0'],
+    ['negative', 'timeout_secs: -10'],
+    ['non-integer', 'timeout_secs: 60.5'],
+    ['non-numeric', 'timeout_secs: soon'],
+  ])('rejects a %s timeout_secs with BAD_RECORD', (_label, line) => {
+    const content = makeHoContent(line);
+    const result = parseHandoffContent(content, 'HO-0002.md');
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toBe('BAD_RECORD');
+    expect(result.message).toContain('timeout_secs');
+  });
+
+  it('allows a value below 1800 (not just above)', () => {
+    const content = makeHoContent('timeout_secs: 60');
+    const result = parseHandoffContent(content, 'HO-0002.md');
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.timeout_secs).toBe(60);
   });
 });

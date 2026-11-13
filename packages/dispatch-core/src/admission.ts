@@ -27,6 +27,7 @@ import { FULL_SHA, type Handoff, type HandoffMode } from './ho.js';
 import { probeWikiSource } from './wiki-source.js';
 import { validateWriteScopeChain } from './write-scope-chain.js';
 import { isMountableRoot } from './mountability.js';
+import { loadLimitsConfig } from './repo-config.js';
 
 const execFile = promisify(execFileCb);
 
@@ -511,6 +512,31 @@ async function checkRuntimeEnvs(handoff: Handoff): Promise<DispatchResult<readon
 }
 
 /**
+ * `worker_timeout_exceeds_cap` (WK-0244, Resolutions rows 2-3): a declared
+ * `timeout_secs` above the operator cap in `wiki/.dispatch/limits.json`
+ * (`max_worker_timeout_secs`) is refused, never clamped. Absent file means a
+ * cap of `DEFAULT_MAX_WORKER_TIMEOUT_SECS` (1800s, repo-config.ts) — a
+ * handoff with no `timeout_secs` skips this check entirely (nothing to cap).
+ */
+async function checkWorkerTimeoutCap(handoff: Handoff, repoRoot: string): Promise<DispatchResult<null>> {
+  if (handoff.timeout_secs === undefined) return ok(null);
+
+  const limits = await loadLimitsConfig(repoRoot);
+  if (!limits.ok) return limits;
+
+  if (handoff.timeout_secs > limits.data.maxWorkerTimeoutSecs) {
+    return fail(
+      'WORKER_TIMEOUT_EXCEEDS_CAP',
+      `Handoff ${handoff.id} declares timeout_secs ${handoff.timeout_secs}, exceeding the operator cap of ${limits.data.maxWorkerTimeoutSecs}s. ` +
+        `Raise "max_worker_timeout_secs" in wiki/.dispatch/limits.json to allow it; it is never clamped.`,
+      { timeout_secs: handoff.timeout_secs, cap: limits.data.maxWorkerTimeoutSecs },
+    );
+  }
+
+  return ok(null);
+}
+
+/**
  * v2 work-item-existence gate (DEC-0036 WK-0121), narrowed from the original
  * IN-0006 WK-0116 initiative-resolution gate: an `implement`-mode HO must
  * declare a `work_item` (WK-####) whose `wiki/issues/<work_item>.md` file
@@ -731,6 +757,9 @@ export async function checkAdmission(handoff: Handoff, repoRoot: string): Promis
 
   const runtimeEnvsCheck = await checkRuntimeEnvs(handoff);
   if (!runtimeEnvsCheck.ok) return runtimeEnvsCheck;
+
+  const workerTimeoutCapCheck = await checkWorkerTimeoutCap(handoff, repoRoot);
+  if (!workerTimeoutCapCheck.ok) return workerTimeoutCapCheck;
 
   const workItemExistsCheck = await checkWorkItemExists(handoff, repoRoot);
   if (!workItemExistsCheck.ok) return workItemExistsCheck;
