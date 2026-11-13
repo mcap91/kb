@@ -152,6 +152,21 @@ async function writeChunked(res: ServerResponse, buffer: Buffer, splitPoints: nu
   res.end();
 }
 
+/**
+ * Returns the byte prefix of `buffer` through the end of its `lineCount`-th
+ * `\n`-terminated line (1-indexed) -- a real fixture's own bytes cut at a
+ * named line count, never a hand-written line (WK-0266 "Golden fixtures"
+ * rule, AC6).
+ */
+function cutAfterLine(buffer: Buffer, lineCount: number): Buffer {
+  let offset = -1;
+  for (let i = 0; i < lineCount; i++) {
+    offset = buffer.indexOf(0x0a, offset + 1);
+    if (offset === -1) throw new Error(`cutAfterLine: fixture has fewer than ${lineCount} lines`);
+  }
+  return buffer.slice(0, offset + 1);
+}
+
 // ---------------------------------------------------------------------------
 // Shared helpers
 // ---------------------------------------------------------------------------
@@ -790,11 +805,16 @@ describe.skipIf(process.platform === 'win32')('WK-0160: real forwarder+relay+stu
     it(
       'AC6 case 1: a client that disconnects mid-stream yields a record with ended:false and cost:null (never whatever usage.cost happened to arrive before the disconnect)',
       async () => {
+        // stream_morph.sse's usage.cost line is line 11 of 14 (WK-0266 fixture
+        // facts) -- the replay server writes the real fixture's bytes through
+        // and including that line, then holds the response open.
+        const fixture = readFixtureBuffer('stream_morph.sse');
+        const prefix = cutAfterLine(fixture, 11);
         harness = await startTunnelHarness({
           providerUsage: true,
           requestHandler: (_req, res) => {
             res.writeHead(200, { 'content-type': 'text/event-stream' });
-            res.write('data: {"id":"gen-disconnect","object":"chat.completion.chunk","provider":"Morph","choices":[]}\n\n');
+            res.write(prefix);
             // Never ends -- the client below disconnects before this stream completes.
           },
         });
@@ -802,9 +822,13 @@ describe.skipIf(process.platform === 'win32')('WK-0160: real forwarder+relay+stu
 
         await new Promise<void>((resolve, reject) => {
           const req = httpRequest({ host: '127.0.0.1', port: h.relayPort, path: '/v1/disconnect', method: 'GET' }, (res) => {
-            res.once('data', () => {
-              req.destroy(); // client disconnects mid-stream
-              resolve();
+            let received = Buffer.alloc(0);
+            res.on('data', (chunk: Buffer) => {
+              received = Buffer.concat([received, chunk]);
+              if (received.includes('usage')) {
+                req.destroy(); // client disconnects after it has received the usage line
+                resolve();
+              }
             });
           });
           req.on('error', () => resolve()); // destroy() can itself surface as a request error -- either way is the disconnect
@@ -815,8 +839,8 @@ describe.skipIf(process.platform === 'win32')('WK-0160: real forwarder+relay+stu
         const records = await readProviderUsageRecords(h.providerUsagePath!);
         expect(records).toHaveLength(1);
         expect(records[0].ended).toBe(false);
-        expect(records[0].cost).toBeNull(); // forced null on an early close, even though no usage line had arrived anyway
-        expect(records[0].providers).toEqual(['Morph']); // the provider seen before the disconnect is still recorded
+        expect(records[0].cost).toBeNull(); // forced null on an early close, even though usage.cost had already arrived
+        expect(records[0].providers).toEqual(['Morph']); // stream_morph.sse's own provider
       },
       10_000,
     );
@@ -824,11 +848,16 @@ describe.skipIf(process.platform === 'win32')('WK-0160: real forwarder+relay+stu
     it(
       'AC6 case 2: a response still open when the forwarder receives SIGTERM still produces a record (ended:false, cost:null), and the forwarder actually exits',
       async () => {
+        // stream_parasail.sse is 8 lines; the replay server writes only its
+        // first data: line (well short of the line-5 usage line) and holds
+        // the response open.
+        const fixture = readFixtureBuffer('stream_parasail.sse');
+        const prefix = cutAfterLine(fixture, 1);
         harness = await startTunnelHarness({
           providerUsage: true,
           requestHandler: (_req, res) => {
             res.writeHead(200, { 'content-type': 'text/event-stream' });
-            res.write('data: {"id":"gen-sigterm","object":"chat.completion.chunk","provider":"Together","choices":[]}\n\n');
+            res.write(prefix);
             // Never ends -- still open when SIGTERM below arrives.
           },
         });
@@ -856,7 +885,7 @@ describe.skipIf(process.platform === 'win32')('WK-0160: real forwarder+relay+stu
         expect(records).toHaveLength(1);
         expect(records[0].ended).toBe(false);
         expect(records[0].cost).toBeNull();
-        expect(records[0].providers).toEqual(['Together']);
+        expect(records[0].providers).toEqual(['Parasail']); // stream_parasail.sse's own provider
       },
       10_000,
     );
