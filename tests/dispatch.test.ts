@@ -14,7 +14,8 @@ import {
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
-import type { BwrapProbeResult, Handoff } from '@kb/dispatch-core';
+import type { BwrapProbeResult, Handoff, V2HandoffMode } from '@kb/dispatch-core';
+import { assemblePrompt, parseHandoffContent } from '@kb/dispatch-core';
 
 const TESTS_DIR = resolve(process.cwd(), 'tests');
 
@@ -752,4 +753,78 @@ describe('runProcess timeout guard', () => {
     expect(result.code).not.toBe(0);
     expect(result.stderr.toLowerCase()).toContain('timeout');
   }, 8000);
+});
+
+// ---------------------------------------------------------------------------
+// assemble.ts — jail retrieval framing (WK-0273, operator ruling (a)): the
+// managed block's "search the kb wiki first" step cannot run in the jail (no
+// kb MCP server, no kb checkout mounted). assemble.ts overrides that step with
+// one jail-retrieval line, stated once in shared assembly code, that must
+// reach every mode's assembled worker prompt.
+// ---------------------------------------------------------------------------
+
+describe('assemble.ts — jail retrieval framing (WK-0273)', () => {
+  let repoRoot: string;
+
+  // `Record<V2HandoffMode, true>` rather than a bare string[]: if a mode is ever
+  // added to or removed from the HandoffMode union, this fails to typecheck until
+  // updated, so the loop below keeps iterating every registered mode.
+  const ALL_HANDOFF_MODES: Record<V2HandoffMode, true> = {
+    implement: true,
+    code_review: true,
+    redteam: true,
+    research: true,
+    explore_code: true,
+  };
+
+  function jailRetrievalHoMarkdown(mode: V2HandoffMode): string {
+    return `---
+id: HO-JAILTEST
+title: Jail retrieval framing test
+mode: ${mode}
+write_scope: []
+base_ref: null
+web: false
+credentials: []
+data_mounts: []
+export_mounts: []
+read_first: ["README.md"]
+acceptance:
+  - "AC-1: test"
+validation:
+  - "npm test"
+status: draft
+---
+
+Test context body.
+`;
+  }
+
+  beforeEach(async () => {
+    repoRoot = await mkdtemp(join(tmpdir(), 'kb-assemble-jail-retrieval-'));
+    await mkdir(join(repoRoot, 'wiki', 'handoffs'), { recursive: true });
+  });
+
+  afterEach(async () => {
+    await rm(repoRoot, { recursive: true, force: true });
+  });
+
+  it.each(Object.keys(ALL_HANDOFF_MODES) as V2HandoffMode[])(
+    "the assembled '%s' worker prompt overrides the kb-wiki-search step with the jail-retrieval line",
+    async (mode) => {
+      const content = jailRetrievalHoMarkdown(mode);
+      await writeFile(join(repoRoot, 'wiki', 'handoffs', 'HO-JAILTEST.md'), content, 'utf8');
+      const parsed = parseHandoffContent(content, 'HO-JAILTEST.md');
+      expect(parsed.ok).toBe(true);
+      if (!parsed.ok) return;
+
+      const result = await assemblePrompt(parsed.data, repoRoot);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      expect(result.data.text).toContain('read the wiki as plain files');
+      expect(result.data.text).toContain('`read_first` list in this task is your retrieval set');
+      expect(result.data.text).toContain('Do not look for a kb MCP server or kb CLI');
+    },
+  );
 });
