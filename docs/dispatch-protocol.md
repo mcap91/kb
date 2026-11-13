@@ -387,20 +387,65 @@ state `cancelled`; an already-terminal run or an already-dead process is a no-op
 ### `derive-review`
 
 Creates a `code_review` HO from a delivered `implement` HO, after running host validation against the
-delivery (see "Host Validation Evidence" below). Derivation: `mode=code_review`, `write_scope=[]` (the
-mode ceiling — never copied from implement), `base_ref=dispatch/<implement_id>`,
-`acceptance`/`validation`/`web`/`credentials`/`data_mounts`/`export_mounts`/`vars`/`work_item` copied
-from implement, `read_first` = implement's only (the response reaches the reviewer through its run dir,
-never `read_first` — DEC-0047 A4.4), `title` = `Code review: <implement_title>`, `reviewed_run` stamped
-to the implement's latest run whose outcome is `delivered` and that left a delivery branch,
-`reviewed_sha` stamped to the delivery branch head that was validated, and a
-`### Host Validation Evidence` section rendered from the evidence JSON into the HO's Context. Acceptance
-text is copied verbatim, never rewritten. Does NOT auto-dispatch — the orchestrator dispatches separately
-(two-step review chain).
+delivery (see "Host Validation Evidence" below). `title` = `Code review: <implement_title>`,
+`reviewed_run` stamped to the implement's latest run whose outcome is `delivered` and that left a
+delivery branch, `reviewed_sha` stamped to the delivery branch head that was validated, and a
+`### Host Validation Evidence` section rendered from the evidence JSON into the HO's Context.
+
+**Chain (WK-0270 Specification 1).** The reviewed chain is every commit in `HEAD..dispatch/<implement_id>`
+in the mother checkout — exactly the range `merge-delivery` ships. Each commit must have exactly one
+parent (else `BAD_RECORD` naming the commit, "merge commit") and the subject `dispatch: HO-XXXX` (else
+`BAD_RECORD` naming the commit and its subject); its named `wiki/handoffs/HO-XXXX.md` is read live from
+disk (never from the commit's own git tree — DEC-0039) and must parse with `mode: implement` (else
+`BAD_RECORD` naming the commit, the HO, and its mode). The newest commit in the range must be the
+implement HO's own delivery, or derivation refuses `BAD_RECORD`. An empty range (the delivery branch is
+already merged) refuses `BAD_RECORD`. A member already reachable from `HEAD` is excluded by the range
+itself. The chain is computed against `HEAD` at derive time, so the merge target the Objective names is
+`HEAD`'s branch at that moment.
+
+**Objective and Expected Output (Specification 2).** Both are fixed sentences built only from
+identifiers — the head HO id, the delivery branch, `reviewed_sha`, the merge target, and one line per
+chain member (oldest first) naming its HO id, `work_item`, and single-commit range — never copied from
+the implement HO's prose. The full reviewed range sits alone on its own
+`Range under review: <range_base>..<head_sha>` line (`range_base` is the parent of the oldest member's
+commit; it is prose here, never the `base_sha` frontmatter stamp, which stays empty for a chained HO), so
+the reviewer cannot confuse it with any one member's range.
+
+**Fields copied vs. set by mode (Specification 3).** Copied from the head implement HO: `initiative`,
+`area`, `work_item`, `credentials`, `data_mounts`, `vars`. Set by the review mode, never copied:
+`write_scope: []`, `runtime_envs: []`, `web: false`, `export_mounts: []` — the implement envelope exceeds
+what `code_review` may declare (`ENVELOPE_EXCEEDS_MODE`, DEC-0047), and copying `export_mounts` would hand
+the reviewer write access. The implement HO's `export_mounts` entries are appended to `data_mounts`
+instead, read-only, so the reviewer can read what the implement exported. `validation` is one fixed
+sentence pointing the reviewer at the Host Validation Evidence (DEC-0047); the implement's validation
+text is never copied. Unchanged: `title`, `subject`, `allowed_agents`, `mode`, `base_ref`, `reviewed_run`,
+`reviewed_sha`, and the Host Validation Evidence in Context.
+
+**read_first (Specification 4).** The union of every chain member's `read_first` (head first, then older
+members), plus `AGENTS.md`, deduplicated, then filtered through `readFirstEntryExists` — the one
+existence predicate shared with admission's `checkMissingReadFirst` (wiki paths against the wiki working
+tree; other paths against `git cat-file -e <base_ref>:<path>`). `DeriveReviewResult.droppedReadFirst`
+lists every entry the filter dropped (e.g. a file the implement deleted on its branch), so the derived
+review's own `read_first` never carries an entry admission would refuse.
+
+**Acceptance (Specification 5).** The union of every chain member's acceptance criteria, oldest member
+first, each criterion prefixed `[HO-XXXX] ` with its own HO id. Text is otherwise copied verbatim, never
+rewritten.
+
+**Reviewer framing — the rules line (Specification 6).** `assemble.ts`'s `code_review` framing is fixed
+text that never parses the Objective; it points the reviewer at the Objective's own
+`Range under review:` line (defaulting to `git diff HEAD~1 HEAD` when an HO, derived or hand-authored,
+names no such line) and tells the reviewer to check the change against the repository's AGENTS.md rules
+as well as the acceptance criteria, naming the specific rule in each finding that cites a rule violation.
+This applies to every `code_review` HO, not only derived ones.
+
+Does NOT auto-dispatch — the orchestrator dispatches separately (two-step review chain).
 
 Refusals: implement not found, mode != implement, not delivered (response doc missing), no delivered run
-with a delivery branch, delivery branch missing, malformed `validation.json`, or a validation run that
-could not be carried out at all (bad runtime path, clone or bwrap failure).
+with a delivery branch, delivery branch missing, a bad chain record (merge commit, non-`dispatch:`
+subject, unparsable or non-implement member HO, wrong newest commit, or an empty range — all
+`BAD_RECORD`), malformed `validation.json`, or a validation run that could not be carried out at all (bad
+runtime path, clone or bwrap failure).
 
 ### Host Validation Evidence (WK-0294, DEC-0047)
 

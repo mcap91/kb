@@ -215,6 +215,27 @@ pass.
 5. Assert: a new merge commit exists on your branch, and `git rev-parse --verify
    refs/heads/dispatch/HO-XXXX` (the golden HO's branch) now fails — the branch is gone.
 
+### Two-HO chain step (WK-0270)
+
+Proves `derive-review`'s chain walk (docs/dispatch-protocol.md's "derive-review" `Chain` paragraph)
+against a real two-member chain, rather than the single-member case above. Do this before the
+"Review chain fixture" steps 4-5 merge away the golden fixture's delivery branch.
+
+1. Deliver A: the golden smoke fixture's HO (call its id HO-A), already dispatched and delivered
+   per "Golden smoke fixture" above — do not merge it yet.
+2. `create-handoff`: a second HO (HO-B) with `base_ref: dispatch/HO-A` and a `write_scope` entry
+   distinct from HO-A's (e.g. a second line in `tests/golden/smoke.txt` or a second file), targeting
+   the same `work_item` stub. `dispatch` it the same way as the golden fixture — it lands as a
+   second commit, subject `dispatch: HO-B`, on top of HO-A's commit on `dispatch/HO-A` (chained HOs
+   are exempt from the `BASE_DRIFT` stamp, so no `base_sha` is needed).
+3. `derive-review`: `handoff_id` = HO-B. Assert the derived review HO's rendered body:
+   - Both HO-A and HO-B's acceptance criteria are present, HO-A's first, each prefixed
+     `[HO-A] ` / `[HO-B] ` with its own id.
+   - The Objective names both members' single-commit ranges (one line each, oldest first) and the
+     combined range on its own `Range under review: <range_base>..<head_sha>` line, where
+     `range_base` is HO-A's commit's parent and `head_sha` is HO-B's delivery commit.
+4. `dispatch` the derived review unedited, same cycle as the single-HO case above.
+
 ### Pi-family fixture
 
 Same recipe as the golden smoke fixture, targeting a distinct file (e.g.
