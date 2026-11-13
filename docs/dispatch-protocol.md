@@ -42,18 +42,18 @@ pipeline after the run (see "Capture and Provenance").
 | Field | Type | Notes |
 |-------|------|-------|
 | `base_ref` | string \| null | `null` = fresh HEAD; otherwise must start with `dispatch/` and name an existing ref (chained review/fix-up HOs) |
-| `base_sha` / `base_wiki_sha` | string | Authoring-time commit stamps (WK-0152) — see "Base Drift Gate" |
-| `reviewed_run` | string | Run id a `code_review` HO targets (WK-0153 discharge evidence). Must be a dispatch run id (`RUN-<uuid>`); anything else is `BAD_RECORD` at parse |
-| `reviewed_sha` | string | Delivery-branch commit a derived `code_review` HO was derived for (full sha; anything else is `BAD_RECORD` at parse). Dispatch refuses unless `base_ref` resolves to it; `merge-delivery` requires the branch head to equal it (WK-0294) |
+| `base_sha` / `base_wiki_sha` | string | Authoring-time commit stamps — see "Base Drift Gate" |
+| `reviewed_run` | string | Run id a `code_review` HO targets. Must be a dispatch run id (`RUN-<uuid>`); anything else is `BAD_RECORD` at parse |
+| `reviewed_sha` | string | Delivery-branch commit a derived `code_review` HO was derived for (full sha; anything else is `BAD_RECORD` at parse). Dispatch refuses unless `base_ref` resolves to it; `merge-delivery` requires the branch head to equal it |
 | `web` | boolean | Default `false`. Never allowed for `code_review`/`redteam` |
 | `credentials` | string[] | Names from `wiki/.dispatch/profiles.json`. Mutually exclusive with `web: true` |
 | `data_mounts` / `export_mounts` | string[] | Absolute host paths *outside* the repo root, bound `ro` / `rw` into the jail. Must already exist |
-| `runtime_envs` | string[] | Absolute paths to pre-installed runtime env roots (e.g. a conda/mamba env), implement-mode only (WK-0201) — see "Runtime Env Projection" below |
+| `runtime_envs` | string[] | Absolute paths to pre-installed runtime env roots (e.g. a conda/mamba env), implement-mode only — see "Runtime Env Projection" below |
 | `read_first` | string[] | Repo-relative paths; each must exist where the worker reads it at dispatch time (`MISSING_READ_FIRST`; see "Where read_first resolves") |
 | `vars` | string[] | `"KEY=value"` non-secret literal env for the worker |
 | `fixup_context` | string | Prior review findings injected verbatim on a re-dispatch |
 | `work_item` | string | `WK-####`; required for `mode: implement`, and its `wiki/issues/<id>.md` must exist |
-| `timeout_secs` | integer | Positive integer; overrides the pipeline's default 1800s worker watchdog (WK-0244). Absent = 1800s. Refused above the operator cap (`WORKER_TIMEOUT_EXCEEDS_CAP`; see "Model and Backend Configuration") — never clamped |
+| `timeout_secs` | integer | Positive integer; overrides the pipeline's default 1800s worker watchdog. Absent = 1800s. Refused above the operator cap (`WORKER_TIMEOUT_EXCEEDS_CAP`; see "Model and Backend Configuration") — never clamped |
 
 ### Written back by the pipeline after a run
 
@@ -101,7 +101,7 @@ here is a persisted review state — it all re-runs, every time, against the liv
 | An HO carrying `reviewed_sha`: the commit it would clone (`base_ref`, else HEAD) is that sha — a derived review runs only against the head it was derived for | `REVIEWED_SHA_MISMATCH` |
 | Fresh-HEAD HOs: declared paths haven't changed since `base_sha`/`base_wiki_sha` | `BASE_DRIFT` (see below) |
 
-### Where read_first resolves (WK-0258)
+### Where read_first resolves
 
 The worker's clone is cut from `base_ref` (or HEAD when it is null), so admission checks each `read_first`
 entry where the worker will read it:
@@ -146,14 +146,14 @@ HO's declared `data_mounts`/`export_mounts`. There is no whole-root bind and no 
   Any other host variable, such as `DATABASE_URL`, never reaches the worker.
 - Every family runs under `--unshare-net` — no network namespace at all inside the jail.
 
-### Runtime Env Projection (WK-0201)
+### Runtime Env Projection
 
 `implement`-mode HOs may declare `runtime_envs: string[]` — absolute paths to pre-installed
 environment roots (a conda/mamba env, a `.cargo` dir, etc.) that the worker's project needs but that
 live under `$HOME`, which is denied wholesale by Wall 1. For each declared path, admission:
 
 1. Canonicalizes with `realpath` (resolve-first — a symlink farm still resolves to its real,
-   bindable target, mirroring WK-0174's toolchain-path pattern).
+   bindable target, mirroring the toolchain-path pattern).
 2. Refuses the canonical path if it is `$HOME` itself, outside both `$HOME` and the curated system
    roots, or has no `bin/` directory — all three with `BAD_RUNTIME_ENV`.
 3. Refuses it if it overlaps a declared `export_mounts` entry in either direction — with
@@ -254,14 +254,14 @@ is written only if absent):
 | `models.json` | slug → `available_on` (backend names) + provider `model_id` |
 | `backends.json` | name → `family` (`pi` \| `codex` \| `claude`), `base_url`, `api_key_env`, `secrets_file`, optional `effort_mapping`, optional `rate_key_prefix` |
 | `profiles.json` | credential profiles — see "Credentials" |
-| `limits.json` | optional, not scaffolded: operator cap on a handoff's `timeout_secs` (WK-0244) — `{ "schema_version": 1, "max_worker_timeout_secs": <positive integer> }`; absent = 1800s cap |
+| `limits.json` | optional, not scaffolded: operator cap on a handoff's `timeout_secs` — `{ "schema_version": 1, "max_worker_timeout_secs": <positive integer> }`; absent = 1800s cap |
 
 A handoff may declare `timeout_secs` to override the pipeline's default 1800s worker watchdog.
 `limits.json`'s `max_worker_timeout_secs` caps how high that override may go; a declared value
 above the effective cap is refused at admission (`WORKER_TIMEOUT_EXCEEDS_CAP`, naming the
 requested value, the cap, and the `wiki/.dispatch/limits.json` path to raise it) — never clamped.
 When the watchdog fires, the run's `state.json` carries three named fields so the kill is
-diagnosable from the run state alone (WK-0244/WK-0260): `configured_limit_secs` (the effective
+diagnosable from the run state alone: `configured_limit_secs` (the effective
 timeout in effect at the kill), `elapsed_secs` (seconds since `started_at`), and
 `heartbeat_age_secs` (age, in seconds, of the last `heartbeat_at` at the moment of the kill). A
 run that ends any other way writes none of the three.
@@ -311,7 +311,7 @@ structured evidence (outcome, findings, kind) extracted from the worker's own la
 never changes the run's verdict; for `code_review`/`redteam` the block *is* the deliverable, and a
 missing or invalid block drives the response doc's verdict to `failed` (`missing_review_artifact`).
 
-WK-0251: the schema handed to claude/codex implement runs for constrained decoding (DEC-0037) requires a
+The schema handed to claude/codex implement runs for constrained decoding (DEC-0037) requires a
 `report` field — the full human-readable report — because those backends' final message IS this JSON
 block, with no separate chat message left for prose. `## Worker Report` renders a valid block's non-empty
 `report` when present, falling back to the worker's raw final message otherwise (pi implement and every
@@ -319,7 +319,7 @@ reviewer/redteam/explorer/research run, none of which populate `report`, are una
 optional+nullable in recovery-block.ts's validator for every role/family — only this one schema file
 requires it.
 
-The response doc's own frontmatter also stamps three fields distilled from that evidence (WK-0166), so
+The response doc's own frontmatter also stamps three fields distilled from that evidence, so
 downstream consumers (e.g. `merge-delivery`) can read a fact instead of re-parsing the rendered
 `## Worker Report` markdown:
 
@@ -327,14 +327,14 @@ downstream consumers (e.g. `merge-delivery`) can read a fact instead of re-parsi
   when a valid block was extracted; empty string otherwise.
 - `recovery_valid` — boolean; whether a valid `kb-dispatch-recovery.v1` block was extracted at all.
 - `worker_report_chars` — the trimmed length of what `## Worker Report` actually renders (a valid block's
-  `report` field when present, else the worker's final assistant message — WK-0251, same resolution the
+  `report` field when present, else the worker's final assistant message — the same resolution the
   section itself uses); the fail-closed "did a review/run actually happen" fact, independent of whether
   it carried a parseable block.
 
 A response doc written before this change carries none of these three fields — consumers must refuse
 loudly on that absence rather than falling back to parsing the markdown body.
 
-## Base Drift Gate (WK-0152)
+## Base Drift Gate
 
 A fresh-HEAD HO (`base_ref` null — the normal "cut from current HEAD" path) must carry the commit it
 was checked against. Admission compares that stamp to what the worker will actually see, restricted to
@@ -368,7 +368,7 @@ For the wiki stamp, substitute `base_wiki_sha` / `git -C wiki rev-parse HEAD`. W
 
 **The fix.** Re-read the listed changes against the HO and its WK, fix and commit anything stale, then set the stamp to the current HEAD printed in the message and re-dispatch.
 
-**Uncommitted read_first inputs (WK-0272, DEC-0047 A2 R9).** Before the base-drift check, admission
+**Uncommitted read_first inputs (DEC-0047 A2 R9).** Before the base-drift check, admission
 refuses `UNCOMMITTED_READ_FIRST` when any `read_first` entry the worker reads from a working tree has
 uncommitted changes, in either wiki shape. A chained HO's non-wiki entries resolve against `base_ref`
 (committed by construction) and are not checked.
@@ -386,7 +386,7 @@ stamp) never block an advisory dispatch.
 
 **Chained-HO exemption.** An HO with `base_ref` set runs on an immutable `dispatch/` branch and is exempt from this gate — the orchestrator is expected to update its WK mid-chain by design.
 
-## Post-Run Lifecycle Tools (WK-0132)
+## Post-Run Lifecycle Tools
 
 Mechanical lifecycle capabilities that close the manual gaps in the dispatch loop:
 
@@ -405,7 +405,7 @@ delivery (see "Host Validation Evidence" below). `title` = `Code review: <implem
 delivery branch, `reviewed_sha` stamped to the delivery branch head that was validated, and a
 `### Host Validation Evidence` section rendered from the evidence JSON into the HO's Context.
 
-**Chain (WK-0270 Specification 1).** The reviewed chain is every commit in `HEAD..dispatch/<implement_id>`
+**Chain.** The reviewed chain is every commit in `HEAD..dispatch/<implement_id>`
 in the mother checkout — exactly the range `merge-delivery` ships. Each commit must have exactly one
 parent (else `BAD_RECORD` naming the commit, "merge commit") and the subject `dispatch: HO-XXXX` (else
 `BAD_RECORD` naming the commit and its subject); its named `wiki/handoffs/HO-XXXX.md` is read live from
@@ -460,7 +460,7 @@ subject, unparsable or non-implement member HO, wrong newest commit, or an empty
 `BAD_RECORD`), malformed `validation.json`, or a validation run that could not be carried out at all (bad
 runtime path, clone or bwrap failure).
 
-### Host Validation Evidence (WK-0294, DEC-0047)
+### Host Validation Evidence (DEC-0047)
 
 Advisory workers never run the project toolchain. The host runs the operator's registered validation
 commands against the delivery commit and records what happened. The review judges the diff plus that
@@ -498,13 +498,13 @@ the host outside the jail. The env is an allowlist (`--clearenv`): `PATH` (runti
 `/usr/local/bin:/usr/bin:/bin`), `HOME=/tmp`, `TMPDIR=/tmp`, and the registry `env`. No host variable
 reaches a step, whatever its name. Commands run with `--unshare-net`; bwrap brings loopback up, so local
 test servers work and egress fails. Setup is the one step that keeps network, so it also gets the
-WK-0301 resolver bind: when the host's `/etc/resolv.conf` is a symlink whose target lies outside the
+resolver bind: when the host's `/etc/resolv.conf` is a symlink whose target lies outside the
 jail's curated system roots (WSL2: `/mnt/wsl/resolv.conf`, never bound wholesale), the jail ro-binds
 exactly that resolved target file at the same path so DNS resolves. `.env` and `.claude/` in the clone are masked. stdout and stderr are
 each kept as a 16 KiB tail. On timeout the whole process group gets `SIGTERM`, then `SIGKILL` after 5 s,
 and the runner waits for the exit before it records the result.
 
-**Jail hermeticity contract (WK-0306).** The Confinement paragraph above states the jail's shape; this
+**Jail hermeticity contract.** The Confinement paragraph above states the jail's shape; this
 is the contract a repo's own test suite writes to when it runs as a registered `commands[]` step.
 *Validation commands* are network-denied (`--unshare-net`; bwrap still brings loopback up, so local test
 servers work) and run with a `--clearenv` allowlisted env — `PATH` (runtime `bin/` dirs, then
@@ -548,7 +548,7 @@ Preconditions (checked in order, fail-closed):
 1. Review evidence: a `code_review` HO whose `base_ref` is `dispatch/<handoff_id>` has a response doc.
    Evidence is read from that doc's frontmatter — `recovery_outcome`, `recovery_valid`,
    `worker_report_chars` (see "Capture and Provenance") — never by re-parsing the rendered
-   `## Worker Report` markdown (WK-0166). DEC-0037: review is prose-first — `recovery_valid: true` with a
+   `## Worker Report` markdown. DEC-0037: review is prose-first — `recovery_valid: true` with a
    passing `recovery_outcome` (`no_findings`/`passed_no_blocking_or_medium_findings`) merges with
    `verdict: structured`; a passing-shaped block reporting anything else (e.g. `changes_requested`)
    refuses, no operator override in this slice; `recovery_valid` false/absent with `worker_report_chars >
@@ -557,7 +557,7 @@ Preconditions (checked in order, fail-closed):
    fields (all three absent — no legacy regex fallback) refuses outright.
 2. Working tree clean
 3. Delivery branch exists
-4. Host validation evidence (WK-0294). The gate reads only the host original: the
+4. Host validation evidence. The gate reads only the host original: the
    `validation-evidence.json` in the implement run dir named by the review's `reviewed_run`, never the
    reviewer's copy. It refuses when the review has no `reviewed_run` or `reviewed_sha`, the evidence is
    missing or unreadable, the evidence belongs to another run, the evidence `outcome` is `fail`, or the
@@ -582,7 +582,7 @@ refuses. An orchestrator passes the override only on an explicit operator instru
 ### `cleanup`
 
 Removes orphaned `.agent-runs/reviews/` and `.agent-runs/runs/` directories past a retention window
-(default 7 days), and sweeps older sibling runs of the same HO once a newer one is removed (WK-0153) so
+(default 7 days), and sweeps older sibling runs of the same HO once a newer one is removed so
 a stale run can never resurface as "latest."
 
 ### Orchestration Recipe
