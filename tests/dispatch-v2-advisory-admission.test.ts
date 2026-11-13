@@ -326,7 +326,14 @@ describe('WK-0272 full path — create/derive then dispatch with no manual commi
       `---\nhandoff_id: ${implement.data.handoffId}\noutcome: delivered\n---\n\n# Response\n`,
     );
     commitAll(repo, 'implement delivered');
-    git(repo, 'branch', `dispatch/${implement.data.handoffId}`);
+    // WK-0270 Specification 1: the chain is HEAD..dispatch/<id> — a real delivery commit ahead of
+    // HEAD, subject "dispatch: HO-XXXX" (was a bare `git branch` at HEAD followed by commits that
+    // advanced HEAD past it, which makes the range empty and invalid under the new chain walk).
+    const branch = `dispatch/${implement.data.handoffId}`;
+    git(repo, 'checkout', '-b', branch);
+    await writeFile(join(repo, 'src', 'app.ts'), 'export const v = 2;\n');
+    commitAll(repo, `dispatch: ${implement.data.handoffId}`);
+    git(repo, 'checkout', '-');
     // The delivered run derive-review keys its evidence to (WK-0294); .agent-runs/ is runtime state, never committed.
     await writeFile(join(repo, '.gitignore'), '.agent-runs/\n');
     commitAll(repo, 'ignore run dirs');

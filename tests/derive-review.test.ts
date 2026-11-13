@@ -1,11 +1,21 @@
 /**
  * WK-0132 Slice 2 — derive-review: derives a code_review HO from a delivered
- * implement HO (mode=code_review, base_ref=dispatch/<implement_id>, acceptance/
- * write_scope/validation copied verbatim, read_first = implement's only — the
- * response travels via the review run dir, DEC-0047 A4.4). WK-0294: derivation
- * needs a delivered run with a delivery branch and records host validation
- * evidence (no registry here, so the host runs nothing). Fixtures use the real bootstrap()/createHandoff() code paths
- * rather than hand-rolled frontmatter, so the HO files under test are
+ * implement HO (mode=code_review, base_ref=dispatch/<implement_id>, acceptance
+ * copied verbatim, write_scope always []). WK-0294: derivation needs a
+ * delivered run with a delivery branch and records host validation evidence
+ * (no registry here, so the host runs nothing). WK-0270 Slice 1: `validation`
+ * is a fixed host-evidence sentence (never the implement's validation text);
+ * `read_first` is the implement's list plus `AGENTS.md`, filtered through
+ * admission's shared existence predicate against the delivery branch tree;
+ * `initiative`/`area`/`work_item` are copied; `runtime_envs`/`web`/
+ * `export_mounts` are set by the review mode, never copied, with the
+ * implement's `export_mounts` appended to `data_mounts` read-only. WK-0270
+ * Slice 2: the chain is `HEAD..dispatch/<id>` in the mother checkout (real
+ * chains, one commit per member, subject `dispatch: HO-XXXX` —
+ * `deliverChainCommit`/`markDelivered` below); Objective/Expected Output are
+ * fixed sentences from identifiers; `acceptance` and `read_first` are unioned
+ * across every member. Fixtures use the real bootstrap()/createHandoff() code
+ * paths rather than hand-rolled frontmatter, so the HO files under test are
  * byte-identical to what dispatch actually produces (mirrors
  * tests/create-handoff-validation.test.ts's setup pattern).
  */
@@ -17,6 +27,7 @@ import { join } from 'node:path';
 
 import { bootstrap } from '@kb/wiki-core';
 
+import { checkAdmission } from '../packages/dispatch-core/src/admission.js';
 import { createHandoff } from '../packages/dispatch-core/src/create-handoff.js';
 import type { CreateHandoffOpts } from '../packages/dispatch-core/src/types.js';
 import { deriveReview } from '../packages/dispatch-core/src/derive-review.js';
@@ -31,6 +42,11 @@ async function setupBootstrappedRepo(repoRoot: string): Promise<void> {
   if (!result.ok) {
     throw new Error(result.message);
   }
+
+  // WK-0270: deriveReview now filters read_first through admission's existence predicate
+  // against the delivery branch tree, so a real committed README.md backs the 'README.md'
+  // read_first fixtures below (an uncommitted/nonexistent entry would be dropped).
+  await writeFile(join(repoRoot, 'README.md'), '# fixture\n', 'utf-8');
 
   // WK-0152: createHandoff stamps base_sha from HEAD, so the repo must be a git repo with a commit.
   for (const args of [['init'], ['config', 'user.email', 'test@example.com'], ['config', 'user.name', 'Test User'], ['add', '-A'], ['commit', '-m', 'init']]) {
@@ -71,6 +87,30 @@ async function deliverImplementHo(tempDir: string) {
 const DELIVERED_RUN = 'RUN-00000000-0000-4000-8000-000000000001';
 const NEWER_FAILED_RUN = 'RUN-00000000-0000-4000-8000-000000000002';
 
+/**
+ * WK-0270 Specification 1: a chain member is one commit, subject `dispatch: HO-XXXX`, on
+ * `dispatch/<handoffId>` branched off `fromRef` — the real delivery.ts shape (`tests/host-validation.test.ts`'s
+ * pattern), not a bare `git branch -f` at HEAD (which forms an empty, invalid HEAD..branch range). Leaves the
+ * caller back on whatever ref was checked out before. Returns the new commit's sha.
+ */
+async function deliverChainCommit(tempDir: string, handoffId: string, fromRef: string): Promise<string> {
+  const current = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: tempDir }).toString().trim();
+  const branch = `dispatch/${handoffId}`;
+  const marker = `${handoffId}.delivered`;
+  execFileSync('git', ['checkout', '-q', '-b', branch, fromRef], { cwd: tempDir });
+  await writeFile(join(tempDir, marker), 'delivered\n', 'utf-8');
+  // Add only the marker file, never `-A`: the implement HO's own `.md` (and its response doc) are
+  // often still uncommitted on `current` at this point, and sweeping them into this branch's commit
+  // would make git delete them from the working tree on the `checkout current` below (tracked here,
+  // absent from current's tree).
+  execFileSync('git', ['add', marker], { cwd: tempDir });
+  execFileSync('git', ['commit', '-q', '-m', `dispatch: ${handoffId}`], { cwd: tempDir });
+  const sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: tempDir }).toString().trim();
+  execFileSync('git', ['checkout', '-q', current], { cwd: tempDir });
+  return sha;
+}
+
+/** Single-member chain: `dispatch/<handoffId>` is one commit ahead of HEAD (WK-0270 Specification 1). */
 async function markDelivered(tempDir: string, handoffId: string, runId = DELIVERED_RUN): Promise<void> {
   await writeRunState(join(tempDir, '.agent-runs', 'runs', handoffId, runId), {
     run_id: runId,
@@ -80,7 +120,7 @@ async function markDelivered(tempDir: string, handoffId: string, runId = DELIVER
     branch: `dispatch/${handoffId}`,
     completed_at: '2026-09-25T10:00:00.000Z',
   });
-  execFileSync('git', ['branch', '-f', `dispatch/${handoffId}`], { cwd: tempDir });
+  await deliverChainCommit(tempDir, handoffId, 'HEAD');
 }
 
 async function writeResponseDoc(tempDir: string, handoffId: string): Promise<void> {
@@ -150,12 +190,456 @@ describe('deriveReview — WK-0132 Slice 2', () => {
       expect(review.mode).toBe('code_review');
       expect(review.base_ref).toBe(`dispatch/${implement.handoffId}`);
       expect(review.write_scope).toEqual([]);
-      expect(review.acceptance).toEqual(['AC-1: slugify("Hello World") returns "hello-world"']);
-      expect(review.validation).toEqual(['npm test -- slugify']);
+      // WK-0270 Specification 5 (single-HO case): acceptance is still the union over the chain's one
+      // member, prefixed [HO-XXXX] (was the bare implement acceptance array, unprefixed).
+      expect(review.acceptance).toEqual([`[${implement.handoffId}] AC-1: slugify("Hello World") returns "hello-world"`]);
+      // WK-0270 Specification 3/Resolution 6: validation is one fixed host-evidence sentence,
+      // never the implement's validation text (was `['npm test -- slugify']`, copied verbatim).
+      expect(review.validation).toHaveLength(1);
+      expect(review.validation[0]).toContain('Host Validation Evidence');
+      expect(review.validation.join(' ')).not.toContain('npm test -- slugify');
       expect(review.work_item).toBe('WK-0132');
-      // DEC-0047 A4.4: the response is delivered through the review run dir, never read_first.
-      expect(review.read_first).toEqual(['README.md']);
+      // WK-0270 Specification 4: read_first is the implement's list plus AGENTS.md, filtered
+      // through admission's shared existence predicate (was the implement's list copied as-is);
+      // bootstrap() writes AGENTS.md into the fixture repo root, so it survives the filter here.
+      expect(review.read_first).toEqual(['README.md', 'AGENTS.md']);
       expect(review.title).toBe('Code review: Add a slugify utility');
+
+      // WK-0270 Specification 2 (new): Objective and Expected Output are fixed sentences from
+      // identifiers — both name the head HO id, reviewed_sha, and the single member's range.
+      const content = await readFile(result.data.reviewPath, 'utf-8');
+      expect(content).toContain(implement.handoffId);
+      expect(content).toContain(review.reviewed_sha!);
+      expect(content).toContain('Range under review:');
+    });
+
+    it('copies initiative, area and work_item from the implement HO', async () => {
+      const created = await createHandoff(baseImplementOpts({ dir: tempDir, area: 'dispatch', initiative: 'IN-0007' }));
+      if (!created.ok) throw new Error(created.message);
+      await writeResponseDoc(tempDir, created.data.handoffId);
+      await markDelivered(tempDir, created.data.handoffId);
+
+      const result = await deriveReview({ dir: tempDir, handoff_id: created.data.handoffId });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      const parsed = await parseHandoff(result.data.reviewPath);
+      expect(parsed.ok).toBe(true);
+      if (!parsed.ok) return;
+      expect(parsed.data.area).toBe('dispatch');
+      expect(parsed.data.initiative).toBe('IN-0007');
+      expect(parsed.data.work_item).toBe('WK-0132');
+    });
+
+    it('sets the envelope by review mode: empties runtime_envs/web/export_mounts, moves the export path to data_mounts, copies credentials/data_mounts/vars, and admits with no ENVELOPE_EXCEEDS_MODE', async () => {
+      const originalHome = process.env.HOME;
+      const fakeHome = await mkdtemp(join(tmpdir(), 'derive-review-home-'));
+      process.env.HOME = fakeHome;
+      try {
+        const runtimeEnvRoot = join(fakeHome, 'runtime-env');
+        await mkdir(join(runtimeEnvRoot, 'bin'), { recursive: true });
+        const exportDir = await mkdtemp(join(tmpdir(), 'derive-review-export-'));
+        const dataMountDir = await mkdtemp(join(tmpdir(), 'derive-review-data-'));
+
+        const created = await createHandoff(
+          baseImplementOpts({
+            dir: tempDir,
+            web: true,
+            runtime_envs: [runtimeEnvRoot],
+            export_mounts: [exportDir],
+            data_mounts: [dataMountDir],
+            credentials: ['anthropic'],
+            vars: ['FOO=bar'],
+          }),
+        );
+        if (!created.ok) throw new Error(created.message);
+        await writeResponseDoc(tempDir, created.data.handoffId);
+        await markDelivered(tempDir, created.data.handoffId);
+
+        const result = await deriveReview({ dir: tempDir, handoff_id: created.data.handoffId });
+        expect(result.ok).toBe(true);
+        if (!result.ok) return;
+
+        const parsed = await parseHandoff(result.data.reviewPath);
+        expect(parsed.ok).toBe(true);
+        if (!parsed.ok) return;
+        const review = parsed.data;
+
+        expect(review.write_scope).toEqual([]);
+        expect(review.runtime_envs).toEqual([]);
+        expect(review.web).toBe(false);
+        expect(review.export_mounts).toEqual([]);
+        expect(review.data_mounts).toEqual([dataMountDir, exportDir]);
+        expect(review.credentials).toEqual(['anthropic']);
+        expect(review.vars).toEqual(['FOO=bar']);
+
+        const admitted = await checkAdmission(review, tempDir);
+        expect(admitted.ok).toBe(true);
+        if (admitted.ok) return;
+        expect(admitted.error).not.toBe('ENVELOPE_EXCEEDS_MODE');
+      } finally {
+        if (originalHome === undefined) delete process.env.HOME;
+        else process.env.HOME = originalHome;
+        await rm(fakeHome, { recursive: true, force: true });
+      }
+    });
+  });
+
+  describe('read_first union with AGENTS.md and the shared existence predicate (WK-0270 Specification 4)', () => {
+    it('keeps AGENTS.md when the delivery branch has it, drops a deleted implement read_first entry, and reports the drop', async () => {
+      await writeFile(join(tempDir, 'AGENTS.md'), '# rules\n', 'utf-8');
+      await writeFile(join(tempDir, 'deleted-on-branch.md'), 'gone soon\n', 'utf-8');
+      execFileSync('git', ['add', '-A'], { cwd: tempDir });
+      execFileSync('git', ['commit', '-m', 'add AGENTS.md and a file the implement deletes'], { cwd: tempDir });
+
+      const created = await createHandoff(
+        baseImplementOpts({ dir: tempDir, read_first: ['README.md', 'deleted-on-branch.md'] }),
+      );
+      if (!created.ok) throw new Error(created.message);
+      await writeResponseDoc(tempDir, created.data.handoffId);
+
+      // The implement's delivered branch no longer has the file it declared in read_first.
+      // WK-0270 Specification 1: the chain commit's subject must be "dispatch: HO-XXXX" (was
+      // "delete the file" — a non-dispatch subject the new chain walk would refuse).
+      const branch = `dispatch/${created.data.handoffId}`;
+      execFileSync('git', ['checkout', '-q', '-b', branch], { cwd: tempDir });
+      execFileSync('git', ['rm', '-q', 'deleted-on-branch.md'], { cwd: tempDir });
+      execFileSync('git', ['commit', '-q', '-m', `dispatch: ${created.data.handoffId}`], { cwd: tempDir });
+      execFileSync('git', ['checkout', '-q', '-'], { cwd: tempDir });
+
+      await writeRunState(join(tempDir, '.agent-runs', 'runs', created.data.handoffId, DELIVERED_RUN), {
+        run_id: DELIVERED_RUN,
+        handoff_id: created.data.handoffId,
+        status: 'delivered',
+        outcome: 'delivered',
+        branch,
+        completed_at: '2026-09-25T10:00:00.000Z',
+      });
+
+      const result = await deriveReview({ dir: tempDir, handoff_id: created.data.handoffId });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      expect(result.data.droppedReadFirst).toEqual(['deleted-on-branch.md']);
+
+      const parsed = await parseHandoff(result.data.reviewPath);
+      expect(parsed.ok).toBe(true);
+      if (!parsed.ok) return;
+      expect(parsed.data.read_first).toEqual(['README.md', 'AGENTS.md']);
+
+      const admitted = await checkAdmission(parsed.data, tempDir);
+      expect(admitted.ok).toBe(true);
+    });
+  });
+
+  describe('chain walk, Objective/Expected Output, and acceptance union (WK-0270 Specification 1, 2, 5)', () => {
+    it('single-member chain: range is <parent>..<head>, and the one criterion carries just one [HO-XXXX] prefix', async () => {
+      const implement = await deliverImplementHo(tempDir);
+      await writeResponseDoc(tempDir, implement.handoffId);
+      await markDelivered(tempDir, implement.handoffId);
+
+      const deliverySha = execFileSync('git', ['rev-parse', `dispatch/${implement.handoffId}`], { cwd: tempDir }).toString().trim();
+      const parentSha = execFileSync('git', ['rev-parse', `dispatch/${implement.handoffId}^`], { cwd: tempDir }).toString().trim();
+
+      const result = await deriveReview({ dir: tempDir, handoff_id: implement.handoffId });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      const parsed = await parseHandoff(result.data.reviewPath);
+      if (!parsed.ok) throw new Error(parsed.message);
+      expect(parsed.data.acceptance).toEqual([`[${implement.handoffId}] AC-1: slugify("Hello World") returns "hello-world"`]);
+
+      const content = await readFile(result.data.reviewPath, 'utf-8');
+      expect(content).toContain(`Range under review: ${parentSha}..${deliverySha}`);
+    });
+
+    it('two-HO chain (B on A): acceptance holds both, oldest first, each prefixed; Objective and Expected Output name the head HO, reviewed_sha, and every member\'s range', async () => {
+      const a = await createHandoff(baseImplementOpts({ dir: tempDir, work_item: 'WK-0001', acceptance: ['AC-A1: a does x'] }));
+      if (!a.ok) throw new Error(a.message);
+      execFileSync('git', ['add', '-A'], { cwd: tempDir });
+      execFileSync('git', ['commit', '-q', '-m', 'author A'], { cwd: tempDir });
+      const authorASha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: tempDir }).toString().trim();
+      const aSha = await deliverChainCommit(tempDir, a.data.handoffId, 'HEAD');
+
+      const b = await createHandoff(
+        baseImplementOpts({
+          dir: tempDir,
+          work_item: 'WK-0002',
+          acceptance: ['AC-B1: b does y'],
+          base_ref: `dispatch/${a.data.handoffId}`,
+        }),
+      );
+      if (!b.ok) throw new Error(b.message);
+      await writeResponseDoc(tempDir, b.data.handoffId);
+      execFileSync('git', ['add', '-A'], { cwd: tempDir });
+      execFileSync('git', ['commit', '-q', '-m', 'author B'], { cwd: tempDir });
+      const bSha = await deliverChainCommit(tempDir, b.data.handoffId, `dispatch/${a.data.handoffId}`);
+
+      await writeRunState(join(tempDir, '.agent-runs', 'runs', b.data.handoffId, DELIVERED_RUN), {
+        run_id: DELIVERED_RUN,
+        handoff_id: b.data.handoffId,
+        status: 'delivered',
+        outcome: 'delivered',
+        branch: `dispatch/${b.data.handoffId}`,
+        completed_at: '2026-09-25T10:00:00.000Z',
+      });
+
+      const result = await deriveReview({ dir: tempDir, handoff_id: b.data.handoffId });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      const parsed = await parseHandoff(result.data.reviewPath);
+      if (!parsed.ok) throw new Error(parsed.message);
+      const review = parsed.data;
+
+      expect(review.reviewed_sha).toBe(bSha);
+      // Specification 5: union across members, oldest (A) first, each prefixed [HO-XXXX].
+      expect(review.acceptance).toEqual([
+        `[${a.data.handoffId}] AC-A1: a does x`,
+        `[${b.data.handoffId}] AC-B1: b does y`,
+      ]);
+
+      const content = await readFile(result.data.reviewPath, 'utf-8');
+      // Specification 2: Objective and Expected Output both name the head HO, reviewed_sha, and every member's range.
+      expect(content).toContain(b.data.handoffId);
+      expect(content).toContain(review.reviewed_sha!);
+      expect(content).toContain(`${authorASha}..${aSha}`); // A's single-commit range
+      expect(content).toContain(`${aSha}..${bSha}`); // B's single-commit range
+      expect(content).toContain(`Range under review: ${authorASha}..${bSha}`);
+    });
+
+    it('excludes a member already merged into HEAD from the chain', async () => {
+      const a = await createHandoff(baseImplementOpts({ dir: tempDir, work_item: 'WK-0001', acceptance: ['AC-A1: a does x'] }));
+      if (!a.ok) throw new Error(a.message);
+      execFileSync('git', ['add', '-A'], { cwd: tempDir });
+      execFileSync('git', ['commit', '-q', '-m', 'author A'], { cwd: tempDir });
+      const aSha = await deliverChainCommit(tempDir, a.data.handoffId, 'HEAD');
+
+      // merge-delivery already landed A: fast-forward HEAD past A's delivery commit.
+      execFileSync('git', ['merge', '--ff-only', `dispatch/${a.data.handoffId}`], { cwd: tempDir });
+      expect(execFileSync('git', ['rev-parse', 'HEAD'], { cwd: tempDir }).toString().trim()).toBe(aSha);
+
+      const b = await createHandoff(
+        baseImplementOpts({
+          dir: tempDir,
+          work_item: 'WK-0002',
+          acceptance: ['AC-B1: b does y'],
+          base_ref: `dispatch/${a.data.handoffId}`,
+        }),
+      );
+      if (!b.ok) throw new Error(b.message);
+      await writeResponseDoc(tempDir, b.data.handoffId);
+      execFileSync('git', ['add', '-A'], { cwd: tempDir });
+      execFileSync('git', ['commit', '-q', '-m', 'author B'], { cwd: tempDir });
+      const bSha = await deliverChainCommit(tempDir, b.data.handoffId, `dispatch/${a.data.handoffId}`);
+
+      await writeRunState(join(tempDir, '.agent-runs', 'runs', b.data.handoffId, DELIVERED_RUN), {
+        run_id: DELIVERED_RUN,
+        handoff_id: b.data.handoffId,
+        status: 'delivered',
+        outcome: 'delivered',
+        branch: `dispatch/${b.data.handoffId}`,
+        completed_at: '2026-09-25T10:00:00.000Z',
+      });
+
+      const result = await deriveReview({ dir: tempDir, handoff_id: b.data.handoffId });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      const parsed = await parseHandoff(result.data.reviewPath);
+      if (!parsed.ok) throw new Error(parsed.message);
+      // A is already reachable from HEAD, so only B's criterion survives — A's is excluded by the range.
+      expect(parsed.data.acceptance).toEqual([`[${b.data.handoffId}] AC-B1: b does y`]);
+
+      const content = await readFile(result.data.reviewPath, 'utf-8');
+      expect(content).not.toContain('AC-A1');
+      expect(content).toContain(`Range under review: ${aSha}..${bSha}`);
+    });
+
+    it('refuses a merge commit in the chain range', async () => {
+      const created = await createHandoff(baseImplementOpts({ dir: tempDir }));
+      if (!created.ok) throw new Error(created.message);
+      await writeResponseDoc(tempDir, created.data.handoffId);
+
+      const current = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: tempDir }).toString().trim();
+      const branch = `dispatch/${created.data.handoffId}`;
+      execFileSync('git', ['checkout', '-q', '-b', branch], { cwd: tempDir });
+      execFileSync('git', ['checkout', '-q', '-b', 'side'], { cwd: tempDir });
+      await writeFile(join(tempDir, 'side.txt'), 'side\n', 'utf-8');
+      // Add only the new file, never `-A`: the implement HO's own `.md`/response doc are still
+      // uncommitted here, and sweeping them in would make git delete them on the final checkout back.
+      execFileSync('git', ['add', 'side.txt'], { cwd: tempDir });
+      execFileSync('git', ['commit', '-q', '-m', 'side change'], { cwd: tempDir });
+      execFileSync('git', ['checkout', '-q', branch], { cwd: tempDir });
+      execFileSync('git', ['merge', '--no-ff', '-q', '-m', 'merge side', 'side'], { cwd: tempDir });
+      await writeFile(join(tempDir, `${created.data.handoffId}.delivered`), 'delivered\n', 'utf-8');
+      execFileSync('git', ['add', `${created.data.handoffId}.delivered`], { cwd: tempDir });
+      execFileSync('git', ['commit', '-q', '-m', `dispatch: ${created.data.handoffId}`], { cwd: tempDir });
+      execFileSync('git', ['checkout', '-q', current], { cwd: tempDir });
+
+      await writeRunState(join(tempDir, '.agent-runs', 'runs', created.data.handoffId, DELIVERED_RUN), {
+        run_id: DELIVERED_RUN,
+        handoff_id: created.data.handoffId,
+        status: 'delivered',
+        outcome: 'delivered',
+        branch,
+        completed_at: '2026-09-25T10:00:00.000Z',
+      });
+
+      const result = await deriveReview({ dir: tempDir, handoff_id: created.data.handoffId });
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error).toBe('BAD_RECORD');
+      expect(result.message).toContain('parents');
+    });
+
+    it('refuses a commit in the chain range whose subject is not "dispatch: HO-XXXX"', async () => {
+      const created = await createHandoff(baseImplementOpts({ dir: tempDir }));
+      if (!created.ok) throw new Error(created.message);
+      await writeResponseDoc(tempDir, created.data.handoffId);
+
+      const current = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: tempDir }).toString().trim();
+      const branch = `dispatch/${created.data.handoffId}`;
+      execFileSync('git', ['checkout', '-q', '-b', branch], { cwd: tempDir });
+      await writeFile(join(tempDir, 'oops.txt'), 'oops\n', 'utf-8');
+      execFileSync('git', ['add', 'oops.txt'], { cwd: tempDir });
+      execFileSync('git', ['commit', '-q', '-m', 'fix a typo'], { cwd: tempDir });
+      execFileSync('git', ['checkout', '-q', current], { cwd: tempDir });
+
+      await writeRunState(join(tempDir, '.agent-runs', 'runs', created.data.handoffId, DELIVERED_RUN), {
+        run_id: DELIVERED_RUN,
+        handoff_id: created.data.handoffId,
+        status: 'delivered',
+        outcome: 'delivered',
+        branch,
+        completed_at: '2026-09-25T10:00:00.000Z',
+      });
+
+      const result = await deriveReview({ dir: tempDir, handoff_id: created.data.handoffId });
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error).toBe('BAD_RECORD');
+      expect(result.message).toContain('fix a typo');
+    });
+
+    it('refuses an empty chain range (the delivery branch is already merged)', async () => {
+      const created = await createHandoff(baseImplementOpts({ dir: tempDir }));
+      if (!created.ok) throw new Error(created.message);
+      await writeResponseDoc(tempDir, created.data.handoffId);
+
+      const branch = `dispatch/${created.data.handoffId}`;
+      execFileSync('git', ['branch', branch], { cwd: tempDir }); // no new commit — the branch equals HEAD
+
+      await writeRunState(join(tempDir, '.agent-runs', 'runs', created.data.handoffId, DELIVERED_RUN), {
+        run_id: DELIVERED_RUN,
+        handoff_id: created.data.handoffId,
+        status: 'delivered',
+        outcome: 'delivered',
+        branch,
+        completed_at: '2026-09-25T10:00:00.000Z',
+      });
+
+      const result = await deriveReview({ dir: tempDir, handoff_id: created.data.handoffId });
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error).toBe('BAD_RECORD');
+      expect(result.message).toContain('empty');
+    });
+
+    it("refuses when the newest commit in the range is not the handoff's own delivery", async () => {
+      const target = await createHandoff(baseImplementOpts({ dir: tempDir, work_item: 'WK-0003' }));
+      if (!target.ok) throw new Error(target.message);
+      await writeResponseDoc(tempDir, target.data.handoffId);
+      const decoy = await createHandoff(baseImplementOpts({ dir: tempDir, work_item: 'WK-0004' }));
+      if (!decoy.ok) throw new Error(decoy.message);
+
+      const current = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: tempDir }).toString().trim();
+      const branch = `dispatch/${target.data.handoffId}`;
+      execFileSync('git', ['checkout', '-q', '-b', branch], { cwd: tempDir });
+      await writeFile(join(tempDir, `${target.data.handoffId}.delivered`), 'delivered\n', 'utf-8');
+      execFileSync('git', ['add', `${target.data.handoffId}.delivered`], { cwd: tempDir });
+      execFileSync('git', ['commit', '-q', '-m', `dispatch: ${target.data.handoffId}`], { cwd: tempDir });
+      // A decoy commit lands on top, naming a different (but validly-parsed, mode=implement) HO.
+      await writeFile(join(tempDir, `${decoy.data.handoffId}.delivered`), 'delivered\n', 'utf-8');
+      execFileSync('git', ['add', `${decoy.data.handoffId}.delivered`], { cwd: tempDir });
+      execFileSync('git', ['commit', '-q', '-m', `dispatch: ${decoy.data.handoffId}`], { cwd: tempDir });
+      execFileSync('git', ['checkout', '-q', current], { cwd: tempDir });
+
+      await writeRunState(join(tempDir, '.agent-runs', 'runs', target.data.handoffId, DELIVERED_RUN), {
+        run_id: DELIVERED_RUN,
+        handoff_id: target.data.handoffId,
+        status: 'delivered',
+        outcome: 'delivered',
+        branch,
+        completed_at: '2026-09-25T10:00:00.000Z',
+      });
+
+      const result = await deriveReview({ dir: tempDir, handoff_id: target.data.handoffId });
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error).toBe('BAD_RECORD');
+      expect(result.message).toContain(decoy.data.handoffId);
+    });
+
+    it('refuses an older chain member whose commit names an HO that does not exist on disk', async () => {
+      // A phantom delivery commit for an HO that was never authored, underneath a real target.
+      const current = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: tempDir }).toString().trim();
+      execFileSync('git', ['checkout', '-q', '-b', 'dispatch/HO-9999'], { cwd: tempDir });
+      await writeFile(join(tempDir, 'HO-9999.delivered'), 'delivered\n', 'utf-8');
+      execFileSync('git', ['add', 'HO-9999.delivered'], { cwd: tempDir });
+      execFileSync('git', ['commit', '-q', '-m', 'dispatch: HO-9999'], { cwd: tempDir });
+      execFileSync('git', ['checkout', '-q', current], { cwd: tempDir });
+
+      const target = await createHandoff(baseImplementOpts({ dir: tempDir }));
+      if (!target.ok) throw new Error(target.message);
+      await writeResponseDoc(tempDir, target.data.handoffId);
+      await deliverChainCommit(tempDir, target.data.handoffId, 'dispatch/HO-9999');
+
+      await writeRunState(join(tempDir, '.agent-runs', 'runs', target.data.handoffId, DELIVERED_RUN), {
+        run_id: DELIVERED_RUN,
+        handoff_id: target.data.handoffId,
+        status: 'delivered',
+        outcome: 'delivered',
+        branch: `dispatch/${target.data.handoffId}`,
+        completed_at: '2026-09-25T10:00:00.000Z',
+      });
+
+      const result = await deriveReview({ dir: tempDir, handoff_id: target.data.handoffId });
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error).toBe('BAD_RECORD');
+      expect(result.message).toContain('HO-9999');
+      expect(result.message).toContain('could not be parsed');
+    });
+
+    it('refuses an older chain member whose commit names a non-implement HO', async () => {
+      // A valid, but non-implement (code_review), HO underneath a real implement target.
+      const olderReview = await createHandoff(
+        baseImplementOpts({ dir: tempDir, mode: 'code_review', write_scope: [], work_item: undefined }),
+      );
+      if (!olderReview.ok) throw new Error(olderReview.message);
+      await deliverChainCommit(tempDir, olderReview.data.handoffId, 'HEAD');
+
+      const target = await createHandoff(baseImplementOpts({ dir: tempDir }));
+      if (!target.ok) throw new Error(target.message);
+      await writeResponseDoc(tempDir, target.data.handoffId);
+      await deliverChainCommit(tempDir, target.data.handoffId, `dispatch/${olderReview.data.handoffId}`);
+
+      await writeRunState(join(tempDir, '.agent-runs', 'runs', target.data.handoffId, DELIVERED_RUN), {
+        run_id: DELIVERED_RUN,
+        handoff_id: target.data.handoffId,
+        status: 'delivered',
+        outcome: 'delivered',
+        branch: `dispatch/${target.data.handoffId}`,
+        completed_at: '2026-09-25T10:00:00.000Z',
+      });
+
+      const result = await deriveReview({ dir: tempDir, handoff_id: target.data.handoffId });
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error).toBe('BAD_RECORD');
+      expect(result.message).toContain(olderReview.data.handoffId);
+      expect(result.message).toContain('mode=code_review');
     });
   });
 

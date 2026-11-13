@@ -196,6 +196,25 @@ describe('ho.ts — §5 HO frontmatter parsing', () => {
     expect(result.data.mode).toBe('redteam');
   });
 
+  // Why: WK-0270 Specification 3 — a derived review's initiative/area/work_item come from
+  // the head implement HO; deriveReview can only copy area/initiative once ho.ts parses them.
+  it('parses area and initiative as optional strings', () => {
+    const content = HO_0002_CONTENT.replace('base_ref: null', 'base_ref: null\narea: dispatch\ninitiative: IN-0007');
+    const result = parseHandoffContent(content, 'HO-0002.md');
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.area).toBe('dispatch');
+    expect(result.data.initiative).toBe('IN-0007');
+  });
+
+  it('leaves area and initiative undefined when absent', () => {
+    const result = parseHandoffContent(HO_0002_CONTENT, 'HO-0002.md');
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.area).toBeUndefined();
+    expect(result.data.initiative).toBeUndefined();
+  });
+
   it('rejects an id/filename mismatch', () => {
     const result = parseHandoffContent(HO_0002_CONTENT, 'HO-0003.md');
     expect(result.ok).toBe(false);
@@ -496,6 +515,57 @@ describe('assemble.ts — mechanical prompt assembly', () => {
     } finally {
       await rm(emptyRoot, { recursive: true, force: true });
     }
+  });
+
+  // Why: WK-0270 Specification 6 — the code_review framing is fixed text pointing at the
+  // Objective's `Range under review:` line, with the single-commit diff as the default when
+  // an HO (derived or hand-authored) names no such line; this HO's body carries no such line.
+  it('code_review framing names the Range under review line, with git diff HEAD~1 HEAD as the default', async () => {
+    const content = HO_0002_CONTENT.replace('mode: implement', 'mode: code_review').replace(
+      'base_ref: null',
+      'base_ref: dispatch/HO-9000',
+    );
+    await writeFile(join(repoRoot, 'wiki', 'handoffs', 'HO-0002.md'), content, 'utf8');
+    const parsed = parseHandoffContent(content, 'HO-0002.md');
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+
+    const result = await assemblePrompt(parsed.data, repoRoot);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.text).toContain('`dispatch/HO-9000`');
+    expect(result.data.text).toContain("Objective's `Range under review:` line");
+    expect(result.data.text).toContain('the default is `git diff HEAD~1 HEAD`');
+  });
+
+  // Why: WK-0270 Specification 6 — every code_review HO (derived or hand-authored) is told
+  // to check AGENTS.md rules as well as the acceptance criteria, and to name the rule.
+  it('code_review framing tells the reviewer to check AGENTS.md rules and name the rule in each finding', async () => {
+    const content = HO_0002_CONTENT.replace('mode: implement', 'mode: code_review');
+    await writeFile(join(repoRoot, 'wiki', 'handoffs', 'HO-0002.md'), content, 'utf8');
+    const parsed = parseHandoffContent(content, 'HO-0002.md');
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+
+    const result = await assemblePrompt(parsed.data, repoRoot);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.text).toContain("repository's AGENTS.md rules as well as the acceptance criteria");
+    expect(result.data.text).toContain('name the specific rule in each finding');
+  });
+
+  // Why: WK-0270 Specification 6 scopes the range/rules framing to code_review only — no other
+  // mode's assembled prompt gains either line.
+  it('does not add the Range under review or AGENTS.md rules line to other modes', async () => {
+    const parsed = parseHandoffContent(HO_0002_CONTENT, 'HO-0002.md');
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+
+    const result = await assemblePrompt(parsed.data, repoRoot);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.text).not.toContain('Range under review');
+    expect(result.data.text).not.toContain('AGENTS.md rules');
   });
 });
 

@@ -259,9 +259,17 @@ function getModeParts(handoff: Handoff, opts: AssembleOpts): ModeParts {
       return {
         introLine: 'You are a code reviewer checking this change against its acceptance criteria.',
         framing:
-          `Review the change delivered on \`${handoff.base_ref}\`. Your checkout is that branch's tip, and ` +
-          'each delivery is a single commit on its base, so the change under review is exactly `git diff HEAD~1 HEAD`. ' +
-          'Check it against the acceptance criteria below.\n\n' +
+          // WK-0270 Specification 6: fixed text, parameterized on identifiers only — this
+          // function never parses the Objective. The Objective (derived or hand-authored)
+          // states the range on its own `Range under review: <range>` line; a hand-authored
+          // review that names no such line falls back to the single-commit default, which
+          // keeps tests/dispatch-v2-base-drift.test.ts passing unchanged.
+          `Review the change delivered on \`${handoff.base_ref}\`. Your checkout is that branch's tip. ` +
+          "Judge the range on the Objective's `Range under review:` line above. When the Objective names " +
+          'no such line (a hand-authored review), the default is `git diff HEAD~1 HEAD` — the single ' +
+          'commit each delivery adds on its base.\n\n' +
+          "Check the change against the repository's AGENTS.md rules as well as the acceptance criteria " +
+          'below, and name the specific rule in each finding that cites a rule violation.\n\n' +
           'Flag iterative fix-up patterns (multiple small patches to the same region, ' +
           'trial-and-error artifacts, debug residue) as a quality finding — do not auto-reject; ' +
           'the orchestrator decides disposition.\n\n' +
