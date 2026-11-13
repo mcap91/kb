@@ -21,8 +21,19 @@
  * `export_mounts` become read-only `data_mounts` entries; `validation` is one
  * fixed host-evidence sentence (DEC-0047); `read_first` is the implement's
  * list plus `AGENTS.md`, filtered through admission's shared existence
- * predicate (`readFirstEntryExists`). The chain walk, Objective/Expected
- * Output text, and the acceptance union are Slice 2/3 — out of scope here.
+ * predicate (`readFirstEntryExists`).
+ *
+ * WK-0270 Slice 2 (Specification 1, 2, 5, and the multi-member half of 4):
+ * the chain is walked as `HEAD..dispatch/<handoff_id>` in the mother
+ * checkout — exactly the range `merge-delivery` ships (`walkChain`). Every
+ * member's `wiki/handoffs/<HO-id>.md` is read from disk, never from a
+ * commit's git tree: the wiki layer is live-bound (DEC-0039), not
+ * reconstructed from history. `Objective`/`Expected Output` are fixed
+ * sentences built only from identifiers (`buildObjective`,
+ * `buildExpectedOutput`); `acceptance` is every member's criteria, oldest
+ * first, each prefixed `[HO-XXXX]`; `read_first` is now fed every member's
+ * list, head first then older members, through the same `buildFilteredReadFirst`
+ * from Slice 1.
  */
 import { execFile as execFileCb } from 'node:child_process';
 import { readFile, readdir, writeFile } from 'node:fs/promises';
@@ -32,7 +43,7 @@ import { promisify } from 'node:util';
 import { allocate } from '@kb/wiki-core';
 
 import { readFirstEntryExists } from './admission.js';
-import { parseHandoff } from './ho.js';
+import { parseHandoff, type Handoff } from './ho.js';
 import { renderHandoff } from './create-handoff.js';
 import type { CreateHandoffOpts } from './types.js';
 import type { DispatchResult } from './errors.js';
@@ -42,6 +53,162 @@ import { isRunId } from './paths.js';
 import { loadValidationRegistry } from './repo-config.js';
 
 const execFile = promisify(execFileCb);
+
+/** WK-0270 Specification 1: the only commit subject a chain member may carry. */
+const DISPATCH_COMMIT_SUBJECT = /^dispatch: (HO-\d{4})$/;
+
+/** One commit in the reviewed chain, and the implement HO its subject names. */
+interface ChainMember {
+  hoId: string;
+  commitSha: string;
+  parentSha: string;
+  handoff: Handoff;
+}
+
+/**
+ * WK-0270 Specification 1: walk `HEAD..deliveryBranch` in the mother checkout —
+ * exactly the range `merge-delivery` merges (`mergeDelivery`'s `git merge <sha>`
+ * onto the current branch). Every commit must be linear (one parent — a merge
+ * commit refuses) with subject `dispatch: HO-XXXX`, whose named HO parses from
+ * disk with `mode: implement` (the wiki layer is read live, never from the
+ * commit's own git tree: a chained HO's own `.md` file is authored on the
+ * mother's current branch, never on the dispatch/ branches themselves). The
+ * newest commit must name `handoffId` itself. An empty range (already merged)
+ * refuses. Returns members newest-first (head first, then older) plus
+ * `rangeBase`, the parent of the oldest member's commit.
+ */
+async function walkChain(
+  targetDir: string,
+  deliveryBranch: string,
+  handoffId: string,
+): Promise<DispatchResult<{ membersNewestFirst: ChainMember[]; rangeBase: string }>> {
+  let rangeOut: string;
+  try {
+    const { stdout } = await execFile('git', ['rev-list', '--topo-order', `HEAD..${deliveryBranch}`], { cwd: targetDir });
+    rangeOut = stdout;
+  } catch (err) {
+    return fail('BAD_RECORD', `Failed to compute the review chain range HEAD..${deliveryBranch} in ${targetDir}.`, err);
+  }
+  const shas = rangeOut
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  if (shas.length === 0) {
+    return fail(
+      'BAD_RECORD',
+      `Range HEAD..${deliveryBranch} is empty; ${deliveryBranch} carries no commit that is not already reachable from HEAD.`,
+    );
+  }
+
+  const members: ChainMember[] = [];
+  for (const commitSha of shas) {
+    let parentsLine: string;
+    let subject: string;
+    try {
+      const parentsOut = await execFile('git', ['log', '-1', '--format=%P', commitSha], { cwd: targetDir });
+      parentsLine = parentsOut.stdout.trim();
+      const subjectOut = await execFile('git', ['log', '-1', '--format=%s', commitSha], { cwd: targetDir });
+      subject = subjectOut.stdout.trim();
+    } catch (err) {
+      return fail('BAD_RECORD', `Failed to inspect commit ${commitSha} in range HEAD..${deliveryBranch}.`, err);
+    }
+
+    const parentShas = parentsLine.split(/\s+/).filter((p) => p.length > 0);
+    if (parentShas.length !== 1) {
+      return fail(
+        'BAD_RECORD',
+        `Commit ${commitSha} in range HEAD..${deliveryBranch} has ${parentShas.length} parents; the chain must be a linear sequence of dispatch deliveries, not a merge commit.`,
+      );
+    }
+
+    const subjectMatch = DISPATCH_COMMIT_SUBJECT.exec(subject);
+    if (!subjectMatch) {
+      return fail(
+        'BAD_RECORD',
+        `Commit ${commitSha} in range HEAD..${deliveryBranch} has subject "${subject}"; every commit in the chain must have the subject "dispatch: HO-XXXX".`,
+      );
+    }
+    const hoId = subjectMatch[1]!;
+
+    const memberPath = join(targetDir, 'wiki', 'handoffs', `${hoId}.md`);
+    const memberParsed = await parseHandoff(memberPath);
+    if (!memberParsed.ok) {
+      return fail(
+        'BAD_RECORD',
+        `Commit ${commitSha} in range HEAD..${deliveryBranch} names ${hoId}, whose handoff could not be parsed: ${memberParsed.message}`,
+      );
+    }
+    if (memberParsed.data.mode !== 'implement') {
+      return fail(
+        'BAD_RECORD',
+        `Commit ${commitSha} in range HEAD..${deliveryBranch} names ${hoId} (mode=${memberParsed.data.mode}); every member of the chain must be mode=implement.`,
+      );
+    }
+
+    members.push({ hoId, commitSha, parentSha: parentShas[0]!, handoff: memberParsed.data });
+  }
+
+  const newest = members[0]!;
+  if (newest.hoId !== handoffId) {
+    return fail(
+      'BAD_RECORD',
+      `The newest commit in range HEAD..${deliveryBranch} (${newest.commitSha}, ${newest.hoId}) is not ${handoffId}'s own delivery commit.`,
+    );
+  }
+
+  const rangeBase = members[members.length - 1]!.parentSha;
+  return ok({ membersNewestFirst: members, rangeBase });
+}
+
+/**
+ * WK-0270 Specification 2: the Objective, built only from identifiers (head
+ * id, branch, reviewed_sha, merge target, and each member's id/work_item/
+ * single-commit range) — never copied from the implement HO's prose. The full
+ * range sits alone on its own trailing line so the reviewer cannot mistake it
+ * for a member's range.
+ */
+function buildObjective(params: {
+  headId: string;
+  branch: string;
+  reviewedSha: string;
+  mergeTarget: string;
+  rangeBase: string;
+  headSha: string;
+  membersOldestFirst: readonly ChainMember[];
+}): string {
+  const { headId, branch, reviewedSha, mergeTarget, rangeBase, headSha, membersOldestFirst } = params;
+  const memberLines = membersOldestFirst.map(
+    (m) => `- ${m.hoId} (work_item ${m.handoff.work_item ?? 'none'}): ${m.parentSha}..${m.commitSha}`,
+  );
+  return [
+    `Code review for ${headId}, branch ${branch}, reviewed_sha ${reviewedSha}. Merging ${branch} into ${mergeTarget} ships every member listed below.`,
+    '',
+    'Members (oldest first):',
+    ...memberLines,
+    '',
+    `Range under review: ${rangeBase}..${headSha}`,
+  ].join('\n');
+}
+
+/**
+ * WK-0270 Specification 2: the Expected Output, built only from identifiers —
+ * asks for a verdict per member, findings that cite a file and a concrete
+ * failing case, and the recovery block. Never copied from the implement HO's
+ * prose.
+ */
+function buildExpectedOutput(params: {
+  headId: string;
+  reviewedSha: string;
+  membersOldestFirst: readonly ChainMember[];
+}): string {
+  const { headId, reviewedSha, membersOldestFirst } = params;
+  const memberRanges = membersOldestFirst.map((m) => `${m.hoId} (${m.parentSha}..${m.commitSha})`).join(', ');
+  return [
+    `Give a verdict for each member HO of ${headId} (reviewed_sha ${reviewedSha}): ${memberRanges}.`,
+    'Every finding must cite a file and a concrete failing case.',
+    'End with the kb-dispatch-recovery.v1 recovery block.',
+  ].join('\n');
+}
 
 /** DEC-0047: validation is one fixed sentence; the advisory reviewer never sees the implement's validation text. */
 const REVIEW_VALIDATION = [
@@ -166,6 +333,20 @@ export async function deriveReview(opts: DeriveReviewOpts): Promise<DispatchResu
     return fail('BAD_RECORD', `Delivery branch ${deliveryBranch} does not exist in ${targetDir}.`, err);
   }
 
+  // WK-0270 Specification 1: the chain is HEAD..deliveryBranch — exactly what merge-delivery ships.
+  const chainResult = await walkChain(targetDir, deliveryBranch, implement.id);
+  if (!chainResult.ok) return chainResult;
+  const { membersNewestFirst, rangeBase } = chainResult.data;
+  const membersOldestFirst = [...membersNewestFirst].reverse();
+
+  let mergeTarget: string;
+  try {
+    const { stdout } = await execFile('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: targetDir });
+    mergeTarget = stdout.trim();
+  } catch (err) {
+    return fail('ADMISSION_FAILED', `Failed to resolve the merge target branch (git rev-parse --abbrev-ref HEAD) in ${targetDir}.`, err);
+  }
+
   const registry = await loadValidationRegistry(targetDir);
   if (!registry.ok) return registry;
   const validation = await runHostValidation({
@@ -178,7 +359,15 @@ export async function deriveReview(opts: DeriveReviewOpts): Promise<DispatchResu
   });
   if (!validation.ok) return validation;
 
-  const { readFirst, dropped } = await buildFilteredReadFirst([implement.read_first], deliveryBranch, targetDir);
+  // WK-0270 Specification 4: union of every member's read_first (head first, then older members).
+  const { readFirst, dropped } = await buildFilteredReadFirst(
+    membersNewestFirst.map((m) => m.handoff.read_first),
+    deliveryBranch,
+    targetDir,
+  );
+
+  // WK-0270 Specification 5: union of every member's acceptance, oldest first, each prefixed [HO-XXXX].
+  const acceptance = membersOldestFirst.flatMap((m) => m.handoff.acceptance.map((c) => `[${m.hoId}] ${c}`));
 
   const allocResult = await allocate({ dir: targetDir, prefix: 'HO' });
   if (!allocResult.ok) return fail('ALLOCATION_FAILED', allocResult.message);
@@ -201,7 +390,18 @@ export async function deriveReview(opts: DeriveReviewOpts): Promise<DispatchResu
     web: false,
     export_mounts: [],
     read_first: readFirst,
-    acceptance: implement.acceptance,
+    // WK-0270 Specification 2: fixed sentences from identifiers only — never implement prose.
+    objective: buildObjective({
+      headId: implement.id,
+      branch: deliveryBranch,
+      reviewedSha: deliverySha,
+      mergeTarget,
+      rangeBase,
+      headSha: deliverySha,
+      membersOldestFirst,
+    }),
+    expected_output: buildExpectedOutput({ headId: implement.id, reviewedSha: deliverySha, membersOldestFirst }),
+    acceptance,
     validation: REVIEW_VALIDATION,
     credentials: implement.credentials,
     data_mounts: [...implement.data_mounts, ...implement.export_mounts],
