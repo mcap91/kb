@@ -74,6 +74,8 @@ const INSTRUCTIONS = [
   '',
   V2_REFUSAL_CODES.join(', '),
   '',
+  '`ACTIVE_RUN_EXISTS` is same-handoff single-flight only: one active run per HO. Different handoffs dispatch concurrently, each in its own clone of `base_sha`. Only merges to main serialize.',
+  '',
   '## Available models',
   '',
   'Configure models and backends in <repo>/wiki/.dispatch/ (run init-dispatch to scaffold). Resolve with --model <slug> --backend <name>.',

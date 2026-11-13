@@ -560,5 +560,8 @@ is the source list; a test fails if this table and that list disagree:
 | Worker-specific | `CLAUDE_PERMISSION_PROBE_FAILED` |
 | Concurrency | `ACTIVE_RUN_EXISTS` |
 
+`ACTIVE_RUN_EXISTS` is same-handoff single-flight only: one active run per HO. Different handoffs
+dispatch concurrently, each in its own clone of `base_sha`. Only merges to main serialize.
+
 `dispatch` itself is background-only: it returns a `watch` command immediately rather than blocking on
 the worker. A refusal above happens synchronously, before that background run is even started.
