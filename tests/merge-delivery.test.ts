@@ -53,18 +53,26 @@ async function writeAndCommit(dir: string, files: Record<string, string>, messag
 
 /**
  * Branches off the current HEAD (captured as the base branch to return to),
- * adds a delivered file, commits it as the "worker" commit, then checks back
- * out — as `delivery.ts` lands worker commits in the real pipeline. Then
- * does derive-review's part: stamps the delivery sha into every review HO
- * for this branch (the `REVIEWED_SHA_STAMP` placeholder), commits that on
- * the base, and writes passing host evidence for the delivery sha.
+ * adds the delivered file(s), commits them as the "worker" commit, then
+ * checks back out — as `delivery.ts` lands worker commits in the real
+ * pipeline. Then does derive-review's part: stamps the delivery sha into
+ * every review HO for this branch (the `REVIEWED_SHA_STAMP` placeholder),
+ * commits that on the base, and writes passing host evidence for the
+ * delivery sha. `files` defaults to the single delivered file most tests use.
  */
-async function createDeliveryBranch(dir: string, handoffId: string): Promise<void> {
+async function createDeliveryBranch(
+  dir: string,
+  handoffId: string,
+  files: Record<string, string> = { 'delivered-file.ts': 'export const x = 1;\n' },
+): Promise<void> {
   const branchName = `dispatch/${handoffId}`;
   const { stdout } = await execFile('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: dir });
   const baseBranch = stdout.trim();
   await execFile('git', ['checkout', '-b', branchName], { cwd: dir });
-  await writeFile(join(dir, 'delivered-file.ts'), 'export const x = 1;\n');
+  for (const [relPath, content] of Object.entries(files)) {
+    await mkdir(join(dir, relPath, '..'), { recursive: true });
+    await writeFile(join(dir, relPath), content);
+  }
   await execFile('git', ['add', '-A'], { cwd: dir });
   await execFile('git', ['commit', '-m', `dispatch: ${handoffId}`], { cwd: dir });
   const deliverySha = (await execFile('git', ['rev-parse', 'HEAD'], { cwd: dir })).stdout.trim();
@@ -568,29 +576,180 @@ describe('mergeDelivery (WK-0132 Slice 3)', () => {
     expect(result.error).toBe('BAD_RECORD');
   });
 
-  it('refuses to merge when the working tree is dirty', async () => {
+  it('merges when the only dirty path is an unrelated untracked file', async () => {
     await writeAndCommit(
       repoDir,
       {
-        'wiki/handoffs/HO-0008.md': makeImplementHO('HO-0008', 'Implement dirty-tree thing', 'WK-0005'),
-        'wiki/handoffs/HO-0009.md': makeReviewHO('HO-0009', 'Code review: Implement dirty-tree thing', 'dispatch/HO-0008', 'WK-0005'),
+        'wiki/handoffs/HO-0008.md': makeImplementHO('HO-0008', 'Implement thing', 'WK-0005'),
+        'wiki/handoffs/HO-0009.md': makeReviewHO('HO-0009', 'Code review: Implement thing', 'dispatch/HO-0008', 'WK-0005'),
         'wiki/handoffs/HO-0009.response.md': makeReviewResponse('no_findings', 'HO-0008', false),
       },
-      'add implement + review HOs (dirty tree test)',
+      'add implement + review HOs (unrelated untracked)',
     );
     await createDeliveryBranch(repoDir, 'HO-0008');
 
-    // Dirty the real working tree with an untracked file.
+    // An untracked file that is not part of the branch's change set.
     await writeFile(join(repoDir, 'untracked-scratch.txt'), 'scratch\n');
 
     const result = await mergeDelivery({ dir: repoDir, handoff_id: 'HO-0008' });
 
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(`expected ok, got: ${result.error}: ${result.message}`);
+    expect(await branchExists(repoDir, 'dispatch/HO-0008')).toBe(false);
+  });
+
+  it('merges when the only dirty path is an unrelated unstaged edit to a tracked file', async () => {
+    await writeAndCommit(
+      repoDir,
+      {
+        'wiki/handoffs/HO-0033.md': makeImplementHO('HO-0033', 'Implement thing', 'WK-0006'),
+        'wiki/handoffs/HO-0034.md': makeReviewHO('HO-0034', 'Code review: Implement thing', 'dispatch/HO-0033', 'WK-0006'),
+        'wiki/handoffs/HO-0034.response.md': makeReviewResponse('no_findings', 'HO-0033', false),
+      },
+      'add implement + review HOs (unrelated unstaged edit)',
+    );
+    await createDeliveryBranch(repoDir, 'HO-0033');
+
+    // An unstaged edit to a tracked file the branch never touches.
+    await writeFile(join(repoDir, 'dummy.txt'), 'edited locally\n');
+
+    const result = await mergeDelivery({ dir: repoDir, handoff_id: 'HO-0033' });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(`expected ok, got: ${result.error}: ${result.message}`);
+    expect(await branchExists(repoDir, 'dispatch/HO-0033')).toBe(false);
+  });
+
+  it("refuses when a dirty path collides with the merge's change set, listing only the colliding paths", async () => {
+    await writeAndCommit(
+      repoDir,
+      {
+        'wiki/handoffs/HO-0035.md': makeImplementHO('HO-0035', 'Implement thing', 'WK-0007'),
+        'wiki/handoffs/HO-0036.md': makeReviewHO('HO-0036', 'Code review: Implement thing', 'dispatch/HO-0035', 'WK-0007'),
+        'wiki/handoffs/HO-0036.response.md': makeReviewResponse('no_findings', 'HO-0035', false),
+      },
+      'add implement + review HOs (colliding dirty path)',
+    );
+    // The branch changes the already-tracked dummy.txt, so it lands in the change set.
+    await createDeliveryBranch(repoDir, 'HO-0035', { 'dummy.txt': 'changed on branch\n' });
+
+    // Dirty dummy.txt locally (collides) and an unrelated file (does not).
+    await writeFile(join(repoDir, 'dummy.txt'), 'edited locally\n');
+    await writeFile(join(repoDir, 'scratch.txt'), 'scratch\n');
+
+    const result = await mergeDelivery({ dir: repoDir, handoff_id: 'HO-0035' });
+
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error('expected refusal, got ok');
     expect(result.error).toBe('DIRTY_REPO');
+    expect(result.detail).toMatchObject({ dirtyPaths: ['dummy.txt'] });
+    expect(await branchExists(repoDir, 'dispatch/HO-0035')).toBe(true);
+  });
 
-    // Refusal must not have touched the branch.
-    expect(await branchExists(repoDir, 'dispatch/HO-0008')).toBe(true);
+  it('refuses when an untracked file sits at a path the branch creates', async () => {
+    await writeAndCommit(
+      repoDir,
+      {
+        'wiki/handoffs/HO-0037.md': makeImplementHO('HO-0037', 'Implement thing', 'WK-0008'),
+        'wiki/handoffs/HO-0038.md': makeReviewHO('HO-0038', 'Code review: Implement thing', 'dispatch/HO-0037', 'WK-0008'),
+        'wiki/handoffs/HO-0038.response.md': makeReviewResponse('no_findings', 'HO-0037', false),
+      },
+      'add implement + review HOs (untracked at created path)',
+    );
+    await createDeliveryBranch(repoDir, 'HO-0037');
+
+    // Untracked locally at the exact path the branch would create.
+    await writeFile(join(repoDir, 'delivered-file.ts'), 'local draft\n');
+
+    const result = await mergeDelivery({ dir: repoDir, handoff_id: 'HO-0037' });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('expected refusal, got ok');
+    expect(result.error).toBe('DIRTY_REPO');
+    expect(result.detail).toMatchObject({ dirtyPaths: ['delivered-file.ts'] });
+  });
+
+  it('refuses when an unrelated path is staged, listing the staged path', async () => {
+    await writeAndCommit(
+      repoDir,
+      {
+        'wiki/handoffs/HO-0039.md': makeImplementHO('HO-0039', 'Implement thing', 'WK-0009'),
+        'wiki/handoffs/HO-0040.md': makeReviewHO('HO-0040', 'Code review: Implement thing', 'dispatch/HO-0039', 'WK-0009'),
+        'wiki/handoffs/HO-0040.response.md': makeReviewResponse('no_findings', 'HO-0039', false),
+      },
+      'add implement + review HOs (staged unrelated file)',
+    );
+    await createDeliveryBranch(repoDir, 'HO-0039');
+
+    await writeFile(join(repoDir, 'staged-unrelated.txt'), 'staged\n');
+    await execFile('git', ['add', 'staged-unrelated.txt'], { cwd: repoDir });
+
+    const result = await mergeDelivery({ dir: repoDir, handoff_id: 'HO-0039' });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('expected refusal, got ok');
+    expect(result.error).toBe('DIRTY_REPO');
+    expect(result.detail).toMatchObject({ dirtyPaths: ['staged-unrelated.txt'] });
+    expect(await branchExists(repoDir, 'dispatch/HO-0039')).toBe(true);
+  });
+
+  it('refuses on a file/directory prefix clash between a dirty path and the change set', async () => {
+    await writeAndCommit(
+      repoDir,
+      {
+        'wiki/handoffs/HO-0041.md': makeImplementHO('HO-0041', 'Implement thing', 'WK-0010'),
+        'wiki/handoffs/HO-0042.md': makeReviewHO('HO-0042', 'Code review: Implement thing', 'dispatch/HO-0041', 'WK-0010'),
+        'wiki/handoffs/HO-0042.response.md': makeReviewResponse('no_findings', 'HO-0041', false),
+      },
+      'add implement + review HOs (directory prefix clash)',
+    );
+    // The branch adds a file inside a directory; locally there's a plain file of the same name as the directory.
+    await createDeliveryBranch(repoDir, 'HO-0041', { 'conflict/dir/file.ts': 'export const y = 1;\n' });
+    await writeFile(join(repoDir, 'conflict'), 'a local file, not a directory\n');
+
+    const result = await mergeDelivery({ dir: repoDir, handoff_id: 'HO-0041' });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('expected refusal, got ok');
+    expect(result.error).toBe('DIRTY_REPO');
+    expect(result.detail).toMatchObject({ dirtyPaths: ['conflict'] });
+  });
+
+  it('keeps unrelated dirty files out of the merge commit and leaves them unchanged afterward', async () => {
+    await writeAndCommit(
+      repoDir,
+      {
+        'wiki/handoffs/HO-0043.md': makeImplementHO('HO-0043', 'Implement thing', 'WK-0011'),
+        'wiki/handoffs/HO-0044.md': makeReviewHO('HO-0044', 'Code review: Implement thing', 'dispatch/HO-0043', 'WK-0011'),
+        'wiki/handoffs/HO-0044.response.md': makeReviewResponse('no_findings', 'HO-0043', false),
+      },
+      'add implement + review HOs (survives merge)',
+    );
+    await createDeliveryBranch(repoDir, 'HO-0043');
+    const preMergeHead = await headSha(repoDir);
+
+    await writeFile(join(repoDir, 'untouched.txt'), 'before\n');
+    await writeFile(join(repoDir, 'dummy.txt'), 'edited unstaged\n');
+
+    const result = await mergeDelivery({ dir: repoDir, handoff_id: 'HO-0043' });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(`expected ok, got: ${result.error}: ${result.message}`);
+
+    // The merge commit's diff from the pre-merge HEAD is exactly the branch's own
+    // diff (a clean merge's first-parent diff equals its merge-base-to-branch diff) —
+    // the unrelated dirty files never entered it.
+    const { stdout } = await execFile(
+      'git',
+      ['diff', '--name-only', '--no-renames', preMergeHead, result.data.mergeSha],
+      { cwd: repoDir },
+    );
+    const changed = stdout.trim().split('\n').filter((l) => l.length > 0);
+    expect(changed).toEqual(['delivered-file.ts']);
+
+    // The dirty files survive, unchanged, in the working tree.
+    expect(await readFile(join(repoDir, 'untouched.txt'), 'utf8')).toBe('before\n');
+    expect(await readFile(join(repoDir, 'dummy.txt'), 'utf8')).toBe('edited unstaged\n');
   });
 
   it('merges a prose-only review (no recovery block) with an advisory verdict (DEC-0037, WK-0143)', async () => {

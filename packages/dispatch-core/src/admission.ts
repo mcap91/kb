@@ -272,8 +272,13 @@ async function checkDirtyWriteScope(handoff: Handoff, repoRoot: string): Promise
   return ok(null);
 }
 
-/** Paths `git status --porcelain -z` reports under `paths` (untracked files listed individually). */
-async function porcelainPaths(cwd: string, paths: string[]): Promise<string[]> {
+/**
+ * Paths `git status --porcelain -z` reports under `paths` (untracked files
+ * listed individually); an empty `paths` is unrestricted (whole repo).
+ * Exported for merge-delivery.ts's scoped dirty-repo check — second
+ * consumer, no parallel porcelain parser.
+ */
+export async function porcelainPaths(cwd: string, paths: string[]): Promise<string[]> {
   const { stdout } = await execFile('git', ['status', '--porcelain', '-z', '--untracked-files=all', '--', ...paths], {
     cwd,
   });

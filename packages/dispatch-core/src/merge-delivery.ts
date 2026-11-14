@@ -25,8 +25,17 @@
  *      missing response doc, an empty report (`worker_report_chars === 0`),
  *      or a response doc that predates frontmatter-based evidence (all
  *      three fields absent) refuses.
- *   2. The working tree is clean (`git status --porcelain` empty).
- *   3. Branch `dispatch/<handoff_id>` exists as a local branch.
+ *   2. Branch `dispatch/<handoff_id>` exists as a local branch.
+ *   3. The working tree is clean within the merge's change set — not
+ *      repo-wide. Anything staged (the index differs from HEAD) refuses
+ *      outright, listing the staged paths: git aborts any merge whose index
+ *      differs from HEAD regardless of which paths are involved (git-merge(1)
+ *      PRE-MERGE CHECKS). Otherwise, only a dirty path (unstaged or
+ *      untracked) that collides with the paths `git diff HEAD...<branch>`
+ *      reports — exact match, or either path a directory prefix of the
+ *      other, matching git's own refusal on a local/branch path clash —
+ *      refuses, listing just the colliding paths. An unrelated dirty file
+ *      anywhere else in the repo never blocks the merge.
  *   3b. Host validation evidence (WK-0294, DEC-0047 A1 ruling 2, A2 R6/R8,
  *      A4.1/A4.5): the review's `reviewed_sha` stamp equals the branch head,
  *      and the evidence JSON in the implement run dir named by the review's
@@ -56,6 +65,7 @@ import { readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 
+import { porcelainPaths } from './admission.js';
 import { commitPaths } from './commit-artifacts.js';
 import { parseHandoffContent, type Handoff } from './ho.js';
 import type { DispatchResult } from './errors.js';
@@ -278,6 +288,63 @@ async function checkReviewEvidence(
   return fail('ADMISSION_FAILED', `Review ${reviewId} response is empty — no evidence of a completed review`);
 }
 
+/** `path` is `other` itself, or sits inside the directory `other` names (or vice versa). */
+function collidesWith(path: string, other: string): boolean {
+  return path === other || path.startsWith(`${other}/`) || other.startsWith(`${path}/`);
+}
+
+/**
+ * Scoped dirty-repo check — replaces the old repo-wide refusal. Runs after
+ * the branch is resolved, since the change set needs it.
+ *
+ * Staged paths (index differs from HEAD) refuse unconditionally: git aborts
+ * any merge whose index differs from HEAD, regardless of path (git-merge(1)
+ * PRE-MERGE CHECKS). Otherwise, a dirty path (unstaged or untracked) is only
+ * a problem when it collides with the merge's change set — the paths
+ * `git diff HEAD...<branch>` reports, renames off so a rename's old and new
+ * paths both land in the set.
+ */
+async function checkScopedDirtyRepo(dir: string, branchName: string): Promise<DispatchResult<null>> {
+  let stagedOut: string;
+  try {
+    const { stdout } = await execFile('git', ['diff', '--cached', '--name-only', '-z'], { cwd: dir });
+    stagedOut = stdout;
+  } catch (err) {
+    return fail('ADMISSION_FAILED', `Failed to run "git diff --cached --name-only -z" in ${dir}.`, err);
+  }
+  const stagedPaths = stagedOut.split('\0').filter((p) => p.length > 0);
+  if (stagedPaths.length > 0) {
+    return fail('DIRTY_REPO', 'Staged changes are present — refusing merge (git aborts any merge whose index differs from HEAD)', {
+      dirtyPaths: stagedPaths,
+    });
+  }
+
+  let dirtyPaths: string[];
+  try {
+    dirtyPaths = await porcelainPaths(dir, []);
+  } catch (err) {
+    return fail('ADMISSION_FAILED', `Failed to run "git status --porcelain" in ${dir}.`, err);
+  }
+  if (dirtyPaths.length === 0) return ok(null);
+
+  let changeSetOut: string;
+  try {
+    const { stdout } = await execFile('git', ['diff', '--name-only', '-z', '--no-renames', `HEAD...${branchName}`], { cwd: dir });
+    changeSetOut = stdout;
+  } catch (err) {
+    return fail('ADMISSION_FAILED', `Failed to compute the change set for ${branchName} in ${dir}.`, err);
+  }
+  const changeSet = changeSetOut.split('\0').filter((p) => p.length > 0);
+
+  const collisions = dirtyPaths.filter((d) => changeSet.some((c) => collidesWith(d, c)));
+  if (collisions.length > 0) {
+    return fail('DIRTY_REPO', "A dirty path collides with the merge's change set — refusing merge", {
+      dirtyPaths: collisions,
+    });
+  }
+  return ok(null);
+}
+
 interface ValidationGate {
   /** Sha to merge: the evidence sha, or the branch head when there is no usable evidence. */
   sha: string;
@@ -429,21 +496,7 @@ export async function mergeDelivery(opts: MergeDeliveryOpts): Promise<DispatchRe
   if (!reviewCheck.ok) return reviewCheck;
   const { reviewId, outcome, verdict, reviewedRun, reviewedSha } = reviewCheck.data;
 
-  // 2. Working tree must be clean.
-  let statusOut: string;
-  try {
-    const { stdout } = await execFile('git', ['status', '--porcelain'], { cwd: dir });
-    statusOut = stdout;
-  } catch (err) {
-    return fail('ADMISSION_FAILED', `Failed to run "git status --porcelain" in ${dir}.`, err);
-  }
-  if (statusOut.trim() !== '') {
-    return fail('DIRTY_REPO', 'Working tree is not clean — refusing merge', {
-      dirtyPaths: statusOut.trim().split('\n'),
-    });
-  }
-
-  // 3. Delivery branch must exist.
+  // 2. Delivery branch must exist.
   let branchSha: string;
   try {
     const { stdout } = await execFile('git', ['rev-parse', '--verify', `refs/heads/${branchName}^{commit}`], { cwd: dir });
@@ -451,6 +504,10 @@ export async function mergeDelivery(opts: MergeDeliveryOpts): Promise<DispatchRe
   } catch {
     return fail('BAD_RECORD', `Branch ${branchName} does not exist`);
   }
+
+  // 3. Working tree must be clean within the merge's change set — see header.
+  const dirtyCheck = await checkScopedDirtyRepo(dir, branchName);
+  if (!dirtyCheck.ok) return dirtyCheck;
 
   // 3b. Host validation evidence (WK-0294) — or an audited override.
   const gateCheck = await checkValidationEvidence(dir, handoff_id, reviewId, { run: reviewedRun, sha: reviewedSha }, branchSha);

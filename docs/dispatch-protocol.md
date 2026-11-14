@@ -555,8 +555,14 @@ Preconditions (checked in order, fail-closed):
    0` still merges, as `verdict: advisory` (the orchestrator/operator reads the prose) — only
    `worker_report_chars === 0`, a missing review HO/doc, or a response doc predating these frontmatter
    fields (all three absent — no legacy regex fallback) refuses outright.
-2. Working tree clean
-3. Delivery branch exists
+2. Delivery branch exists
+3. Working tree clean within the merge's change set — not repo-wide. Any staged path
+   (the index differs from HEAD) refuses outright, listing the staged paths: git aborts any merge
+   whose index differs from HEAD regardless of path (git-merge(1) PRE-MERGE CHECKS). Otherwise, only
+   a dirty path (unstaged or untracked) that collides with the paths `git diff HEAD...<branch>`
+   reports — exact match, or either path a directory prefix of the other — refuses, listing just the
+   colliding paths. A rename on the branch counts both its old and new path (the diff runs with
+   renames off). An unrelated uncommitted file anywhere else in the repo never blocks the merge.
 4. Host validation evidence. The gate reads only the host original: the
    `validation-evidence.json` in the implement run dir named by the review's `reviewed_run`, never the
    reviewer's copy. It refuses when the review has no `reviewed_run` or `reviewed_sha`, the evidence is
