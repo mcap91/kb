@@ -2,8 +2,9 @@
  * WK-0132 Slice 3 — `mergeDelivery` tests.
  *
  * Covers the merge tool's ordered, fail-closed preconditions (review
- * evidence passes -> working tree clean -> delivery branch exists -> host
- * validation evidence passes (WK-0294) -> merge succeeds) plus the happy path
+ * evidence passes -> delivery branch exists -> working tree clean within the
+ * merge's change set -> host validation evidence passes (WK-0294) -> merge
+ * succeeds) plus the happy path
  * (fast-forward merge + branch delete). The shared fixtures model a derived
  * review: the review HO carries `reviewed_run`, and `createDeliveryBranch`
  * stamps the branch head into it as `reviewed_sha` (committed on the base,
@@ -644,6 +645,42 @@ describe('mergeDelivery (WK-0132 Slice 3)', () => {
     expect(result.error).toBe('DIRTY_REPO');
     expect(result.detail).toMatchObject({ dirtyPaths: ['dummy.txt'] });
     expect(await branchExists(repoDir, 'dispatch/HO-0035')).toBe(true);
+  });
+
+  it('refuses when the branch renames a tracked file and the old path is dirty locally', async () => {
+    await writeAndCommit(
+      repoDir,
+      {
+        'wiki/handoffs/HO-0045.md': makeImplementHO('HO-0045', 'Implement thing', 'WK-0012'),
+        'wiki/handoffs/HO-0046.md': makeReviewHO('HO-0046', 'Code review: Implement thing', 'dispatch/HO-0045', 'WK-0012'),
+        'wiki/handoffs/HO-0046.response.md': makeReviewResponse('no_findings', 'HO-0045', false),
+      },
+      'add implement + review HOs (rename collision)',
+    );
+
+    // The branch renames the already-tracked dummy.txt instead of adding a new file.
+    const branchName = 'dispatch/HO-0045';
+    const base = (await execFile('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: repoDir })).stdout.trim();
+    await execFile('git', ['checkout', '-b', branchName], { cwd: repoDir });
+    await execFile('git', ['mv', 'dummy.txt', 'renamed.txt'], { cwd: repoDir });
+    await execFile('git', ['commit', '-m', 'dispatch: HO-0045'], { cwd: repoDir });
+    const deliverySha = (await execFile('git', ['rev-parse', 'HEAD'], { cwd: repoDir })).stdout.trim();
+    await execFile('git', ['checkout', base], { cwd: repoDir });
+    const reviewPath = join(repoDir, 'wiki', 'handoffs', 'HO-0046.md');
+    await writeFile(reviewPath, (await readFile(reviewPath, 'utf8')).replace(REVIEWED_SHA_STAMP, deliverySha));
+    await execFile('git', ['commit', '-a', '-m', 'derive-review stamps for HO-0045'], { cwd: repoDir });
+    await writeEvidence(repoDir, 'HO-0045', {});
+
+    // An unstaged edit at the OLD path the branch renamed away from.
+    await writeFile(join(repoDir, 'dummy.txt'), 'edited locally\n');
+
+    const result = await mergeDelivery({ dir: repoDir, handoff_id: 'HO-0045' });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('expected refusal, got ok');
+    expect(result.error).toBe('DIRTY_REPO');
+    expect(result.detail).toMatchObject({ dirtyPaths: ['dummy.txt'] });
+    expect(await branchExists(repoDir, 'dispatch/HO-0045')).toBe(true);
   });
 
   it('refuses when an untracked file sits at a path the branch creates', async () => {
