@@ -303,17 +303,17 @@ Grant `export_mounts` as the narrowest per-job directory you can (e.g.
 `/path/to/mount-target/<job-id>/`, never a broad shared mount root) — it bounds blast radius and
 keeps the pipeline's post-run mount-write accounting cheap.
 
-**Currently blocked (WK-0164).** As of this writing, step 4 delivers successfully, but the
-traversal itself is not proven: the assembled worker prompt never communicates that
-`export_mounts`/`data_mounts` paths are authorized at all, so a worker that notices the absolute
-path lies outside `write_scope` self-gates and refuses to write there — correct behavior given
-what it was told, but it means the jail's bind-mount mechanism is never actually exercised. Watch
-for this exact failure shape: `delivered`, with the marker file landed in the repo, but nothing
-appears at the real mount path, and the recovery block (if present) reports `kind:
-"scope_insufficient"`. Once WK-0164 ships (the prompt fix and its companion mount-write manifest),
-re-run this fixture and assert: the marker file exists at the real mount location (not in the repo
-tree), and the response doc gains a `## Mount Writes` section listing it — a deterministic
-post-run walk the pipeline performs, never the worker's own self-report.
+**Assert after step 4.** The assembled worker prompt names each `data_mounts` path (read-only) and
+each `export_mounts` path (read-write), so the worker knows the mount is authorized. A passing run
+shows both of these:
+
+- The marker file exists at the real mount location, not in the repo tree.
+- The response doc carries a `## Mount Writes` section that lists it — a deterministic post-run
+  walk the pipeline performs, never the worker's own self-report.
+
+A failing run has this shape: `delivered`, with the marker file landed in the repo, but nothing at
+the real mount path, and the recovery block (if present) reports `kind: "scope_insufficient"`. That
+shape means the worker did not treat the mount as authorized; check the assembled prompt first.
 
 ### Teardown + reset state
 
