@@ -344,6 +344,22 @@ Do not treat generated views, launcher runtime artifacts, or `scratch_space/` ma
 - `wiki/catalog.md`, `wiki/now.md`, `wiki/backlog.md`, `wiki/archive.md`, and `wiki/inbox.md` are generated views, not canonical state.
 - `.agent-runs/` is runtime state only and must never be treated as committed or canonical content.
 
+### Live captures
+
+Four running source records hold kb's live captures. Append rows to them. Do not create a new SRC for a
+run, a session, or a failure; a new SRC is for a new outside source only.
+
+- A failure, or a success to keep: `wiki/sources/SRC-0024.md` — feeds rules and guards.
+- A dispatch run, delivery chain, or lost-time figure (this machine or the work VM): `wiki/sources/SRC-0048.md` —
+  shows where dispatch time and money go.
+- A plan, review, or redteam outcome, and where a defect came from: `wiki/sources/SRC-0053.md` — shows what
+  planning and review are worth.
+- An interactive run of the seat chain (overseer, planner, orchestrator) and its seat sessions:
+  `wiki/sources/SRC-0021.md` — evidence for kb-autoshop design.
+
+One fact goes in one record. Numbers come from logs and commands. Every row carries the capture date, the
+machine, and the kb commit.
+
 ### TypeScript Patterns
 
 - TypeScript, Node.js 20+, npm workspaces
