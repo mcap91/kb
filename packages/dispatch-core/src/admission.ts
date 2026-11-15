@@ -158,8 +158,8 @@ export async function checkWriteScopeEntryShape(repoRootResolved: string, entry:
  * that is the root or touches `.git`. A brand-new multi-level path (e.g.
  * `tests/golden/smoke.txt` in a repo with no `tests/`) is admitted — pipeline
  * step 9b creates the full hierarchy — but a symlink ancestor that resolves
- * outside the repo, or that aliases the root or `.git`, is refused (D2 soft
- * posture: an ordinary within-repo symlink is fine).
+ * outside the repo, or that aliases the root or `.git`, is refused (an
+ * ordinary within-repo symlink is fine).
  */
 async function checkStaleWriteScope(handoff: Handoff, repoRootResolved: string): Promise<DispatchResult<null>> {
   for (const entry of handoff.write_scope) {

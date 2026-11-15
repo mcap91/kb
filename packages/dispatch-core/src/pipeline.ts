@@ -496,8 +496,8 @@ export async function checkWriteScopeMountGuard(mounts: readonly string[], clone
     if (realMount === realClone) {
       return fail('STALE_WRITE_SCOPE', `write_scope mount "${entry}" resolves to the clone root.`, { entry });
     }
-    if (realGit !== null && (realMount === realGit || isWithinRoot(realGit, realMount))) {
-      return fail('STALE_WRITE_SCOPE', `write_scope mount "${entry}" resolves into ".git".`, { entry });
+    if (realGit !== null && (realMount === realGit || isWithinRoot(realGit, realMount) || isWithinRoot(realMount, realGit))) {
+      return fail('STALE_WRITE_SCOPE', `write_scope mount "${entry}" resolves into, or contains, ".git".`, { entry });
     }
   }
 
@@ -506,7 +506,7 @@ export async function checkWriteScopeMountGuard(mounts: readonly string[], clone
 
 /**
  * Build the Claude settings.json content injected at
- * `/tmp/.claude-settings/settings.json` (D2 ruling 2 item 2). `Edit`, `Write`
+ * `/tmp/.claude-settings/settings.json`. `Edit`, `Write`
  * and `NotebookEdit` are denied in EVERY mode — a managed Claude worker
  * edits exact-file-bound files through
  * Bash instead (mirrors AgentChassis's managed-Claude editing limits: a
@@ -1488,7 +1488,7 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
     // 12d. Build the frozen bwrap plan (D6 ruling 7 components 1-4/15).
     // `bwrapInjectedFiles` is Pi's models.json or Claude's settings.json
     // (step 10 above) — empty for codex. `scopedWriteScope` (step 9d above)
-    // is the per-family write mount shape (D2 ruling 2) — Pi's own shape is
+    // is the per-family write mount shape — Pi's own shape is
     // unchanged (identity passthrough); the post-hoc scope check at step 17
     // below still verifies the delivered diff against the UNWIDENED
     // `handoff.write_scope`, so this override only narrows/reshapes the

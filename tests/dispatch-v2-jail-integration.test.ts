@@ -475,6 +475,14 @@ describe('checkWriteScopeMountGuard', () => {
     expect(result.ok).toBe(true);
   });
 
+  it('refuses a mount that contains <clone>/.git (the parent folder, via "..")', async () => {
+    const result = await checkWriteScopeMountGuard(['..'], repo);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toBe('STALE_WRITE_SCOPE');
+    expect(result.message).toContain(JSON.stringify('..'));
+  });
+
   it('refuses when ".git" cannot be resolved (EACCES on the clone root itself, not ENOENT), carrying the cause', async () => {
     await chmod(repo, 0o000);
     try {

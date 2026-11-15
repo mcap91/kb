@@ -20,7 +20,7 @@
  * nothing is ever created through a symlinked ancestor that aliases the root
  * or `.git` in the first place.
  *
- * Pure validation only (D1) — this never creates anything on disk;
+ * Pure validation only — this never creates anything on disk;
  * admission.ts's `checkWriteScopeEntryShape` (itself called by
  * `checkStaleWriteScope` and by `createHandoff`) and pipeline.ts's
  * `precreateWriteScopeSkeleton` are the call sites, run against the mother
