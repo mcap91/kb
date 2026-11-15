@@ -112,15 +112,17 @@ function buildCloneScript(motherRepoPath: string, cloneRootShell: string, runId:
  * separate concern, handled by jail.ts's own mount recipe, not this check's.
  * A real `.env` file or `.claude/` directory (not a symlink) is untouched —
  * still masked by jail.ts, same as always.
+ * @internal clone.ts internal — exported only for direct unit testing.
  */
-async function checkMaskPathsNotSymlinks(clonePath: string): Promise<DispatchResult<null>> {
+export async function checkMaskPathsNotSymlinks(clonePath: string): Promise<DispatchResult<null>> {
   for (const name of ['.env', '.claude']) {
     const maskPath = join(clonePath, name);
     let st;
     try {
       st = await lstat(maskPath);
-    } catch {
-      continue; // does not exist in this clone — nothing to check.
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') continue; // does not exist in this clone — nothing to check.
+      return fail(`Refusing clone: failed to check "${name}" (${maskPath}) for a symlink.`, { path: maskPath, err: String(err) });
     }
     if (st.isSymbolicLink()) {
       return fail(

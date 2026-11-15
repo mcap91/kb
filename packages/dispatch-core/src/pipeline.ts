@@ -478,8 +478,11 @@ export async function checkWriteScopeMountGuard(mounts: readonly string[], clone
   let realGit: string | null;
   try {
     realGit = await realpath(join(clonePath, '.git'));
-  } catch {
-    realGit = null;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') {
+      return fail('STALE_WRITE_SCOPE', `Failed to resolve the clone's ".git" realpath for the write_scope mount guard: ${clonePath}.`, err);
+    }
+    realGit = null; // clone has no ".git" on disk yet — nothing to guard against.
   }
 
   for (const entry of mounts) {
@@ -540,7 +543,7 @@ export function buildClaudeSettingsJson(writeScope: string[], clonePath: string,
     }
   }
 
-  // WK-0268: the Read rule must be absolute (`//<clonePath>/...`) — Claude
+  // The Read rule must be absolute (`//<clonePath>/...`) — Claude
   // Code resolves a RELATIVE allow pattern against the session's current
   // directory, and a worker's Bash `cd` moves that directory, so a relative
   // rule stops matching the moment the worker leaves the clone root. An

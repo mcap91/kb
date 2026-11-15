@@ -38,13 +38,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
-import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { checkWriteScopeMountGuard, precreateWriteScopeSkeleton, precreateWikiMountSkeleton, runDispatch } from '../packages/dispatch-core/src/pipeline.js';
 import { buildBwrapPlan } from '../packages/dispatch-core/src/jail.js';
-import { createClone, removeClone } from '../packages/dispatch-core/src/clone.js';
+import { checkMaskPathsNotSymlinks, createClone, removeClone } from '../packages/dispatch-core/src/clone.js';
 import { spawnIsolated } from '../packages/dispatch-core/src/spawn-isolated.js';
 import * as spawnIsolatedModule from '../packages/dispatch-core/src/spawn-isolated.js';
 import * as tierModule from '../packages/dispatch-core/src/tier.js';
@@ -474,6 +474,19 @@ describe('checkWriteScopeMountGuard', () => {
     const result = await checkWriteScopeMountGuard(['src/a.ts'], repo);
     expect(result.ok).toBe(true);
   });
+
+  it('refuses when ".git" cannot be resolved (EACCES on the clone root itself, not ENOENT), carrying the cause', async () => {
+    await chmod(repo, 0o000);
+    try {
+      const result = await checkWriteScopeMountGuard([], repo);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error).toBe('STALE_WRITE_SCOPE');
+      expect(result.detail).toBeTruthy();
+    } finally {
+      await chmod(repo, 0o755);
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -522,6 +535,24 @@ describe('createClone -- mask-path symlink refusal', () => {
       await removeClone(result.data.clonePath);
     } finally {
       await rm(motherRepo, { recursive: true, force: true });
+    }
+  });
+
+  it('checkMaskPathsNotSymlinks refuses when lstat on a mask path fails with a non-ENOENT error (EACCES on the clone root), carrying the cause', async () => {
+    const clonePath = await createTempDir('kb-mask-eacces-');
+    try {
+      await chmod(clonePath, 0o000);
+      try {
+        const result = await checkMaskPathsNotSymlinks(clonePath);
+        expect(result.ok).toBe(false);
+        if (result.ok) return;
+        expect(result.message).toContain('.env');
+        expect(result.detail).toBeTruthy();
+      } finally {
+        await chmod(clonePath, 0o755);
+      }
+    } finally {
+      await rm(clonePath, { recursive: true, force: true });
     }
   });
 });

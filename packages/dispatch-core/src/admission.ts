@@ -152,7 +152,7 @@ export async function checkWriteScopeEntryShape(repoRootResolved: string, entry:
  * §7.3 `stale_write_scope`. Every entry must be repo-relative, resolve inside
  * the repo (string check below), and pass the shared entry-shape rule above
  * (`checkWriteScopeEntryShape`): `.git` segment / root-aliasing, and the
- * ancestor-chain resolution (WK-0163, `validateWriteScopeChain`) — walk up to
+ * ancestor-chain resolution (`validateWriteScopeChain`) — walk up to
  * the nearest existing ancestor, require its realpath stay within the repo
  * root's realpath, then refuse a resolved path (ancestor realpath + remainder)
  * that is the root or touches `.git`. A brand-new multi-level path (e.g.

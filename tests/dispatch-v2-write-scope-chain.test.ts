@@ -15,7 +15,7 @@ import { describe, expect, it, beforeEach, afterEach } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { lstat, mkdir, mkdtemp, readdir, readFile, readlink, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, lstat, mkdir, mkdtemp, readdir, readFile, readlink, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 
@@ -237,6 +237,41 @@ describe('WK-0163: ancestor-chain write_scope validation', () => {
         expect(after).toEqual(before);
         expect(existsSync(join(repoRoot, 'docs'))).toBe(false);
       });
+    });
+  });
+
+  // A non-ENOENT realpath failure (e.g. a directory the caller cannot
+  // traverse into) must refuse closed, carrying the cause -- never be
+  // treated the same as "does not exist yet".
+  describe('validateWriteScopeChain -- non-ENOENT realpath failures refuse closed', () => {
+    it('refuses when the root itself cannot be resolved (EACCES on an ancestor directory), carrying the cause', async () => {
+      const blockedParent = await mkdtemp(join(tmpdir(), 'dispatch-write-scope-blocked-'));
+      const actualRoot = join(blockedParent, 'theroot');
+      await mkdir(actualRoot, { recursive: true });
+      await chmod(blockedParent, 0o000);
+      try {
+        const result = await validateWriteScopeChain(actualRoot, 'newfile.txt');
+        expect(result.ok).toBe(false);
+        if (result.ok) return;
+        expect(result.error).toBe('STALE_WRITE_SCOPE');
+        expect(result.detail).toBeTruthy();
+      } finally {
+        await chmod(blockedParent, 0o755);
+        await rm(blockedParent, { recursive: true, force: true });
+      }
+    });
+
+    it('refuses when ".git" cannot be resolved (EACCES on the repo root itself), carrying the cause', async () => {
+      await chmod(repoRoot, 0o000);
+      try {
+        const result = await validateWriteScopeChain(repoRoot, 'newfile.txt');
+        expect(result.ok).toBe(false);
+        if (result.ok) return;
+        expect(result.error).toBe('STALE_WRITE_SCOPE');
+        expect(result.detail).toBeTruthy();
+      } finally {
+        await chmod(repoRoot, 0o755);
+      }
     });
   });
 });

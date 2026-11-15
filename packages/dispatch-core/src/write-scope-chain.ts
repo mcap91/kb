@@ -65,8 +65,15 @@ export async function validateWriteScopeChain(rootDir: string, entry: string): P
   let realRoot: string;
   try {
     realRoot = await realpath(rootResolved);
-  } catch {
-    return ok(null); // repo root does not exist on disk yet (e.g. authoring-time dry run) — nothing further to resolve.
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') {
+      return ok(null); // repo root does not exist on disk yet (e.g. authoring-time dry run) — nothing further to resolve.
+    }
+    return fail(
+      'STALE_WRITE_SCOPE',
+      `write_scope entry "${entry}" could not be resolved (realpath failed on the repo root).`,
+      err,
+    );
   }
 
   let realAncestor: string;
@@ -105,8 +112,15 @@ export async function validateWriteScopeChain(rootDir: string, entry: string): P
   let realGit: string | null;
   try {
     realGit = await realpath(join(realRoot, '.git'));
-  } catch {
-    realGit = null;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') {
+      return fail(
+        'STALE_WRITE_SCOPE',
+        `write_scope entry "${entry}" could not be resolved (realpath failed on ".git").`,
+        err,
+      );
+    }
+    realGit = null; // repo has no ".git" on disk yet — nothing to alias through.
   }
   if (realGit !== null && (resolvedPath === realGit || isWithinRoot(realGit, resolvedPath))) {
     return fail(

@@ -75,7 +75,7 @@ describe('buildJailArgs — write_scope sparse binds', () => {
   it('keeps the clone fully writable (legacy shape) when writeScope is absent but other S5 options are set', () => {
     const result = buildJailArgs({ clonePath, unshareNet: true });
     // The only exact --ro-bind is the final .git bind (system
-    // roots are --ro-bind-try, DEC-0011); the clone itself binds writable
+    // roots are --ro-bind-try); the clone itself binds writable
     // because writeScope was never provided.
     const roBindCount = result.argv.filter((tok) => tok === '--ro-bind').length;
     expect(roBindCount).toBe(1);
@@ -224,7 +224,7 @@ describe('buildJailArgs — wiki read axis (T25/D19)', () => {
       '--',
     ]);
     // The only exact --ro-bind is the final .git bind (system roots are
-    // --ro-bind-try, DEC-0011) — no wiki bind was added.
+    // --ro-bind-try) — no wiki bind was added.
     expect(result.argv.filter((tok) => tok === '--ro-bind').length).toBe(1);
   });
 });
@@ -610,7 +610,7 @@ describe('buildBwrapPlan — write_scope sparse binds', () => {
   it('keeps the clone fully writable (legacy shape) when writeScope is absent', () => {
     const plan = buildBwrapPlan({ clonePath, unshareNet: true, command: ['pi'] });
     const roBindMounts = plan.mounts.filter((m) => m.kind === 'ro-bind');
-    // Only the final .git bind (system roots are ro-bind-try, DEC-0011, not ro-bind).
+    // Only the final .git bind (system roots are ro-bind-try, not ro-bind).
     expect(roBindMounts).toEqual([{ kind: 'ro-bind', src: `${clonePath}/.git`, dst: `${clonePath}/.git` }]);
     const cloneMount: BwrapMount | undefined = plan.mounts.find((m) => m.dst === clonePath);
     expect(cloneMount).toEqual({ kind: 'bind', src: clonePath, dst: clonePath });
@@ -744,7 +744,7 @@ describe('buildBwrapPlan — wiki read axis (T25/D19)', () => {
   it('tracked + redteam: no wiki mask — wiki stays visible as part of the clone', () => {
     const plan = buildBwrapPlan({ clonePath, wikiShape: 'tracked', mode: 'redteam', command: ['pi'] });
     expect(plan.bwrapArgs).not.toContain(`${clonePath}/wiki`);
-    // Only the final .git bind (system roots are ro-bind-try, DEC-0011) — no wiki mask was added.
+    // Only the final .git bind (system roots are ro-bind-try) — no wiki mask was added.
     expect(plan.mounts.filter((m) => m.kind === 'ro-bind')).toEqual([
       { kind: 'ro-bind', src: `${clonePath}/.git`, dst: `${clonePath}/.git` },
     ]);
@@ -780,7 +780,7 @@ describe('buildBwrapPlan — wiki read axis (T25/D19)', () => {
   it('nested-private + redteam WITHOUT motherWikiPath: no wiki bind — nothing to bind against', () => {
     const plan = buildBwrapPlan({ clonePath, wikiShape: 'nested-private', mode: 'redteam', command: ['pi'] });
     expect(plan.mounts.filter((m) => m.dst === `${clonePath}/wiki`)).toHaveLength(0);
-    // Only the final .git bind (system roots are ro-bind-try, DEC-0011).
+    // Only the final .git bind (system roots are ro-bind-try).
     expect(plan.mounts.filter((m) => m.kind === 'ro-bind')).toEqual([
       { kind: 'ro-bind', src: `${clonePath}/.git`, dst: `${clonePath}/.git` },
     ]);

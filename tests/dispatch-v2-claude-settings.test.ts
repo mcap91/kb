@@ -1,9 +1,9 @@
 /**
- * WK-0268/HO-0209 (absolute Read rule) + managed Claude editing: Edit/Write/
+ * The absolute Read rule, plus managed Claude editing: Edit/Write/
  * NotebookEdit are denied in every mode, so Bash is Claude's only write
  * path; no more per-write_scope `Edit(...)` allow entries — a bare-name deny
  * wins over them, so they would be dead grants. Pure/synchronous, no bwrap
- * required. No personal/absolute paths in fixtures (WK-0043 rule) —
+ * required. No personal/absolute paths in fixtures —
  * clonePath below is synthetic.
  */
 import { describe, expect, it } from 'vitest';
