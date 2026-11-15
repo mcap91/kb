@@ -668,7 +668,7 @@ directly against a real temp git repo and a real WSL2 clone.
         const stubPort = nextStubPort++;
         // Socket on ext4 (clonePath), not DrvFS (runDirWsl) — AF_UNIX ENOTSUP.
         const tunnelSocketWsl = `${clonePath}/${TUNNEL_SOCKET_NAME}`;
-        const relayScriptWsl = `${runDirWsl}/relay.js`;
+        const relayScriptWsl = `${runDirWsl}/relay.cjs`;
         const tunnelConfig: TunnelConfig = {
           socketPath: tunnelSocketWsl,
           targetUrl: `http://127.0.0.1:${stubPort}/v1`,

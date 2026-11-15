@@ -1126,11 +1126,11 @@ describe('dispatch v2 e2e (fake-tier) — HO-0069: pipeline.ts threads stopReaso
 });
 
 // ---------------------------------------------------------------------------
-// WK-0156 — relay.js orphan fix. Root cause: the innerScript used to `exec`
+// WK-0156 — relay orphan fix. Root cause: the innerScript used to `exec`
 // the worker command, which replaces the wrapper shell process outright —
 // the backgrounded relay's PID (and any trap that could kill it) died along
-// with that shell, so once the worker exited, relay.js kept running as an
-// unreachable host orphan (10+ observed across completed/failed runs). The
+// with that shell, so once the worker exited, the relay script kept running
+// as an unreachable host orphan (10+ observed across completed/failed runs). The
 // fix backgrounds the worker too and `wait`s on it explicitly, with an
 // EXIT/TERM/INT trap that kills both the worker and the relay.
 //

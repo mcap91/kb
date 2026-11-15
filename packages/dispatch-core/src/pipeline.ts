@@ -91,6 +91,8 @@ import {
   buildTunnelScripts,
   TUNNEL_RELAY_PORT,
   TUNNEL_SOCKET_NAME,
+  TUNNEL_FORWARDER_SCRIPT_NAME,
+  TUNNEL_RELAY_SCRIPT_NAME,
   type TunnelConfig,
 } from './tunnel.js';
 import { probeBwrap, APPARMOR_REMEDIATION_TEXT, MISSING_BWRAP_TEXT } from './tier.js';
@@ -1336,8 +1338,8 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
     // itself is the grant. Socket lives under the clone path (same
     // filesystem as everything else dispatch stages there).
     const tunnelSocketPath = join(clonePath, TUNNEL_SOCKET_NAME);
-    const relayScriptPath = join(runDir, 'relay.js');
-    const forwarderScriptPath = join(runDir, 'forwarder.js');
+    const relayScriptPath = join(runDir, TUNNEL_RELAY_SCRIPT_NAME);
+    const forwarderScriptPath = join(runDir, TUNNEL_FORWARDER_SCRIPT_NAME);
     const forwarderLogPath = join(runDir, 'forwarder.log');
     const tunnelDestinationsLogPath = join(runDir, 'tunnel-destinations.log');
     const tunnelConfig: TunnelConfig = {

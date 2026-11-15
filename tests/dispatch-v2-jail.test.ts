@@ -358,7 +358,7 @@ describe('buildJailArgs — tunnel socket and relay script binds', () => {
   });
 
   it('binds the relay script read-only', () => {
-    const relayScriptPath = '/home/user/.kb-dispatch/runs/RUN-JAIL/relay.js';
+    const relayScriptPath = '/home/user/.kb-dispatch/runs/RUN-JAIL/relay.cjs';
     const result = buildJailArgs({ clonePath, relayScriptPath });
     expect(result.argv).toEqual([
       'bwrap',
@@ -386,7 +386,7 @@ describe('buildJailArgs — full combined recipe', () => {
   it('applies every S5 addition in §11 order', () => {
     const cwd = `${clonePath}/work`;
     const tunnelSocketPath = '/home/user/.kb-dispatch/runs/RUN-JAIL/tunnel.sock';
-    const relayScriptPath = '/home/user/.kb-dispatch/runs/RUN-JAIL/relay.js';
+    const relayScriptPath = '/home/user/.kb-dispatch/runs/RUN-JAIL/relay.cjs';
     const opts: JailOpts = {
       clonePath,
       cwd,

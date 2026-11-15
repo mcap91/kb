@@ -137,7 +137,7 @@ describe('buildTunnelScripts', () => {
     });
 
     it('exits with a usage message when required argv is missing', () => {
-      expect(forwarderScript).toContain('usage: node forwarder.js');
+      expect(forwarderScript).toContain('usage: node forwarder.cjs');
       expect(forwarderScript).toContain('process.exit(1)');
     });
   });
@@ -186,7 +186,7 @@ describe('buildTunnelScripts', () => {
     });
 
     it('exits with a usage message when required argv is missing', () => {
-      expect(relayScript).toContain('usage: node relay.js');
+      expect(relayScript).toContain('usage: node relay.cjs');
       expect(relayScript).toContain('process.exit(1)');
     });
   });
@@ -276,24 +276,24 @@ describe('buildTunnelBashLines', () => {
       const joined = lines.preJailLines.join('\n');
       expect(joined).toContain("cat <<'TUNNEL_FORWARDER_EOF'");
       expect(joined).toContain('TUNNEL_FORWARDER_EOF');
-      expect(joined).toContain(`${runDirWsl}/forwarder.js`);
+      expect(joined).toContain(`${runDirWsl}/forwarder.cjs`);
     });
 
     it('preJailLines writes the relay script for the jail to bind-mount', () => {
       const joined = lines.preJailLines.join('\n');
       expect(joined).toContain("cat <<'TUNNEL_RELAY_EOF'");
-      expect(joined).toContain(`${runDirWsl}/relay.js`);
+      expect(joined).toContain(`${runDirWsl}/relay.cjs`);
     });
 
     it('preJailLines starts the forwarder in the background and captures its PID', () => {
       const joined = lines.preJailLines.join('\n');
-      expect(joined).toMatch(/node .*forwarder\.js.* &$/m);
+      expect(joined).toMatch(/node .*forwarder\.cjs.* &$/m);
       expect(joined).toContain('FORWARDER_PID=$!');
     });
 
     it('preJailLines passes web:false through to the forwarder argv', () => {
       const joined = lines.preJailLines.join('\n');
-      expect(joined).toMatch(/node .*forwarder\.js[^\n]*'false'/);
+      expect(joined).toMatch(/node .*forwarder\.cjs[^\n]*'false'/);
     });
 
     it('preJailLines passes the JSON-encoded allowedHosts as a 5th forwarder argv (DEC-0011/WK-0104)', () => {
@@ -301,7 +301,7 @@ describe('buildTunnelBashLines', () => {
       const expectedJson = JSON.stringify(baseConfig.allowedHosts);
       expect(joined).toContain(expectedJson);
       // Ordering: socketPath, targetUrl, webEnabled, logPath, THEN allowedHostsJson.
-      const forwarderLine = lines.preJailLines.find((l) => l.trim().startsWith('node ') && l.includes('forwarder.js'));
+      const forwarderLine = lines.preJailLines.find((l) => l.trim().startsWith('node ') && l.includes('forwarder.cjs'));
       expect(forwarderLine).toBeDefined();
       expect(forwarderLine!.indexOf(expectedJson)).toBeGreaterThan(forwarderLine!.indexOf(baseConfig.targetUrl));
     });
@@ -317,14 +317,14 @@ describe('buildTunnelBashLines', () => {
 
     it('inJailPrefix brings up the loopback interface before starting the relay', () => {
       const loIndex = lines.inJailPrefix.findIndex((l) => l.includes('ip link set lo up'));
-      const relayIndex = lines.inJailPrefix.findIndex((l) => l.includes('relay.js'));
+      const relayIndex = lines.inJailPrefix.findIndex((l) => l.includes('relay.cjs'));
       expect(loIndex).toBeGreaterThanOrEqual(0);
       expect(relayIndex).toBeGreaterThan(loIndex);
     });
 
     it('inJailPrefix starts the relay in the background and captures its PID', () => {
       const joined = lines.inJailPrefix.join('\n');
-      expect(joined).toMatch(/node .*relay\.js.* &$/m);
+      expect(joined).toMatch(/node .*relay\.cjs.* &$/m);
       expect(joined).toContain('RELAY_PID=$!');
     });
 
@@ -344,7 +344,7 @@ describe('buildTunnelBashLines', () => {
     const trueLines = buildTunnelBashLines({ ...baseConfig, webEnabled: true }, runDirWsl);
 
     it('passes web:true through to the forwarder argv', () => {
-      expect(trueLines.preJailLines.join('\n')).toMatch(/node .*forwarder\.js[^\n]*'true'/);
+      expect(trueLines.preJailLines.join('\n')).toMatch(/node .*forwarder\.cjs[^\n]*'true'/);
     });
 
     it('exports the identical proxy env vars as web:false -- routing never changes, only forwarder-side policy does', () => {
@@ -408,7 +408,7 @@ describe('buildTunnelBashLines', () => {
 
   it('never emits an unquoted-looking socketPath/targetUrl in the forwarder invocation', () => {
     const lines = buildTunnelBashLines(baseConfig, runDirWsl);
-    const forwarderInvocation = lines.preJailLines.find((l) => l.trim().startsWith('node ') && l.includes('forwarder.js'));
+    const forwarderInvocation = lines.preJailLines.find((l) => l.trim().startsWith('node ') && l.includes('forwarder.cjs'));
     expect(forwarderInvocation).toBeDefined();
     expect(forwarderInvocation).toContain(`'${baseConfig.socketPath}'`);
     expect(forwarderInvocation).toContain(`'${baseConfig.targetUrl}'`);
@@ -458,7 +458,7 @@ describe('WK-0266 ruling 8 — provenance.json retired from the generated forwar
 
   it('buildTunnelBashLines keeps its own forwarder invocation argv unchanged (allowedHostsJson is still the LAST quoted arg -- no 6th provider-usage path appended) — ruling 8', () => {
     const lines = buildTunnelBashLines(baseConfig, runDirWsl);
-    const forwarderLine = lines.preJailLines.find((l) => l.trim().startsWith('node ') && l.includes('forwarder.js'));
+    const forwarderLine = lines.preJailLines.find((l) => l.trim().startsWith('node ') && l.includes('forwarder.cjs'));
     expect(forwarderLine).toBeDefined();
     const expectedAllowedHostsJson = `'${JSON.stringify(baseConfig.allowedHosts)}'`; // mirrors tunnel.ts's private shQuote (no special chars in this fixture)
     const beforeRedirect = forwarderLine!.split('<')[0];

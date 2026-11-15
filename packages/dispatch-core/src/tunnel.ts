@@ -85,6 +85,20 @@ export const TUNNEL_RELAY_PORT = 18787;
 /** Socket filename convention, staged under the run dir on ext4. */
 export const TUNNEL_SOCKET_NAME = 'tunnel.sock';
 
+/**
+ * Forwarder/relay script filename convention, staged under the run dir
+ * alongside `TUNNEL_SOCKET_NAME`. `.cjs`, never `.js` — Node resolves a
+ * `.js` file's module type from the nearest `package.json`, which for the
+ * written-script case is the TARGET repo's own root; a target declaring
+ * `"type": "module"` would then make Node parse these self-contained
+ * CommonJS scripts (`require(...)`) as ES modules and crash at startup
+ * before the forwarder ever creates its socket. `.cjs` pins CommonJS
+ * regardless of that field, so the target repo's own module type can never
+ * affect how these load.
+ */
+export const TUNNEL_FORWARDER_SCRIPT_NAME = 'forwarder.cjs';
+export const TUNNEL_RELAY_SCRIPT_NAME = 'relay.cjs';
+
 /** Single-quote a value for safe embedding in generated bash (mirrors pipeline.ts's / credentials.ts's private helper). */
 function shQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
@@ -92,10 +106,15 @@ function shQuote(value: string): string {
 
 /**
  * Generate the two self-contained Node.js scripts (host-side forwarder,
- * in-jail relay). Both are plain CommonJS `.js` text (no imports from this
- * package, no npm packages) so they run standalone via a bare `node
- * <file>.js <args>` — no TS toolchain, no `package.json`, no `node_modules`
- * needed wherever they land. Pure and synchronous: this only builds strings.
+ * in-jail relay). Both are plain CommonJS text (`require(...)`, no imports
+ * from this package, no npm packages) so they run standalone via a bare
+ * `node <file> <args>` — no TS toolchain, no `node_modules` needed wherever
+ * they land. The caller (pipeline.ts) writes them with a `.cjs` extension
+ * specifically so Node's module-type resolution always treats them as
+ * CommonJS regardless of the nearest `package.json`'s own `"type"` field —
+ * a `.js` extension would let a `"type": "module"` target repo override
+ * that and fail at startup instead. Pure and synchronous: this only builds
+ * strings.
  *
  * The scripts themselves parse their configuration from `process.argv` at
  * spawn time (see `buildTunnelBashLines`) rather than baking `config` into
@@ -118,7 +137,7 @@ export function buildTunnelScripts(config: TunnelConfig): TunnelScripts {
 // ever touches a real network interface for egress.
 //
 // Self-contained: Node.js built-ins only, no npm packages.
-// Usage: node forwarder.js <socketPath> <targetUrl> <webEnabled:true|false> <logPath> <allowedHostsJson> [providerUsagePath]
+// Usage: node forwarder.cjs <socketPath> <targetUrl> <webEnabled:true|false> <logPath> <allowedHostsJson> [providerUsagePath]
 
 const http = require('node:http');
 const https = require('node:https');
@@ -134,7 +153,7 @@ const ALLOWED_HOSTS_JSON = process.argv[6];
 const PROVIDER_USAGE_PATH = process.argv[7];
 
 if (!SOCKET_PATH || !TARGET_URL || !WEB_ENABLED_ARG || !LOG_PATH) {
-  console.error('usage: node forwarder.js <socketPath> <targetUrl> <webEnabled:true|false> <logPath> <allowedHostsJson> [providerUsagePath]');
+  console.error('usage: node forwarder.cjs <socketPath> <targetUrl> <webEnabled:true|false> <logPath> <allowedHostsJson> [providerUsagePath]');
   process.exit(1);
 }
 
@@ -479,7 +498,7 @@ server.listen(SOCKET_PATH, () => {
 // it never buffers and never breaks SSE.
 //
 // Self-contained: Node.js built-ins only, no npm packages.
-// Usage: node relay.js <relayPort> <socketPath>
+// Usage: node relay.cjs <relayPort> <socketPath>
 
 const net = require('node:net');
 
@@ -487,7 +506,7 @@ const PORT_ARG = process.argv[2];
 const SOCKET_PATH = process.argv[3];
 
 if (!PORT_ARG || !SOCKET_PATH) {
-  console.error('usage: node relay.js <relayPort> <socketPath>');
+  console.error('usage: node relay.cjs <relayPort> <socketPath>');
   process.exit(1);
 }
 
@@ -557,8 +576,8 @@ server.listen(PORT, '127.0.0.1', () => {
 export function buildTunnelBashLines(config: TunnelConfig, runDirWsl: string): TunnelBashLines {
   const relayPort = config.relayPort ?? TUNNEL_RELAY_PORT;
   const logPath = config.logPath ?? `${runDirWsl}/tunnel-destinations.log`;
-  const forwarderScriptPath = `${runDirWsl}/forwarder.js`;
-  const relayScriptPath = `${runDirWsl}/relay.js`;
+  const forwarderScriptPath = `${runDirWsl}/${TUNNEL_FORWARDER_SCRIPT_NAME}`;
+  const relayScriptPath = `${runDirWsl}/${TUNNEL_RELAY_SCRIPT_NAME}`;
   const forwarderLogPath = `${runDirWsl}/forwarder.log`;
   const { forwarderScript, relayScript } = buildTunnelScripts(config);
   const webEnabledArg = config.webEnabled ? 'true' : 'false';

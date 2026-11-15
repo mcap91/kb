@@ -181,7 +181,7 @@ The minimal repeatable case: one file, one line, all nine pipeline stages.
 | 1 | create-handoff | `wiki/handoffs/HO-XXXX.md` exists; frontmatter has `base_sha` |
 | 2 | admission | `RD/state.json` exists; `.error` is `null` |
 | 3 | jail (bwrap) | `RD/worker-output.log` exists; response frontmatter `isolation_backend: bwrap` |
-| 4 | tunnel/relay | `RD/relay.js`, `RD/forwarder.js`, `RD/forwarder.log`, `RD/tunnel-destinations.log`, `RD/provider-usage.jsonl` all exist |
+| 4 | tunnel/relay | `RD/relay.cjs`, `RD/forwarder.cjs`, `RD/forwarder.log`, `RD/tunnel-destinations.log`, `RD/provider-usage.jsonl` all exist |
 | 5 | adapter | `RD/prompt.txt` exists; response frontmatter has `model`, `backend`, `backend_fingerprint` |
 | 6 | worker execution | `RD/worker-output.log` non-empty; response frontmatter has `total_tokens`/`cost_usd`; for a pi-family backend, the response doc's `## Token Detail` table has `rate_key` (the exact rate-table key looked up, WK-0266 s1) and `provider_cost_coverage` (`k/n` 2xx responses from `RD/provider-usage.jsonl` that carried a cost, WK-0266 s2) rows |
 | 7 | delivery | `git rev-parse --verify refs/heads/dispatch/HO-XXXX` resolves; its tip commit's author/committer is `kb-dispatch <dispatch@kb.local>`, message `dispatch: HO-XXXX`; `RD/state.json` has `delivery_status: "delivered"` |
