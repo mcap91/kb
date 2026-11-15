@@ -7,5 +7,9 @@
   operator explicitly approves.
 - `HO-*` handoffs are dispatch-owned (`wiki/handoffs/`, excluded from wiki scans); never create them via
   `wiki create`.
+- A `write_scope` entry refuses, for every family, naming only the entry, if it has a `.git` path
+  segment or resolves to the repo root (`""`, `.`, `./`, `/`) — refused at authoring and again at
+  dispatch. A root-level file entry (e.g. `README.md`) is fine: every family binds it as an exact file,
+  never the directory around it.
 - Merges go through `merge-delivery` only — never by hand. After a merge, run this repo's validation command
   on the host and record the result in the WK.

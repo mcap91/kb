@@ -36,13 +36,15 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { precreateWriteScopeSkeleton, precreateWikiMountSkeleton, runDispatch } from '../packages/dispatch-core/src/pipeline.js';
+import { checkWriteScopeMountGuard, precreateWriteScopeSkeleton, precreateWikiMountSkeleton, runDispatch } from '../packages/dispatch-core/src/pipeline.js';
 import { buildBwrapPlan } from '../packages/dispatch-core/src/jail.js';
+import { createClone, removeClone } from '../packages/dispatch-core/src/clone.js';
 import { spawnIsolated } from '../packages/dispatch-core/src/spawn-isolated.js';
 import * as spawnIsolatedModule from '../packages/dispatch-core/src/spawn-isolated.js';
 import * as tierModule from '../packages/dispatch-core/src/tier.js';
@@ -347,6 +349,180 @@ describe.skipIf(!BWRAP_FUNCTIONAL)('real bwrap jail integration (WK-0159)', () =
     // only, and confirms the CURRENT (unmodified) pipeline.ts -- exercised by
     // every `it` in this file -- is what fixes it.
     // -----------------------------------------------------------------------
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Live bwrap proof that the final `.git` ro-bind actually closes the write
+// path in a REAL sandbox, for the shape every host-validation jail uses (no
+// `writeScope`, whole clone rw) and under a tracked-symlink bind-order
+// attack (cold-check probe: a former post-step mask order let
+// `.claude -> .git` make `.git` writable again).
+// ---------------------------------------------------------------------------
+
+describe.skipIf(!BWRAP_FUNCTIONAL)('real bwrap jail integration -- .git read-only', () => {
+  let motherRepo: string;
+  let clonePath: string;
+
+  beforeEach(async () => {
+    motherRepo = await createTempDir('kb-git-rolock-mother-');
+    initRepo(motherRepo);
+    await writeFile(join(motherRepo, 'README.md'), '# fixture\n');
+    commitAll(motherRepo, 'init');
+    clonePath = await createTempDir('kb-git-rolock-clone-');
+    execFileSync('git', ['clone', motherRepo, clonePath]);
+  });
+
+  afterEach(async () => {
+    await rm(motherRepo, { recursive: true, force: true });
+    await rm(clonePath, { recursive: true, force: true });
+  });
+
+  it('host-validation step plan (whole clone rw, no writeScope): a write to .git/config fails read-only, "git status" still runs, and a write to a root-level file succeeds', async () => {
+    const plan = buildBwrapPlan({
+      clonePath,
+      unshareNet: true,
+      command: [
+        'bash',
+        '-c',
+        [
+          'echo planted >> .git/config; echo "GIT_CONFIG_WRITE=$?"',
+          'git status --porcelain >/dev/null 2>&1; echo "GIT_STATUS=$?"',
+          'echo ok > root-level.txt; echo "ROOT_WRITE=$?"',
+        ].join('\n'),
+      ],
+    });
+    const result = await spawnIsolated(plan, { timeoutMs: 10_000 });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.stdout).toContain('GIT_CONFIG_WRITE=1');
+    expect(result.data.stderr.toLowerCase()).toContain('read-only file system');
+    expect(result.data.stdout).toContain('GIT_STATUS=0');
+    expect(result.data.stdout).toContain('ROOT_WRITE=0');
+    expect(existsSync(join(clonePath, 'root-level.txt'))).toBe(true);
+  });
+
+  // Why: the bite proof -- a tracked `.claude -> .git` symlink is planted
+  // directly on the already-created clone (never through createClone, which
+  // now refuses it on its own -- this isolates the JAIL's bind-order
+  // mechanism from clone.ts's separate point-in-time gate). Under a former
+  // post-step mask order, the probe captured `.git/config` becoming
+  // writable; with the mask moved before the final unconditional `.git`
+  // bind, it stays read-only.
+  it('tracked .claude -> .git and wiki -> .git symlinks: .git/config still stays read-only', async () => {
+    await symlink('.git', join(clonePath, '.claude'));
+    await symlink('.git', join(clonePath, 'wiki'));
+    const plan = buildBwrapPlan({
+      clonePath,
+      unshareNet: true,
+      command: ['bash', '-c', 'echo planted >> .git/config; echo "EXIT=$?"'],
+    });
+    const result = await spawnIsolated(plan, { timeoutMs: 10_000 });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.stdout).toContain('EXIT=1');
+    expect(result.data.stderr.toLowerCase()).toContain('read-only file system');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Mount guard. Real git/symlink fixtures; never needs bwrap itself
+// (`checkWriteScopeMountGuard` is pure realpath resolution), so this
+// describe is NOT gated by BWRAP_FUNCTIONAL.
+// ---------------------------------------------------------------------------
+
+describe('checkWriteScopeMountGuard', () => {
+  let repo: string;
+
+  beforeEach(async () => {
+    repo = await createTempDir('kb-mount-guard-');
+    initRepo(repo);
+    await writeFile(join(repo, 'README.md'), '# fixture\n');
+    await mkdir(join(repo, 'src'), { recursive: true });
+    await writeFile(join(repo, 'src', 'a.ts'), '// a\n');
+    await symlink('.', join(repo, 'alias'));
+    await symlink('.git', join(repo, 'alias2'));
+    await writeFile(join(repo, '.git', 'x'), 'x\n');
+    commitAll(repo, 'init');
+  });
+
+  afterEach(async () => {
+    await rm(repo, { recursive: true, force: true });
+  });
+
+  it('refuses the clone root, <clone>/.git, a path inside .git, and a tracked symlink alias -> . pointing at the root', async () => {
+    for (const entry of ['.', '.git', '.git/hooks', 'alias/']) {
+      const result = await checkWriteScopeMountGuard([entry], repo);
+      expect(result.ok).toBe(false);
+      if (result.ok) continue;
+      expect(result.error).toBe('STALE_WRITE_SCOPE');
+      expect(result.message).toContain(JSON.stringify(entry));
+    }
+  });
+
+  it('refuses a tracked symlink alias2 -> .git pointing into .git', async () => {
+    const result = await checkWriteScopeMountGuard(['alias2/x'], repo);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toBe('STALE_WRITE_SCOPE');
+    expect(result.message).toContain('alias2/x');
+  });
+
+  it('proceeds for an ordinary nested mount (e.g. src/a.ts) -- the same plan without the aliases', async () => {
+    const result = await checkWriteScopeMountGuard(['src/a.ts'], repo);
+    expect(result.ok).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// createClone's mask-path symlink refusal. Real git fixtures; never needs
+// bwrap.
+// ---------------------------------------------------------------------------
+
+describe('createClone -- mask-path symlink refusal', () => {
+  it.each([
+    ['.claude', '.'],
+    ['.claude', '.git'],
+    ['.claude', 'evil'],
+    ['.env', 'src/a.ts'],
+  ])('refuses a clone whose tracked %s -> %s symlink exists, naming the path (no evidence of a worker ever running)', async (maskName, target) => {
+    const motherRepo = await createTempDir('kb-mask-symlink-');
+    try {
+      initRepo(motherRepo);
+      await writeFile(join(motherRepo, 'README.md'), '# fixture\n');
+      await mkdir(join(motherRepo, 'src'), { recursive: true });
+      await writeFile(join(motherRepo, 'src', 'a.ts'), '// a\n');
+      await symlink(target, join(motherRepo, maskName));
+      commitAll(motherRepo, 'init');
+
+      const result = await createClone({ motherRepo, runId: `RUN-${randomUUID()}`, baseSha: 'HEAD' });
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.message).toContain(maskName);
+    } finally {
+      await rm(motherRepo, { recursive: true, force: true });
+    }
+  });
+
+  it('a real .env file and .claude/ directory (not symlinks) are admitted and still masked, not refused', async () => {
+    const motherRepo = await createTempDir('kb-mask-real-');
+    try {
+      initRepo(motherRepo);
+      await writeFile(join(motherRepo, 'README.md'), '# fixture\n');
+      await writeFile(join(motherRepo, '.env'), 'API_TOKEN=leaked\n');
+      await mkdir(join(motherRepo, '.claude'), { recursive: true });
+      await writeFile(join(motherRepo, '.claude', 'settings.json'), '{}\n');
+      commitAll(motherRepo, 'init');
+
+      const result = await createClone({ motherRepo, runId: `RUN-${randomUUID()}`, baseSha: 'HEAD' });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      await removeClone(result.data.clonePath);
+    } finally {
+      await rm(motherRepo, { recursive: true, force: true });
+    }
   });
 });
 

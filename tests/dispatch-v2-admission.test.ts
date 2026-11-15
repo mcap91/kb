@@ -110,6 +110,33 @@ describe('admission.ts — S4 full admission gate (new refusal codes)', () => {
       if (result.ok) return;
       expect(result.error).toBe('WORK_ITEM_NOT_FOUND');
     });
+
+    // The shared entry-shape rule — a `.git` segment anywhere, or an entry
+    // that resolves to the repo root itself — refuses for every family,
+    // naming the entry; it never names another family.
+    describe('entry-shape rule: .git segments and root-equivalent entries', () => {
+      it.each(['.git/hooks/', 'src/.git/x', '""', '.', './', '/'])(
+        'refuses write_scope entry %j with STALE_WRITE_SCOPE naming the entry',
+        async (rawEntry) => {
+          const entry = rawEntry === '""' ? '' : rawEntry;
+          const result = await checkAdmission(makeHandoff({ write_scope: [entry] }), tempDir);
+          expect(result.ok).toBe(false);
+          if (result.ok) return;
+          expect(result.error).toBe('STALE_WRITE_SCOPE');
+          expect(result.message).toContain(JSON.stringify(entry));
+        },
+      );
+
+      it('admits README.md (existing root-level file), a not-yet-existing NEW.md, docs/ and docs (an existing directory), and src/a.ts', async () => {
+        await mkdir(join(tempDir, 'docs'), { recursive: true });
+        for (const entry of ['README.md', 'NEW.md', 'docs/', 'docs', 'src/a.ts']) {
+          const result = await checkAdmission(makeHandoff({ write_scope: [entry] }), tempDir);
+          expect(result.ok).toBe(false);
+          if (result.ok) return;
+          expect(result.error).toBe('WORK_ITEM_NOT_FOUND');
+        }
+      });
+    });
   });
 
   describe('WRITE_SCOPE_UNCAPTURABLE (WK-0180)', () => {

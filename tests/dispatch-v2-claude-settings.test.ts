@@ -1,9 +1,10 @@
 /**
- * WK-0268/HO-0209 — buildClaudeSettingsJson's Edit allow-list must be
- * absolute (`//<clonePath>/...`), same as its Read rule, so a worker's Bash
- * `cd` cannot move it out from under a relative pattern. Pure/synchronous,
- * no bwrap required. No personal/absolute paths in fixtures (WK-0043 rule)
- * — clonePath below is synthetic.
+ * WK-0268/HO-0209 (absolute Read rule) + managed Claude editing: Edit/Write/
+ * NotebookEdit are denied in every mode, so Bash is Claude's only write
+ * path; no more per-write_scope `Edit(...)` allow entries — a bare-name deny
+ * wins over them, so they would be dead grants. Pure/synchronous, no bwrap
+ * required. No personal/absolute paths in fixtures (WK-0043 rule) —
+ * clonePath below is synthetic.
  */
 import { describe, expect, it } from 'vitest';
 
@@ -11,32 +12,30 @@ import { buildClaudeSettingsJson } from '../packages/dispatch-core/src/pipeline.
 
 const clonePath = '/home/user/.kb-dispatch/clones/RUN-CLAUDE-SETTINGS';
 
-describe('buildClaudeSettingsJson — absolute Edit rules (WK-0268)', () => {
-  it('mixed write_scope (dir entry with a trailing slash, file entry) and a clone path with its leading slash stripped yields absolute Read/Edit rules only', () => {
+describe('buildClaudeSettingsJson — exact-file binds, no Edit allow entries', () => {
+  it('mode=implement with a mixed write_scope (dir entry with a trailing slash, file entry): allow is Read + Bash only (named behavior change — no Edit(...) entries), Read is absolute', () => {
     const writeScope = ['skills/ntfy-bridge/', 'docs/notes.md'];
     const json = buildClaudeSettingsJson(writeScope, clonePath, 'implement');
     const settings = JSON.parse(json);
 
-    expect(settings.permissions.allow).toEqual([
-      `Read(//${clonePath.slice(1)}/**)`,
-      'Bash',
-      `Edit(//${clonePath.slice(1)}/skills/ntfy-bridge/**)`,
-      `Edit(//${clonePath.slice(1)}/docs/notes.md)`,
-    ]);
+    expect(settings.permissions.allow).toEqual([`Read(//${clonePath.slice(1)}/**)`, 'Bash']);
+    expect(settings.permissions.allow.some((entry: string) => entry.startsWith('Edit('))).toBe(false);
+  });
 
-    for (const entry of settings.permissions.allow) {
-      if (entry.startsWith('Edit(') || entry.startsWith('Read(')) {
-        expect(entry).toMatch(/^(Edit|Read)\(\/\//);
-      }
+  it('every mode denies Edit, Write, NotebookEdit (named behavior change — previously implement-only allowed Edit)', () => {
+    for (const mode of ['implement', 'review', 'code_review', 'redteam']) {
+      const writeScope = mode === 'implement' ? ['docs/notes.md'] : [];
+      const json = buildClaudeSettingsJson(writeScope, clonePath, mode);
+      const settings = JSON.parse(json);
+      expect(settings.permissions.deny).toEqual(
+        expect.arrayContaining(['Edit', 'Write', 'NotebookEdit']),
+      );
     }
   });
 
-  it('non-implement modes still deny Edit, Write, NotebookEdit', () => {
+  it('non-implement modes: allow is Read + Bash only', () => {
     const json = buildClaudeSettingsJson([], clonePath, 'review');
     const settings = JSON.parse(json);
-    expect(settings.permissions.deny).toEqual(
-      expect.arrayContaining(['Edit', 'Write', 'NotebookEdit']),
-    );
     expect(settings.permissions.allow).toEqual([`Read(//${clonePath.slice(1)}/**)`, 'Bash']);
     expect(settings.permissions.disableBypassPermissionsMode).toBe('disable');
   });

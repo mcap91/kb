@@ -87,8 +87,95 @@ function checkEnvelope(handoff: Handoff): DispatchResult<null> {
 }
 
 /**
+ * The one entry-shape rule shared by `checkStaleWriteScope` below (admission,
+ * refusal `STALE_WRITE_SCOPE` naming the entry) and `createHandoff`
+ * (create-handoff.ts; refuses to author the HO with the same code) — mirrors
+ * AgentChassis's `relativeAuthorityPathToAbsolute`'s `.git`-segment and
+ * root-aliasing refusals (`launch-isolation-worker-scope.mjs`). Refuses, for
+ * EVERY family (the refusal text names only this rule — it never points to
+ * another family):
+ *   - an entry with a `.git` path segment anywhere in the path (e.g.
+ *     `.git/hooks/`, `src/.git/x`);
+ *   - an entry that resolves (plain `path.resolve`, no realpath needed) to
+ *     the repo root itself (`""`, `.`, `./`, `/`, or any other entry whose
+ *     resolution lands back on `repoRootResolved`);
+ *   - an entry whose REALPATH in the mother repo — checked only when the
+ *     entry already exists on disk, e.g. a tracked symlink — is the repo
+ *     root, or equals, contains, or lies inside the repo's `.git` (closes an
+ *     `alias -> .` / `alias -> .git` alias the string checks above cannot
+ *     see).
+ * A root-level FILE entry (e.g. `README.md`) is ADMITTED: every family now
+ * gets exact-file binds, so no family ever widens a root-level file entry to
+ * the writable root itself anymore.
+ */
+export async function checkWriteScopeEntryShape(repoRootResolved: string, entry: string): Promise<DispatchResult<null>> {
+  if (entry.split('/').includes('.git')) {
+    return fail(
+      'STALE_WRITE_SCOPE',
+      `write_scope entry "${entry}" has a ".git" path segment; no write_scope entry may touch ".git".`,
+      { entry },
+    );
+  }
+
+  // Root-equivalent literal forms (`""`, `.`, `./`, `/`) all strip to `""` or
+  // `"."` once trailing slashes are removed — checked directly rather than
+  // through `path.resolve`, which (for an ABSOLUTE entry like `/`) ignores
+  // `repoRootResolved` entirely and would otherwise let it slip through this
+  // check unrefused (createHandoff has no separate pre-check for absolute
+  // entries the way admission.ts's `checkStaleWriteScope` does). The
+  // `path.resolve` comparison stays as defense-in-depth for any other
+  // relative form that strings its way back to the root (e.g. `src/..`).
+  const withoutTrailingSlash = entry.replace(/\/+$/, '');
+  const resolved = resolve(repoRootResolved, entry);
+  if (withoutTrailingSlash === '' || withoutTrailingSlash === '.' || resolved === repoRootResolved) {
+    return fail(
+      'STALE_WRITE_SCOPE',
+      `write_scope entry "${entry}" resolves to the repo root; no write_scope entry may be the repo root itself.`,
+      { entry },
+    );
+  }
+
+  let realRoot: string;
+  try {
+    realRoot = await realpath(repoRootResolved);
+  } catch {
+    return ok(null); // repo root does not exist on disk yet (e.g. authoring-time dry run) — nothing further to resolve.
+  }
+  let realGit: string | null;
+  try {
+    realGit = await realpath(join(repoRootResolved, '.git'));
+  } catch {
+    realGit = null;
+  }
+  let realEntry: string;
+  try {
+    realEntry = await realpath(resolved);
+  } catch {
+    return ok(null); // entry does not exist yet (a brand-new path) — nothing to alias through.
+  }
+
+  if (realEntry === realRoot) {
+    return fail(
+      'STALE_WRITE_SCOPE',
+      `write_scope entry "${entry}" resolves (through a symlink) to the repo root.`,
+      { entry },
+    );
+  }
+  if (realGit !== null && (realEntry === realGit || isWithinRoot(realGit, realEntry))) {
+    return fail(
+      'STALE_WRITE_SCOPE',
+      `write_scope entry "${entry}" resolves (through a symlink) into ".git".`,
+      { entry },
+    );
+  }
+
+  return ok(null);
+}
+
+/**
  * §7.3 `stale_write_scope`. Every entry must be repo-relative and resolve
- * inside the repo, then pass the ancestor-chain check (WK-0163,
+ * inside the repo, pass the shared entry-shape rule above (`.git` segment /
+ * root-aliasing), then pass the ancestor-chain check (WK-0163,
  * `validateWriteScopeChain`): walk up to the nearest existing ancestor and
  * require its realpath stay within the repo root's realpath. A brand-new
  * multi-level path (e.g. `tests/golden/smoke.txt` in a repo with no `tests/`)
@@ -114,6 +201,9 @@ async function checkStaleWriteScope(handoff: Handoff, repoRootResolved: string):
         { entry },
       );
     }
+
+    const entryShapeCheck = await checkWriteScopeEntryShape(repoRootResolved, entry);
+    if (!entryShapeCheck.ok) return entryShapeCheck;
 
     const chainCheck = await validateWriteScopeChain(repoRootResolved, entry);
     if (!chainCheck.ok) return chainCheck;

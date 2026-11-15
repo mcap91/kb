@@ -27,8 +27,8 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { closeSync, constants as fsConstants, existsSync, openSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
-import { mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises';
-import { dirname, join, relative, resolve } from 'node:path';
+import { mkdir, readdir, readFile, realpath, stat, writeFile } from 'node:fs/promises';
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import type { DispatchResult } from './errors.js';
@@ -53,11 +53,8 @@ import { execBash } from './exec-direct.js';
 import {
   buildBwrapPlan,
   classifyEntry,
-  deriveDirectoryScopedMounts,
   deriveExactFileMounts,
-  type BwrapPlan,
   type WikiShape,
-  withSecretMaskArgs,
 } from './jail.js';
 import { isMountableRoot } from './mountability.js';
 import { spawnIsolated, type SpawnResult } from './spawn-isolated.js';
@@ -431,49 +428,99 @@ function spawnAndWait(
 
 /**
  * Per-family write_scope override for the bwrap plan's mount list (D2 ruling
- * 2, PLN-0004
- * `wiki/plans/PLN-0004/execution/mid_project_review_rulings.md:149-201`):
- * Pi's current sparse-bind recipe is unchanged (identity — every entry binds
- * exactly as written); Claude widens file-shaped entries to their parent
- * directory (atomic-rename write pattern needs write+exec on the containing
- * dir, not just the target file); Codex classifies exact files vs
- * directories explicitly (mechanically the same per-entry self-bind
- * `buildBwrapPlan`'s own write_scope loop already applies to any entry —
- * computed here via `deriveExactFileMounts` to mirror agent-chassis's
- * separate Codex code path rather than relying on that coincidence). Returns
- * clone-RELATIVE paths: `buildBwrapPlan`'s own `joinUnderClone` re-resolves
- * relative entries onto `clonePath`, the same contract `handoff.write_scope`
- * itself already satisfies, so this is a drop-in override either way.
+ * 2; Claude edits through Bash with its native write tools denied, so it no
+ * longer needs atomic-rename's write+exec on a containing directory). Pi's
+ * current sparse-bind recipe is unchanged (identity — every
+ * entry binds exactly as written); Claude and Codex both classify exact
+ * files vs directories via `deriveExactFileMounts` — only the declared
+ * file/dir is writable, never a widened parent. Returns clone-RELATIVE
+ * paths: `buildBwrapPlan`'s own `joinUnderClone` re-resolves relative
+ * entries onto `clonePath`, the same contract `handoff.write_scope` itself
+ * already satisfies, so this is a drop-in override either way.
  */
 export function familyWriteScope(family: BackendFamily, writeScope: string[], clonePath: string): string[] {
-  if (family === 'claude') {
-    return deriveDirectoryScopedMounts(writeScope, clonePath).map((dir) => relative(clonePath, dir));
-  }
-  if (family === 'codex') {
+  if (family === 'claude' || family === 'codex') {
     const { writableDirs, writableFiles } = deriveExactFileMounts(writeScope, clonePath);
     return [...writableDirs, ...writableFiles].map((p) => relative(clonePath, p));
   }
   return writeScope;
 }
 
+/** True when `target` (pre-resolved absolute) is `root` itself or one of its descendants (mirrors admission.ts's/write-scope-chain.ts's private helper of the same name). */
+function isWithinRoot(root: string, target: string): boolean {
+  if (target === root) return true;
+  const rel = relative(root, target);
+  return rel !== '' && !rel.startsWith('..') && !isAbsolute(rel);
+}
+
+/**
+ * Mount guard — the last line of defense against a tracked symlink inside
+ * the clone (e.g. `alias -> .`, `alias2 ->
+ * .git`) that admission's entry-shape check (`checkWriteScopeEntryShape`,
+ * admission.ts) could only evaluate against the MOTHER repo, not the clone
+ * `familyWriteScope` actually mounts. Called from `runDispatch` after the
+ * write_scope skeleton exists on disk (so every declared mount can be
+ * `realpath`'d) and before `buildBwrapPlan`, over the FAMILY-RESOLVED mount
+ * list (post-`familyWriteScope`, clone-relative) — never the raw unwidened
+ * `handoff.write_scope`. Refuses `STALE_WRITE_SCOPE`, naming the entry, when
+ * a mount's realpath equals the clone root's realpath, or equals, contains,
+ * or lies inside the realpath of `<clone>/.git`; an ordinary nested mount
+ * passes through untouched. Mirrors agent-chassis's
+ * `launch-isolation-plan-mounts.mjs` (realpath'd writable roots).
+ * @internal pipeline.ts internal — exported only for direct unit testing.
+ */
+export async function checkWriteScopeMountGuard(mounts: readonly string[], clonePath: string): Promise<DispatchResult<null>> {
+  let realClone: string;
+  try {
+    realClone = await realpath(clonePath);
+  } catch (err) {
+    return fail('STALE_WRITE_SCOPE', `Failed to resolve the clone root's realpath for the write_scope mount guard: ${clonePath}.`, err);
+  }
+  let realGit: string | null;
+  try {
+    realGit = await realpath(join(clonePath, '.git'));
+  } catch {
+    realGit = null;
+  }
+
+  for (const entry of mounts) {
+    const absPath = resolve(clonePath, entry);
+    let realMount: string;
+    try {
+      realMount = await realpath(absPath);
+    } catch (err) {
+      return fail('STALE_WRITE_SCOPE', `write_scope mount "${entry}" could not be resolved for the mount guard.`, err);
+    }
+    if (realMount === realClone) {
+      return fail('STALE_WRITE_SCOPE', `write_scope mount "${entry}" resolves to the clone root.`, { entry });
+    }
+    if (realGit !== null && (realMount === realGit || isWithinRoot(realGit, realMount))) {
+      return fail('STALE_WRITE_SCOPE', `write_scope mount "${entry}" resolves into ".git".`, { entry });
+    }
+  }
+
+  return ok(null);
+}
+
 /**
  * Build the Claude settings.json content injected at
- * `/tmp/.claude-settings/settings.json` (D2 ruling 2 item 2, mirrors
- * agent-chassis). Grants Claude's OWN internal permission engine an Edit
- * allow-entry per write_scope path — the exact DECLARED grant
- * (`Edit(<file>)` for a file entry, `Edit(<dir>/**)` for a directory entry,
- * via `deriveExactFileMounts`'s unwidened classification), deliberately NOT
- * the OS-level widened parent-directory mount `deriveDirectoryScopedMounts`
- * computes for the bwrap bind (step 12d below): Claude's permission check
- * runs before its own Edit tool ever reaches a `rename(2)` syscall, so the
- * kernel-level widening reason doesn't apply at this layer. `Read` is
- * granted over the whole clone (workers need to read outside write_scope for
- * context) and `Bash` is allowed outright; the deny list closes off
- * subagent/web tools entirely — `--permission-mode default` +
- * `--settings <path>` (pipeline.ts's Claude branch) make this allow-list the
- * SOLE grant. Advisory modes (non-implement) also deny Edit/Write/
- * NotebookEdit outright — belt-and-suspenders alongside their already-empty
- * write_scope (D2 ruling 2 item 3).
+ * `/tmp/.claude-settings/settings.json` (D2 ruling 2 item 2). `Edit`, `Write`
+ * and `NotebookEdit` are denied in EVERY mode — a managed Claude worker
+ * edits exact-file-bound files through
+ * Bash instead (mirrors AgentChassis's managed-Claude editing limits: a
+ * bare-name deny wins over a per-path `Edit(...)` allow entry, so the former
+ * per-write_scope-path `Edit(...)` grants this function used to emit would
+ * be dead the moment the deny list also carried the bare name — they are
+ * dropped rather than left as inert grants). `Read` is granted over the
+ * whole clone (workers need to read outside write_scope for context) and
+ * `Bash` is allowed outright — with Edit/Write/NotebookEdit denied, Bash is
+ * Claude's only write path, writing in place through the exact-file bwrap
+ * binds `familyWriteScope`/`deriveExactFileMounts` lay down (jail.ts), never
+ * through its own native editor tools' atomic-rename-into-sibling-temp-file
+ * pattern (captured against an exact-file bind: EROFS, no in-place
+ * fallback). The rest of the deny list closes off subagent/web tools
+ * entirely — `--permission-mode default` + `--settings <path>` (pipeline.ts's
+ * Claude branch) make this allow-list the SOLE grant.
  */
 export function buildClaudeSettingsJson(writeScope: string[], clonePath: string, mode: string): string {
   // WK-0131: mode=implement requires a non-empty write_scope (admission.ts's
@@ -494,38 +541,21 @@ export function buildClaudeSettingsJson(writeScope: string[], clonePath: string,
     }
   }
 
-  // WK-0268: Edit rules must be absolute (`//<clonePath>/...`), same as the
-  // Read rule below — Claude Code resolves a RELATIVE allow pattern against
-  // the session's current directory, and a worker's Bash `cd` moves that
-  // directory, so a relative Edit rule stops matching the moment the worker
-  // leaves the clone root. An absolute pattern is immune to `cd`.
+  // WK-0268: the Read rule must be absolute (`//<clonePath>/...`) — Claude
+  // Code resolves a RELATIVE allow pattern against the session's current
+  // directory, and a worker's Bash `cd` moves that directory, so a relative
+  // rule stops matching the moment the worker leaves the clone root. An
+  // absolute pattern is immune to `cd`.
   const clonePathTrimmed = clonePath.replace(/^\/+/, '');
-  const editEntries: string[] = [];
-  for (const rel of writeScope) {
-    const trimmed = rel.replace(/^\/+/, '').replace(/\/+$/, '');
-    const absPath = join(clonePath, trimmed);
-    if (classifyEntry(absPath, trimmed) === 'file') {
-      editEntries.push(`Edit(//${clonePathTrimmed}/${trimmed})`);
-    } else {
-      editEntries.push(`Edit(//${clonePathTrimmed}/${trimmed}/**)`);
-    }
-  }
-  const deny = ['WebFetch', 'WebSearch', 'Task', 'Agent', 'Workflow', 'Skill', 'Monitor'];
-  if (mode !== 'implement') {
-    deny.push('Edit', 'Write', 'NotebookEdit');
-  }
   const settings = {
     permissions: {
-      allow: [`Read(//${clonePathTrimmed}/**)`, 'Bash', ...editEntries],
-      deny,
+      allow: [`Read(//${clonePathTrimmed}/**)`, 'Bash'],
+      deny: ['WebFetch', 'WebSearch', 'Task', 'Agent', 'Workflow', 'Skill', 'Monitor', 'Edit', 'Write', 'NotebookEdit'],
       disableBypassPermissionsMode: 'disable',
     },
   };
   return JSON.stringify(settings, null, 2);
 }
-
-/** Moved to jail.ts (WK-0294: the host-validation runner shares it); re-exported for existing imports. */
-export { withSecretMaskArgs };
 
 /**
  * Build the run's forwarder allowlist (DEC-0011 ruling 2/3, WK-0104): Pi's
@@ -1109,6 +1139,19 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
     // 9c. Wiki mount-target skeleton for nested-private shape (WK-0149).
     await precreateWikiMountSkeleton(wikiShape, clonePath);
 
+    // 9d. Mount guard — resolve the per-family write mount shape ONCE here
+    // (not inline at step 12d below)
+    // and refuse, before any worker starts, any mount whose realpath is the
+    // clone root or touches `.git`. Runs after the skeleton steps above (so
+    // every declared mount already exists on disk for `realpath` to
+    // resolve) and before the plan is built, catching a tracked symlink
+    // (e.g. `alias -> .`, `alias2 -> .git`) that the admission-time entry
+    // rule (checkWriteScopeEntryShape, admission.ts) could only check
+    // against the MOTHER repo, not the clone.
+    const scopedWriteScope = familyWriteScope(model.family, handoff.write_scope, clonePath);
+    const mountGuardCheck = await checkWriteScopeMountGuard(scopedWriteScope, clonePath);
+    if (!mountGuardCheck.ok) return mountGuardCheck;
+
     // 10. Build the family-specific worker invocation (T33 family-aware
     // pipeline). Each branch below produces two family-agnostic outputs
     // consumed downstream: `execLines` (the bash line(s) appended to the
@@ -1433,18 +1476,18 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
 
     // 12d. Build the frozen bwrap plan (D6 ruling 7 components 1-4/15).
     // `bwrapInjectedFiles` is Pi's models.json or Claude's settings.json
-    // (step 10 above) — empty for
-    // codex. Per-family write mount shape via `familyWriteScope` (D2 ruling
-    // 2) — Pi's own shape is unchanged (identity passthrough); the post-hoc
-    // scope check at step 17 below still verifies the delivered diff against
-    // the UNWIDENED `handoff.write_scope`, so this override only widens the
-    // PREVENTIVE bwrap mount, never the actual granted scope. `.env`/
-    // `.claude/` secret masking (D2 ruling 2 item 5) is layered on
-    // afterward for every family via `withSecretMaskArgs` — `buildBwrapPlan`
-    // itself stays unmodified (jail.ts's additive-only contract).
-    const rawPlan = buildBwrapPlan({
+    // (step 10 above) — empty for codex. `scopedWriteScope` (step 9d above)
+    // is the per-family write mount shape (D2 ruling 2) — Pi's own shape is
+    // unchanged (identity passthrough); the post-hoc scope check at step 17
+    // below still verifies the delivered diff against the UNWIDENED
+    // `handoff.write_scope`, so this override only narrows/reshapes the
+    // PREVENTIVE bwrap mount, never the actual granted scope. `buildBwrapPlan`
+    // itself now bakes in the `.env`/`.claude/` secret masks and the final
+    // read-only `.git` bind (jail.ts's `buildJailPlanSteps`) — no post-step
+    // layers them on afterward any more.
+    const plan = buildBwrapPlan({
       clonePath,
-      writeScope: familyWriteScope(model.family, handoff.write_scope, clonePath),
+      writeScope: scopedWriteScope,
       wikiShape,
       mode: handoff.mode,
       motherWikiPath,
@@ -1463,7 +1506,6 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       env: workerEnv,
       injectedFiles: bwrapInjectedFiles,
     });
-    const plan = withSecretMaskArgs(rawPlan, clonePath);
 
     // 12e. Pre-jail: lockfile-gated `npm ci --ignore-scripts` (s5-rulings.md
     // ruling 2), direct spawn, no bwrap — best-effort, never gating (only the
@@ -1776,10 +1818,10 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       // dir-prefix match), and a non-zero-exit or exec failure on the
       // enumerate script already returns the failed DispatchResult above
       // (fail-closed on git errors, never falls through to delivery). The
-      // per-family bwrap mounts built at step 12d (deriveDirectoryScopedMounts
-      // for Claude, deriveExactFileMounts for Codex) are the PREVENTIVE half;
-      // this is the backstop that catches anything they missed. No
-      // additional code needed here — both halves already existed/now exist.
+      // per-family bwrap mounts built at step 9d/12d (`deriveExactFileMounts`
+      // for both Claude and Codex) are the PREVENTIVE half; this is the
+      // backstop that catches anything they missed. No additional code
+      // needed here — both halves already existed/now exist.
       const scopeCheck = checkWriteScope(allChangedFiles, handoff.write_scope);
 
       if (!scopeCheck.ok) {

@@ -12,7 +12,7 @@
  * create, remove, and sweep those clones; the delivery/plumbing-commit path (§8
  * canonical delivery sequence) is a separate module (delivery.ts, Wave 2b).
  */
-import { realpath } from 'node:fs/promises';
+import { lstat, realpath } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 
@@ -98,6 +98,41 @@ function buildCloneScript(motherRepoPath: string, cloneRootShell: string, runId:
 }
 
 /**
+ * Refuse a clone whose `.env` or `.claude` secret-mask path (jail.ts's
+ * `buildJailPlanSteps`, which masks each one by its own name, last, right
+ * before the final `.git` bind) is a TRACKED SYMLINK — e.g. `.claude -> .`,
+ * `.claude -> .git`, `.claude -> evil`, or `.env -> src/a.ts`. Without this
+ * gate a symlinked mask path lets a committed payload reach the jail
+ * unmasked (the mask lands on the symlink's target, never the real
+ * `.env`/`.claude`) or, for `.claude -> <repo-root-alias>`, makes the mask's
+ * own tmpfs cover something other than the intended directory. Point-in-time
+ * gate, run right after checkout, for every clone this module creates
+ * (`createClone` is the only clone path, shared by worker dispatch and
+ * `runHostValidation`'s re-clone) — in-jail writability of these paths is a
+ * separate concern, handled by jail.ts's own mount recipe, not this check's.
+ * A real `.env` file or `.claude/` directory (not a symlink) is untouched —
+ * still masked by jail.ts, same as always.
+ */
+async function checkMaskPathsNotSymlinks(clonePath: string): Promise<DispatchResult<null>> {
+  for (const name of ['.env', '.claude']) {
+    const maskPath = join(clonePath, name);
+    let st;
+    try {
+      st = await lstat(maskPath);
+    } catch {
+      continue; // does not exist in this clone — nothing to check.
+    }
+    if (st.isSymbolicLink()) {
+      return fail(
+        `Refusing clone: "${name}" (${maskPath}) is a symlink; a committed secret-mask path must be a real file or directory.`,
+        { path: maskPath },
+      );
+    }
+  }
+  return ok(null);
+}
+
+/**
  * Create an ephemeral full clone of the mother repo at a pinned `base_sha`, on
  * the dispatch-owned clone root. Steps (spec §8 step 2 / WK-0074 B10):
  * resolve the clone root, `mkdir -p` it, `git clone` the mother repo,
@@ -138,6 +173,12 @@ export async function createClone(opts: CloneOpts): Promise<DispatchResult<Clone
 
   if (!clonePath) {
     return fail('Clone script produced no clone path on stdout.', execResult.data);
+  }
+
+  const maskCheck = await checkMaskPathsNotSymlinks(clonePath);
+  if (!maskCheck.ok) {
+    await removeClone(clonePath);
+    return maskCheck;
   }
 
   return ok({ clonePath, baseSha: resolvedBaseSha });

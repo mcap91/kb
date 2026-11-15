@@ -119,4 +119,38 @@ describe('createHandoff — WK-0120 work_item-for-implement authoring gate', () 
       expect(result.ok).toBe(true);
     });
   });
+
+  // createHandoff refuses to author an HO whose write_scope entry fails the
+  // shared entry-shape rule (checkWriteScopeEntryShape, admission.ts) — the
+  // same rule admission applies at dispatch time, now enforced at authoring
+  // time too, for every family (the rule itself carries no family notion).
+  describe('write_scope entry-shape rule', () => {
+    it.each(['.git/hooks/', 'src/.git/x', '""', '.', './', '/'])(
+      'refuses to author an HO with write_scope entry %j, naming the entry',
+      async (rawEntry) => {
+        await setupBootstrappedRepo(tempDir);
+        const entry = rawEntry === '""' ? '' : rawEntry;
+
+        const result = await createHandoff(
+          baseOpts({ dir: tempDir, work_item: 'WK-0120', write_scope: [entry] }),
+        );
+        expect(result.ok).toBe(false);
+        if (result.ok) return;
+        expect(result.error).toBe('STALE_WRITE_SCOPE');
+        expect(result.message).toContain(JSON.stringify(entry));
+      },
+    );
+
+    it('admits README.md, a not-yet-existing NEW.md, docs/ and docs (an existing directory), and src/a.ts', async () => {
+      await setupBootstrappedRepo(tempDir);
+      await mkdir(join(tempDir, 'docs'), { recursive: true });
+
+      for (const entry of ['README.md', 'NEW.md', 'docs/', 'docs', 'src/a.ts']) {
+        const result = await createHandoff(
+          baseOpts({ dir: tempDir, work_item: 'WK-0120', write_scope: [entry] }),
+        );
+        expect(result.ok).toBe(true);
+      }
+    });
+  });
 });

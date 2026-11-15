@@ -222,6 +222,7 @@ describe('buildJailArgs — wiki-shape x mode matrix gap-fill (T25/D19; compleme
       '--unshare-ipc',
       '--new-session',
       '--bind', clonePath, clonePath,
+      '--ro-bind', `${clonePath}/.git`, `${clonePath}/.git`,
       '--chdir', clonePath,
       '--',
     ]);
@@ -245,6 +246,7 @@ describe('buildJailArgs — wiki-shape x mode matrix gap-fill (T25/D19; compleme
       '--new-session',
       '--bind', clonePath, clonePath,
       '--ro-bind', motherWikiPath, `${clonePath}/wiki`,
+      '--ro-bind', `${clonePath}/.git`, `${clonePath}/.git`,
       '--chdir', clonePath,
       '--',
     ]);
@@ -265,6 +267,7 @@ describe('buildJailArgs — wiki-shape x mode matrix gap-fill (T25/D19; compleme
       '--new-session',
       '--bind', clonePath, clonePath,
       '--ro-bind', motherWikiPath, `${clonePath}/wiki`,
+      '--ro-bind', `${clonePath}/.git`, `${clonePath}/.git`,
       '--chdir', clonePath,
       '--',
     ]);
