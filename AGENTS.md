@@ -327,6 +327,11 @@ Use the repo-local wiki and docs as the canonical work-and-knowledge model for t
 
 Do not treat generated views, launcher runtime artifacts, or `scratch_space/` material as canonical state.
 
+### Least Privilege
+
+**Only give an agent what it needs.** Access starts at nothing: no write, no network, no credential, no mount.
+Each grant names the job step that needs it. When in doubt, leave it out; a refused run costs less than a leak.
+
 ### Canonical Layers
 
 - `docs/` reference pages are the canonical durable knowledge layer for operator and protocol behavior.
