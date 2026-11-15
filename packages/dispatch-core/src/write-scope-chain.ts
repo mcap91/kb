@@ -7,12 +7,27 @@
  * D2's soft symlink posture: a within-repo symlink ancestor is admitted (its
  * realpath still lands inside the root); an ancestor that resolves outside
  * the root (a symlink escape, or a `..`-relative entry with no admission-time
- * string check upstream) is refused. Pure validation only (D1) — this never
- * creates anything on disk; admission.ts's `checkStaleWriteScope` and
- * pipeline.ts's `precreateWriteScopeSkeleton` are the two call sites, run
- * against the mother repo and the clone respectively.
+ * string check upstream) is refused.
+ *
+ * The SAME walk also resolves the entry's full target path — the nearest
+ * existing ancestor's realpath, joined with the not-yet-existing remainder —
+ * and refuses it when that resolved path IS the repo root, or equals,
+ * contains, or lies inside the repo's `.git` (a corrected redteam finding:
+ * checking only the full entry's own realpath misses a not-yet-existing
+ * child of a symlinked ancestor, e.g. a tracked `alias -> .git` with entry
+ * `alias/worker.txt` — the entry itself has no realpath to check until it is
+ * created, but its ancestor already does). Resolving and refusing here means
+ * nothing is ever created through a symlinked ancestor that aliases the root
+ * or `.git` in the first place.
+ *
+ * Pure validation only (D1) — this never creates anything on disk;
+ * admission.ts's `checkWriteScopeEntryShape` (itself called by
+ * `checkStaleWriteScope` and by `createHandoff`) and pipeline.ts's
+ * `precreateWriteScopeSkeleton` are the call sites, run against the mother
+ * repo and the clone respectively, and all three refuse before any entry is
+ * created.
  */
-import { dirname, isAbsolute, relative, resolve } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { lstat, realpath } from 'node:fs/promises';
 
 import type { DispatchResult } from './errors.js';
@@ -27,7 +42,8 @@ function isWithinRoot(root: string, target: string): boolean {
 
 export async function validateWriteScopeChain(rootDir: string, entry: string): Promise<DispatchResult<null>> {
   const rootResolved = resolve(rootDir);
-  let ancestor = resolve(rootResolved, entry);
+  const target = resolve(rootResolved, entry);
+  let ancestor = target;
 
   for (;;) {
     try {
@@ -46,11 +62,16 @@ export async function validateWriteScopeChain(rootDir: string, entry: string): P
     }
   }
 
-  let realAncestor: string;
   let realRoot: string;
   try {
-    realAncestor = await realpath(ancestor);
     realRoot = await realpath(rootResolved);
+  } catch {
+    return ok(null); // repo root does not exist on disk yet (e.g. authoring-time dry run) — nothing further to resolve.
+  }
+
+  let realAncestor: string;
+  try {
+    realAncestor = await realpath(ancestor);
   } catch (err) {
     return fail(
       'STALE_WRITE_SCOPE',
@@ -63,6 +84,34 @@ export async function validateWriteScopeChain(rootDir: string, entry: string): P
     return fail(
       'STALE_WRITE_SCOPE',
       `write_scope entry "${entry}" resolves through an ancestor outside the repo root.`,
+      { entry },
+    );
+  }
+
+  // The nearest existing ancestor's realpath, joined with the remainder that
+  // does not exist yet (plain string join: nothing past `ancestor` exists on
+  // disk, so there is no further symlink to resolve in the remainder).
+  const remainder = relative(ancestor, target);
+  const resolvedPath = remainder === '' ? realAncestor : join(realAncestor, remainder);
+
+  if (resolvedPath === realRoot) {
+    return fail(
+      'STALE_WRITE_SCOPE',
+      `write_scope entry "${entry}" resolves (through a symlink ancestor) to the repo root.`,
+      { entry },
+    );
+  }
+
+  let realGit: string | null;
+  try {
+    realGit = await realpath(join(realRoot, '.git'));
+  } catch {
+    realGit = null;
+  }
+  if (realGit !== null && (resolvedPath === realGit || isWithinRoot(realGit, resolvedPath))) {
+    return fail(
+      'STALE_WRITE_SCOPE',
+      `write_scope entry "${entry}" resolves (through a symlink ancestor) into ".git".`,
       { entry },
     );
   }

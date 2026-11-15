@@ -88,22 +88,28 @@ function checkEnvelope(handoff: Handoff): DispatchResult<null> {
 
 /**
  * The one entry-shape rule shared by `checkStaleWriteScope` below (admission,
- * refusal `STALE_WRITE_SCOPE` naming the entry) and `createHandoff`
- * (create-handoff.ts; refuses to author the HO with the same code) — mirrors
- * AgentChassis's `relativeAuthorityPathToAbsolute`'s `.git`-segment and
- * root-aliasing refusals (`launch-isolation-worker-scope.mjs`). Refuses, for
- * EVERY family (the refusal text names only this rule — it never points to
- * another family):
+ * refusal `STALE_WRITE_SCOPE` naming the entry), `createHandoff`
+ * (create-handoff.ts; refuses to author the HO with the same code), and
+ * pipeline.ts's `precreateWriteScopeSkeleton` (refuses before creating
+ * anything in the clone) — mirrors AgentChassis's
+ * `relativeAuthorityPathToAbsolute`'s `.git`-segment and root-aliasing
+ * refusals (`launch-isolation-worker-scope.mjs`). Refuses, for EVERY family
+ * (the refusal text names only this rule — it never points to another
+ * family):
  *   - an entry with a `.git` path segment anywhere in the path (e.g.
  *     `.git/hooks/`, `src/.git/x`);
  *   - an entry that resolves (plain `path.resolve`, no realpath needed) to
  *     the repo root itself (`""`, `.`, `./`, `/`, or any other entry whose
  *     resolution lands back on `repoRootResolved`);
- *   - an entry whose REALPATH in the mother repo — checked only when the
- *     entry already exists on disk, e.g. a tracked symlink — is the repo
- *     root, or equals, contains, or lies inside the repo's `.git` (closes an
- *     `alias -> .` / `alias -> .git` alias the string checks above cannot
- *     see).
+ *   - an entry whose RESOLVED path — the nearest existing ancestor's
+ *     realpath, joined with the not-yet-existing remainder
+ *     (`validateWriteScopeChain`, write-scope-chain.ts) — is the repo root,
+ *     or equals, contains, or lies inside the repo's `.git`. Resolving
+ *     through the nearest EXISTING ancestor (not just the full entry path)
+ *     is what closes a tracked `alias -> .git` with a not-yet-existing child
+ *     (e.g. `alias/worker.txt`): the entry itself has nothing to realpath
+ *     yet, but its ancestor already does, so the alias is caught before
+ *     anything is created through it.
  * A root-level FILE entry (e.g. `README.md`) is ADMITTED: every family now
  * gets exact-file binds, so no family ever widens a root-level file entry to
  * the writable root itself anymore.
@@ -135,53 +141,25 @@ export async function checkWriteScopeEntryShape(repoRootResolved: string, entry:
     );
   }
 
-  let realRoot: string;
-  try {
-    realRoot = await realpath(repoRootResolved);
-  } catch {
-    return ok(null); // repo root does not exist on disk yet (e.g. authoring-time dry run) — nothing further to resolve.
-  }
-  let realGit: string | null;
-  try {
-    realGit = await realpath(join(repoRootResolved, '.git'));
-  } catch {
-    realGit = null;
-  }
-  let realEntry: string;
-  try {
-    realEntry = await realpath(resolved);
-  } catch {
-    return ok(null); // entry does not exist yet (a brand-new path) — nothing to alias through.
-  }
-
-  if (realEntry === realRoot) {
-    return fail(
-      'STALE_WRITE_SCOPE',
-      `write_scope entry "${entry}" resolves (through a symlink) to the repo root.`,
-      { entry },
-    );
-  }
-  if (realGit !== null && (realEntry === realGit || isWithinRoot(realGit, realEntry))) {
-    return fail(
-      'STALE_WRITE_SCOPE',
-      `write_scope entry "${entry}" resolves (through a symlink) into ".git".`,
-      { entry },
-    );
-  }
-
-  return ok(null);
+  // The ancestor-walk-and-realpath resolution (escape check plus the root/
+  // `.git` alias check) lives in write-scope-chain.ts's `validateWriteScopeChain`
+  // — the one shared implementation `checkStaleWriteScope`, `createHandoff`,
+  // and `precreateWriteScopeSkeleton` all go through via this function.
+  return validateWriteScopeChain(repoRootResolved, entry);
 }
 
 /**
- * §7.3 `stale_write_scope`. Every entry must be repo-relative and resolve
- * inside the repo, pass the shared entry-shape rule above (`.git` segment /
- * root-aliasing), then pass the ancestor-chain check (WK-0163,
- * `validateWriteScopeChain`): walk up to the nearest existing ancestor and
- * require its realpath stay within the repo root's realpath. A brand-new
- * multi-level path (e.g. `tests/golden/smoke.txt` in a repo with no `tests/`)
- * is admitted — pipeline step 9b creates the full hierarchy — but a symlink
- * ancestor that resolves outside the repo is refused (D2 soft posture:
- * within-repo symlinks are fine).
+ * §7.3 `stale_write_scope`. Every entry must be repo-relative, resolve inside
+ * the repo (string check below), and pass the shared entry-shape rule above
+ * (`checkWriteScopeEntryShape`): `.git` segment / root-aliasing, and the
+ * ancestor-chain resolution (WK-0163, `validateWriteScopeChain`) — walk up to
+ * the nearest existing ancestor, require its realpath stay within the repo
+ * root's realpath, then refuse a resolved path (ancestor realpath + remainder)
+ * that is the root or touches `.git`. A brand-new multi-level path (e.g.
+ * `tests/golden/smoke.txt` in a repo with no `tests/`) is admitted — pipeline
+ * step 9b creates the full hierarchy — but a symlink ancestor that resolves
+ * outside the repo, or that aliases the root or `.git`, is refused (D2 soft
+ * posture: an ordinary within-repo symlink is fine).
  */
 async function checkStaleWriteScope(handoff: Handoff, repoRootResolved: string): Promise<DispatchResult<null>> {
   for (const entry of handoff.write_scope) {
@@ -202,11 +180,11 @@ async function checkStaleWriteScope(handoff: Handoff, repoRootResolved: string):
       );
     }
 
+    // checkWriteScopeEntryShape already runs validateWriteScopeChain's
+    // ancestor-walk resolution internally — one call, not a second re-run of
+    // the identical rule.
     const entryShapeCheck = await checkWriteScopeEntryShape(repoRootResolved, entry);
     if (!entryShapeCheck.ok) return entryShapeCheck;
-
-    const chainCheck = await validateWriteScopeChain(repoRootResolved, entry);
-    if (!chainCheck.ok) return chainCheck;
   }
 
   return ok(null);

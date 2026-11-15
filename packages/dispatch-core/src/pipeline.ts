@@ -34,7 +34,7 @@ import { fileURLToPath } from 'node:url';
 import type { DispatchResult } from './errors.js';
 import { ok, fail } from './errors.js';
 import { parseHandoff } from './ho.js';
-import { checkAdmission } from './admission.js';
+import { checkAdmission, checkWriteScopeEntryShape } from './admission.js';
 import {
   resolveModelFromConfig,
   checkHarnessVersion,
@@ -62,7 +62,6 @@ import { attachStreamErrorHandlers } from './stream-utils.js';
 import { buildWorkerEnv } from './env-policy.js';
 import { createClone, removeClone, sweepOrphanClones } from './clone.js';
 import { probeWikiSource } from './wiki-source.js';
-import { validateWriteScopeChain } from './write-scope-chain.js';
 import {
   buildEnumerateScript,
   parseEnumerateOutput,
@@ -784,13 +783,21 @@ export async function collectMountWrites(
  * Step 9b: pre-create the write_scope skeleton in the CLONE (never the
  * mother repo — D1, WK-0163) so every declared path exists on disk before
  * `buildBwrapPlan` (bwrap cannot mkdir a new path under a ro-bound root,
- * jail.ts's own module doc). Validates each entry's ancestor chain
- * (`validateWriteScopeChain`, the same D2 containment rule admission.ts
- * runs against the mother repo) before creating anything, against the RAW
- * entry — an entry that is absolute or escapes the clone via `..` resolves
- * outside `clonePath` and is refused here even in isolation from admission,
- * which has already run against every entry reaching this call site in the
- * real pipeline. File entries: mkdir the parent, touch the file (chassis
+ * jail.ts's own module doc).
+ *
+ * Checks EVERY entry against the shared entry-shape rule
+ * (`checkWriteScopeEntryShape`, admission.ts — the same `.git`-segment /
+ * root-aliasing / ancestor-resolved rule admission runs against the mother
+ * repo) against the RAW entry, resolved here against the CLONE, before
+ * creating anything for ANY entry: a validation pass over the whole list
+ * runs first, then a creation pass, so one bad entry anywhere in the list
+ * leaves the clone unchanged (a corrected redteam finding — the previous
+ * per-entry interleaving could create an earlier good entry's file, inside
+ * a tracked symlink's target, before a later entry's refusal ever ran). An
+ * entry that is absolute or escapes the clone via `..` resolves outside
+ * `clonePath` and is refused here even in isolation from admission, which
+ * has already run against every entry reaching this call site in the real
+ * pipeline. File entries: mkdir the parent, touch the file (chassis
  * pattern: O_CREAT | O_EXCL). Directory entries: mkdir the entry itself.
  *
  * Returns the write_scope-relative paths of the file skeletons actually
@@ -803,36 +810,37 @@ export async function collectMountWrites(
 export async function precreateWriteScopeSkeleton(writeScope: string[], clonePath: string): Promise<DispatchResult<string[]>> {
   const createdSkeletonPaths: string[] = [];
 
-  if (writeScope.length > 0) {
-    for (const rel of writeScope) {
-      const trimmed = rel.replace(/^\/+/, '').replace(/\/+$/, '');
-      if (!trimmed) continue;
+  const toCreate: Array<{ entryPath: string; trimmed: string }> = [];
+  for (const rel of writeScope) {
+    const shapeCheck = await checkWriteScopeEntryShape(clonePath, rel);
+    if (!shapeCheck.ok) return shapeCheck;
 
-      const chainCheck = await validateWriteScopeChain(clonePath, rel);
-      if (!chainCheck.ok) return chainCheck;
+    const trimmed = rel.replace(/^\/+/, '').replace(/\/+$/, '');
+    if (!trimmed) continue;
+    toCreate.push({ entryPath: join(clonePath, trimmed), trimmed });
+  }
 
-      const entryPath = join(clonePath, trimmed);
-      if (classifyEntry(entryPath, trimmed) === 'file') {
-        const parentDir = dirname(entryPath);
-        try {
-          await mkdir(parentDir, { recursive: true });
-        } catch (err) {
-          return fail('PIPELINE_FAILED', `Failed to create write_scope skeleton dir: ${parentDir}`, err);
+  for (const { entryPath, trimmed } of toCreate) {
+    if (classifyEntry(entryPath, trimmed) === 'file') {
+      const parentDir = dirname(entryPath);
+      try {
+        await mkdir(parentDir, { recursive: true });
+      } catch (err) {
+        return fail('PIPELINE_FAILED', `Failed to create write_scope skeleton dir: ${parentDir}`, err);
+      }
+      try {
+        closeSync(openSync(entryPath, fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY, 0o644));
+        createdSkeletonPaths.push(trimmed);
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException)?.code !== 'EEXIST') {
+          return fail('PIPELINE_FAILED', `Failed to create write_scope skeleton file: ${entryPath}`, err);
         }
-        try {
-          closeSync(openSync(entryPath, fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY, 0o644));
-          createdSkeletonPaths.push(trimmed);
-        } catch (err) {
-          if ((err as NodeJS.ErrnoException)?.code !== 'EEXIST') {
-            return fail('PIPELINE_FAILED', `Failed to create write_scope skeleton file: ${entryPath}`, err);
-          }
-        }
-      } else {
-        try {
-          await mkdir(entryPath, { recursive: true });
-        } catch (err) {
-          return fail('PIPELINE_FAILED', `Failed to create write_scope skeleton dir: ${entryPath}`, err);
-        }
+      }
+    } else {
+      try {
+        await mkdir(entryPath, { recursive: true });
+      } catch (err) {
+        return fail('PIPELINE_FAILED', `Failed to create write_scope skeleton dir: ${entryPath}`, err);
       }
     }
   }
