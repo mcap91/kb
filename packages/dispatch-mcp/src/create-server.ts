@@ -76,6 +76,8 @@ const INSTRUCTIONS = [
   '',
   '`ACTIVE_RUN_EXISTS` is same-handoff single-flight only: one active run per HO. Different handoffs dispatch concurrently, each in its own clone of `base_sha`. Only merges to main serialize.',
   '',
+  'A `write_scope` entry refuses `STALE_WRITE_SCOPE`, naming the entry, for every family, if it has a `.git` path segment or resolves to the repo root (`""`, `.`, `./`, `/`) — at `create-handoff` authoring time and again at `dispatch` admission. A root-level file entry (e.g. `README.md`) is fine: every family binds it as an exact file, never the directory around it.',
+  '',
   '## Available models',
   '',
   'Configure models and backends in <repo>/wiki/.dispatch/ (run init-dispatch to scaffold). Resolve with --model <slug> --backend <name>.',

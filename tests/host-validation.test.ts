@@ -12,7 +12,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { connect, createServer, type Server } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -235,6 +235,30 @@ describe.skipIf(!BWRAP_FUNCTIONAL)('runHostValidation (WK-0294) — real bwrap',
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.data.commands[0]?.stdout_tail).toBe('[end]\n');
+  });
+
+  // Why: a validation run clones the delivery too
+  // (`runHostValidation` -> `createClone`, no admission pass); a tracked
+  // mask-path symlink in the delivered tree must refuse there as well,
+  // writing no evidence (the merge gate must see evidence as missing, not
+  // a misleadingly-empty pass).
+  it('refuses a delivery whose .claude is a tracked symlink, writing no evidence', async () => {
+    const base = git(repo, 'rev-parse', '--abbrev-ref', 'HEAD');
+    git(repo, 'checkout', '-q', '-b', `dispatch/${HANDOFF_ID}`);
+    await symlink('.git', join(repo, '.claude'));
+    git(repo, 'add', '-A');
+    git(repo, 'commit', '-q', '-m', 'symlinked delivery');
+    deliverySha = git(repo, 'rev-parse', 'HEAD');
+    git(repo, 'checkout', '-q', base);
+
+    const result = await run(registry({ commands: [{ name: 'should-not-run', argv: ['bash', '-c', 'echo should-not-run'], timeout_ms: 5_000 }] }));
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.message).toContain('.claude');
+
+    const evidencePath = join(repo, '.agent-runs', 'runs', HANDOFF_ID, RUN_ID, VALIDATION_EVIDENCE_FILE);
+    const read = await readValidationEvidence(evidencePath);
+    expect(read).toEqual({ ok: true, data: null });
   });
 
   // Why: HO validation text is never executed — with no registry the host runs nothing and clones nothing.

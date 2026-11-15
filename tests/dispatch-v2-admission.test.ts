@@ -14,13 +14,40 @@
  */
 import { describe, expect, it, beforeEach, afterEach } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { lstat, mkdir, mkdtemp, readdir, readFile, readlink, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 
 import { parseHandoffContent, type Handoff } from '../packages/dispatch-core/src/ho.js';
 import { checkAdmission } from '../packages/dispatch-core/src/admission.js';
 import { assemblePrompt } from '../packages/dispatch-core/src/assemble.js';
+
+/**
+ * A deterministic snapshot of every path under `root` (relative path, kind,
+ * mode, content hash for a file or link target for a symlink) — proves a
+ * refused write_scope entry leaves `.git` byte-identical.
+ */
+async function snapshotTree(root: string): Promise<string[]> {
+  const out: string[] = [];
+  async function walk(dir: string): Promise<void> {
+    for (const name of await readdir(dir)) {
+      const full = join(dir, name);
+      const rel = relative(root, full);
+      const st = await lstat(full);
+      if (st.isSymbolicLink()) {
+        out.push(`${rel}\tsymlink\t${st.mode.toString(8)}\t${await readlink(full)}`);
+      } else if (st.isDirectory()) {
+        out.push(`${rel}\tdir\t${st.mode.toString(8)}`);
+        await walk(full);
+      } else {
+        out.push(`${rel}\tfile\t${st.mode.toString(8)}\t${createHash('sha256').update(await readFile(full)).digest('hex')}`);
+      }
+    }
+  }
+  await walk(root);
+  return out.sort();
+}
 
 function makeHandoff(overrides: Partial<Handoff> = {}): Handoff {
   return {
@@ -109,6 +136,61 @@ describe('admission.ts — S4 full admission gate (new refusal codes)', () => {
       expect(result.ok).toBe(false);
       if (result.ok) return;
       expect(result.error).toBe('WORK_ITEM_NOT_FOUND');
+    });
+
+    // The shared entry-shape rule — a `.git` segment anywhere, or an entry
+    // that resolves to the repo root itself — refuses for every family,
+    // naming the entry; it never names another family.
+    describe('entry-shape rule: .git segments and root-equivalent entries', () => {
+      it.each(['.git/hooks/', 'src/.git/x', '""', '.', './', '/'])(
+        'refuses write_scope entry %j with STALE_WRITE_SCOPE naming the entry',
+        async (rawEntry) => {
+          const entry = rawEntry === '""' ? '' : rawEntry;
+          const result = await checkAdmission(makeHandoff({ write_scope: [entry] }), tempDir);
+          expect(result.ok).toBe(false);
+          if (result.ok) return;
+          expect(result.error).toBe('STALE_WRITE_SCOPE');
+          expect(result.message).toContain(JSON.stringify(entry));
+        },
+      );
+
+      it('admits README.md (existing root-level file), a not-yet-existing NEW.md, docs/ and docs (an existing directory), and src/a.ts', async () => {
+        await mkdir(join(tempDir, 'docs'), { recursive: true });
+        for (const entry of ['README.md', 'NEW.md', 'docs/', 'docs', 'src/a.ts']) {
+          const result = await checkAdmission(makeHandoff({ write_scope: [entry] }), tempDir);
+          expect(result.ok).toBe(false);
+          if (result.ok) return;
+          expect(result.error).toBe('WORK_ITEM_NOT_FOUND');
+        }
+      });
+
+      // A redteam-found gap: a tracked symlink aliasing `.git` makes a
+      // not-yet-existing CHILD entry (the entry itself has nothing to
+      // realpath yet) resolve into `.git` through its existing ancestor.
+      // Refused before anything else runs; `.git` is untouched either way.
+      describe('a tracked symlink aliasing .git (not-yet-existing child entries)', () => {
+        beforeEach(async () => {
+          await symlink(join(tempDir, '.git'), join(tempDir, 'alias'));
+          execFileSync('git', ['add', '-A'], { cwd: tempDir });
+          execFileSync('git', ['commit', '-m', 'add alias'], { cwd: tempDir });
+        });
+
+        it.each(['alias/worker.txt', 'alias/hooks/post-checkout'])(
+          'refuses write_scope entry %j with STALE_WRITE_SCOPE naming the entry, leaving .git byte-identical',
+          async (entry) => {
+            const gitDir = join(tempDir, '.git');
+            const before = await snapshotTree(gitDir);
+
+            const result = await checkAdmission(makeHandoff({ write_scope: [entry] }), tempDir);
+            expect(result.ok).toBe(false);
+            if (result.ok) return;
+            expect(result.error).toBe('STALE_WRITE_SCOPE');
+            expect(result.message).toContain(JSON.stringify(entry));
+
+            expect(await snapshotTree(gitDir)).toEqual(before);
+          },
+        );
+      });
     });
   });
 

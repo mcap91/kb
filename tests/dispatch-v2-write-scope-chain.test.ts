@@ -13,13 +13,44 @@
  */
 import { describe, expect, it, beforeEach, afterEach } from 'vitest';
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, lstat, mkdir, mkdtemp, readdir, readFile, readlink, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 
 import { validateWriteScopeChain } from '../packages/dispatch-core/src/write-scope-chain.js';
 import { precreateWriteScopeSkeleton } from '../packages/dispatch-core/src/pipeline.js';
+
+/**
+ * A deterministic snapshot of every path under `root`: relative path, entry
+ * kind, mode, and (for a regular file) a content hash — or its link target
+ * for a symlink. Used to prove a refused write_scope entry leaves a
+ * directory (`.git`, or a whole clone) byte-identical: the sorted snapshot
+ * taken before a refusal must equal the one taken after.
+ */
+async function snapshotTree(root: string): Promise<string[]> {
+  const out: string[] = [];
+  async function walk(dir: string): Promise<void> {
+    const names = await readdir(dir);
+    for (const name of names) {
+      const full = join(dir, name);
+      const rel = relative(root, full);
+      const st = await lstat(full);
+      if (st.isSymbolicLink()) {
+        out.push(`${rel}\tsymlink\t${st.mode.toString(8)}\t${await readlink(full)}`);
+      } else if (st.isDirectory()) {
+        out.push(`${rel}\tdir\t${st.mode.toString(8)}`);
+        await walk(full);
+      } else {
+        const hash = createHash('sha256').update(await readFile(full)).digest('hex');
+        out.push(`${rel}\tfile\t${st.mode.toString(8)}\t${hash}`);
+      }
+    }
+  }
+  await walk(root);
+  return out.sort();
+}
 
 describe('WK-0163: ancestor-chain write_scope validation', () => {
   let repoRoot: string;
@@ -123,6 +154,124 @@ describe('WK-0163: ancestor-chain write_scope validation', () => {
       const result = await precreateWriteScopeSkeleton(['src'], repoRoot);
       expect(result.ok).toBe(true);
       expect(existsSync(join(repoRoot, 'src'))).toBe(true);
+    });
+  });
+
+  // A redteam-found gap: the nearest-existing-ancestor walk above resolves a
+  // not-yet-existing entry's target through a symlinked ancestor — closing a
+  // tracked `alias -> .git` (or `alias -> .`) where the entry itself (e.g.
+  // `alias/worker.txt`) has nothing of its own to realpath yet, but its
+  // ancestor already does. Both call sites must refuse before anything is
+  // created.
+  describe('resolving a not-yet-existing entry through a symlinked ancestor that aliases .git or the root', () => {
+    let gitAlias: string;
+    let rootAlias: string;
+
+    beforeEach(async () => {
+      gitAlias = join(repoRoot, 'alias');
+      rootAlias = join(repoRoot, 'alias-root');
+      await symlink(join(repoRoot, '.git'), gitAlias);
+      await symlink(repoRoot, rootAlias);
+      execFileSync('git', ['add', '-A'], { cwd: repoRoot });
+      execFileSync('git', ['commit', '-m', 'add aliases'], { cwd: repoRoot });
+    });
+
+    describe('validateWriteScopeChain', () => {
+      it.each(['alias/worker.txt', 'alias/hooks/post-checkout'])(
+        'refuses entry %j (not-yet-existing child of a tracked alias -> .git)',
+        async (entry) => {
+          const result = await validateWriteScopeChain(repoRoot, entry);
+          expect(result.ok).toBe(false);
+          if (result.ok) return;
+          expect(result.error).toBe('STALE_WRITE_SCOPE');
+        },
+      );
+
+      // A not-yet-existing CHILD of a root-aliasing symlink (e.g.
+      // `alias-root/new-file.txt`) resolves to a new file INSIDE the root —
+      // the same effect as a plain root-level file entry, which is admitted
+      // (every family gets exact-file binds). Only the alias itself,
+      // directly, resolves to the root exactly and is refused.
+      it('refuses a tracked alias -> . used directly as an entry (resolves to the repo root itself)', async () => {
+        const result = await validateWriteScopeChain(repoRoot, 'alias-root');
+        expect(result.ok).toBe(false);
+        if (result.ok) return;
+        expect(result.error).toBe('STALE_WRITE_SCOPE');
+      });
+
+      it('admits a not-yet-existing child of a tracked alias -> . (a root-level file write, same as writing it directly)', async () => {
+        const result = await validateWriteScopeChain(repoRoot, 'alias-root/new-file.txt');
+        expect(result.ok).toBe(true);
+      });
+    });
+
+    describe('precreateWriteScopeSkeleton', () => {
+      it.each(['alias/worker.txt', 'alias/hooks/post-checkout'])(
+        'refuses entry %j and leaves .git byte-identical (nothing created through the alias)',
+        async (entry) => {
+          const gitDir = join(repoRoot, '.git');
+          const before = await snapshotTree(gitDir);
+
+          const result = await precreateWriteScopeSkeleton([entry], repoRoot);
+          expect(result.ok).toBe(false);
+          if (result.ok) return;
+          expect(result.error).toBe('STALE_WRITE_SCOPE');
+
+          const after = await snapshotTree(gitDir);
+          expect(after).toEqual(before);
+        },
+      );
+
+      it('a bad entry after several good entries creates nothing at all (clone-wide snapshot unchanged)', async () => {
+        const before = await snapshotTree(repoRoot);
+
+        const result = await precreateWriteScopeSkeleton(
+          ['docs/good-one.txt', 'docs/nested/good-two.txt', 'alias/worker.txt'],
+          repoRoot,
+        );
+        expect(result.ok).toBe(false);
+        if (result.ok) return;
+        expect(result.error).toBe('STALE_WRITE_SCOPE');
+
+        const after = await snapshotTree(repoRoot);
+        expect(after).toEqual(before);
+        expect(existsSync(join(repoRoot, 'docs'))).toBe(false);
+      });
+    });
+  });
+
+  // A non-ENOENT realpath failure (e.g. a directory the caller cannot
+  // traverse into) must refuse closed, carrying the cause -- never be
+  // treated the same as "does not exist yet".
+  describe('validateWriteScopeChain -- non-ENOENT realpath failures refuse closed', () => {
+    it('refuses when the root itself cannot be resolved (EACCES on an ancestor directory), carrying the cause', async () => {
+      const blockedParent = await mkdtemp(join(tmpdir(), 'dispatch-write-scope-blocked-'));
+      const actualRoot = join(blockedParent, 'theroot');
+      await mkdir(actualRoot, { recursive: true });
+      await chmod(blockedParent, 0o000);
+      try {
+        const result = await validateWriteScopeChain(actualRoot, 'newfile.txt');
+        expect(result.ok).toBe(false);
+        if (result.ok) return;
+        expect(result.error).toBe('STALE_WRITE_SCOPE');
+        expect(result.detail).toBeTruthy();
+      } finally {
+        await chmod(blockedParent, 0o755);
+        await rm(blockedParent, { recursive: true, force: true });
+      }
+    });
+
+    it('refuses when ".git" cannot be resolved (EACCES on the repo root itself), carrying the cause', async () => {
+      await chmod(repoRoot, 0o000);
+      try {
+        const result = await validateWriteScopeChain(repoRoot, 'newfile.txt');
+        expect(result.ok).toBe(false);
+        if (result.ok) return;
+        expect(result.error).toBe('STALE_WRITE_SCOPE');
+        expect(result.detail).toBeTruthy();
+      } finally {
+        await chmod(repoRoot, 0o755);
+      }
     });
   });
 });

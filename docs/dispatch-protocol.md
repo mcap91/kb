@@ -87,7 +87,7 @@ here is a persisted review state — it all re-runs, every time, against the liv
 | Handoff parses (required fields, valid `mode`) | `BAD_RECORD` |
 | `write_scope` empty outside `implement`, or `web: true` for `code_review`/`redteam` | `ENVELOPE_EXCEEDS_MODE` |
 | `implement` with empty `write_scope` | `MISSING_WRITE_SCOPE` |
-| Every `write_scope` entry is repo-relative, resolves inside the repo, and it or its parent exists | `STALE_WRITE_SCOPE` |
+| Every `write_scope` entry is repo-relative and resolves inside the repo; no entry has a `.git` path segment or resolves (plain string form, `""`/`.`/`./`/`/`) to the repo root; resolving the entry through its nearest EXISTING ancestor's realpath (joined with the not-yet-existing remainder) must not land on the repo root or touch `.git` either — for every family, naming only the entry, and before anything is created from it | `STALE_WRITE_SCOPE` |
 | Every `read_first` entry exists — in the `base_ref` tree for a chained HO's non-wiki entries, else in the working tree | `MISSING_READ_FIRST` |
 | Repo is clean (`git status --porcelain` over `write_scope` paths only; with an empty `write_scope` — every advisory mode — the scan is skipped and declared-path staleness is covered by the base-drift gate) | `DIRTY_REPO` |
 | Every `read_first` entry is committed — no modified, staged, or untracked file under it (wiki entries checked in the wiki repo when nested-private); checked before base drift | `UNCOMMITTED_READ_FIRST` (see below) |
@@ -135,11 +135,30 @@ HO's declared `data_mounts`/`export_mounts`. There is no whole-root bind and no 
 - **Auth leaf** — the only `$HOME` paths let through: Claude's `~/.claude/.credentials.json` (`rw` for
   `implement`, `ro` otherwise); Codex's `~/.codex/auth.json` + `config.toml` (`ro`); Pi needs none (its
   key is env-injected, its config dir is jail tmpfs).
-- **`write_scope` mounts** are family-shaped: Claude widens a file entry to its parent directory
-  (its atomic-rename write pattern needs directory write+exec); Codex binds exact files; Pi binds
-  exactly what was declared.
-- **Secret masking** — a clone's own `.env` is masked to `/dev/null` and `.claude/` to a fresh tmpfs,
-  so a committed secret or agent config in the mother repo's working tree never reaches the jail.
+- **`write_scope` mounts bind exact files for every family** — Claude, Codex, and Pi (Pi binds exactly
+  what was declared; Claude and Codex each get the declared file or directory, never a parent widened
+  to cover it). A Claude worker edits a write_scope file in place through Bash, with its native `Edit`/
+  `Write`/`NotebookEdit` tools denied: those tools save by renaming a temp sibling file into place,
+  which needs write+execute on the containing directory — an exact-file bind, by design, refuses that
+  rename (`EROFS`), so Bash is Claude's only write path inside a jail.
+- **Entries are resolved and refused before anything is created** — the admission-gate entry-shape
+  rule above, and the clone-side write_scope skeleton step that pre-creates each declared path, both
+  resolve every entry through its nearest existing ancestor before creating anything for ANY entry in
+  the list; a refusal (a tracked symlink ancestor aliasing the repo root or `.git`, e.g. `alias ->
+  .git` with entry `alias/worker.txt`) leaves the clone unchanged — nothing is created through the bad
+  entry, and nothing created for an earlier good entry in the same list survives either, since every
+  entry is checked before the first create. A further mount guard still runs as the final check, over
+  the family-resolved mount list, after the skeleton exists on disk — belt-and-suspenders over the
+  same clone, never a substitute for resolving and refusing before creation.
+- **Secret masking, then the final read-only `.git` bind** — a clone's own `.env` is masked to
+  `/dev/null` and `.claude/` to a fresh tmpfs when either is present (a committed secret or agent
+  config in the mother repo's working tree must never reach the jail), immediately followed, as the
+  LAST mount operation of every plan (worker and host-validation alike), by an unconditional, strict
+  `--ro-bind <clone>/.git <clone>/.git`. That order matters: bwrap resolves later binds over earlier
+  ones, so no mask (nor any write_scope bind) can ever land after the `.git` bind and reopen it — this
+  is the sole protection for a host-validation jail, which declares no `write_scope` and otherwise
+  binds the whole clone read-write. A tracked symlink at a mask path (`.claude -> .`, `.claude -> .git`,
+  `.env -> <file>`) is refused before any jail ever starts: cloning fails closed, naming the path.
 - **Worker env** — minted from an allowlist: only `PATH`, `HOME`, `USER`, `SHELL`, `TERM`, `LANG`, and
   `LC_*` are copied from the host, then secret-shaped, posture, and proxy names are dropped. `TMPDIR`
   is pinned to the jail's `/tmp`. kb adds its own vars on top (credentials, HO `vars`, tunnel proxy).

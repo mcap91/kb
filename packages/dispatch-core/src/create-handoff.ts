@@ -9,6 +9,7 @@ import { allocate } from '@kb/wiki-core';
 import type { CreateHandoffOpts, CreateHandoffResult } from './types.js';
 import type { DispatchResult } from './errors.js';
 import { ok, fail } from './errors.js';
+import { checkWriteScopeEntryShape } from './admission.js';
 import { probeWikiSource } from './wiki-source.js';
 
 const THIS_DIR = dirname(fileURLToPath(import.meta.url));
@@ -174,6 +175,22 @@ function checkWorkItemForImplement(opts: CreateHandoffOpts): DispatchResult<null
   return ok(null);
 }
 
+/**
+ * Refuses to author an HO whose write_scope entry fails the shared
+ * entry-shape rule (`checkWriteScopeEntryShape`, admission.ts) — the same
+ * `.git`-segment / root-aliasing refusal admission applies at dispatch time,
+ * now also enforced at authoring time so a broken HO never even reaches
+ * disk. Every family: the refusal names only the rule, never another
+ * family.
+ */
+async function checkWriteScopeEntriesForAuthoring(targetDir: string, writeScope: string[]): Promise<DispatchResult<null>> {
+  for (const entry of writeScope) {
+    const shapeCheck = await checkWriteScopeEntryShape(targetDir, entry);
+    if (!shapeCheck.ok) return shapeCheck;
+  }
+  return ok(null);
+}
+
 export async function createHandoff(
   opts: CreateHandoffOpts,
 ): Promise<DispatchResult<CreateHandoffResult>> {
@@ -181,6 +198,10 @@ export async function createHandoff(
   if (!workItemCheck.ok) return workItemCheck;
 
   const targetDir = resolve(opts.dir);
+
+  const writeScopeCheck = await checkWriteScopeEntriesForAuthoring(targetDir, opts.write_scope ?? []);
+  if (!writeScopeCheck.ok) return writeScopeCheck;
+
   const templateResult = await loadHandoffTemplate(targetDir);
   if (!templateResult.ok) return templateResult;
 

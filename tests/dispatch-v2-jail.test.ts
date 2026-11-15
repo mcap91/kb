@@ -31,6 +31,7 @@ import {
   type BwrapMount,
   type JailOpts,
 } from '../packages/dispatch-core/src/jail.js';
+import { familyWriteScope } from '../packages/dispatch-core/src/pipeline.js';
 import { spawnIsolated } from '../packages/dispatch-core/src/spawn-isolated.js';
 
 const clonePath = '/home/user/.kb-dispatch/clones/RUN-JAIL';
@@ -65,6 +66,7 @@ describe('buildJailArgs — write_scope sparse binds', () => {
       '--ro-bind', clonePath, clonePath,
       '--bind', `${clonePath}/src`, `${clonePath}/src`,
       '--bind', `${clonePath}/test`, `${clonePath}/test`,
+      '--ro-bind', `${clonePath}/.git`, `${clonePath}/.git`,
       '--chdir', clonePath,
       '--',
     ]);
@@ -72,10 +74,12 @@ describe('buildJailArgs — write_scope sparse binds', () => {
 
   it('keeps the clone fully writable (legacy shape) when writeScope is absent but other S5 options are set', () => {
     const result = buildJailArgs({ clonePath, unshareNet: true });
-    // No exact --ro-bind appears (system roots are --ro-bind-try, DEC-0011);
-    // the clone itself binds writable because writeScope was never provided.
+    // The only exact --ro-bind is the final .git bind (system
+    // roots are --ro-bind-try); the clone itself binds writable
+    // because writeScope was never provided.
     const roBindCount = result.argv.filter((tok) => tok === '--ro-bind').length;
-    expect(roBindCount).toBe(0);
+    expect(roBindCount).toBe(1);
+    expect(result.argv).toEqual(expect.arrayContaining(['--ro-bind', `${clonePath}/.git`, `${clonePath}/.git`]));
     const bindIdx = result.argv.indexOf('--bind');
     expect(result.argv[bindIdx + 1]).toBe(clonePath);
     expect(result.argv[bindIdx + 2]).toBe(clonePath);
@@ -94,6 +98,7 @@ describe('buildJailArgs — write_scope sparse binds', () => {
       '--unshare-ipc',
       '--new-session',
       '--ro-bind', clonePath, clonePath,
+      '--ro-bind', `${clonePath}/.git`, `${clonePath}/.git`,
       '--chdir', clonePath,
       '--',
     ]);
@@ -118,6 +123,7 @@ describe('buildJailArgs — wiki read axis (T25/D19)', () => {
       '--unshare-ipc',
       '--new-session',
       '--bind', clonePath, clonePath,
+      '--ro-bind', `${clonePath}/.git`, `${clonePath}/.git`,
       '--chdir', clonePath,
       '--',
     ]);
@@ -142,6 +148,7 @@ describe('buildJailArgs — wiki read axis (T25/D19)', () => {
       '--unshare-ipc',
       '--new-session',
       '--bind', clonePath, clonePath,
+      '--ro-bind', `${clonePath}/.git`, `${clonePath}/.git`,
       '--chdir', clonePath,
       '--',
     ]);
@@ -167,6 +174,7 @@ describe('buildJailArgs — wiki read axis (T25/D19)', () => {
       '--new-session',
       '--bind', clonePath, clonePath,
       '--ro-bind', motherWikiPath, `${clonePath}/wiki`,
+      '--ro-bind', `${clonePath}/.git`, `${clonePath}/.git`,
       '--chdir', clonePath,
       '--',
     ]);
@@ -192,6 +200,7 @@ describe('buildJailArgs — wiki read axis (T25/D19)', () => {
       '--new-session',
       '--bind', clonePath, clonePath,
       '--ro-bind', motherWikiPath, `${clonePath}/wiki`,
+      '--ro-bind', `${clonePath}/.git`, `${clonePath}/.git`,
       '--chdir', clonePath,
       '--',
     ]);
@@ -210,11 +219,13 @@ describe('buildJailArgs — wiki read axis (T25/D19)', () => {
       '--unshare-ipc',
       '--new-session',
       '--bind', clonePath, clonePath,
+      '--ro-bind', `${clonePath}/.git`, `${clonePath}/.git`,
       '--chdir', clonePath,
       '--',
     ]);
-    // No exact --ro-bind is present (system roots are --ro-bind-try, DEC-0011) — no wiki bind was added either.
-    expect(result.argv.filter((tok) => tok === '--ro-bind').length).toBe(0);
+    // The only exact --ro-bind is the final .git bind (system roots are
+    // --ro-bind-try) — no wiki bind was added.
+    expect(result.argv.filter((tok) => tok === '--ro-bind').length).toBe(1);
   });
 });
 
@@ -237,6 +248,7 @@ describe('buildJailArgs — data mounts', () => {
       '--new-session',
       '--bind', clonePath, clonePath,
       '--ro-bind', '/data/ref', '/data/ref',
+      '--ro-bind', `${clonePath}/.git`, `${clonePath}/.git`,
       '--chdir', clonePath,
       '--',
     ]);
@@ -256,6 +268,7 @@ describe('buildJailArgs — data mounts', () => {
       '--new-session',
       '--bind', clonePath, clonePath,
       '--bind', '/tmp/scratch', '/tmp/scratch',
+      '--ro-bind', `${clonePath}/.git`, `${clonePath}/.git`,
       '--chdir', clonePath,
       '--',
     ]);
@@ -282,6 +295,7 @@ describe('buildJailArgs — data mounts', () => {
       '--bind', clonePath, clonePath,
       '--ro-bind', '/data/ref', '/data/ref',
       '--bind', '/tmp/scratch', '/tmp/scratch',
+      '--ro-bind', `${clonePath}/.git`, `${clonePath}/.git`,
       '--chdir', clonePath,
       '--',
     ]);
@@ -352,6 +366,7 @@ describe('buildJailArgs — tunnel socket and relay script binds', () => {
       '--new-session',
       '--bind', clonePath, clonePath,
       '--bind', tunnelSocketPath, tunnelSocketPath,
+      '--ro-bind', `${clonePath}/.git`, `${clonePath}/.git`,
       '--chdir', clonePath,
       '--',
     ]);
@@ -372,6 +387,7 @@ describe('buildJailArgs — tunnel socket and relay script binds', () => {
       '--new-session',
       '--bind', clonePath, clonePath,
       '--ro-bind', relayScriptPath, relayScriptPath,
+      '--ro-bind', `${clonePath}/.git`, `${clonePath}/.git`,
       '--chdir', clonePath,
       '--',
     ]);
@@ -422,6 +438,7 @@ describe('buildJailArgs — full combined recipe', () => {
       '--bind', '/tmp/scratch-area', '/tmp/scratch-area',
       '--bind', tunnelSocketPath, tunnelSocketPath,
       '--ro-bind', relayScriptPath, relayScriptPath,
+      '--ro-bind', `${clonePath}/.git`, `${clonePath}/.git`,
       '--chdir', cwd,
       '--',
     ]);
@@ -488,6 +505,7 @@ describe('buildBwrapPlan — plan object shape', () => {
       '--unshare-ipc',
       '--new-session',
       '--bind', clonePath, clonePath,
+      '--ro-bind', `${clonePath}/.git`, `${clonePath}/.git`,
       '--chdir', clonePath,
       '--',
       'pi', '-p',
@@ -547,6 +565,7 @@ describe('buildBwrapPlan — injectedFiles', () => {
       '--unshare-ipc',
       '--new-session',
       '--bind', clonePath, clonePath,
+      '--ro-bind', `${clonePath}/.git`, `${clonePath}/.git`,
       '--file', '3', injectedFiles[0].dest,
       '--file', '4', injectedFiles[1].dest,
       '--chdir', clonePath,
@@ -581,6 +600,7 @@ describe('buildBwrapPlan — write_scope sparse binds', () => {
       '--ro-bind', clonePath, clonePath,
       '--bind', `${clonePath}/src`, `${clonePath}/src`,
       '--bind', `${clonePath}/test`, `${clonePath}/test`,
+      '--ro-bind', `${clonePath}/.git`, `${clonePath}/.git`,
       '--chdir', clonePath,
       '--',
       'pi',
@@ -590,7 +610,8 @@ describe('buildBwrapPlan — write_scope sparse binds', () => {
   it('keeps the clone fully writable (legacy shape) when writeScope is absent', () => {
     const plan = buildBwrapPlan({ clonePath, unshareNet: true, command: ['pi'] });
     const roBindMounts = plan.mounts.filter((m) => m.kind === 'ro-bind');
-    expect(roBindMounts).toHaveLength(0); // system roots are ro-bind-try (DEC-0011), not ro-bind
+    // Only the final .git bind (system roots are ro-bind-try, not ro-bind).
+    expect(roBindMounts).toEqual([{ kind: 'ro-bind', src: `${clonePath}/.git`, dst: `${clonePath}/.git` }]);
     const cloneMount: BwrapMount | undefined = plan.mounts.find((m) => m.dst === clonePath);
     expect(cloneMount).toEqual({ kind: 'bind', src: clonePath, dst: clonePath });
   });
@@ -607,6 +628,7 @@ describe('buildBwrapPlan — write_scope sparse binds', () => {
       '--unshare-ipc',
       '--new-session',
       '--ro-bind', clonePath, clonePath,
+      '--ro-bind', `${clonePath}/.git`, `${clonePath}/.git`,
       '--chdir', clonePath,
       '--',
       'pi',
@@ -632,6 +654,7 @@ describe('buildBwrapPlan — data mounts', () => {
       '--new-session',
       '--bind', clonePath, clonePath,
       '--ro-bind', '/data/ref', '/data/ref',
+      '--ro-bind', `${clonePath}/.git`, `${clonePath}/.git`,
       '--chdir', clonePath,
       '--',
       'pi',
@@ -652,6 +675,7 @@ describe('buildBwrapPlan — data mounts', () => {
       '--new-session',
       '--bind', clonePath, clonePath,
       '--bind', '/tmp/scratch', '/tmp/scratch',
+      '--ro-bind', `${clonePath}/.git`, `${clonePath}/.git`,
       '--chdir', clonePath,
       '--',
       'pi',
@@ -680,6 +704,7 @@ describe('buildBwrapPlan — data mounts', () => {
       '--bind', clonePath, clonePath,
       '--ro-bind', '/data/ref', '/data/ref',
       '--bind', '/tmp/scratch', '/tmp/scratch',
+      '--ro-bind', `${clonePath}/.git`, `${clonePath}/.git`,
       '--chdir', clonePath,
       '--',
       'pi',
@@ -708,6 +733,7 @@ describe('buildBwrapPlan — wiki read axis (T25/D19)', () => {
       '--unshare-ipc',
       '--new-session',
       '--bind', clonePath, clonePath,
+      '--ro-bind', `${clonePath}/.git`, `${clonePath}/.git`,
       '--chdir', clonePath,
       '--',
       'pi',
@@ -718,8 +744,10 @@ describe('buildBwrapPlan — wiki read axis (T25/D19)', () => {
   it('tracked + redteam: no wiki mask — wiki stays visible as part of the clone', () => {
     const plan = buildBwrapPlan({ clonePath, wikiShape: 'tracked', mode: 'redteam', command: ['pi'] });
     expect(plan.bwrapArgs).not.toContain(`${clonePath}/wiki`);
-    // No exact ro-bind is present (system roots are ro-bind-try, DEC-0011) — no wiki mask was added.
-    expect(plan.mounts.filter((m) => m.kind === 'ro-bind')).toHaveLength(0);
+    // Only the final .git bind (system roots are ro-bind-try) — no wiki mask was added.
+    expect(plan.mounts.filter((m) => m.kind === 'ro-bind')).toEqual([
+      { kind: 'ro-bind', src: `${clonePath}/.git`, dst: `${clonePath}/.git` },
+    ]);
   });
 
   it('nested-private + research with motherWikiPath: ro-binds the mother wiki into the clone', () => {
@@ -742,6 +770,7 @@ describe('buildBwrapPlan — wiki read axis (T25/D19)', () => {
       '--new-session',
       '--bind', clonePath, clonePath,
       '--ro-bind', motherWikiPath, `${clonePath}/wiki`,
+      '--ro-bind', `${clonePath}/.git`, `${clonePath}/.git`,
       '--chdir', clonePath,
       '--',
       'pi',
@@ -751,8 +780,10 @@ describe('buildBwrapPlan — wiki read axis (T25/D19)', () => {
   it('nested-private + redteam WITHOUT motherWikiPath: no wiki bind — nothing to bind against', () => {
     const plan = buildBwrapPlan({ clonePath, wikiShape: 'nested-private', mode: 'redteam', command: ['pi'] });
     expect(plan.mounts.filter((m) => m.dst === `${clonePath}/wiki`)).toHaveLength(0);
-    // No exact ro-bind is present (system roots are ro-bind-try, DEC-0011).
-    expect(plan.mounts.filter((m) => m.kind === 'ro-bind')).toHaveLength(0);
+    // Only the final .git bind (system roots are ro-bind-try).
+    expect(plan.mounts.filter((m) => m.kind === 'ro-bind')).toEqual([
+      { kind: 'ro-bind', src: `${clonePath}/.git`, dst: `${clonePath}/.git` },
+    ]);
   });
 });
 
@@ -965,9 +996,10 @@ describe('runtime env roots (WK-0201)', () => {
     expect(cloneIdx).toBeGreaterThan(roBindIdx);
   });
 
-  it('undeclared runtimeEnvPaths: no --ro-bind appears anywhere in the plan', () => {
+  it('undeclared runtimeEnvPaths: the only --ro-bind in the plan is the final .git bind', () => {
     const { argv } = buildJailArgs({ clonePath });
-    expect(argv.filter((tok) => tok === '--ro-bind')).toHaveLength(0);
+    expect(argv.filter((tok) => tok === '--ro-bind')).toHaveLength(1);
+    expect(argv).toEqual(expect.arrayContaining(['--ro-bind', `${clonePath}/.git`, `${clonePath}/.git`]));
   });
 
   it('multiple declared runtimeEnvPaths each get their own --ro-bind, reflected in both bwrapArgs and mounts', () => {
@@ -992,6 +1024,91 @@ describe('classifyEntry / looksLikeFile — write_scope file vs directory classi
     expect(looksLikeFile('src/')).toBe(false);
     expect(looksLikeFile('src')).toBe(false);
     expect(looksLikeFile('docs/api')).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The `.git` ro-bind is the LAST mount operation of every plan: worker plans
+// for every family, and a host-validation step plan (no `writeScope` at
+// all — the legacy whole-clone-rw shape). `expectGitBindIsLastMount` is this
+// suite's own assertion helper, proven to bite by the final `it` below,
+// which plants a violation (an extra rw bind landing AFTER the `.git` bind)
+// and confirms the helper throws on it.
+// ---------------------------------------------------------------------------
+
+function expectGitBindIsLastMount(mounts: readonly BwrapMount[], clonePathUnderTest: string): void {
+  const last = mounts[mounts.length - 1];
+  expect(last).toEqual({ kind: 'ro-bind', src: `${clonePathUnderTest}/.git`, dst: `${clonePathUnderTest}/.git` });
+}
+
+describe('buildBwrapPlan — .git ro-bind is the last mount operation of every plan', () => {
+  it('pi plan (sparse write_scope binds)', () => {
+    const plan = buildBwrapPlan({ clonePath, writeScope: ['src/'], command: ['true'] });
+    expectGitBindIsLastMount(plan.mounts, clonePath);
+  });
+
+  it('claude plan (exact-file/dir binds via familyWriteScope)', () => {
+    const scoped = familyWriteScope('claude', ['docs/'], clonePath);
+    const plan = buildBwrapPlan({ clonePath, writeScope: scoped, command: ['true'] });
+    expectGitBindIsLastMount(plan.mounts, clonePath);
+  });
+
+  it('codex plan (exact-file/dir binds via familyWriteScope)', () => {
+    const scoped = familyWriteScope('codex', ['docs/'], clonePath);
+    const plan = buildBwrapPlan({ clonePath, writeScope: scoped, command: ['true'] });
+    expectGitBindIsLastMount(plan.mounts, clonePath);
+  });
+
+  it('host-validation step plan (no writeScope at all — whole clone rw)', () => {
+    const plan = buildBwrapPlan({ clonePath, command: ['true'] });
+    expectGitBindIsLastMount(plan.mounts, clonePath);
+  });
+
+  it('planted-failure proof: the assertion fails when a rw bind of <clone>/.git/hooks lands after the final .git bind', () => {
+    const plan = buildBwrapPlan({ clonePath, command: ['true'] });
+    const corruptedMounts = [
+      ...plan.mounts,
+      { kind: 'bind' as const, src: `${clonePath}/.git/hooks`, dst: `${clonePath}/.git/hooks` },
+    ];
+    expect(() => expectGitBindIsLastMount(corruptedMounts, clonePath)).toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// familyWriteScope gives Claude exact-file binds, same shape as Codex; pi is
+// unchanged (identity passthrough). No family ever widens a file entry to
+// its parent directory any more (`deriveDirectoryScopedMounts` is retired).
+// ---------------------------------------------------------------------------
+
+describe('familyWriteScope — exact-file binds for claude, mirroring codex', () => {
+  const scope = ['README.md', 'src/a.ts'];
+
+  it('a claude plan for write_scope README.md and src/a.ts binds exactly those two files read-write, leaving the clone root and src/ read-only', () => {
+    const scoped = familyWriteScope('claude', scope, clonePath);
+    const plan = buildBwrapPlan({ clonePath, writeScope: scoped, command: ['claude'] });
+
+    expect(plan.mounts).toEqual(expect.arrayContaining([
+      { kind: 'bind', src: `${clonePath}/README.md`, dst: `${clonePath}/README.md` },
+      { kind: 'bind', src: `${clonePath}/src/a.ts`, dst: `${clonePath}/src/a.ts` },
+    ]));
+    // The clone root stays read-only (sparse write_scope mode: step 7 ro-binds it).
+    expect(plan.mounts).toEqual(expect.arrayContaining([{ kind: 'ro-bind', src: clonePath, dst: clonePath }]));
+    // src/ itself is never separately mounted -- only the exact file inside it.
+    expect(plan.mounts.find((m) => m.dst === `${clonePath}/src`)).toBeUndefined();
+  });
+
+  it('codex and pi plans are unchanged: codex still gets exact-file binds, pi still passes write_scope through as-is', () => {
+    const codexScoped = familyWriteScope('codex', scope, clonePath);
+    const piScoped = familyWriteScope('pi', scope, clonePath);
+
+    expect(new Set(codexScoped)).toEqual(new Set(scope));
+    expect(piScoped).toEqual(scope);
+
+    const codexPlan = buildBwrapPlan({ clonePath, writeScope: codexScoped, command: ['codex'] });
+    expect(codexPlan.mounts).toEqual(expect.arrayContaining([
+      { kind: 'bind', src: `${clonePath}/README.md`, dst: `${clonePath}/README.md` },
+      { kind: 'bind', src: `${clonePath}/src/a.ts`, dst: `${clonePath}/src/a.ts` },
+    ]));
   });
 });
 
@@ -1123,6 +1240,10 @@ describe.skipIf(!BWRAP_FUNCTIONAL)('real bwrap jail integration — resolver bin
     liveOutsideDir = await mkdtemp(join(tmpdir(), 'kb-jail-resolv-outside-'));
     await writeFile(join(liveOutsideDir, 'resolv.conf'), 'nameserver 203.0.113.53\n');
     await symlink(join(liveOutsideDir, 'resolv.conf'), join(liveClonePath, 'resolv.conf'));
+    // Every plan now carries an unconditional strict ro-bind of <clone>/.git,
+    // so the bind target must exist on disk — a bare directory is enough,
+    // this fixture never runs git.
+    await mkdir(join(liveClonePath, '.git'));
   });
 
   afterEach(async () => {

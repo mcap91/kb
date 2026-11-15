@@ -64,12 +64,26 @@
  *                                      by the admission gate)
  *   11. tunnel socket bind (T26/D21)  egress-forwarder unix socket
  *   12. relay script bind (T26/D21)   in-jail relay, read-only
- *   13. --chdir <cwd>
- *   14. --                            terminates bwrap's own argv; the
+ *   13. secret-mask binds             `<clone>/.env` -> /dev/null,
+ *                                      `<clone>/.claude` -> fresh tmpfs, each
+ *                                      only when the path exists in the
+ *                                      clone (same existence checks the
+ *                                      former `withSecretMaskArgs` post-step
+ *                                      used) -- inlined here, immediately
+ *                                      before the final bind below, so
+ *                                      nothing can ever land after them
+ *                                      again
+ *   14. `.git` read-only bind         unconditional strict
+ *                                      `--ro-bind <clone>/.git <clone>/.git`
+ *                                      (not -try: a clone always has .git)
+ *                                      -- the LAST mount operation of every
+ *                                      plan, worker and host-validation
+ *                                      alike
+ *   15. --chdir <cwd>
+ *   16. --                            terminates bwrap's own argv; the
  *                                      caller appends the worker invocation
  */
 import { existsSync, lstatSync, realpathSync, statSync } from 'node:fs';
-import { dirname } from 'node:path';
 
 import { SYSTEM_ROOTS } from './mountability.js';
 
@@ -362,6 +376,35 @@ function buildJailPlanSteps(opts: JailOpts): JailPlanSteps {
     bind('ro-bind', opts.relayScriptPath, opts.relayScriptPath);
   }
 
+  // 13: secret-mask binds -- moved in from the former post-step
+  // `withSecretMaskArgs`, same existence checks:
+  // a committed `.env` is masked with /dev/null (a worker must never read
+  // secrets baked into the mother repo's own working-tree `.env`); a
+  // committed `.claude/` is masked with a fresh tmpfs (committed agent
+  // config must never reach the jail). Placed here, immediately before the
+  // unconditional `.git` bind below, so no later caller-side step can ever
+  // re-order a mask after it again.
+  const envPath = `${opts.clonePath}/.env`;
+  const claudeDirPath = `${opts.clonePath}/.claude`;
+  if (existsSync(envPath)) {
+    bind('ro-bind', '/dev/null', envPath);
+  }
+  if (existsSync(claudeDirPath)) {
+    synthetic('tmpfs', claudeDirPath);
+  }
+
+  // 14: read-only `.git` bind -- the LAST mount operation of
+  // EVERY plan this function renders (worker plans for every family and
+  // every host-validation step): strict `--ro-bind`, never `-try` (a clone
+  // always has `.git`; a missing one is a bug worth bwrap failing loudly
+  // on). This is the only protection a host-validation jail has (no
+  // write_scope, whole clone rw per step 7-8 above) and the backstop for
+  // every worker jail regardless of its write_scope shape. Only the `--file`
+  // args (jail-`/tmp` destinations) and `--chdir` follow it -- a tracked
+  // symlink such as `.claude -> .git` cannot overlay this bind because the
+  // mask above already landed first and this is unconditional and last.
+  bind('ro-bind', `${opts.clonePath}/.git`, `${opts.clonePath}/.git`);
+
   return { mountArgv, mounts, cwd };
 }
 
@@ -511,13 +554,15 @@ export function buildBwrapPlan(opts: BuildBwrapPlanOpts): BwrapPlan {
 // design source agent-chassis `docs/enforcement-model.md:505-550` — ELv2,
 // design mirrored only, no chassis source copied). Pi's existing sparse-bind
 // recipe above (buildJailPlanSteps's write_scope loop, unmodified) stays the
-// default for any family that isn't claude/codex. These are standalone
-// classification helpers — pipeline.ts (step 12d) uses their output to build
-// a family-specific `writeScope` override before calling the UNMODIFIED
-// `buildBwrapPlan` above; they are not new recipe steps inside
+// default for pi; claude and codex both classify exact file/dir mounts via
+// `deriveExactFileMounts` below (claude mirrors codex's exact-file binds
+// now — no more directory-widening). This is a standalone
+// classification helper — pipeline.ts (step 12d) uses its output to build a
+// family-specific `writeScope` override before calling the UNMODIFIED
+// `buildBwrapPlan` above; it is not a new recipe step inside
 // `buildJailPlanSteps` itself.
 //
-// Both functions need to know whether a write_scope entry names a FILE or a
+// This needs to know whether a write_scope entry names a FILE or a
 // DIRECTORY, which — unlike the rest of this file — requires real filesystem
 // I/O (`stat`). `classifyEntry` below is the shared classifier: `statSync`
 // when the path already exists in the clone, falling back to an extension
@@ -556,32 +601,15 @@ export function classifyEntry(absPath: string, relPath: string): EntryKind {
 }
 
 /**
- * Claude: widen file-scope write_scope entries to their PARENT DIRECTORY.
- * Claude Code writes via atomic rename (temp sibling + `rename(2)`), which
- * needs write+execute on the CONTAINING directory, not just the target file
- * — binding only the exact file (as Codex's `deriveExactFileMounts` below
- * does) would make every Claude edit fail at the rename step. Directory
- * entries stay as-is. Returns de-duplicated ABSOLUTE directory paths under
- * `clonePath` — pipeline.ts converts these back to clone-relative paths
- * before handing them to `buildBwrapPlan`'s own `writeScope` param (which
- * re-resolves relative entries itself via this module's `joinUnderClone`).
- */
-export function deriveDirectoryScopedMounts(writeScope: string[], clonePath: string): string[] {
-  const dirs = new Set<string>();
-  for (const rel of writeScope) {
-    const absPath = joinUnderClone(clonePath, rel);
-    const kind = classifyEntry(absPath, rel);
-    dirs.add(kind === 'file' ? dirname(absPath) : absPath);
-  }
-  return Array.from(dirs);
-}
-
-/**
- * Codex: classify write_scope entries as exact files or directories — Codex
- * gets exact-file kernel binds (`--bind <file> <file>`, parent directory
- * stays read-only) rather than Claude's directory-widened mounts above.
- * Returns ABSOLUTE paths in each bucket, same convention as
- * `deriveDirectoryScopedMounts`.
+ * Classify write_scope entries as exact files or directories — every family
+ * (pi aside, which keeps its own identity sparse-bind recipe above) gets
+ * exact-file kernel binds (`--bind <file> <file>`, parent directory stays
+ * read-only), never a directory widened to cover a file entry (Claude now
+ * edits through Bash with its native write tools denied, so it no longer
+ * needs atomic-rename's write+execute on the containing directory —
+ * `deriveDirectoryScopedMounts`, the former Claude-only widening helper, is
+ * retired). Returns ABSOLUTE paths in each bucket, resolved via this
+ * module's own `joinUnderClone`.
  */
 export function deriveExactFileMounts(
   writeScope: string[],
@@ -600,47 +628,3 @@ export function deriveExactFileMounts(
   return { writableDirs, writableFiles };
 }
 
-/**
- * `.env` / `.claude/` secret-masking bwrap args (D2 ruling 2 item 5, mirrors
- * agent-chassis): mask `<clone>/.env` with `/dev/null` (a worker must never
- * be able to read secrets baked into the mother repo's own working-tree
- * `.env`) and mask `<clone>/.claude/` with a fresh tmpfs (a committed
- * `.claude/` config must never reach the jail). `buildBwrapPlan` requires
- * bind TARGETS to already exist (this module's own top-of-file doc) — this
- * checks existence itself so it never emits an arg bwrap would reject; empty
- * array when neither path exists in the clone.
- */
-export function buildSecretMaskArgs(clonePath: string): string[] {
-  const args: string[] = [];
-  const envPath = `${clonePath}/.env`;
-  const claudeDirPath = `${clonePath}/.claude`;
-  if (existsSync(envPath)) {
-    args.push('--ro-bind', '/dev/null', envPath);
-  }
-  if (existsSync(claudeDirPath)) {
-    args.push('--tmpfs', claudeDirPath);
-  }
-  return args;
-}
-
-/**
- * Layer D2 ruling 2 item 5's `.env`/`.claude/` secret-mask args onto an
- * already-built bwrap plan, right before the `--chdir` terminator — bwrap
- * resolves LATER binds over EARLIER ones (jail.ts's own recipe-order
- * comment), so appending here means these masks win over anything
- * `buildBwrapPlan`'s own write_scope/data_mount binds already laid down for
- * the same clone. `buildBwrapPlan` itself stays unmodified (jail.ts's
- * additive-only contract) — a post-processing step applied by
- * pipeline.ts to every family and by host-validation.ts to every validation jail (Pi included: masking is dormant unless
- * the clone actually carries a `.env`/`.claude/` — see `buildSecretMaskArgs`).
- */
-export function withSecretMaskArgs(plan: BwrapPlan, clonePath: string): BwrapPlan {
-  const maskArgs = buildSecretMaskArgs(clonePath);
-  if (maskArgs.length === 0) return plan;
-  const chdirIdx = plan.bwrapArgs.indexOf('--chdir');
-  const insertAt = chdirIdx === -1 ? plan.bwrapArgs.length : chdirIdx;
-  return {
-    ...plan,
-    bwrapArgs: [...plan.bwrapArgs.slice(0, insertAt), ...maskArgs, ...plan.bwrapArgs.slice(insertAt)],
-  };
-}

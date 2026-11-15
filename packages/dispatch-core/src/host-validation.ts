@@ -22,9 +22,12 @@
  * here, `buildBwrapPlan`'s existing `unshareNet: !opts.network` already
  * selects it. The env is an
  * allowlist — `--clearenv` plus PATH, HOME, TMPDIR and registry-declared vars
- * only (A4.3). `.env`/`.claude/` are masked. Output is tail-capped; a
- * timeout kills the jail's whole process group and waits for exit with a
- * forced-kill bound (A4.6).
+ * only (A4.3). `.env`/`.claude/` are masked, and `<clone>/.git` is bound
+ * strictly read-only as the LAST mount of every plan `buildBwrapPlan` renders
+ * here — this call site passes no `writeScope`, so without that bind the
+ * whole clone (including `.git`) would otherwise be writable rw. Output is
+ * tail-capped; a timeout kills the jail's whole process group and waits for
+ * exit with a forced-kill bound (A4.6).
  *
  * HO `validation` text is never read here (A2 R6): the registry is the sole
  * source of host-run commands.
@@ -36,7 +39,7 @@ import { join } from 'node:path';
 import { createClone, removeClone } from './clone.js';
 import type { DispatchResult } from './errors.js';
 import { fail, ok } from './errors.js';
-import { buildBwrapPlan, withSecretMaskArgs } from './jail.js';
+import { buildBwrapPlan } from './jail.js';
 import { isMountableRoot } from './mountability.js';
 import { getRunDir, isRunId } from './paths.js';
 import { validationRegistryFingerprint, type ValidationRegistry } from './repo-config.js';
@@ -146,17 +149,14 @@ async function runStep(opts: {
   runtimePaths: string[];
   env: Record<string, string>;
 }): Promise<DispatchResult<ValidationStepResult>> {
-  const plan = withSecretMaskArgs(
-    buildBwrapPlan({
-      clonePath: opts.clonePath,
-      cwd: opts.clonePath,
-      runtimeEnvPaths: opts.runtimePaths,
-      unshareNet: !opts.network,
-      allowlistEnv: opts.env,
-      command: opts.argv,
-    }),
-    opts.clonePath,
-  );
+  const plan = buildBwrapPlan({
+    clonePath: opts.clonePath,
+    cwd: opts.clonePath,
+    runtimeEnvPaths: opts.runtimePaths,
+    unshareNet: !opts.network,
+    allowlistEnv: opts.env,
+    command: opts.argv,
+  });
   const started = Date.now();
   const spawned = await spawnIsolated(plan, {
     timeoutMs: opts.timeoutMs,
