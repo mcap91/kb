@@ -926,7 +926,7 @@ describe.skipIf(process.platform === 'win32')('WK-0160: real forwarder+relay+stu
   // mock: it writes a `package.json` declaring `"type": "module"` into the
   // SAME directory the real `node <script>` processes below load from.
   // -------------------------------------------------------------------------
-  describe('WK-0333: forwarder/relay survive a "type": "module" target repo', () => {
+  describe('forwarder/relay survive a "type": "module" target repo', () => {
     let harness: TunnelHarness | undefined;
     let received: ReceivedRequest[] = [];
 
@@ -975,8 +975,9 @@ describe.skipIf(process.platform === 'win32')('WK-0160: real forwarder+relay+stu
  * setupS3Repo defaults (pi family, deepseek/openrouter, no credentials,
  * web:false, mode:implement) so runDispatch() reaches spawnIsolated without
  * any unrelated refusal gate tripping first. `opts.esModule` additionally
- * writes a root `package.json` declaring `"type": "module"` -- the WK-0333
- * regression shape: the real (non-mocked) forwarder/relay scripts pipeline.ts
+ * writes a root `package.json` declaring `"type": "module"` -- the
+ * "type": "module" target-repo regression shape: the real (non-mocked)
+ * forwarder/relay scripts pipeline.ts
  * writes under `<repoRoot>/.agent-runs/runs/<ho>/<run>/` resolve their module
  * type from THIS file, the nearest one above that directory.
  */
@@ -1100,7 +1101,7 @@ describe('WK-0160 D8: env wiring -- runDispatch() real workerEnv carries NO_PROX
 });
 
 // ---------------------------------------------------------------------------
-// WK-0333: runDispatch() against an ES-module target repo -- the real
+// runDispatch() against an ES-module target repo -- the real
 // (non-mocked) forwarder pipeline.ts spawns pre-jail must survive startup
 // under a target repo whose root package.json declares "type": "module",
 // and the run must still reach the worker invocation. spawnIsolated is
@@ -1110,7 +1111,7 @@ describe('WK-0160 D8: env wiring -- runDispatch() real workerEnv carries NO_PROX
 // downstream (the jailed worker) is faked.
 // ---------------------------------------------------------------------------
 
-describe('WK-0333: runDispatch() real forwarder survives a "type": "module" target repo', () => {
+describe('runDispatch() real forwarder survives a "type": "module" target repo', () => {
   afterEach(() => {
     vi.restoreAllMocks();
   });

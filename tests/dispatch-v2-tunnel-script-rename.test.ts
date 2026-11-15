@@ -1,5 +1,5 @@
 /**
- * WK-0333 — mechanical drift-check gate: no stale `.js` or extensionless
+ * Mechanical drift-check gate: no stale `.js` or extensionless
  * reference to the tunnel forwarder/relay script names survives in the
  * tracked working tree. `forwarder.cjs`/`relay.cjs` (tunnel.ts's
  * `TUNNEL_FORWARDER_SCRIPT_NAME`/`TUNNEL_RELAY_SCRIPT_NAME`) pin CommonJS
@@ -10,24 +10,29 @@
  * file at all (Node's bare-specifier resolution only tries `.js`/`.json`/
  * `.node`/index files, never `.cjs`).
  *
- * Boundary (WK-0333 instruction): tracked files only, via `git ls-files` —
+ * Boundary: tracked files only, via `git ls-files` —
  * untracked scratch/build output is irrelevant. Exempt paths legitimately
  * carry the OLD names: `.agent-runs/` and `scratch_space/` are runtime/
  * planning artifacts (never canonical, per AGENTS.md); `wiki/` is a
  * SEPARATE nested repository with historical captures; `tests/fixtures/
  * RUN-<id>/` directories are captured run bundles from before this fix
- * (real, unedited captures — rule 33).
+ * (real, unedited captures — rule 33); this file itself is exempt by its
+ * own path, since its doc comment, describe title, and bite-proof sample
+ * strings necessarily contain the literal stale names it searches for.
  */
 import { describe, expect, it } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, relative, sep } from 'node:path';
 
 const REPO_ROOT = join(__dirname, '..');
+
+const OWN_REL_PATH = relative(REPO_ROOT, __filename).split(sep).join('/');
 
 const EXEMPT_PREFIXES = ['wiki/', 'scratch_space/', '.agent-runs/'];
 
 function isExempt(relPath: string): boolean {
+  if (relPath === OWN_REL_PATH) return true;
   if (EXEMPT_PREFIXES.some((prefix) => relPath.startsWith(prefix))) return true;
   if (/^tests\/fixtures\/RUN-[^/]+\//.test(relPath)) return true;
   return false;
@@ -42,7 +47,7 @@ const STALE_JS_PATTERN = /\b(forwarder|relay)\.js\b/;
 // never resolves a `.cjs` file via Node's own bare-specifier resolution.
 const EXTENSIONLESS_SPECIFIER_PATTERN = /['"`](?:\.{1,2}\/)*(forwarder|relay)['"`]/;
 
-describe('WK-0333: no stale forwarder.js/relay.js reference in the tracked tree', () => {
+describe('no stale forwarder.js/relay.js reference in the tracked tree', () => {
   it('git ls-files contains no stale .js or extensionless reference to the tunnel script names outside exempt paths', () => {
     const tracked = execFileSync('git', ['ls-files'], { cwd: REPO_ROOT, encoding: 'utf8' })
       .split('\n')
