@@ -212,5 +212,19 @@ describe.skipIf(!BWRAP_FUNCTIONAL).each(['tracked', 'nested-private'] as const)(
       if (staged.ok) return;
       expect(staged.message).toContain('re-run derive-review');
     });
+
+    it('refuses to stage a malformed evidence file and names the next step', async () => {
+      repo = await setupRepo(shape);
+      await writeFile(join(repo, '.agent-runs', 'runs', IMPL, IMPL_RUN, 'validation-evidence.json'), '{ not json');
+      const staged = await stageReviewEvidence({
+        dir: repo,
+        handoff: { mode: 'code_review', base_ref: `dispatch/${IMPL}`, reviewed_run: IMPL_RUN },
+        runDir: await mkdtemp(join(tmpdir(), 'kb-review-run-')),
+      });
+      expect(staged.ok).toBe(false);
+      if (staged.ok) return;
+      expect(staged.message).toContain('Malformed validation evidence');
+      expect(staged.message).toContain(`re-run derive-review for ${IMPL}`);
+    });
   },
 );

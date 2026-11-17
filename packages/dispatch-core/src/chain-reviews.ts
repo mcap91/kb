@@ -5,7 +5,8 @@
  * frontmatter, never re-parsed from its markdown.
  *
  * A review is FINISHED when its worker ran to completion and left a report: the response doc's
- * `outcome` is `delivered` and it holds a valid block or a non-empty report (`reviewState`).
+ * `outcome` is `delivered` and it holds a valid block or a non-empty report (`reviewState`); a doc
+ * with none of the evidence stamps is not finished.
  * That one definition decides which review governs a merge, whose findings need judgments, and
  * which commits a later review skips.
  */
@@ -125,19 +126,19 @@ async function readResponseDoc(dir: string, reviewId: string): Promise<DispatchR
 }
 
 /** Where a review stands: `finished`, or why it is not. */
-export type ReviewState = 'finished' | 'no response doc' | 'empty report' | `run did not complete: ${string}`;
+export type ReviewState = 'finished' | 'no response doc' | 'no evidence stamps' | 'empty report' | `run did not complete: ${string}`;
 
 /**
  * A review is finished when its run completed (the response doc's `outcome` is `delivered`) and
  * the doc holds a valid block or a non-empty report. A doc with none of the block and report
- * fields predates them and counts as finished: the merge refuses it with its own message, never
- * silently passes over it. A doc with no `outcome` line is judged on the block and report alone.
+ * fields carries no evidence to read, so it is not finished: no tool may treat it as a review that
+ * covers the chain. A doc with no `outcome` line is judged on the block and report alone.
  */
 function reviewState(responseDoc: string | null): ReviewState {
   if (responseDoc === null) return 'no response doc';
   const { runOutcome, recoveryOutcome, recoveryValid, workerReportChars } = parseResponseDocFrontmatter(responseDoc);
   if (runOutcome !== undefined && runOutcome !== COMPLETED_RUN_OUTCOME) return `run did not complete: ${runOutcome}`;
-  if (recoveryOutcome === undefined && recoveryValid === undefined && workerReportChars === undefined) return 'finished';
+  if (recoveryOutcome === undefined && recoveryValid === undefined && workerReportChars === undefined) return 'no evidence stamps';
   return recoveryValid === true || (workerReportChars ?? 0) > 0 ? 'finished' : 'empty report';
 }
 

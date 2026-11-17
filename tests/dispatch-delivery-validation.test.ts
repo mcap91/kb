@@ -102,7 +102,7 @@ const REGISTRY = JSON.stringify({ schema_version: 1, commands: [{ name: 'unit', 
  * `src/feature.ts` into the clone, so delivery lands a commit; a call whose
  * command is the registered suite gets `suite`'s answer.
  */
-function mockSpawns(suite: 'pass' | 'fail' | 'spawn_error'): { suiteCalls: () => number } {
+function mockSpawns(suite: 'pass' | 'fail' | 'fail_then_pass' | 'spawn_error'): { suiteCalls: () => number } {
   let suiteCalls = 0;
   const fixture = readFileSync(join(__dirname, 'fixtures', 'claude-p-output.txt'), 'utf8');
   vi.spyOn(spawnIsolatedModule, 'spawnIsolated').mockImplementation(async (plan, opts) => {
@@ -110,7 +110,7 @@ function mockSpawns(suite: 'pass' | 'fail' | 'spawn_error'): { suiteCalls: () =>
     if (plan.command[0] === SUITE_COMMAND) {
       suiteCalls += 1;
       if (suite === 'spawn_error') return { ok: false, error: 'PIPELINE_FAILED', message: 'bwrap could not start' } as never;
-      return { ok: true, data: { ...base, exitCode: suite === 'pass' ? 0 : 1 } };
+      return { ok: true, data: { ...base, exitCode: suite === 'pass' || (suite === 'fail_then_pass' && suiteCalls > 1) ? 0 : 1 } };
     }
     if (opts?.stdoutLogPath) {
       await writeFile(opts.stdoutLogPath, fixture, 'utf8');
@@ -200,6 +200,20 @@ describe('host validation at delivery (mocked spawnIsolated)', () => {
     const doc = await readFile(result.data.responsePath, 'utf8');
     expect(doc).toContain('outcome: delivered');
     expect(doc).toContain('\nHost validation: fail (unit). Also failing on the base commit: unit.\n');
+  });
+
+  it('a red suite that passes on the base commit says the base passes the same commands, not "none"', async () => {
+    const repo = await setupRepo({ mode: 'implement', registry: REGISTRY });
+    repos.push(repo);
+    mockSpawns('fail_then_pass');
+    stubClaudeOnPath();
+    const result = await dispatchFixture(repo);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.hostValidation).toEqual({ status: 'fail', failedCommands: ['unit'], baseline: { status: 'ran', alsoFailing: [] } });
+    const doc = await readFile(result.data.responsePath, 'utf8');
+    expect(doc).toContain('\nHost validation: fail (unit). The base commit passes the same commands, so this delivery introduced the failure.\n');
+    expect(doc).not.toContain('Also failing on the base commit');
   });
 
   it('a jail failure leaves the run delivered, writes no evidence, and records why', async () => {

@@ -30,6 +30,7 @@ import {
   renderValidationEvidence,
   runHostValidation,
   summarizeValidation,
+  validationGateRefusal,
   type ValidationEvidence,
   type ValidationStepResult,
 } from '../packages/dispatch-core/src/host-validation.js';
@@ -580,6 +581,50 @@ describe('renderValidationEvidence teaching sentence (WK-0306, Resolution 1)', (
       evidence({ setup: step({ name: 'setup', network: true, exit_code: 1, result: 'fail' }), commands: [], outcome: 'fail' }),
     );
     expect(rendered).not.toContain(JAIL_HERMETICITY_TEACHING_SENTENCE);
+  });
+
+  describe('merge refusal text (validationGateRefusal)', () => {
+    const OVERRIDE_SENTENCE = 'An override needs an explicit operator instruction.';
+    const red = (baseline?: ValidationEvidence['baseline']) =>
+      evidence({ commands: [step({ name: 'test', exit_code: 1, result: 'fail' })], outcome: 'fail', ...(baseline === undefined ? {} : { baseline }) });
+    const refusal = (e: ValidationEvidence | null, problems = ['host validation failed (test)']) =>
+      validationGateRefusal('dispatch/HO-0001', problems, e);
+
+    it('red and passing on the base commit: the delivery introduced it; next step is a fix-up handoff; no jail-only sentence', () => {
+      const text = refusal(red({ status: 'ran', base_sha: 'b'.repeat(40), setup: null, commands: [step({ name: 'test' })] }));
+      expect(text).toContain('Host validation gate refused merge of dispatch/HO-0001: host validation failed (test).');
+      expect(text).toContain('The base commit passes the same commands, so this delivery introduced the failure.');
+      expect(text).toContain('dispatch a fix-up handoff with base_ref: dispatch/HO-0001, then call merge-delivery on the fix-up handoff');
+      expect(text).toContain(OVERRIDE_SENTENCE);
+      expect(text).not.toContain(JAIL_HERMETICITY_TEACHING_SENTENCE);
+      expect(text).not.toContain('Fix the cause and call merge-delivery again');
+    });
+
+    it('red and also failing on the base commit: not specific to this delivery; host fix; jail-only sentence kept', () => {
+      const text = refusal(red({ status: 'ran', base_sha: 'b'.repeat(40), setup: null, commands: [step({ name: 'test', exit_code: 1, result: 'fail' })] }));
+      expect(text).toContain('The same commands also fail on the base commit (test), so the failure is not specific to this delivery.');
+      expect(text).toContain('fix the failing command\'s host dependency or the base commit, then call merge-delivery again');
+      expect(text).toContain(JAIL_HERMETICITY_TEACHING_SENTENCE);
+      expect(text).toContain(OVERRIDE_SENTENCE);
+      expect(text).not.toContain('fix-up handoff');
+    });
+
+    it('red and the baseline did not run: not specific to this delivery; host fix; jail-only sentence kept', () => {
+      const text = refusal(red({ status: 'not_run', reason: 'no merge-base' }));
+      expect(text).toContain('The same commands did not run on the base commit (no merge-base), so the failure is not known to be specific to this delivery.');
+      expect(text).toContain('then call merge-delivery again');
+      expect(text).toContain(JAIL_HERMETICITY_TEACHING_SENTENCE);
+      expect(text).toContain(OVERRIDE_SENTENCE);
+      expect(text).not.toContain('fix-up handoff');
+    });
+
+    it('a problem that is not a red result keeps "fix the cause and call merge-delivery again"', () => {
+      const text = refusal(null, ['review HO-0002 carries no reviewed_sha stamp']);
+      expect(text).toContain('Fix the cause and call merge-delivery again');
+      expect(text).toContain(OVERRIDE_SENTENCE);
+      expect(text).not.toContain(JAIL_HERMETICITY_TEACHING_SENTENCE);
+      expect(text).not.toContain('fix-up handoff');
+    });
   });
 });
 

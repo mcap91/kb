@@ -608,7 +608,8 @@ function deriveVerdict(
 function describeBaseline(b: HostValidationBaselineSummary | undefined): string {
   if (b === undefined) return '';
   if (b.status === 'not_run') return ` The same steps did not run on the base commit (${b.reason.replace(/\s+/g, ' ').trim()}).`;
-  return ` Also failing on the base commit: ${b.alsoFailing.length === 0 ? 'none' : b.alsoFailing.join(', ')}.`;
+  if (b.alsoFailing.length === 0) return ' The base commit passes the same commands, so this delivery introduced the failure.';
+  return ` Also failing on the base commit: ${b.alsoFailing.join(', ')}.`;
 }
 
 function describeHostValidation(v: HostValidationSummary): string {

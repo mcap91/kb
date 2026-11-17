@@ -1036,6 +1036,19 @@ describe('deriveReview: a review after a finished review covers only the fix-up'
     expect(content).not.toContain('Findings this fix-up was asked to fix');
   });
 
+  it('a review whose response doc carries none of the evidence stamps is not finished: a new whole-chain review is derived', async () => {
+    const { a, parentOfA, first } = await reviewedHead();
+    await writeFile(
+      join(tempDir, 'wiki', 'handoffs', `${first.data.reviewId}.response.md`),
+      ['---', `handoff_id: ${first.data.reviewId}`, 'outcome: delivered', '---', '', '# Response: Code review', ''].join('\n'),
+      'utf-8',
+    );
+    const { data } = await derive(a.id);
+    expect(data.kind).toBe('whole_chain');
+    expect(data.range).toBe(`${parentOfA}..${a.sha}`);
+    expect(data.reviewId).not.toBe(first.data.reviewId);
+  });
+
   it('refuses when a finished review already covers the head, naming the review and the next step (merge-delivery)', async () => {
     const { a, first } = await reviewedHead({});
     const again = await deriveReview({ dir: tempDir, handoff_id: a.id });

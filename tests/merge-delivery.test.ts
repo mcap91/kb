@@ -982,7 +982,7 @@ describe('mergeDelivery (WK-0132 Slice 3)', () => {
     expect(await branchExists(repoDir, 'dispatch/HO-0020')).toBe(true);
   });
 
-  it('refuses a legacy response doc predating frontmatter-based evidence, with no regex fallback', async () => {
+  it('does not treat a response doc with none of the evidence stamps as a finished review: refuses, naming it and its state', async () => {
     await writeAndCommit(
       repoDir,
       {
@@ -1004,8 +1004,30 @@ describe('mergeDelivery (WK-0132 Slice 3)', () => {
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error('expected refusal, got ok');
     expect(result.error).toBe('ADMISSION_FAILED');
-    expect(result.message).toContain('predates frontmatter-based evidence');
+    expect(result.message).toContain('No finished code_review');
+    expect(result.message).toContain('HO-0023 (no evidence stamps)');
     expect(await branchExists(repoDir, 'dispatch/HO-0022')).toBe(true);
+  });
+
+  it('ignores a review with no evidence stamps when a finished review exists', async () => {
+    await writeAndCommit(
+      repoDir,
+      {
+        'wiki/handoffs/HO-0022.md': makeImplementHO('HO-0022', 'Implement thing', 'WK-0166'),
+        'wiki/handoffs/HO-0023.md': makeReviewHO('HO-0023', 'Code review', 'dispatch/HO-0022', 'WK-0166'),
+        'wiki/handoffs/HO-0023.response.md': makeReviewResponse('no_findings', 'HO-0022', false),
+        'wiki/handoffs/HO-0024.md': makeReviewHO('HO-0024', 'Code review again', 'dispatch/HO-0022', 'WK-0166'),
+        'wiki/handoffs/HO-0024.response.md': makeLegacyReviewResponse('no_findings', 'HO-0022'),
+      },
+      'add implement + a finished review + a newer review with no stamps',
+    );
+    await createDeliveryBranch(repoDir, 'HO-0022');
+
+    const result = await mergeDelivery({ dir: repoDir, handoff_id: 'HO-0022' });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+    expect(result.data.reviewId).toBe('HO-0023');
   });
 
   // -- WK-0207: newest matching review wins, not the first readdir match --
@@ -1269,6 +1291,24 @@ describe('mergeDelivery host validation gate (WK-0294, DEC-0047 A1.2 / A2 R6 R8 
     // WK-0306 Resolution 1: a registered command failed, so the refusal
     // teaches the loop — fix the host dependency or add a capability probe.
     expect(result.message).toContain(JAIL_HERMETICITY_TEACHING_SENTENCE);
+  });
+
+  it.skipIf(!BWRAP_FUNCTIONAL)('a red result that passes on the base commit refuses with the fix-up next step and without the jail-only sentence', async () => {
+    await setupReviewedDelivery();
+    // Fails only where the delivery's file exists: the delivery introduced the failure.
+    await mkdir(join(repoDir, 'wiki', '.dispatch'), { recursive: true });
+    await writeAndCommit(
+      repoDir,
+      { 'wiki/.dispatch/validation.json': JSON.stringify({ schema_version: 1, commands: [{ name: 'test', argv: ['bash', '-c', 'test ! -f delivered-file.ts'], timeout_ms: 30_000 }] }) },
+      'register a command the delivery breaks',
+    );
+    const result = await mergeDelivery({ dir: repoDir, handoff_id: 'HO-0001' });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.message).toContain('this delivery introduced the failure');
+    expect(result.message).toContain('dispatch a fix-up handoff with base_ref: dispatch/HO-0001');
+    expect(result.message).toContain('An override needs an explicit operator instruction.');
+    expect(result.message).not.toContain(JAIL_HERMETICITY_TEACHING_SENTENCE);
   });
 
   // Why: A4.1 — the reviewer can edit only its jail copy; the gate reads the host original.
@@ -2054,6 +2094,32 @@ describe('mergeDelivery when git cannot merge', () => {
     expect(result.message).toContain('already committed before the merge: wiki/handoffs/HO-0001.judgments.json');
     expect((await execFile('git', ['status', '--porcelain'], { cwd: repoDir })).stdout.trim()).toBe('');
     expect(await branchExists(repoDir, 'dispatch/HO-0001')).toBe(true);
+  });
+});
+
+describe('mergeDelivery when git never starts the merge', () => {
+  it('says no merge was started and the working tree is unchanged, not that an abort failed', async () => {
+    await writeAndCommit(
+      repoDir,
+      {
+        'wiki/handoffs/HO-0001.md': makeImplementHO('HO-0001', 'Implement thing', 'WK-0001'),
+        'wiki/handoffs/HO-0002.md': makeReviewHO('HO-0002', 'Code review', 'dispatch/HO-0001', 'WK-0001'),
+        'wiki/handoffs/HO-0002.response.md': makeReviewResponse('no_findings', 'HO-0001', false),
+      },
+      'add HOs',
+    );
+    await createDeliveryBranch(repoDir, 'HO-0001', { 'dummy.txt': 'from the branch\n' });
+    // A local edit the dirty check cannot see (assume-unchanged) to a file the branch changes: git refuses before it starts the merge.
+    await execFile('git', ['update-index', '--assume-unchanged', 'dummy.txt'], { cwd: repoDir });
+    await writeFile(join(repoDir, 'dummy.txt'), 'my local edit\n');
+
+    const result = await mergeDelivery({ dir: repoDir, handoff_id: 'HO-0001' });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('expected failure, got ok');
+    expect(result.message).toContain('git merge of dispatch/HO-0001 failed');
+    expect(result.message).toContain('No merge was started; the working tree is unchanged.');
+    expect(result.message).not.toContain('could not be aborted');
   });
 });
 

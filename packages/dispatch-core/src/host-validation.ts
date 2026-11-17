@@ -465,7 +465,7 @@ export async function stageReviewEvidence(opts: {
   if (!sourceCheck.ok) return sourceCheck;
   const source = sourceCheck.data;
   const evidence = await readValidationEvidence(source);
-  if (!evidence.ok) return evidence;
+  if (!evidence.ok) return fail(evidence.error, `${evidence.message} Next step: re-run derive-review for ${implementId}.`, evidence);
   if (evidence.data === null) {
     return fail('BAD_RECORD', `Derived review has no host validation evidence at ${source}; re-run derive-review for ${implementId}.`);
   }
@@ -533,6 +533,32 @@ function renderStep(step: ValidationStepResult): string[] {
  */
 export const JAIL_HERMETICITY_TEACHING_SENTENCE =
   "failures may be jail-only: fix the test's host dependency or add a capability probe (jail hermeticity contract, docs/dispatch-protocol.md), then call merge-delivery again; it runs the validation again when the stored result is red";
+
+/**
+ * The text of a refused merge-delivery gate: what failed, and the one next step. A red result whose
+ * base commit passes the same steps was introduced by the delivery, so the step is a fix-up handoff;
+ * a red result that also fails on the base commit, or has no baseline, is not specific to the
+ * delivery, so the step is to fix the host dependency or the base. Any other problem keeps the
+ * general step. The override is never offered as a choice.
+ */
+export function validationGateRefusal(branch: string, problems: string[], evidence: ValidationEvidence | null): string {
+  const head = `Host validation gate refused merge of ${branch}: ${problems.join('; ')}.`;
+  const override = 'An override needs an explicit operator instruction.';
+  if (evidence === null || evidence.outcome !== 'fail') {
+    return `${head} Fix the cause and call merge-delivery again; it runs the validation again when the stored result is red, missing or stale. ${override}`;
+  }
+  const summary = summarizeValidation(evidence);
+  const baseline = summary.status === 'fail' ? summary.baseline : undefined;
+  if (baseline?.status === 'ran' && baseline.alsoFailing.length === 0) {
+    return `${head} The base commit passes the same commands, so this delivery introduced the failure. Next step: dispatch a fix-up handoff with base_ref: ${branch}, then call merge-delivery on the fix-up handoff. ${override}`;
+  }
+  const cause =
+    baseline?.status === 'ran'
+      ? `The same commands also fail on the base commit (${baseline.alsoFailing.join(', ')}), so the failure is not specific to this delivery.`
+      : `The same commands did not run on the base commit (${baseline?.reason.replace(/\s+/g, ' ').trim() ?? 'no baseline recorded'}), so the failure is not known to be specific to this delivery.`;
+  const teaching = evidence.commands.some((c) => c.result === 'fail') ? ` ${JAIL_HERMETICITY_TEACHING_SENTENCE}.` : '';
+  return `${head} ${cause} Next step: fix the failing command's host dependency or the base commit, then call merge-delivery again; it runs the validation again when the stored result is red.${teaching} ${override}`;
+}
 
 /**
  * Render the evidence as markdown for the review HO (rule 45: rendered from

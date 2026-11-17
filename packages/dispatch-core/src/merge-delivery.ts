@@ -20,7 +20,7 @@
  *      for any chain member (the head included). Finished (chain-reviews.ts)
  *      means its response doc (`<review_id>.response.md`) exists, records a run
  *      that completed (`outcome: delivered`), and holds a valid block or a
- *      non-empty report; a review that was derived and never finished, or whose
+ *      non-empty report, and carries at least one of the evidence stamps below; a review that was derived and never finished, or whose
  *      run failed, timed out or was cancelled, is ignored for governing and
  *      judging. When the chain has reviews and none is finished, the merge
  *      refuses, naming each one and its state. Evidence is read from the response doc's frontmatter
@@ -33,8 +33,7 @@
  *      (see 5). code_review/redteam is prose-first, so an absent or invalid
  *      block is not itself a gate — when `worker_report_chars > 0`, the merge
  *      proceeds with `verdict: 'advisory'` (the orchestrator/operator reads the
- *      prose). Only a missing review HO, no finished review, or a response doc
- *      that predates frontmatter-based evidence (all three fields absent) refuses.
+ *      prose). Only a missing review HO or no finished review refuses.
  *      A review handoff file that cannot be read or parsed and names a chain
  *      branch as its `base_ref` refuses too: a hidden review must not change
  *      which review governs.
@@ -96,7 +95,7 @@ import { type Handoff } from './ho.js';
 import { commitExists, parseResponseDocFrontmatter, readChainReviews } from './chain-reviews.js';
 import type { DispatchResult } from './errors.js';
 import { ok, fail } from './errors.js';
-import { evidenceForDelivery, JAIL_HERMETICITY_TEACHING_SENTENCE, type ValidationEvidence } from './host-validation.js';
+import { evidenceForDelivery, validationGateRefusal, type ValidationEvidence } from './host-validation.js';
 import { loadValidationRegistry } from './repo-config.js';
 import { FINDING_SEVERITIES } from './recovery-block.js';
 
@@ -288,25 +287,15 @@ function readReviewFindings(reviewId: string, content: string | null): DispatchR
 
 /**
  * Read the governing review's response doc frontmatter evidence fields
- * (no markdown re-parsing). Fails closed on a response doc that predates
- * frontmatter-based evidence (all three fields absent). The outcome never
+ * (no markdown re-parsing). The outcome never
  * refuses; the findings are judged separately. A missing/invalid block backed
  * by real review content (`worker_report_chars > 0`) returns `verdict: 'advisory'`
  * (the block is optional metadata, never a gate, for code_review/redteam). The
- * governing review is finished by construction, so an empty report cannot reach here.
+ * governing review is finished by construction, so an empty report or a doc with no
+ * evidence stamps cannot reach here.
  */
 function checkReviewEvidence(reviewId: string, content: string): DispatchResult<{ outcome: string; verdict: 'structured' | 'advisory' }> {
-  const { recoveryOutcome, recoveryValid, workerReportChars } = parseResponseDocFrontmatter(content);
-
-  // A response doc predating frontmatter-based evidence has none of the
-  // three fields — refuse loudly rather than silently falling back to a
-  // legacy markdown re-parse (no regex fallback, no dual-path parsing).
-  if (recoveryOutcome === undefined && recoveryValid === undefined && workerReportChars === undefined) {
-    return fail(
-      'ADMISSION_FAILED',
-      `Review ${reviewId} response doc predates frontmatter-based evidence — re-run the review to generate updated fields`,
-    );
-  }
+  const { recoveryOutcome, recoveryValid } = parseResponseDocFrontmatter(content);
 
   // A valid block passes whatever its outcome: a review advises; its findings are judged, not vetoed.
   if (recoveryValid === true) {
@@ -804,16 +793,9 @@ export async function mergeDelivery(opts: MergeDeliveryOpts): Promise<DispatchRe
   if (gate.problems.length > 0) {
     const override = opts.override;
     if (override === undefined) {
-      // WK-0306 (Resolution 1): the teaching sentence rides only a REGISTERED
-      // COMMAND failure (never a setup-only failure, never the other refusal
-      // kinds below — missing/unreadable/other-run/stale-registry evidence —
-      // where no command ran to teach anything about).
-      const teaching = gate.evidence !== null && gate.evidence.commands.some((c) => c.result === 'fail')
-        ? ` ${JAIL_HERMETICITY_TEACHING_SENTENCE}.`
-        : '';
       return fail(
         'ADMISSION_FAILED',
-        `Host validation gate refused merge of ${branchName}: ${gate.problems.join('; ')}. Fix the cause and call merge-delivery again — it runs the validation again when the stored result is red, missing or stale — or merge with an override carrying a reason.${teaching}`,
+        validationGateRefusal(branchName, gate.problems, gate.evidence),
         { problems: gate.problems },
       );
     }
@@ -849,11 +831,21 @@ export async function mergeDelivery(opts: MergeDeliveryOpts): Promise<DispatchRe
   try {
     await execFile('git', ['merge', gate.sha], { cwd: dir });
   } catch (err) {
-    let aborted = 'The merge was aborted.';
+    // A merge that failed before it started leaves no MERGE_HEAD (exit 1) and nothing to abort.
+    let started = true;
     try {
-      await execFile('git', ['merge', '--abort'], { cwd: dir });
-    } catch (abortErr) {
-      aborted = `The merge could not be aborted (${gitOutput(abortErr)}); check the working tree.`;
+      await execFile('git', ['rev-parse', '-q', '--verify', 'MERGE_HEAD'], { cwd: dir });
+    } catch (probeErr) {
+      started = (probeErr as { code?: unknown }).code !== 1;
+    }
+    let aborted = 'No merge was started; the working tree is unchanged.';
+    if (started) {
+      aborted = 'The merge was aborted.';
+      try {
+        await execFile('git', ['merge', '--abort'], { cwd: dir });
+      } catch (abortErr) {
+        aborted = `The merge could not be aborted (${gitOutput(abortErr)}); check the working tree.`;
+      }
     }
     const recorded = [overrideRecord, judgmentsRecord].filter((r) => r !== undefined);
     const committed = recorded.length > 0 ? `Record files already committed before the merge: ${recorded.join(', ')}.` : 'No record file was committed before the merge.';
