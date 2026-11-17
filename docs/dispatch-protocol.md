@@ -32,9 +32,19 @@ A work item with a `## Slices` table can generate its handoff instead of retypin
 writes the HO. `write_scope` and `validation` come from the row; `read_first` is the row's files that
 exist at generation time (a new slice's files do not exist yet, and admission refuses a missing
 `read_first` path) plus the work item path; `objective` comes from the work item's `## Objective`
-and `acceptance` from its `## Acceptance criteria` items; `title` defaults to the row title and
+and `acceptance` from its `## Acceptance criteria` items, both bounded to the slice (below); `title` defaults to the row title and
 `mode` to `implement`; `work_item` and `slice` are recorded. `--subject` and `--allowed-agents` are
 still required.
+
+The slice bounds the work. The objective starts with a generated paragraph that names the slice, its
+title and the work item, says to build this slice only, and lists every other slice of the table by
+id and title as out of scope; then comes `Work item objective, for context:` and the `## Objective`
+text unchanged. The acceptance list starts with one generated item saying that only this slice is
+built and that a criterion needing another slice is out of scope; the work item's items follow
+unchanged, in order. A table with one row gets neither the out-of-scope clause nor the generated item.
+
+`--timeout-secs <n>` (MCP: `timeout_secs`) writes the `timeout_secs` field on either path; it must be
+a positive integer, and `create-handoff` refuses anything else.
 
 An acceptance item is a top-level list entry (`-`, `*`, `1.` or `1)`, with an optional `[ ]`/`[x]`
 box). The lines indented under it (wrapped text, sub-bullets, a fenced block) belong to it and are
@@ -628,8 +638,10 @@ the mother repo's current `HEAD`. The result goes into `validation-evidence.json
 baseline never changes `outcome`: red stays red. It does not run when the delivery is green, and a baseline
 that cannot run does not fail the validation. The evidence block in the review HO states, for each failed
 step, its result on the delivery next to its result on the base commit, and the response-doc line adds
-`Also failing on the base commit: <names>.` (or says the baseline did not run, with the reason). These are
-facts only; the host draws no conclusion from them.
+`Also failing on the base commit: <names>.` when some of them also fail there, `The base commit passes the
+same commands, so this delivery introduced the failure.` when none do, or says the baseline did not run,
+with the reason. The merge gate reads the same facts to choose the next step it names (see step 7 of the
+merge preconditions); the outcome stays red whatever the baseline says.
 
 **Evidence.** The pipeline writes `validation-evidence.json` into the delivered implement run's dir; `derive-review` and `merge-delivery` write it again when the stored result is red, missing or stale
 (`.agent-runs/runs/<implement_id>/<run_id>/`). It holds `handoff_id`, `run_id`, `delivery_branch`,
@@ -663,10 +675,11 @@ Preconditions (checked in order, fail-closed):
    `dispatch/<id>` for any member of the chain, the head included. A fix-up delivery on top of a
    reviewed delivery needs no new review. A review is finished when its response doc exists, records a run
    that completed (`outcome: delivered`), and holds a valid block or a non-empty report. A review that
-   was derived and never finished (no response doc, a run that did not complete, or an empty report) is
-   ignored for governing and judging, so it never forces another review. When the chain has reviews and
-   none is finished, the merge refuses, naming each review with its state (`no response doc`, `run did
-   not complete: <outcome>` or `empty report`) and the next step: dispatch it, or run `derive-review`. A review handoff file that cannot
+   was derived and never finished (no response doc, a run that did not complete, a response doc with none
+   of the evidence stamps, or an empty report) is ignored for governing and judging, so it never forces
+   another review. When the chain has reviews and none is finished, the merge refuses, naming each review
+   with its state (`no response doc`, `run did not complete: <outcome>`, `no evidence stamps` or `empty
+   report`) and the next step: dispatch it, or run `derive-review`. A review handoff file that cannot
    be read or parsed and names a chain branch as its `base_ref` refuses, naming the file and the
    problem: a hidden review must not change which review governs. Evidence is read from the governing
    doc's frontmatter — `recovery_outcome`, `recovery_valid`, `worker_report_chars` (see "Capture and
@@ -674,13 +687,13 @@ Preconditions (checked in order, fail-closed):
    `recovery_valid: true` merges with `verdict: structured` whatever the outcome: a review advises and
    never vetoes, so `changes_requested` alone does not refuse. `recovery_valid` false/absent with
    `worker_report_chars > 0` merges as `verdict: advisory` (the orchestrator/operator reads the prose).
-   A response doc predating these frontmatter fields (all three absent — no legacy regex fallback)
-   refuses outright when it is the newest finished candidate.
+   A response doc with none of these fields (all three absent — no legacy regex fallback) is not
+   finished, so it never governs; `derive-review` treats it the same way and derives a new review.
 3. Commits after the review. The governing review's `reviewed_sha` must be the head or an ancestor of
    it (a sha that is not a commit in the repository refuses too), and every commit after it must be a dispatch delivery (`dispatch: HO-XXXX`) of an implement
    handoff in the chain. Any other commit — a hand edit, a merge, a commit outside the chain — refuses,
    naming the commit sha and subject; derive a review for the new head. No override applies, because
-   that code was never reviewed. A review with no `reviewed_sha` skips this check and refuses at step 6.
+   that code was never reviewed. A review with no `reviewed_sha` skips this check and refuses at step 7.
 4. Chain walk: every commit in `HEAD..dispatch/<handoff_id>` is a delivery of an implement handoff.
 5. Judgments (see below). Checked after the chain is walked and before anything is committed.
 6. Working tree clean within the merge's change set — not repo-wide. Any staged path
@@ -697,11 +710,18 @@ Preconditions (checked in order, fail-closed):
    commands run again and the file is rewritten. It refuses when the review has no `reviewed_run` or
    `reviewed_sha`, the head has no delivered run, the evidence cannot be produced, the evidence belongs
    to another run, or the evidence `outcome` is `fail`. An override can clear each of these, and only
-   these. The reviewer's copy of the evidence is never read.
+   these. The reviewer's copy of the evidence is never read. The refusal names the next step by what the
+   baseline shows. A red result whose base commit passes the same commands says the delivery introduced
+   the failure; the step is a fix-up handoff with `base_ref: dispatch/<id>`, then `merge-delivery` on
+   the fix-up handoff. A red result that also fails on the base commit, or whose baseline did not run,
+   says the failure is not specific to the delivery, keeps the jail hermeticity sentence, and names the
+   step: fix the test's host dependency or the base, then call `merge-delivery` again. Any other problem
+   says to fix the cause and call `merge-delivery` again. Every refusal ends with `An override needs an
+   explicit operator instruction.`
 8. Records: the override record and the judgments record are committed (see below).
 9. Merge succeeds (fast-forward or a real merge). The merge names the evidence sha, not the branch. When
    `git merge` fails, the merge is aborted and the refusal carries git's output, says whether the abort
-   itself failed, and names the record files already committed before the merge (they stay in history).
+   itself failed (or that no merge was started and the working tree is unchanged), and names the record files already committed before the merge (they stay in history).
 
 **Judgments.** Judgments cover `code_review` findings only; `redteam` handoffs are not judged at merge.
 The findings to judge are the findings of every finished `code_review` on the chain (its `base_ref` is a

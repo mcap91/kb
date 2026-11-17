@@ -36,7 +36,7 @@ export const tools: ToolDef[] = [
   },
   {
     name: 'create-handoff',
-    description: 'Create a repo-local HO handoff document. Pass wk + slice to generate it from a slice row of the work item (derives title, write_scope, read_first, objective, acceptance, validation; mode defaults to implement); otherwise title, mode, acceptance and validation are required.',
+    description: 'Create a repo-local HO handoff document. Pass wk + slice to generate it from a slice row of the work item (derives title, write_scope, read_first, validation, and an objective and acceptance that bound the work to the slice and name the other slices as out of scope; mode defaults to implement); otherwise title, mode, acceptance and validation are required.',
     inputSchema: dirSchema.extend({
       title: z.string().optional(),
       subject: z.string(),
@@ -65,6 +65,7 @@ export const tools: ToolDef[] = [
       base_ref: z.string().optional(),
       fixup_context: z.string().optional().describe('Review findings a fix-up handoff (base_ref dispatch/<id>) repairs, injected verbatim into the worker prompt. ' + FIXUP_AUTHORING_RULES),
       vars: z.array(z.string()).optional(),
+      timeout_secs: z.number().optional().describe('Worker watchdog override in seconds; a positive integer, refused above the operator cap at dispatch. Omitted = the 1800s default'),
     }),
     handler: async (input) => createHandoff(input as unknown as Parameters<typeof createHandoff>[0]),
   },

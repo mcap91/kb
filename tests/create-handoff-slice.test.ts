@@ -65,6 +65,11 @@ const TWO_SLICES = [
   '',
 ].join('\n');
 
+async function objectiveOf(handoffPath: string): Promise<string> {
+  const text = await readFile(handoffPath, 'utf8');
+  return /\n## Objective\n([^]*?)\n\n## Constraints/.exec(text)?.[1] ?? '';
+}
+
 function git(cwd: string, ...args: string[]): void {
   execFileSync('git', args, { cwd });
 }
@@ -117,10 +122,107 @@ describe('createHandoff from a slice row', () => {
       write_scope: ['src/other.ts'],
       read_first: ['src/other.ts', `wiki/issues/${WK_ID}.md`],
       validation: ['npm run typecheck'],
-      acceptance: ['The thing is done', 'The thing is tested'],
+      acceptance: [expect.stringContaining('Only slice s2 (Second slice)'), 'The thing is done', 'The thing is tested'],
     });
     const content = await readFile(created.data.handoffPath, 'utf8');
     expect(content).toContain('Make the fixture do the thing.');
+  });
+
+  // Why: the worker of s1 built every function of the work item, so s2 had nothing left; the slice must bound the work.
+  it('bounds the objective to the slice and names the other slices as out of scope', async () => {
+    await setup(wkText(TWO_SLICES));
+    const created = await createHandoff(input({ slice: 's1' }));
+    if (!created.ok) throw new Error(created.message);
+    const [lead, ...rest] = (await objectiveOf(created.data.handoffPath)).split('\n\n');
+    expect(lead).toContain('s1');
+    expect(lead).toContain('First slice');
+    expect(lead).toContain(WK_ID);
+    expect(lead).toContain('this slice only');
+    expect(lead).toMatch(/out of scope[^]*s2 \(Second slice\)/);
+    expect(lead).not.toMatch(/out of scope[^]*s1/);
+    expect(rest.join('\n\n')).toBe('Work item objective, for context:\nMake the fixture do the thing.');
+  });
+
+  it('puts one generated item before the work item acceptance items, unchanged and in order', async () => {
+    await setup(wkText(TWO_SLICES));
+    const created = await createHandoff(input({ slice: 's1' }));
+    if (!created.ok) throw new Error(created.message);
+    const parsed = await parseHandoff(created.data.handoffPath);
+    if (!parsed.ok) throw new Error(parsed.message);
+    const [generated, ...items] = parsed.data.acceptance;
+    expect(generated).toContain('s1');
+    expect(generated).toContain('First slice');
+    expect(generated).toContain('another slice is out of scope');
+    expect(items).toEqual(['The thing is done', 'The thing is tested']);
+  });
+
+  it('adds no out-of-scope clause and no generated acceptance item when the table has one row', async () => {
+    const oneRow = TWO_SLICES.split('\n').filter((line) => !line.startsWith('| s2')).join('\n');
+    await setup(wkText(oneRow));
+    const created = await createHandoff(input({ slice: 's1' }));
+    if (!created.ok) throw new Error(created.message);
+    const objective = await objectiveOf(created.data.handoffPath);
+    expect(objective).not.toContain('out of scope');
+    expect(objective).toContain('Make the fixture do the thing.');
+    const parsed = await parseHandoff(created.data.handoffPath);
+    if (!parsed.ok) throw new Error(parsed.message);
+    expect(parsed.data.acceptance).toEqual(['The thing is done', 'The thing is tested']);
+  });
+
+  // Why: a slice title with YAML-significant characters must not break the frontmatter.
+  it('round-trips a generated acceptance item built from a title with punctuation', async () => {
+    await setup(wkText(TWO_SLICES.replace('First slice', 'countWords `with` tests: (a, b)')));
+    const created = await createHandoff(input({ slice: 's1' }));
+    if (!created.ok) throw new Error(created.message);
+    const parsed = await parseHandoff(created.data.handoffPath);
+    if (!parsed.ok) throw new Error(parsed.message);
+    expect(parsed.data.acceptance[0]).toContain('countWords `with` tests: (a, b)');
+    expect(parsed.data.acceptance.slice(1)).toEqual(['The thing is done', 'The thing is tested']);
+  });
+
+  it('writes timeout_secs on the slice path and on the explicit path, and refuses a bad value', async () => {
+    await setup(wkText(TWO_SLICES));
+    const sliced = await createHandoff(input({ timeout_secs: 3600 }));
+    if (!sliced.ok) throw new Error(sliced.message);
+    expect(await readFile(sliced.data.handoffPath, 'utf8')).toContain('timeout_secs: 3600\n');
+    const parsedSlice = await parseHandoff(sliced.data.handoffPath);
+    if (!parsedSlice.ok) throw new Error(parsedSlice.message);
+    expect(parsedSlice.data.timeout_secs).toBe(3600);
+
+    const explicit = await createHandoff({
+      dir: repo, subject: 'kb:dispatch', allowed_agents: ['claude'], title: 'T', mode: 'code_review',
+      acceptance: ['a'], validation: ['v'], timeout_secs: 90,
+    });
+    if (!explicit.ok) throw new Error(explicit.message);
+    const parsedExplicit = await parseHandoff(explicit.data.handoffPath);
+    if (!parsedExplicit.ok) throw new Error(parsedExplicit.message);
+    expect(parsedExplicit.data.timeout_secs).toBe(90);
+
+    for (const bad of [0, -5, 1.5, Number.NaN]) {
+      const refused = await createHandoff(input({ timeout_secs: bad }));
+      expect(refused.ok).toBe(false);
+      if (refused.ok) continue;
+      expect(refused.error).toBe('INVALID_HANDOFF');
+      expect(refused.message).toContain('timeout_secs');
+    }
+  });
+
+  it('writes no timeout_secs line when it is omitted', async () => {
+    await setup(wkText(TWO_SLICES));
+    const created = await createHandoff(input());
+    if (!created.ok) throw new Error(created.message);
+    expect(await readFile(created.data.handoffPath, 'utf8')).not.toContain('timeout_secs');
+  });
+
+  it('the CLI --timeout-secs flag writes it and refuses a bad value', async () => {
+    await setup(wkText(TWO_SLICES));
+    const base = [CLI, 'create-handoff', '--dir', repo, '--subject', 'kb:dispatch', '--allowed-agents', 'claude', '--wk', WK_ID, '--slice', 's1'];
+    execFileSync(TSX, [...base, '--timeout-secs', '600'], { cwd: ROOT, stdio: 'pipe' });
+    const parsed = await parseHandoff(join(repo, 'wiki', 'handoffs', 'HO-0001.md'));
+    if (!parsed.ok) throw new Error(parsed.message);
+    expect(parsed.data.timeout_secs).toBe(600);
+    expect(() => execFileSync(TSX, [...base, '--timeout-secs', '0'], { cwd: ROOT, stdio: 'pipe' })).toThrow();
+    expect(() => execFileSync(TSX, [...base, '--timeout-secs', 'abc'], { cwd: ROOT, stdio: 'pipe' })).toThrow();
   });
 
   it('picks the requested row when the table has several', async () => {
@@ -223,7 +325,7 @@ describe('createHandoff from a slice row', () => {
     if (!created.ok) throw new Error(created.message);
     const parsed = await parseHandoff(created.data.handoffPath);
     if (!parsed.ok) throw new Error(parsed.message);
-    return parsed.data.acceptance;
+    return parsed.data.acceptance.slice(1); // item 0 is the generated slice bound
   }
 
   // Why: real work items wrap long criteria; a truncated criterion is a weaker spec for the worker.
@@ -376,7 +478,7 @@ describe('createHandoff from a slice row', () => {
       slice: 's2',
       write_scope: ['src/other.ts'],
       validation: ['npm run typecheck'],
-      acceptance: ['The thing is done', 'The thing is tested'],
+      acceptance: [expect.stringContaining('Only slice s2 (Second slice)'), 'The thing is done', 'The thing is tested'],
     });
   });
 

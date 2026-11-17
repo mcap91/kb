@@ -80,7 +80,10 @@ Command Options:
     --validation <csv>       Validation commands, comma-separated (required without --slice)
     --wk <WK-id>             Generate from a slice of this work item's ## Slices table (needs --slice)
     --slice <id>             Slice row id, e.g. s1 (needs --wk); derives write scope, validation,
-                             read-first, objective and acceptance, so those flags are refused with it
+                             read-first, objective and acceptance, so those flags are refused with it.
+                             The objective and acceptance start with generated text that bounds the
+                             work to this slice and names the other slices as out of scope
+    --timeout-secs <n>       Optional worker watchdog override in seconds (positive integer; default 1800)
     --work-item <WK-id>      Optional linked work item
     --write-scope <csv>      Optional write scope paths
     --read-first <csv>       Optional Read First paths
@@ -216,6 +219,7 @@ async function cmdCreateHandoff(args: string[]): Promise<number> {
   const wk = getFlagValue(args, '--wk');
   const slice = getFlagValue(args, '--slice');
   const fromSlice = wk !== undefined || slice !== undefined;
+  const timeoutSecs = getFlagValue(args, '--timeout-secs');
 
   if (!dir || !subject || allowedAgents.length === 0) {
     console.error('Error: --dir, --subject, and --allowed-agents are required');
@@ -258,6 +262,7 @@ async function cmdCreateHandoff(args: string[]): Promise<number> {
     base_ref: getFlagValue(args, '--base-ref'),
     fixup_context: getFlagValue(args, '--fixup-context'),
     vars: parseCsv(getFlagValue(args, '--vars')),
+    timeout_secs: timeoutSecs === undefined ? undefined : Number(timeoutSecs),
   });
 
   if (!result.ok) {

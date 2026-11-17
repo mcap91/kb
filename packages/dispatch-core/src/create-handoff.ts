@@ -117,6 +117,7 @@ export function renderHandoff(id: string, opts: CreateHandoffOpts, stamps: Hando
     scalarField('initiative', opts.initiative),
     scalarField('work_item', opts.work_item),
     ...(opts.slice ? [scalarField('slice', opts.slice)] : []),
+    ...(opts.timeout_secs !== undefined ? [`timeout_secs: ${opts.timeout_secs}`] : []),
     ...writeScopeBlock(opts.write_scope ?? []),
     ...listField('read_first', opts.read_first ?? []),
     ...listField('acceptance', opts.acceptance),
@@ -237,6 +238,12 @@ function listItems(section: string, label: string): DispatchResult<string[]> {
   return ok(items.map((item) => item.parts.join(' ')));
 }
 
+/** A bad `timeout_secs` stops authoring; the parser refuses the same values at dispatch. */
+function checkTimeoutSecs(timeoutSecs: number | undefined): DispatchResult<null> {
+  if (timeoutSecs === undefined || (Number.isInteger(timeoutSecs) && timeoutSecs > 0)) return ok(null);
+  return fail('INVALID_HANDOFF', `timeout_secs must be a positive integer; got: ${timeoutSecs}`);
+}
+
 const SLICE_DERIVED_FIELDS = ['write_scope', 'read_first', 'objective', 'acceptance', 'validation'] as const;
 
 /**
@@ -244,7 +251,9 @@ const SLICE_DERIVED_FIELDS = ['write_scope', 'read_first', 'objective', 'accepta
  * `validation` from the slice row, `read_first` = the row's files that exist
  * now (a new slice's files do not exist yet and admission refuses a missing
  * read_first path) plus the WK path, `objective` and `acceptance` from the WK
- * body. Supplying any derived field alongside a slice is refused, never merged.
+ * body. The slice bounds the work: a generated paragraph and a generated
+ * acceptance item name the slice and the other slices as out of scope, ahead
+ * of the WK text, which stays unchanged. Supplying any derived field alongside a slice is refused, never merged.
  */
 async function resolveSliceOpts(input: CreateHandoffInput, targetDir: string): Promise<DispatchResult<CreateHandoffOpts>> {
   const { wk, slice } = input;
@@ -302,6 +311,18 @@ async function resolveSliceOpts(input: CreateHandoffInput, targetDir: string): P
     if (await readFirstEntryExists(file, input.base_ref ?? null, targetDir)) existing.push(file);
   }
 
+  const slicePhrase = `slice ${slice} (${row.title}) of ${wk}`;
+  const others = slices.data.filter((candidate) => candidate.id !== slice);
+  const scopeClause = others.length === 0
+    ? ''
+    : ` These slices are out of scope: ${others.map((other) => `${other.id} (${other.title})`).join(', ')}.`;
+  const sliceObjective =
+    `This handoff is ${slicePhrase}. Build this slice only.${scopeClause}\n\n` +
+    `Work item objective, for context:\n${objective}`;
+  const sliceAcceptance = others.length === 0
+    ? acceptance
+    : [`Only ${slicePhrase} is built; a criterion below that needs another slice is out of scope for this handoff.`, ...acceptance];
+
   return ok({
     ...input,
     title: input.title ?? row.title,
@@ -310,8 +331,8 @@ async function resolveSliceOpts(input: CreateHandoffInput, targetDir: string): P
     slice,
     write_scope: row.write_scope,
     read_first: [...existing, wkRelativePath],
-    objective,
-    acceptance,
+    objective: sliceObjective,
+    acceptance: sliceAcceptance,
     validation: [row.validation],
   });
 }
@@ -334,6 +355,9 @@ export async function createHandoff(
     : requireExplicitFields(input);
   if (!resolved.ok) return resolved;
   const opts = resolved.data;
+
+  const timeoutCheck = checkTimeoutSecs(opts.timeout_secs);
+  if (!timeoutCheck.ok) return timeoutCheck;
 
   const workItemCheck = checkWorkItemForImplement(opts);
   if (!workItemCheck.ok) return workItemCheck;
