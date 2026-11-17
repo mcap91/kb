@@ -55,10 +55,10 @@ import { loadValidationRegistry } from './repo-config.js';
 const execFile = promisify(execFileCb);
 
 /** WK-0270 Specification 1: the only commit subject a chain member may carry. */
-const DISPATCH_COMMIT_SUBJECT = /^dispatch: (HO-\d{4})$/;
+export const DISPATCH_COMMIT_SUBJECT = /^dispatch: (HO-\d{4})$/;
 
 /** One commit in the reviewed chain, and the implement HO its subject names. */
-interface ChainMember {
+export interface ChainMember {
   hoId: string;
   commitSha: string;
   parentSha: string;
@@ -77,7 +77,7 @@ interface ChainMember {
  * refuses. Returns members newest-first (head first, then older) plus
  * `rangeBase`, the parent of the oldest member's commit.
  */
-async function walkChain(
+export async function walkChain(
   targetDir: string,
   deliveryBranch: string,
   handoffId: string,
@@ -244,6 +244,40 @@ async function buildFilteredReadFirst(
   return { readFirst, dropped };
 }
 
+/**
+ * The handoff's latest delivered run: the newest `completed_at` among its
+ * dispatch-minted run dirs whose state is schema 2, `outcome: delivered`, with
+ * a delivery branch. Unreadable run state is skipped. `undefined` when none.
+ */
+export async function latestDeliveredRun(targetDir: string, handoffId: string): Promise<string | undefined> {
+  let latestRunId: string | undefined;
+  const runsDir = join(targetDir, '.agent-runs', 'runs', handoffId);
+  let runIds: string[] = [];
+  try {
+    runIds = await readdir(runsDir);
+  } catch {
+    // No runs dir — no delivered run.
+  }
+  let latestCompletedAt = '';
+  for (const runId of runIds) {
+    if (!isRunId(runId)) continue; // not a dispatch-minted run dir; never stamped (HO-0220 F1)
+    try {
+      const stateRaw = await readFile(join(runsDir, runId, 'state.json'), 'utf-8');
+      const state = JSON.parse(stateRaw) as Record<string, unknown>;
+      if (state.schema_version !== 2) continue;
+      if (state.outcome !== 'delivered' || typeof state.branch !== 'string') continue;
+      const completedAt = typeof state.completed_at === 'string' ? state.completed_at : '';
+      if (completedAt > latestCompletedAt) {
+        latestCompletedAt = completedAt;
+        latestRunId = runId;
+      }
+    } catch {
+      // Skip unreadable run state
+    }
+  }
+  return latestRunId;
+}
+
 export interface DeriveReviewOpts {
   dir: string;
   handoff_id: string;
@@ -291,32 +325,8 @@ export async function deriveReview(opts: DeriveReviewOpts): Promise<DispatchResu
 
   // The HO's latest delivered run is the one the review targets (WK-0153 reviewed_run;
   // DEC-0047 A2 R6: only a run whose outcome is `delivered` and that left a branch).
-  let reviewedRunId: string | undefined;
-
+  const reviewedRunId = await latestDeliveredRun(targetDir, implement.id);
   const runsDir = join(targetDir, '.agent-runs', 'runs', implement.id);
-  let runIds: string[] = [];
-  try {
-    runIds = await readdir(runsDir);
-  } catch {
-    // No runs dir — no delivered run; refused below.
-  }
-  let latestCompletedAt = '';
-  for (const runId of runIds) {
-    if (!isRunId(runId)) continue; // not a dispatch-minted run dir; never stamped (HO-0220 F1)
-    try {
-      const stateRaw = await readFile(join(runsDir, runId, 'state.json'), 'utf-8');
-      const state = JSON.parse(stateRaw) as Record<string, unknown>;
-      if (state.schema_version !== 2) continue;
-      if (state.outcome !== 'delivered' || typeof state.branch !== 'string') continue;
-      const completedAt = typeof state.completed_at === 'string' ? state.completed_at : '';
-      if (completedAt > latestCompletedAt) {
-        latestCompletedAt = completedAt;
-        reviewedRunId = runId;
-      }
-    } catch {
-      // Skip unreadable run state
-    }
-  }
   if (reviewedRunId === undefined) {
     return fail(
       'BAD_RECORD',

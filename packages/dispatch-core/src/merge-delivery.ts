@@ -5,9 +5,15 @@
  * Local only — no remote push; push is the operator's decision (WK-0132
  * spec, Slice 3).
  *
+ * `dispatch/<handoff_id>` is the head of a chain: a fix-up delivery builds on
+ * the branch it fixes, so `HEAD..dispatch/<handoff_id>` carries every member.
+ * After the merge each fully merged member branch is deleted too.
+ *
  * Preconditions, checked in order, fail closed throughout:
- *   1. Review evidence: a `code_review` HO in `wiki/handoffs/` whose
- *      `base_ref` is `dispatch/<handoff_id>` has a response doc
+ *   0. Branch `dispatch/<handoff_id>` exists as a local branch.
+ *   1. Review evidence: the governing review is the newest `code_review` HO in
+ *      `wiki/handoffs/` whose `base_ref` is `dispatch/<id>` for any chain
+ *      member (the head included); it has a response doc
  *      (`<review_id>.response.md`). Evidence is read from the response
  *      doc's frontmatter (`recovery_outcome`, `recovery_valid`,
  *      `worker_report_chars` — stamped by capture.ts's `writeResponseDoc`),
@@ -25,7 +31,9 @@
  *      missing response doc, an empty report (`worker_report_chars === 0`),
  *      or a response doc that predates frontmatter-based evidence (all
  *      three fields absent) refuses.
- *   2. Branch `dispatch/<handoff_id>` exists as a local branch.
+ *   2. Commits after the review: its `reviewed_sha` is the head or an ancestor of
+ *      it, and every later commit is a dispatch delivery (a hand edit refuses, no
+ *      override); every commit in the range is a chain member (`walkChain`).
  *   3. The working tree is clean within the merge's change set — not
  *      repo-wide. Anything staged (the index differs from HEAD) refuses
  *      outright, listing the staged paths: git aborts any merge whose index
@@ -37,18 +45,15 @@
  *      refuses, listing just the colliding paths. An unrelated dirty file
  *      anywhere else in the repo never blocks the merge.
  *   3b. Host validation evidence (WK-0294, DEC-0047 A1 ruling 2, A2 R6/R8,
- *      A4.1/A4.5): the review's `reviewed_sha` stamp equals the branch head,
- *      and the evidence JSON in the implement run dir named by the review's
- *      `reviewed_run` stamp — the host original, never a jail copy — exists,
- *      belongs to that run, carries the same sha, passed, and was produced by
- *      the current registry (fingerprint). A branch head that differs from
- *      the review's sha or the evidence sha always refuses: re-validating the
- *      same run for a new head overwrites its evidence, so the evidence alone
- *      cannot prove which head a review saw. Missing stamps, or missing,
- *      failing, or stale-registry evidence, refuse unless the caller passes an
- *      `override` with a reason; the override's provenance is committed
- *      fail-closed (isolated index) before the merge, so an override merge
- *      is distinguishable from a gated one in history.
+ *      A4.1/A4.5): the evidence is the chain head's — `evidenceForDelivery`
+ *      for the head's latest delivered run and the head sha, reused when it
+ *      passed for that sha and registry, produced now otherwise. Missing
+ *      stamps on the review, a head with no delivered run, evidence that
+ *      cannot be read or produced, evidence of another run, or a failing
+ *      outcome refuse unless the caller passes an `override` with a reason;
+ *      the override's provenance is committed fail-closed (isolated index)
+ *      before the merge, so an override merge is distinguishable from a gated
+ *      one in history.
  *   4. The merge succeeds (fast-forward or a real merge) with no conflict —
  *      a conflicting merge is aborted and surfaced to the operator. The
  *      merge names the gated sha, never the branch name.
@@ -67,16 +72,12 @@ import { promisify } from 'node:util';
 
 import { porcelainPaths } from './admission.js';
 import { commitPaths } from './commit-artifacts.js';
+import { DISPATCH_COMMIT_SUBJECT, latestDeliveredRun, walkChain } from './derive-review.js';
 import { parseHandoffContent, type Handoff } from './ho.js';
 import type { DispatchResult } from './errors.js';
 import { ok, fail } from './errors.js';
-import {
-  readValidationEvidence,
-  validationEvidencePath,
-  JAIL_HERMETICITY_TEACHING_SENTENCE,
-  type ValidationEvidence,
-} from './host-validation.js';
-import { loadValidationRegistry, validationRegistryFingerprint } from './repo-config.js';
+import { evidenceForDelivery, JAIL_HERMETICITY_TEACHING_SENTENCE, type ValidationEvidence } from './host-validation.js';
+import { loadValidationRegistry } from './repo-config.js';
 
 const execFile = promisify(execFileCb);
 
@@ -115,6 +116,14 @@ export interface MergeDeliveryResult {
   mergedSha: string;
   /** Repo-relative path of the committed override provenance record; set only when `gate` is `override`. */
   overrideRecord?: string;
+  /** `code_review` handoffs on chain members that have a response doc. */
+  reviewCount: number;
+  /** Implement delivery members of the chain (the head included). */
+  implementDeliveries: number;
+  /** Delivery branches (the head's and fully merged intermediate members') deleted after the merge. */
+  deletedBranches: string[];
+  /** Delivery branches that were left in place, each with the reason. */
+  keptBranches: { branch: string; reason: string }[];
 }
 
 /** `FindingsOutcome` values that gate a merge open (recovery-block.ts's `FINDINGS_OUTCOMES` minus `changes_requested`). */
@@ -189,31 +198,8 @@ export function selectLatestReview(candidates: Handoff[]): Handoff | null {
   return latest;
 }
 
-/**
- * Scan `wiki/handoffs/` for all `code_review` HOs whose `base_ref` equals
- * `branchName`, select the newest via `selectLatestReview` (WK-0207 — the
- * newest matching review wins, never the first readdir match), then read its
- * response doc's frontmatter evidence fields (WK-0166 — no markdown
- * re-parsing). Fails closed on: no matching review HO, no response doc, a
- * response doc that predates frontmatter-based evidence (all three fields
- * absent), an empty report (`worker_report_chars === 0`), or a structured
- * block reporting a non-passing outcome. A missing/invalid block backed by
- * real review content (`worker_report_chars > 0`) returns
- * `verdict: 'advisory'` instead of failing (DEC-0037 — the block is optional
- * metadata, never a gate, for code_review/redteam).
- */
-async function checkReviewEvidence(
-  dir: string,
-  branchName: string,
-): Promise<
-  DispatchResult<{
-    reviewId: string;
-    outcome: string;
-    verdict: 'structured' | 'advisory';
-    reviewedRun: string | undefined;
-    reviewedSha: string | undefined;
-  }>
-> {
+/** Every `code_review` HO in `wiki/handoffs/`, parsed; unreadable or unparsable files are skipped. */
+async function readCodeReviews(dir: string): Promise<DispatchResult<Handoff[]>> {
   const handoffsDir = join(dir, 'wiki', 'handoffs');
 
   let files: string[];
@@ -223,10 +209,8 @@ async function checkReviewEvidence(
     return fail('ADMISSION_FAILED', `Could not read handoffs directory: ${handoffsDir}`, err);
   }
 
-  const hoFiles = files.filter((f) => /^HO-\d{4}\.md$/.test(f));
-
-  const candidates: Handoff[] = [];
-  for (const file of hoFiles) {
+  const reviews: Handoff[] = [];
+  for (const file of files.filter((f) => /^HO-\d{4}\.md$/.test(f))) {
     let content: string;
     try {
       content = await readFile(join(handoffsDir, file), 'utf8');
@@ -234,22 +218,37 @@ async function checkReviewEvidence(
       continue;
     }
     const parsed = parseHandoffContent(content, file);
-    if (!parsed.ok) continue;
-    if (parsed.data.mode === 'code_review' && parsed.data.base_ref === branchName) {
-      candidates.push(parsed.data);
-    }
+    if (parsed.ok && parsed.data.mode === 'code_review') reviews.push(parsed.data);
   }
+  return ok(reviews);
+}
 
-  const reviewHandoff = selectLatestReview(candidates);
-
-  if (!reviewHandoff) {
-    return fail('ADMISSION_FAILED', `No code_review HO found with base_ref: ${branchName}`);
+/** Whether the review's response doc exists in `wiki/handoffs/`. */
+async function hasResponseDoc(dir: string, reviewId: string): Promise<boolean> {
+  try {
+    await readFile(join(dir, 'wiki', 'handoffs', `${reviewId}.response.md`), 'utf8');
+    return true;
+  } catch {
+    return false;
   }
+}
+
+/**
+ * Read the governing review's response doc frontmatter evidence fields
+ * (WK-0166 — no markdown re-parsing). Fails closed on: no response doc, a
+ * response doc that predates frontmatter-based evidence (all three fields
+ * absent), an empty report (`worker_report_chars === 0`), or a structured
+ * block reporting a non-passing outcome. A missing/invalid block backed by
+ * real review content (`worker_report_chars > 0`) returns
+ * `verdict: 'advisory'` instead of failing (DEC-0037 — the block is optional
+ * metadata, never a gate, for code_review/redteam).
+ */
+async function checkReviewEvidence(
+  dir: string,
+  reviewHandoff: Handoff,
+): Promise<DispatchResult<{ outcome: string; verdict: 'structured' | 'advisory' }>> {
   const reviewId = reviewHandoff.id;
-  const reviewedRun = reviewHandoff.reviewed_run;
-  const reviewedSha = reviewHandoff.reviewed_sha;
-
-  const reviewResponsePath = join(handoffsDir, `${reviewId}.response.md`);
+  const reviewResponsePath = join(dir, 'wiki', 'handoffs', `${reviewId}.response.md`);
   let reviewResponseContent: string;
   try {
     reviewResponseContent = await readFile(reviewResponsePath, 'utf8');
@@ -272,7 +271,7 @@ async function checkReviewEvidence(
 
   if (recoveryValid === true) {
     if (recoveryOutcome !== undefined && PASSING_OUTCOMES.includes(recoveryOutcome)) {
-      return ok({ reviewId, outcome: recoveryOutcome, verdict: 'structured' as const, reviewedRun, reviewedSha });
+      return ok({ outcome: recoveryOutcome, verdict: 'structured' as const });
     }
     return fail('ADMISSION_FAILED', `Review ${reviewId} outcome is "${recoveryOutcome}" — merge blocked`);
   }
@@ -282,10 +281,69 @@ async function checkReviewEvidence(
   // as the response doc has real review content; only a genuinely empty report (no
   // evidence a review ran at all) fails closed.
   if ((workerReportChars ?? 0) > 0) {
-    return ok({ reviewId, outcome: 'advisory', verdict: 'advisory' as const, reviewedRun, reviewedSha });
+    return ok({ outcome: 'advisory', verdict: 'advisory' as const });
   }
 
   return fail('ADMISSION_FAILED', `Review ${reviewId} response is empty — no evidence of a completed review`);
+}
+
+/**
+ * Commits `HEAD..branchSha` newest first with their subjects, read leniently
+ * (no handoff parsing) so the review lookup and the commits-after-review check
+ * can name a bad commit before `walkChain` rejects the range.
+ */
+async function listUnmergedCommits(dir: string, range: string): Promise<DispatchResult<{ sha: string; subject: string }[]>> {
+  try {
+    const { stdout } = await execFile('git', ['log', '--topo-order', '--format=%H%x09%s', range], { cwd: dir });
+    return ok(
+      stdout
+        .split('\n')
+        .filter((line) => line.length > 0)
+        .map((line) => {
+          const [sha = '', ...subject] = line.split('\t');
+          return { sha, subject: subject.join('\t') };
+        }),
+    );
+  } catch (err) {
+    return fail('BAD_RECORD', `Failed to list commits in ${range} in ${dir}.`, err);
+  }
+}
+
+/**
+ * The governing review is bound to `reviewedSha` (R). The head (S) may sit
+ * past R only on dispatch implement deliveries: R must be S or an ancestor of
+ * S, and every commit in `R..S` must carry a dispatch delivery subject. Any
+ * other commit is unreviewed code, and an override cannot merge it.
+ */
+async function checkCommitsAfterReview(
+  dir: string,
+  handoffId: string,
+  review: { id: string; sha: string },
+  branchSha: string,
+): Promise<DispatchResult<null>> {
+  const moved = (detail: string): DispatchResult<null> =>
+    fail(
+      'ADMISSION_FAILED',
+      `dispatch/${handoffId} is at ${branchSha}, but review ${review.id} was derived for ${review.sha} — the branch moved after the review was derived: ${detail}. Run derive-review for ${handoffId} and review the new head; an override cannot merge an unreviewed head.`,
+      { branchSha, reviewedSha: review.sha },
+    );
+  if (review.sha === branchSha) return ok(null);
+
+  try {
+    await execFile('git', ['merge-base', '--is-ancestor', review.sha, branchSha], { cwd: dir });
+  } catch (err) {
+    // `merge-base --is-ancestor` exits 1 for "not an ancestor"; any other failure is a git error.
+    if ((err as { code?: unknown }).code === 1) return moved(`${review.sha} is not an ancestor of ${branchSha}`);
+    return fail('ADMISSION_FAILED', `Failed to compare ${review.sha} with ${branchSha} in ${dir}.`, err);
+  }
+
+  const after = await listUnmergedCommits(dir, `${review.sha}..${branchSha}`);
+  if (!after.ok) return after;
+  const offender = after.data.find((c) => !DISPATCH_COMMIT_SUBJECT.test(c.subject));
+  if (offender !== undefined) {
+    return moved(`commit ${offender.sha} "${offender.subject}" is not a dispatch implement delivery`);
+  }
+  return ok(null);
 }
 
 /** `path` is `other` itself, or sits inside the directory `other` names (or vice versa). */
@@ -351,61 +409,51 @@ interface ValidationGate {
   /** Overridable gate failures; empty = the evidence gates the merge open. */
   problems: string[];
   evidence: ValidationEvidence | null;
-  /** The review's `reviewed_run` stamp, recorded in an override whether or not evidence was found. */
+  /** The chain head run that holds (or would hold) the evidence, recorded in an override whether or not evidence was found. */
   reviewedRun: string | null;
 }
 
 /**
- * Host-validation gate (WK-0294). Reads only the host original in the
- * implement run dir (A4.1). A branch head that differs from the review's
- * `reviewed_sha` or the evidence sha is a hard refusal — the reviewed commit
- * is not what would merge; re-derive.
+ * Host-validation gate (WK-0294). The evidence is the chain head's: taken from
+ * the head's latest delivered run for the head sha, reused when it matches the
+ * sha and registry, produced on the spot otherwise (`evidenceForDelivery`).
+ * Whether the reviewed commits are what merges is `checkCommitsAfterReview`'s
+ * job, not this gate's. Evidence that is unavailable or red is an overridable
+ * problem.
  */
 async function checkValidationEvidence(
   dir: string,
   handoffId: string,
-  reviewId: string,
-  reviewed: { run: string | undefined; sha: string | undefined },
+  review: { id: string; run: string | undefined; sha: string | undefined },
   branchSha: string,
 ): Promise<DispatchResult<ValidationGate>> {
-  if (reviewed.sha !== undefined && reviewed.sha !== branchSha) {
-    return fail(
-      'ADMISSION_FAILED',
-      `dispatch/${handoffId} is at ${branchSha}, but review ${reviewId} was derived for ${reviewed.sha} — the branch moved after the review was derived. Re-run derive-review and review again; an override cannot merge an unreviewed head.`,
-      { branchSha, reviewedSha: reviewed.sha },
-    );
+  const unbound = (runId: string | null, problem: string): DispatchResult<ValidationGate> =>
+    ok({ sha: branchSha, evidence: null, reviewedRun: runId, problems: [problem] });
+  if (review.run === undefined) {
+    return unbound(null, `review ${review.id} carries no reviewed_run stamp, so no host validation evidence is bound to it (derive the review with derive-review)`);
   }
-  const reviewedRun = reviewed.run;
-  if (reviewedRun === undefined) {
-    return ok({
-      sha: branchSha,
-      evidence: null,
-      reviewedRun: null,
-      problems: [`review ${reviewId} carries no reviewed_run stamp, so no host validation evidence is bound to it (derive the review with derive-review)`],
-    });
-  }
-  const unbound = (problem: string): DispatchResult<ValidationGate> =>
-    ok({ sha: branchSha, evidence: null, reviewedRun, problems: [problem] });
-  if (reviewed.sha === undefined) {
-    return unbound(`review ${reviewId} carries no reviewed_sha stamp, so it is not bound to a delivery commit (derive the review with derive-review)`);
+  if (review.sha === undefined) {
+    return unbound(review.run, `review ${review.id} carries no reviewed_sha stamp, so it is not bound to a delivery commit (derive the review with derive-review)`);
   }
 
-  const pathCheck = validationEvidencePath(dir, handoffId, reviewedRun);
-  if (!pathCheck.ok) return pathCheck;
-  const evidencePath = pathCheck.data;
-  const read = await readValidationEvidence(evidencePath);
-  if (!read.ok) return unbound(`host validation evidence is unreadable: ${read.message}`);
-  const evidence = read.data;
-  if (evidence === null) return unbound(`no host validation evidence at ${evidencePath} (run derive-review)`);
-  if (evidence.run_id !== reviewedRun) {
-    return unbound(`evidence belongs to run ${evidence.run_id}, but review ${reviewId} reviewed run ${reviewedRun}`);
+  const runId = await latestDeliveredRun(dir, handoffId);
+  if (runId === undefined) {
+    return unbound(null, `${handoffId} has no delivered run to hold host validation evidence (dispatch it, or run derive-review)`);
   }
-  if (evidence.delivery_sha !== branchSha) {
-    return fail(
-      'ADMISSION_FAILED',
-      `dispatch/${handoffId} is at ${branchSha}, but host validation evidence (and review ${reviewId}) cover ${evidence.delivery_sha} — the branch moved after validation. Re-run derive-review and review again; an override cannot merge an unreviewed head.`,
-      { branchSha, evidenceSha: evidence.delivery_sha },
-    );
+  const registry = await loadValidationRegistry(dir);
+  if (!registry.ok) return registry;
+  const produced = await evidenceForDelivery({
+    dir,
+    handoffId,
+    runId,
+    deliveryBranch: `dispatch/${handoffId}`,
+    deliverySha: branchSha,
+    registry: registry.data,
+  });
+  if (!produced.ok) return unbound(runId, `host validation evidence is unreadable or could not be produced: ${produced.message}`);
+  const evidence = produced.data;
+  if (evidence.run_id !== runId) {
+    return unbound(runId, `evidence belongs to run ${evidence.run_id}, but the latest delivered run of ${handoffId} is ${runId}`);
   }
 
   const problems: string[] = [];
@@ -413,15 +461,7 @@ async function checkValidationEvidence(
     const failed = [evidence.setup, ...evidence.commands].filter((c) => c !== null && c.result === 'fail').map((c) => c?.name);
     problems.push(`host validation failed (${failed.join(', ')})`);
   }
-  const registry = await loadValidationRegistry(dir);
-  if (!registry.ok) return registry;
-  const current = validationRegistryFingerprint(registry.data);
-  if (current !== evidence.registry_fingerprint) {
-    problems.push(
-      `validation registry changed since the evidence was recorded (evidence ${evidence.registry_fingerprint}, current ${current}); re-run derive-review to revalidate`,
-    );
-  }
-  return ok({ sha: evidence.delivery_sha, evidence, reviewedRun, problems });
+  return ok({ sha: evidence.delivery_sha, evidence, reviewedRun: runId, problems });
 }
 
 /**
@@ -482,21 +522,50 @@ async function commitOverrideRecord(
 }
 
 /**
- * Merge a dispatch delivery branch (`dispatch/<handoff_id>`) into the
- * current branch after confirming a passing code review exists. Local
- * only — never pushes to a remote (WK-0132 Slice 3: push is the operator's
- * decision). Never throws — every failure path returns a `DispatchResult`.
+ * Delete the delivery branch of every chain member that the merge fully
+ * absorbed (`git branch -d`, never forced). A branch that no longer exists is
+ * skipped; one that stays is reported with its reason, never a merge failure.
+ */
+async function deleteMergedBranches(
+  dir: string,
+  branches: readonly string[],
+): Promise<{ deleted: string[]; kept: { branch: string; reason: string }[] }> {
+  const deleted: string[] = [];
+  const kept: { branch: string; reason: string }[] = [];
+  for (const branch of branches) {
+    try {
+      await execFile('git', ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`], { cwd: dir });
+    } catch {
+      continue; // already gone
+    }
+    try {
+      await execFile('git', ['merge-base', '--is-ancestor', branch, 'HEAD'], { cwd: dir });
+    } catch (err) {
+      kept.push({ branch, reason: (err as { code?: unknown }).code === 1 ? 'not fully merged into the merge target' : `could not compare with the merge target: ${String(err)}` });
+      continue;
+    }
+    try {
+      await execFile('git', ['branch', '-d', branch], { cwd: dir });
+      deleted.push(branch);
+    } catch (err) {
+      kept.push({ branch, reason: `git branch -d failed: ${String(err)}` });
+    }
+  }
+  return { deleted, kept };
+}
+
+/**
+ * Merge a dispatch delivery chain's head branch (`dispatch/<handoff_id>`) into
+ * the current branch after confirming a passing code review of the chain
+ * exists. Local only — never pushes to a remote (WK-0132 Slice 3: push is the
+ * operator's decision). Never throws — every failure path returns a
+ * `DispatchResult`.
  */
 export async function mergeDelivery(opts: MergeDeliveryOpts): Promise<DispatchResult<MergeDeliveryResult>> {
   const { dir, handoff_id } = opts;
   const branchName = `dispatch/${handoff_id}`;
 
-  // 1. Review evidence must exist and report a passing outcome.
-  const reviewCheck = await checkReviewEvidence(dir, branchName);
-  if (!reviewCheck.ok) return reviewCheck;
-  const { reviewId, outcome, verdict, reviewedRun, reviewedSha } = reviewCheck.data;
-
-  // 2. Delivery branch must exist.
+  // 1. Delivery branch must exist.
   let branchSha: string;
   try {
     const { stdout } = await execFile('git', ['rev-parse', '--verify', `refs/heads/${branchName}^{commit}`], { cwd: dir });
@@ -505,12 +574,50 @@ export async function mergeDelivery(opts: MergeDeliveryOpts): Promise<DispatchRe
     return fail('BAD_RECORD', `Branch ${branchName} does not exist`);
   }
 
-  // 3. Working tree must be clean within the merge's change set — see header.
+  // 2. The governing review: the newest code_review of any delivery in HEAD..branch (the head included).
+  const unmerged = await listUnmergedCommits(dir, `HEAD..${branchName}`);
+  if (!unmerged.ok) return unmerged;
+  const chainIds = new Set([handoff_id]);
+  for (const commit of unmerged.data) {
+    const id = DISPATCH_COMMIT_SUBJECT.exec(commit.subject)?.[1];
+    if (id !== undefined) chainIds.add(id);
+  }
+  const chainBranches = new Set([...chainIds].map((id) => `dispatch/${id}`));
+  const reviews = await readCodeReviews(dir);
+  if (!reviews.ok) return reviews;
+  const chainReviews = reviews.data.filter((r) => r.base_ref !== null && chainBranches.has(r.base_ref));
+  const reviewHandoff = selectLatestReview(chainReviews);
+  if (!reviewHandoff) {
+    return fail('ADMISSION_FAILED', `No code_review HO found with base_ref: ${[...chainBranches].join(' or ')}`);
+  }
+  const reviewId = reviewHandoff.id;
+  const reviewedRun = reviewHandoff.reviewed_run;
+  const reviewedSha = reviewHandoff.reviewed_sha;
+
+  // 3. The review must pass; the head may sit past the reviewed sha only on dispatch deliveries.
+  const reviewCheck = await checkReviewEvidence(dir, reviewHandoff);
+  if (!reviewCheck.ok) return reviewCheck;
+  const { outcome, verdict } = reviewCheck.data;
+  if (reviewedSha !== undefined) {
+    const rangeCheck = await checkCommitsAfterReview(dir, handoff_id, { id: reviewId, sha: reviewedSha }, branchSha);
+    if (!rangeCheck.ok) return rangeCheck;
+  }
+
+  // 4. Every commit in the range is a delivery of an implement handoff — the chain, strictly.
+  const chain = await walkChain(dir, branchName, handoff_id);
+  if (!chain.ok) return chain;
+  const members = chain.data.membersNewestFirst;
+  let reviewCount = 0;
+  for (const review of chainReviews) {
+    if (members.some((m) => review.base_ref === `dispatch/${m.hoId}`) && (await hasResponseDoc(dir, review.id))) reviewCount += 1;
+  }
+
+  // 5. Working tree must be clean within the merge's change set — see header.
   const dirtyCheck = await checkScopedDirtyRepo(dir, branchName);
   if (!dirtyCheck.ok) return dirtyCheck;
 
-  // 3b. Host validation evidence (WK-0294) — or an audited override.
-  const gateCheck = await checkValidationEvidence(dir, handoff_id, reviewId, { run: reviewedRun, sha: reviewedSha }, branchSha);
+  // 5b. Host validation evidence for the head (WK-0294) — or an audited override.
+  const gateCheck = await checkValidationEvidence(dir, handoff_id, { id: reviewId, run: reviewedRun, sha: reviewedSha }, branchSha);
   if (!gateCheck.ok) return gateCheck;
   const gate = gateCheck.data;
   let overrideRecord: string | undefined;
@@ -554,10 +661,9 @@ export async function mergeDelivery(opts: MergeDeliveryOpts): Promise<DispatchRe
     return fail('ADMISSION_FAILED', `Merge succeeded but could not resolve HEAD sha in ${dir}.`, err);
   }
 
-  // 5. Delete the delivery branch — only reached after a successful merge, at
-  // which point `-d` (safe delete) always succeeds because the branch is by
-  // construction fully merged; swallow defensively rather than throw.
-  await execFile('git', ['branch', '-d', branchName], { cwd: dir }).catch(() => {});
+  // 5. Delete the head's branch and each chain member's — only reached after a
+  // successful merge, only for branches git confirms are fully merged.
+  const branches = await deleteMergedBranches(dir, [branchName, ...members.slice(1).map((m) => `dispatch/${m.hoId}`)]);
 
   return ok({
     mergedBranch: branchName,
@@ -567,6 +673,10 @@ export async function mergeDelivery(opts: MergeDeliveryOpts): Promise<DispatchRe
     verdict,
     gate: overrideRecord === undefined ? 'evidence' : 'override',
     mergedSha: gate.sha,
+    reviewCount,
+    implementDeliveries: members.length,
+    deletedBranches: branches.deleted,
+    keptBranches: branches.kept,
     ...(overrideRecord !== undefined ? { overrideRecord } : {}),
   });
 }
