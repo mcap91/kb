@@ -63,7 +63,7 @@ export const tools: ToolDef[] = [
       export_mounts: z.array(z.string()).optional(),
       runtime_envs: z.array(z.string()).optional(),
       base_ref: z.string().optional(),
-      fixup_context: z.string().optional().describe('Review findings a fix-up handoff (base_ref dispatch/<id>) repairs, injected verbatim into the worker prompt. ' + FIXUP_AUTHORING_RULES),
+      fixup_context: z.string().optional().describe('The review findings (or red-test failure) a fix-up handoff repairs; needs base_ref dispatch/<id>. On an implement handoff they are rendered verbatim as the task of the fix-up; they grant no write scope or other authority. ' + FIXUP_AUTHORING_RULES),
       vars: z.array(z.string()).optional(),
       timeout_secs: z.number().optional().describe('Worker watchdog override in seconds; a positive integer, refused above the operator cap at dispatch. Omitted = the 1800s default'),
     }),
@@ -138,7 +138,7 @@ export const tools: ToolDef[] = [
       judgments: z
         .array(
           z.object({
-            review: z.string().optional().describe('The review handoff id; optional only when exactly one review on the chain has findings.'),
+            review: z.string().optional().describe('The review handoff id; optional only when exactly one review on the chain has findings. Omit judgments when no finished review on the chain has a finding.'),
             finding: z.string().describe('The finding id from the review.'),
             judgment: z.enum(FINDING_JUDGMENTS).describe('fix: a delivery after the review fixes it. dismiss: not a defect. defer: real, not fixed now.'),
             reason: z.string().optional().describe('Required for dismiss and defer.'),

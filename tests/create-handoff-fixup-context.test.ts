@@ -125,7 +125,7 @@ describe('fixup_context through createHandoff, the CLI and the MCP tool', () => 
   });
 
   it('round-trips through a written file', async () => {
-    const created = await createHandoff({ dir: repo, subject: 'kb:dispatch', allowed_agents: ['claude'], wk: 'WK-0001', slice: SLICE_ID, fixup_context: HARD_TEXT });
+    const created = await createHandoff({ dir: repo, subject: 'kb:dispatch', allowed_agents: ['claude'], wk: 'WK-0001', slice: SLICE_ID, base_ref: 'dispatch/HO-0001', fixup_context: HARD_TEXT });
     if (!created.ok) throw new Error(created.message);
     const parsed = await parseHandoff(created.data.handoffPath);
     expect(parsed.ok && parsed.data.fixup_context).toBe(HARD_TEXT);
@@ -134,7 +134,7 @@ describe('fixup_context through createHandoff, the CLI and the MCP tool', () => 
   it('the CLI --fixup-context flag reaches the file', async () => {
     execFileSync(TSX, [CLI,
       'create-handoff', '--dir', repo, '--subject', 's', '--allowed-agents', 'claude',
-      '--wk', 'WK-0001', '--slice', SLICE_ID,
+      '--wk', 'WK-0001', '--slice', SLICE_ID, '--base-ref', 'dispatch/HO-0001',
       '--fixup-context', HARD_TEXT,
     ], { cwd: ROOT, stdio: 'pipe' });
     const parsed = await parseHandoff(join(repo, 'wiki', 'handoffs', 'HO-0001.md'));
@@ -145,7 +145,7 @@ describe('fixup_context through createHandoff, the CLI and the MCP tool', () => 
     const tool = tools.find((t) => t.name === 'create-handoff')!;
     const shape = (tool.inputSchema as unknown as { shape: Record<string, unknown> }).shape;
     expect(Object.keys(shape)).toContain('fixup_context');
-    const result = (await tool.handler({ dir: repo, subject: 'kb:dispatch', allowed_agents: ['claude'], wk: 'WK-0001', slice: SLICE_ID, fixup_context: HARD_TEXT })) as { ok: boolean };
+    const result = (await tool.handler({ dir: repo, subject: 'kb:dispatch', allowed_agents: ['claude'], wk: 'WK-0001', slice: SLICE_ID, base_ref: 'dispatch/HO-0001', fixup_context: HARD_TEXT })) as { ok: boolean };
     expect(result.ok).toBe(true);
     const text = await readFile(join(repo, 'wiki', 'handoffs', 'HO-0001.md'), 'utf8');
     const parsed = parseHandoffContent(text, 'HO-0001.md');

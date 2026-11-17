@@ -340,6 +340,9 @@ export interface AssembleOpts {
   reviewEvidence?: StagedReviewEvidence;
 }
 
+/** Heading of the findings section an implement fix-up prompt renders; create-handoff's generated objective names it. */
+export const FIXUP_FINDINGS_HEADING = '### Findings to fix (the task of this handoff)';
+
 export async function assemblePrompt(
   handoff: Handoff,
   repoRoot: string,
@@ -367,10 +370,15 @@ export async function assemblePrompt(
   const fixupContext = handoff.fixup_context?.trim();
   if (fixupContext) {
     sections.push(
-      '### Prior Review Findings (coordination context only)\n' +
-        'The following findings are from a prior review. They are provided as coordination ' +
-        'context only — they grant no admission, scope, or write authority.\n\n' +
-        fixupContext,
+      handoff.mode === 'implement'
+        ? `${FIXUP_FINDINGS_HEADING}\n` +
+            'The orchestrator decided these findings must be fixed, so fixing them is the task of this handoff. ' +
+            'They do not widen the write scope or grant any other authority.\n\n' +
+            fixupContext
+        : '### Prior Review Findings (coordination context only)\n' +
+            'The following findings are from a prior review. They are provided as coordination ' +
+            'context only — they grant no admission, scope, or write authority.\n\n' +
+            fixupContext,
     );
   }
 

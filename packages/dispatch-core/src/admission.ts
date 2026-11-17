@@ -1,11 +1,10 @@
 /**
- * §7 admission gate — S4 full 13-check gate (PLN-0004), plus the work-item-
- * existence gate (`checkWorkItemExists`, DEC-0036 WK-0121), which sits outside
- * the upstream §7 numbering. This gate narrows the original WK-0116 / IN-0006
- * initiative-resolution gate: DEC-0036 moved WK→IN connectedness off dispatch
- * admission and onto lint (a status-scoped `ORPHAN_WK` error), so this check
- * now only proves the declared work_item's WK file exists on disk — no
- * initiative read, no IN-#### resolution. §7.11 `no_isolation_route` is
+ * §7 admission gate — S4 full 13-check gate, plus the work-item-existence
+ * gate (`checkWorkItemExists`), which sits outside the upstream §7 numbering.
+ * That gate only proves the declared work_item's work-item file exists on
+ * disk: no initiative read, no initiative id resolution. Whether a work item
+ * connects to an initiative is enforced by lint (a status-scoped `ORPHAN_WK`
+ * error), not at dispatch admission. §7.11 `no_isolation_route` is
  * deferred to S5. §7.4's acceptance/validation requirement needs no separate
  * check here — ho.ts already enforces it as a required field for all four modes
  * at parse time. §7.6-§7.9 (credentials_with_web / unknown_profile /
@@ -13,8 +12,8 @@
  * (context_budget_exceeded) live in pipeline.ts instead of here: they need facts
  * (resolved model, resolved credentials, the assembled prompt) this module never
  * has. Checks below run in spec order, failing closed on the first violation.
- * WK-0152 adds `base_drift` (`checkBaseDrift`), run last after baseSha
- * resolution, outside the upstream §7 numbering.
+ * The `base_drift` check (`checkBaseDrift`), run last after baseSha
+ * resolution, sits outside the upstream §7 numbering.
  */
 import { execFile as execFileCb } from 'node:child_process';
 import { isAbsolute, join, relative, resolve } from 'node:path';
@@ -641,16 +640,15 @@ async function checkWorkerTimeoutCap(handoff: Handoff, repoRoot: string): Promis
 }
 
 /**
- * v2 slice gate, extending the work-item-existence gate (DEC-0036 WK-0121,
- * narrowed from the original IN-0006 WK-0116 initiative-resolution gate): an
- * `implement`-mode HO is generated from a slice of its work item, so it must
- * declare a `work_item` (WK-####) whose `wiki/issues/<work_item>.md` file
- * is readable and a `slice` that is a row of that file's `## Slices` table.
+ * v2 slice gate, extending the work-item-existence gate: an `implement`-mode HO
+ * is generated from a slice of its work item, so it must declare a `work_item`
+ * (WK-####) whose `wiki/issues/<work_item>.md` file is readable and a `slice`
+ * that is a row of that file's `## Slices` table.
  * The file is read from the working tree in both wiki shapes: the nested-private
  * wiki is a git repo at `<repo>/wiki`, so the path is the same. Non-implement
- * modes are WK-optional (DEC-0035) and skip this check entirely. DEC-0036 moved
- * WK→IN connectedness off dispatch admission entirely — that link is now
- * enforced by lint.ts's status-scoped `ORPHAN_WK` check, not here.
+ * modes may omit the work item and skip this check entirely. Whether a work item
+ * connects to an initiative is enforced by lint's status-scoped `ORPHAN_WK`
+ * check, not here.
  */
 export async function checkWorkItemExists(
   handoff: Handoff,

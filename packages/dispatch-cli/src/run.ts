@@ -100,7 +100,8 @@ Command Options:
     --export-mounts <csv>    Optional export mount paths, comma-separated
     --runtime-envs <csv>     Optional runtime env root paths, comma-separated (implement-mode only)
     --base-ref <ref>         Optional base ref (branch/commit) for the worker
-    --fixup-context <text>   Optional review findings a fix-up handoff (with --base-ref dispatch/<id>) repairs, any length.
+    --fixup-context <text>   Optional review findings (or red-test failure) a fix-up handoff repairs, any length; needs --base-ref dispatch/<id>.
+                             On an implement handoff they are the task of the fix-up; they grant no write scope or other authority.
                              ${FIXUP_AUTHORING_RULES}
     --vars <csv>             Optional KEY=value vars, comma-separated
 

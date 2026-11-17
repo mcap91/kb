@@ -9,6 +9,7 @@ import { allocate, readSection, readSliceSection, readSlices } from '@kb/wiki-co
 import type { CreateHandoffInput, CreateHandoffOpts, CreateHandoffResult } from './types.js';
 import type { DispatchResult } from './errors.js';
 import { ok, fail } from './errors.js';
+import { FIXUP_FINDINGS_HEADING } from './assemble.js';
 import { checkWriteScopeEntryShape, readFirstEntryExists } from './admission.js';
 import { probeWikiSource } from './wiki-source.js';
 
@@ -225,6 +226,10 @@ function checkTimeoutSecs(timeoutSecs: number | undefined): DispatchResult<null>
 const IMPLEMENT_FROM_SLICE =
   'An implement handoff is generated from a slice: pass wk and slice; the work item needs a "## Slices" table, and one row is enough.';
 
+const FIXUP_TASK_LABEL = 'Slice text, the standing spec and not a to-do list:';
+const FIXUP_ACCEPTANCE_ITEM =
+  'Each finding in the findings section is fixed, with a test that fails before the fix and passes after it';
+
 const SLICE_DERIVED_FIELDS = ['write_scope', 'read_first', 'objective', 'acceptance', 'validation'] as const;
 
 /**
@@ -236,6 +241,8 @@ const SLICE_DERIVED_FIELDS = ['write_scope', 'read_first', 'objective', 'accepta
  * copied verbatim, with the WK objective after it as context only; with no
  * section, a one-row table means the slice is the whole WK, and several rows
  * are refused. Supplying any derived field alongside a slice is refused, never merged.
+ * A fix-up (`fixup_context` with `base_ref`) swaps the "build this slice" lead
+ * for one that makes the findings the task, and appends one acceptance item.
  */
 async function resolveSliceOpts(input: CreateHandoffInput, targetDir: string): Promise<DispatchResult<CreateHandoffOpts>> {
   const { wk, slice } = input;
@@ -254,6 +261,11 @@ async function resolveSliceOpts(input: CreateHandoffInput, targetDir: string): P
   });
   if (conflicts.length > 0) {
     return fail('INVALID_HANDOFF', `${conflicts.join(', ')} derive from slice ${slice} of ${wk} and cannot be given alongside it.`);
+  }
+
+  const isFixup = Boolean(input.fixup_context?.trim());
+  if (isFixup && !input.base_ref) {
+    return fail('INVALID_HANDOFF', `fixup_context needs base_ref: a fix-up repairs an earlier delivery, so give the branch (dispatch/<handoff>) it repairs.`);
   }
 
   const wkRelativePath = `wiki/issues/${wk}.md`;
@@ -279,6 +291,10 @@ async function resolveSliceOpts(input: CreateHandoffInput, targetDir: string): P
     return fail('MISSING_FIELD', `${wkRelativePath} has no "## Objective" text to derive the objective from.`);
   }
   const sliceHeading = `### Slice ${slice}`;
+  const fixupLead =
+    `This handoff is a fix-up of slice ${slice} (${row.title}) of ${wk}, on branch \`${input.base_ref}\`. ` +
+    `The slice is already built on that branch. Your task is to fix what is listed under "${FIXUP_FINDINGS_HEADING}" in this handoff. ` +
+    `Each fix adds a test that fails before the fix and passes after it. The branch must still satisfy the slice text below.`;
   const section = readSliceSection(wkText, slice);
   let sliceObjective: string;
   let acceptance: string[];
@@ -299,10 +315,11 @@ async function resolveSliceOpts(input: CreateHandoffInput, targetDir: string): P
     const scopeClause = others.length === 0
       ? ''
       : ` These slices are out of scope: ${others.map((other) => `${other.id} (${other.title})`).join(', ')}.`;
-    sliceObjective =
-      `This handoff is slice ${slice} (${row.title}) of ${wk}. Build this slice only.${scopeClause}\n\n` +
-      `${section.task}\n\n` +
-      `Work item objective, for context only:\n${objective}`;
+    sliceObjective = isFixup
+      ? `${fixupLead}${scopeClause}\n\n${FIXUP_TASK_LABEL}\n${section.task}\n\nWork item objective, for context only:\n${objective}`
+      : `This handoff is slice ${slice} (${row.title}) of ${wk}. Build this slice only.${scopeClause}\n\n` +
+        `${section.task}\n\n` +
+        `Work item objective, for context only:\n${objective}`;
   } else if (slices.data.length === 1) {
     const listed = listItems(readSection(wkText, 'Acceptance criteria') ?? '', `${wkRelativePath} "## Acceptance criteria"`);
     if (!listed.ok) return listed;
@@ -310,7 +327,7 @@ async function resolveSliceOpts(input: CreateHandoffInput, targetDir: string): P
       return fail('MISSING_FIELD', `${wkRelativePath} has no "## Acceptance criteria" items to derive acceptance from.`);
     }
     acceptance = listed.data;
-    sliceObjective = objective;
+    sliceObjective = isFixup ? `${fixupLead}\n\n${FIXUP_TASK_LABEL}\n${objective}` : objective;
   } else {
     return fail(
       'MISSING_FIELD',
@@ -318,6 +335,7 @@ async function resolveSliceOpts(input: CreateHandoffInput, targetDir: string): P
         `write "${sliceHeading}" with the task text and a "#### Acceptance" list.`,
     );
   }
+  if (isFixup) acceptance = [...acceptance, FIXUP_ACCEPTANCE_ITEM];
   if (row.validation === '') {
     return fail('MISSING_FIELD', `Slice ${slice} of ${wk} has an empty validation cell.`);
   }

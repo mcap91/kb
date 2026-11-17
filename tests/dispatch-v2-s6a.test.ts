@@ -30,6 +30,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SLICE_ID, slicesSection } from './helpers/slice-fixture.js';
+import { FIXUP_FINDINGS_HEADING } from '../packages/dispatch-core/src/assemble.js';
 
 import {
   extractRecoveryBlock,
@@ -578,8 +579,20 @@ describe('assemble.ts — mode-specific framings (S6a)', () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
 
-    expect(result.data.text).toContain('Prior Review Findings (coordination context only)');
+    expect(result.data.text).toContain(FIXUP_FINDINGS_HEADING);
+    expect(result.data.text).toContain('fixing them is the task of this handoff');
+    expect(result.data.text).toContain('do not widen the write scope');
+    expect(result.data.text).not.toContain('coordination context only');
     expect(result.data.text).toContain('Prior review flagged a null-check gap in the parser.');
+  });
+
+  it('keeps the coordination-context label for fix-up context on a non-implement mode', async () => {
+    const result = await assembleForMode('code_review', 'Prior review flagged a null-check gap in the parser.');
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.data.text).toContain('### Prior Review Findings (coordination context only)');
+    expect(result.data.text).not.toContain(FIXUP_FINDINGS_HEADING);
   });
 
   it('omits fix-up context when the handoff does not declare it', async () => {

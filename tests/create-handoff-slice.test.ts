@@ -12,6 +12,7 @@ import { dirname, join, resolve } from 'node:path';
 
 import { bootstrap } from '@kb/wiki-core';
 import { checkAdmission } from '../packages/dispatch-core/src/admission.js';
+import { FIXUP_FINDINGS_HEADING } from '../packages/dispatch-core/src/assemble.js';
 import { createHandoff } from '../packages/dispatch-core/src/create-handoff.js';
 import { parseHandoff } from '../packages/dispatch-core/src/ho.js';
 import type { CreateHandoffInput } from '../packages/dispatch-core/src/types.js';
@@ -660,6 +661,59 @@ describe('createHandoff from a slice row — fix-up and drift', () => {
       slice: 's1',
       write_scope: ['src/existing.ts', 'src/brand-new.ts'],
     });
+  });
+
+  // Why: a fix-up told "Build this slice only" under a findings section labelled context delivered nothing.
+  it('writes a fix-up objective whose task is the findings, with the slice text as the standing spec', async () => {
+    git(repo, 'branch', 'dispatch/HO-0001');
+    const created = await createHandoff({
+      dir: repo, subject: 'kb:dispatch', allowed_agents: ['claude'], wk: WK_ID, slice: 's1',
+      base_ref: 'dispatch/HO-0001', fixup_context: 'F1: the parser drops digits',
+    });
+    if (!created.ok) throw new Error(created.message);
+    const objective = await objectiveOf(created.data.handoffPath);
+    const [lead, ...rest] = objective.split('\n\n');
+    expect(lead).toContain('fix-up');
+    expect(lead).toContain('s1');
+    expect(lead).toContain('First slice');
+    expect(lead).toContain(WK_ID);
+    expect(lead).toContain('`dispatch/HO-0001`');
+    expect(lead).toContain(FIXUP_FINDINGS_HEADING);
+    expect(lead).toContain('fails before the fix and passes after it');
+    expect(objective).not.toContain('Build this slice only');
+    expect(rest.join('\n\n')).toBe(
+      `Slice text, the standing spec and not a to-do list:\n${S1_TASK}\n\nWork item objective, for context only:\nMake the fixture do the thing.`,
+    );
+    const parsed = await parseHandoff(created.data.handoffPath);
+    if (!parsed.ok) throw new Error(parsed.message);
+    expect(parsed.data.acceptance).toEqual([
+      ...S1_ITEMS,
+      'Each finding in the findings section is fixed, with a test that fails before the fix and passes after it',
+    ]);
+  });
+
+  it('writes the same objective and acceptance as a first build when fixup_context is blank', async () => {
+    git(repo, 'branch', 'dispatch/HO-0001');
+    const base = { dir: repo, subject: 'kb:dispatch', allowed_agents: ['claude'], wk: WK_ID, slice: 's1', base_ref: 'dispatch/HO-0001' };
+    const plain = await createHandoff(base);
+    const blank = await createHandoff({ ...base, fixup_context: ' \n ' });
+    if (!plain.ok || !blank.ok) throw new Error('create failed');
+    expect(await objectiveOf(blank.data.handoffPath)).toBe(await objectiveOf(plain.data.handoffPath));
+    expect(await objectiveOf(plain.data.handoffPath)).toContain('Build this slice only');
+    const parsed = await parseHandoff(blank.data.handoffPath);
+    if (!parsed.ok) throw new Error(parsed.message);
+    expect(parsed.data.acceptance).toEqual(S1_ITEMS);
+  });
+
+  // Why: a fix-up repairs an earlier delivery; with no base_ref it would rebuild the slice from HEAD.
+  it('refuses fixup_context without base_ref', async () => {
+    const created = await createHandoff({
+      dir: repo, subject: 'kb:dispatch', allowed_agents: ['claude'], wk: WK_ID, slice: 's1', fixup_context: 'F1: the parser drops digits',
+    });
+    expect(created.ok).toBe(false);
+    if (created.ok) return;
+    expect(created.error).toBe('INVALID_HANDOFF');
+    expect(created.message).toContain('base_ref');
   });
 
   it('admission refuses BASE_DRIFT when the slice row changes after the handoff was generated', async () => {

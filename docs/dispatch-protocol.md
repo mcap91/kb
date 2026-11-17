@@ -69,7 +69,12 @@ cell, `work_item` is given and differs from `wk`, or any derived field (`write_s
 `objective`, `acceptance`, `validation`) is also passed. Editing the work item or the row after
 generation trips the Base Drift Gate at `dispatch`; regenerate the HO.
 
-A fix-up is the same call plus `base_ref` and `fixup_context`; it carries the slice row's write scope.
+A fix-up is the same call plus `base_ref` and `fixup_context`; `fixup_context` without `base_ref` is refused,
+because a fix-up repairs an earlier delivery. It carries the slice row's write scope. Its objective says the
+slice is already built on `base_ref`, that the task is to fix what the prompt's "Findings to fix" section lists
+(each fix with a test that fails before the fix and passes after it), and that the branch must still satisfy the
+slice text, which follows as the standing spec. One acceptance item is appended to the slice's own list: each
+finding is fixed with such a test. The findings section does not widen the write scope or grant any other authority.
 A fix-up that must touch a file outside the row needs the row widened first.
 
 ### Required fields
@@ -99,7 +104,7 @@ A fix-up that must touch a file outside the row needs the row widened first.
 | `runtime_envs` | string[] | Absolute paths to pre-installed runtime env roots (e.g. a conda/mamba env), implement-mode only — see "Runtime Env Projection" below |
 | `read_first` | string[] | Repo-relative paths; each must exist where the worker reads it at dispatch time (`MISSING_READ_FIRST`; see "Where read_first resolves") |
 | `vars` | string[] | `"KEY=value"` non-secret literal env for the worker |
-| `fixup_context` | string | Prior review findings injected verbatim on a re-dispatch. `create-handoff --fixup-context` writes it as a one-line JSON string, so any text survives. State each fix as a property of the whole branch with the command that proves it; restate every standing property of the tests the fix-up touches |
+| `fixup_context` | string | The review findings (or red-test failure) a fix-up repairs, injected verbatim; needs `base_ref`. An implement handoff renders them as the task of the fix-up; they grant no write scope or other authority. `create-handoff --fixup-context` writes it as a one-line JSON string, so any text survives. State each fix as a property of the whole branch with the command that proves it; restate every standing property of the tests the fix-up touches |
 | `work_item` | string | `WK-####`; required for `mode: implement`, and its `wiki/issues/<id>.md` must exist and declare the HO's `slice` |
 | `timeout_secs` | integer | Positive integer; overrides the pipeline's default 1800s worker watchdog. Absent = 1800s. Refused above the operator cap (`WORKER_TIMEOUT_EXCEEDS_CAP`; see "Model and Backend Configuration") — never clamped |
 

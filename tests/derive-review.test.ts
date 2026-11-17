@@ -1035,7 +1035,10 @@ describe('deriveReview: a review after a finished review covers only the fix-up'
     expect(content).not.toContain(a.id + ' (work_item');
     expect(content).not.toContain(parentOfA);
     expect(review.read_first).toEqual(['README.md', 'docs/f1-only.md', 'wiki/issues/WK-0132.md', 'AGENTS.md']);
-    expect(review.acceptance).toEqual([`[${f.id}] AC-F1: digits kept`]);
+    expect(review.acceptance).toEqual([
+      `[${f.id}] AC-F1: digits kept`,
+      `[${f.id}] Each finding in the findings section is fixed, with a test that fails before the fix and passes after it`,
+    ]);
     expect(review.reviewed_sha).toBe(f.sha);
     expect(review.reviewed_run).toBe(DELIVERED_RUN);
     expect(review.base_ref).toBe(`dispatch/${f.id}`);
