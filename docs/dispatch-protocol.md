@@ -842,4 +842,7 @@ is the source list; a test fails if this table and that list disagree:
 dispatch concurrently, each in its own clone of `base_sha`. Only merges to main serialize.
 
 `dispatch` itself is background-only: it returns a `watch` command immediately rather than blocking on
-the worker. A refusal above happens synchronously, before that background run is even started.
+the worker. A refusal above happens synchronously, before that background run is even started. A refusal the
+background controller raises before its start gate — a check that passed at dispatch time but failed inside
+the controller, e.g. against a newer dispatch-core — is returned by `dispatch` with the same code and
+message, recovered from the failed run's `state.json`, instead of a generic launch failure.

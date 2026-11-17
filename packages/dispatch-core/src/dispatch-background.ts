@@ -15,11 +15,11 @@
 import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { access, readdir, readFile } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import type { DispatchResult } from './errors.js';
-import { ok, fail } from './errors.js';
+import { ok, fail, V2_REFUSAL_CODES } from './errors.js';
 import { parseHandoff } from './ho.js';
 import { checkAdmission } from './admission.js';
 import { resolveModelFromConfig, resolveModelByMode, resolveModelInferBackend } from './model-registry.js';
@@ -163,6 +163,66 @@ export async function checkActiveRunExists(
   return ok({ active: false });
 }
 
+/** True when `code` is one of the known v2 refusal codes (`errors.ts` is the single source). */
+function isV2RefusalCode(code: string): code is (typeof V2_REFUSAL_CODES)[number] {
+  return (V2_REFUSAL_CODES as readonly string[]).includes(code);
+}
+
+/**
+ * Recover a typed refusal from the controller's terminal `state.json` `error`
+ * string. The controller records a pipeline refusal as `` `${code}: ${message}` ``
+ * (`deriveTerminalFields` in `dispatch-controller-entry.ts`); the start gate
+ * returns that code and message verbatim when the code is a known refusal code.
+ * A recorded error with no known code prefix is free text; it is surfaced in
+ * the fallback message, never invented into a code.
+ */
+function parseRecordedRefusal(
+  recorded: string,
+): { code: (typeof V2_REFUSAL_CODES)[number]; message: string } | null {
+  const separator = recorded.indexOf(': ');
+  if (separator <= 0) return null;
+
+  const code = recorded.slice(0, separator);
+  if (!isV2RefusalCode(code)) return null;
+
+  return { code, message: recorded.slice(separator + 2) };
+}
+
+/**
+ * Build the failure result when the controller exits before its start gate.
+ * The controller's recorded `error` wins when it carries a known refusal code;
+ * a free-text error is named in the fallback message; a missing state or a null
+ * `error` keeps the original failure text. Every path carries `runId` and
+ * `controllerPid` in `detail` — the run id is the parent directory of the
+ * deterministic state path the launcher minted pre-spawn.
+ */
+async function controllerExitFailure(
+  statePath: string,
+  controllerPid: number,
+): Promise<DispatchResult<{ pid: number }>> {
+  const runId = basename(dirname(statePath));
+  const state = await tryReadJson(statePath);
+  const recorded = state && typeof state.error === 'string' && state.error.length > 0 ? state.error : null;
+
+  if (recorded !== null) {
+    const refusal = parseRecordedRefusal(recorded);
+    if (refusal !== null) {
+      return fail(refusal.code, refusal.message, { runId, controllerPid });
+    }
+    return fail(
+      'BACKGROUND_LAUNCH_FAILED',
+      `Controller process exited before start gate was satisfied. Controller error: ${recorded}`,
+      { runId, controllerPid },
+    );
+  }
+
+  return fail(
+    'BACKGROUND_LAUNCH_FAILED',
+    'Controller process exited before start gate was satisfied.',
+    { runId, controllerPid },
+  );
+}
+
 /**
  * Poll for the controller's `state.json` at the exact known path (the
  * launcher mints the run id pre-spawn, so the path is deterministic).
@@ -190,11 +250,7 @@ export async function pollDispatchStartGate(
     if (!isAlive(controllerPid)) {
       const lastChance = await check();
       if (lastChance !== null) return ok({ pid: lastChance });
-      return fail(
-        'BACKGROUND_LAUNCH_FAILED',
-        'Controller process exited before start gate was satisfied.',
-        { controllerPid },
-      );
+      return controllerExitFailure(statePath, controllerPid);
     }
 
     await sleep(POLL_INTERVAL_MS);

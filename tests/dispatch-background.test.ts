@@ -178,6 +178,116 @@ describe('pollDispatchStartGate (exact-path polling)', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Start-gate controller-exit error recovery
+// ---------------------------------------------------------------------------
+
+describe('pollDispatchStartGate (controller-exit error recovery)', () => {
+  it('returns the recorded typed refusal code and message, with detail.runId', async () => {
+    const handoffId = 'HO-0310';
+    const runId = 'RUN-11111111-1111-4111-8111-111111111111';
+    const recorded =
+      'WORKER_TIMEOUT_EXCEEDS_CAP: Handoff HO-0310 declares timeout_secs 3600, exceeding the operator cap of 1800s.';
+    const statePath = join(repoRoot, '.agent-runs', 'runs', handoffId, runId, 'state.json');
+    await writeState(handoffId, runId, {
+      schema_version: 2,
+      status: 'failed',
+      pid: DEAD_PID,
+      error: recorded,
+    });
+
+    const result = await pollDispatchStartGate(statePath, DEAD_PID, 5000);
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toBe('WORKER_TIMEOUT_EXCEEDS_CAP');
+      expect(result.message).toBe(
+        'Handoff HO-0310 declares timeout_secs 3600, exceeding the operator cap of 1800s.',
+      );
+      expect(result.detail).toMatchObject({ runId, controllerPid: DEAD_PID });
+    }
+  });
+
+  it('keeps BACKGROUND_LAUNCH_FAILED when the recorded error has no code prefix, including its text', async () => {
+    const handoffId = 'HO-0311';
+    const runId = 'RUN-22222222-2222-4222-8222-222222222222';
+    const recorded = 'Pipeline produced no result.';
+    const statePath = join(repoRoot, '.agent-runs', 'runs', handoffId, runId, 'state.json');
+    await writeState(handoffId, runId, {
+      schema_version: 2,
+      status: 'failed',
+      pid: DEAD_PID,
+      error: recorded,
+    });
+
+    const result = await pollDispatchStartGate(statePath, DEAD_PID, 5000);
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toBe('BACKGROUND_LAUNCH_FAILED');
+      expect(result.message).toContain(recorded);
+      expect(result.detail).toMatchObject({ runId, controllerPid: DEAD_PID });
+    }
+  });
+
+  it('treats an unknown code prefix as free text, not a code', async () => {
+    const handoffId = 'HO-0312';
+    const runId = 'RUN-33333333-3333-4333-8333-333333333333';
+    const recorded = 'NOT_A_CODE: x';
+    const statePath = join(repoRoot, '.agent-runs', 'runs', handoffId, runId, 'state.json');
+    await writeState(handoffId, runId, {
+      schema_version: 2,
+      status: 'failed',
+      pid: DEAD_PID,
+      error: recorded,
+    });
+
+    const result = await pollDispatchStartGate(statePath, DEAD_PID, 5000);
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toBe('BACKGROUND_LAUNCH_FAILED');
+      expect(result.message).toContain(recorded);
+    }
+  });
+
+  it('keeps the original failure when the failed state has no recorded error', async () => {
+    const handoffId = 'HO-0313';
+    const runId = 'RUN-44444444-4444-4444-8444-444444444444';
+    const statePath = join(repoRoot, '.agent-runs', 'runs', handoffId, runId, 'state.json');
+    await writeState(handoffId, runId, {
+      schema_version: 2,
+      status: 'failed',
+      pid: DEAD_PID,
+      error: null,
+    });
+
+    const result = await pollDispatchStartGate(statePath, DEAD_PID, 5000);
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toBe('BACKGROUND_LAUNCH_FAILED');
+      expect(result.message).toBe('Controller process exited before start gate was satisfied.');
+      expect(result.detail).toMatchObject({ runId, controllerPid: DEAD_PID });
+    }
+  });
+
+  it('keeps the original failure when there is no state.json, still carrying detail.runId', async () => {
+    const handoffId = 'HO-0314';
+    const runId = 'RUN-55555555-5555-4555-8555-555555555555';
+    const statePath = join(repoRoot, '.agent-runs', 'runs', handoffId, runId, 'state.json');
+
+    const result = await pollDispatchStartGate(statePath, DEAD_PID, 5000);
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toBe('BACKGROUND_LAUNCH_FAILED');
+      expect(result.message).toBe('Controller process exited before start gate was satisfied.');
+      expect(result.detail).toMatchObject({ runId, controllerPid: DEAD_PID });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Controller state-writing logic (dispatch-controller-entry.ts)
 // ---------------------------------------------------------------------------
 
