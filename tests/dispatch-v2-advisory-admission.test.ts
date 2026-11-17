@@ -152,19 +152,15 @@ describe('WK-0272 admission — tracked wiki', () => {
     expect(result.ok).toBe(true);
   });
 
-  // Why: a chained HO has no stamp to refresh, so its remedy is one commit.
-  it('refuses an uncommitted wiki read_first input of a chained HO with the single-commit remedy', async () => {
+  // Why: the tracked-shape clone carries the base_ref copy of wiki/, so a dirty main-checkout copy of an entry in that tree is not what the worker reads.
+  it('does not refuse a chained HO wiki input that is in the base_ref tree but dirty in the working tree', async () => {
     git(repo, 'branch', 'dispatch/HO-9000');
     await writeFile(join(repo, 'wiki', 'issues', 'WK-9272.md'), 'edited, not committed\n');
     const result = await checkAdmission(
       makeHandoff({ base_ref: 'dispatch/HO-9000', read_first: ['wiki/issues/WK-9272.md'] }),
       repo,
     );
-    expect(result.ok).toBe(false);
-    if (result.ok) return;
-    expect(result.error).toBe('UNCOMMITTED_READ_FIRST');
-    expect(result.message).not.toContain('restamp --handoff');
-    expect(result.detail).toEqual({ uncommitted: ['wiki/issues/WK-9272.md'], remedy: 'commit' });
+    expect(result.ok).toBe(true);
   });
 });
 
@@ -354,9 +350,9 @@ describe('WK-0272 full path — create/derive then dispatch with no manual commi
     expect(result.error).toBe('EFFORT_UNSUPPORTED');
   });
 
-  // Why: commitArtifacts is best-effort and swallows failures; the uncommitted response it leaves must surface
-  // as the typed refusal naming the file and the one-step remedy, not a silent stale read.
-  it('a response left uncommitted by a swallowed commitArtifacts failure refuses UNCOMMITTED_READ_FIRST', async () => {
+  // Why: commitArtifacts is best-effort and swallows failures; the uncommitted response it leaves is not in the
+  // base_ref tree the tracked-shape worker is cut from, so it must surface as a typed refusal naming the file, not a silent stale read.
+  it('a response left uncommitted by a swallowed commitArtifacts failure refuses MISSING_READ_FIRST', async () => {
     const implement = await createHandoff(implementOpts(repo));
     if (!implement.ok) throw new Error(implement.message);
     commitAll(repo, 'implement HO');
@@ -377,8 +373,8 @@ describe('WK-0272 full path — create/derive then dispatch with no manual commi
     const result = await dispatchToAdmission(repo, review.data.handoffRelativePath);
     expect(result.ok).toBe(false);
     if (result.ok) return;
-    expect(result.error).toBe('UNCOMMITTED_READ_FIRST');
+    expect(result.error).toBe('MISSING_READ_FIRST');
     expect(result.message).toContain(responsePath);
-    expect(result.detail).toEqual({ uncommitted: [responsePath], remedy: 'commit' });
+    expect(result.detail).toEqual({ entry: responsePath, base_ref: `dispatch/${implement.data.handoffId}` });
   });
 });

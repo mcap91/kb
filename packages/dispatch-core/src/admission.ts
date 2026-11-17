@@ -24,6 +24,7 @@ import { promisify } from 'node:util';
 import type { DispatchResult } from './errors.js';
 import { fail, ok } from './errors.js';
 import { FULL_SHA, type Handoff, type HandoffMode } from './ho.js';
+import type { WikiShape } from './jail.js';
 import { probeWikiSource } from './wiki-source.js';
 import { validateWriteScopeChain } from './write-scope-chain.js';
 import { isMountableRoot } from './mountability.js';
@@ -241,30 +242,38 @@ async function checkUncapturableWriteScope(handoff: Handoff, repoRoot: string): 
 }
 
 /**
- * True when a non-wiki read_first entry resolves against the base_ref tree
- * rather than the mother repo's working tree (WK-0258): a chained HO's clone is
- * cut from base_ref, so that tree is the world its worker reads. Wiki entries
- * always resolve against the wiki working tree.
+ * True when a read_first entry resolves against the base_ref tree rather than
+ * the mother repo's working tree: a chained HO's clone is cut from base_ref, so
+ * that tree is the world its worker reads. A non-wiki entry always does. A wiki
+ * entry does only in the tracked shape, where the clone carries the base_ref
+ * copy of wiki/; the nested-private wiki is bound live, so its entries resolve
+ * against the wiki working tree. `wikiShape` is null when the probe failed
+ * (or was not needed): wiki entries then keep the working-tree rule and the
+ * other gates report a broken wiki source.
  */
-function resolvesAgainstBaseRef(baseRef: string | null, entry: string): boolean {
-  return baseRef !== null && !isWikiPath(entry);
+function resolvesAgainstBaseRef(baseRef: string | null, entry: string, wikiShape: WikiShape | null): boolean {
+  if (baseRef === null) return false;
+  return !isWikiPath(entry) || wikiShape === 'tracked';
 }
 
-/**
- * Shared read_first existence predicate (WK-0270 Specification 4): wiki paths
- * resolve against the wiki working tree; a non-wiki entry of a chained HO
- * resolves against `baseRef`'s tree (`git cat-file -e`, WK-0258); every other
- * entry resolves against the working tree. An unresolvable (or non-dispatch-owned)
- * `baseRef` is accepted here and left to `checkBaseRef`'s precise refusal.
- * `checkMissingReadFirst` and `deriveReview` both call this — the one copy of
- * the existence rule (rule 65).
- */
-export async function readFirstEntryExists(
+/** Wiki shape for a chained handoff's read_first, probed once; null when no probe is needed or it fails. */
+async function probeReadFirstShape(
+  baseRef: string | null,
+  entries: readonly string[],
+  repoRoot: string,
+): Promise<WikiShape | null> {
+  if (baseRef === null || !entries.some(isWikiPath)) return null;
+  const wiki = await probeWikiSource(repoRoot);
+  return wiki.ok ? wiki.data.shape : null;
+}
+
+async function entryExists(
   entry: string,
   baseRef: string | null,
   repoRootResolved: string,
+  wikiShape: WikiShape | null,
 ): Promise<boolean> {
-  if (resolvesAgainstBaseRef(baseRef, entry)) {
+  if (resolvesAgainstBaseRef(baseRef, entry, wikiShape)) {
     if (baseRef === null || !baseRef.startsWith('dispatch/')) return true;
     try {
       await execFile('git', ['rev-parse', '--verify', '--quiet', `${baseRef}^{commit}`], { cwd: repoRootResolved });
@@ -283,20 +292,39 @@ export async function readFirstEntryExists(
 }
 
 /**
+ * Shared read_first existence predicate (WK-0270 Specification 4): a chained
+ * HO's entry resolves against `baseRef`'s tree (`git cat-file -e`, WK-0258) —
+ * every non-wiki entry, and a wiki entry too in the tracked wiki shape; every
+ * other entry resolves against the working tree. An unresolvable (or
+ * non-dispatch-owned) `baseRef` is accepted here and left to `checkBaseRef`'s
+ * precise refusal. `checkMissingReadFirst` and `deriveReview` both call this —
+ * the one copy of the existence rule (rule 65).
+ */
+export async function readFirstEntryExists(
+  entry: string,
+  baseRef: string | null,
+  repoRootResolved: string,
+): Promise<boolean> {
+  return entryExists(entry, baseRef, repoRootResolved, await probeReadFirstShape(baseRef, [entry], repoRootResolved));
+}
+
+/**
  * §7.5 `missing_read_first` — every declared read_first path must exist where
- * the worker will read it (WK-0258, DEC-0047 A3.4), per `readFirstEntryExists`.
+ * the worker will read it (WK-0258, DEC-0047 A3.4), per `entryExists`.
  */
 async function checkMissingReadFirst(handoff: Handoff, repoRootResolved: string): Promise<DispatchResult<null>> {
+  const shape = await probeReadFirstShape(handoff.base_ref, handoff.read_first, repoRootResolved);
   for (const entry of handoff.read_first) {
-    if (await readFirstEntryExists(entry, handoff.base_ref, repoRootResolved)) continue;
+    if (await entryExists(entry, handoff.base_ref, repoRootResolved, shape)) continue;
 
-    if (resolvesAgainstBaseRef(handoff.base_ref, entry)) {
+    if (resolvesAgainstBaseRef(handoff.base_ref, entry, shape)) {
       return fail(
         'MISSING_READ_FIRST',
         `Handoff ${handoff.id} read_first entry "${entry}" does not exist in the base_ref tree (${handoff.base_ref}), ` +
           `which is where the worker's clone is cut from. A file that exists only on main is not visible there: ` +
           `dispatch artifacts (the implement response, validation evidence) reach the worker through the run-dir ` +
-          `evidence channel, and other content belongs in the HO context.`,
+          `evidence channel, review findings a fix-up needs belong in the handoff's fixup_context field, ` +
+          `and other content belongs in the HO context.`,
         { entry, base_ref: handoff.base_ref },
       );
     }
@@ -378,7 +406,8 @@ export async function porcelainPaths(cwd: string, paths: string[]): Promise<stri
  */
 async function checkUncommittedReadFirst(handoff: Handoff, repoRoot: string): Promise<DispatchResult<null>> {
   // A base_ref-tree entry is committed by construction; the working tree is not what the worker reads.
-  const entries = handoff.read_first.filter((entry) => !resolvesAgainstBaseRef(handoff.base_ref, entry));
+  const shape = await probeReadFirstShape(handoff.base_ref, handoff.read_first, repoRoot);
+  const entries = handoff.read_first.filter((entry) => !resolvesAgainstBaseRef(handoff.base_ref, entry, shape));
   if (entries.length === 0) return ok(null);
 
   const wikiEntries = entries.filter(isWikiPath);

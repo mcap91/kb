@@ -3,7 +3,8 @@
  * clone is cut from base_ref, so non-wiki entries resolve against that tree:
  * branch-only files are admitted, main-only files refuse MISSING_READ_FIRST
  * with guidance, and nothing is copied into the clone. Wiki entries keep the
- * wiki working-tree check in both shapes. The overseer's two base_ref-tree
+ * wiki working-tree check in the nested-private shape; in the tracked shape they
+ * resolve against the base_ref tree like any other entry. The overseer's two base_ref-tree
  * acceptance tests live in dispatch-v2-foundation.test.ts; these cover the
  * precedence edges. Temp dirs only (WK-0043).
  */
@@ -13,7 +14,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { checkAdmission } from '../packages/dispatch-core/src/admission.js';
+import { checkAdmission, readFirstEntryExists } from '../packages/dispatch-core/src/admission.js';
 import type { Handoff } from '../packages/dispatch-core/src/ho.js';
 
 function git(cwd: string, ...args: string[]): string {
@@ -82,13 +83,38 @@ describe('WK-0258 chained read_first — tracked wiki', () => {
     expect(result.ok).toBe(true);
   });
 
-  // Why: wiki entries keep the working-tree rule (ruling precedence 1), even when main-only.
-  it('admits a wiki entry that exists only in the working tree on main', async () => {
+  // Why: the tracked-shape clone carries the base_ref copy of wiki/, so a wiki file committed to main after the branch was cut is absent for the worker.
+  it('refuses a wiki entry committed on main after the branch was cut, and the derived-review filter drops it', async () => {
     await mkdir(join(repo, 'wiki', 'handoffs'), { recursive: true });
     await writeFile(join(repo, 'wiki', 'handoffs', 'HO-9000.response.md'), 'response\n');
     commitAll(repo, 'response on main');
-    const result = await checkAdmission(chainedHandoff({ read_first: ['wiki/handoffs/HO-9000.response.md'] }), repo);
+    const entry = 'wiki/handoffs/HO-9000.response.md';
+    const result = await checkAdmission(chainedHandoff({ read_first: [entry] }), repo);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toBe('MISSING_READ_FIRST');
+    expect(result.message).toContain(entry);
+    expect(result.message).toContain('base_ref tree (dispatch/HO-9000)');
+    expect(result.message).toContain('fixup_context');
+    expect(await readFirstEntryExists(entry, 'dispatch/HO-9000', repo)).toBe(false);
+  });
+
+  // Why: a wiki file already in the base_ref tree is visible to the worker.
+  it('admits a wiki entry present in the base_ref tree', async () => {
+    const entry = 'wiki/issues/WK-9258.md';
+    const result = await checkAdmission(chainedHandoff({ read_first: [entry] }), repo);
     expect(result.ok).toBe(true);
+    expect(await readFirstEntryExists(entry, 'dispatch/HO-9000', repo)).toBe(true);
+  });
+
+  // Why: a fresh-HEAD HO's clone is cut from HEAD, so the working tree is what it reads.
+  it('keeps the working-tree check for a wiki entry of an HO with no base_ref', async () => {
+    await writeFile(join(repo, 'wiki', 'issues', 'WK-9259.md'), 'new ticket\n');
+    const head = commitAll(repo, 'second ticket');
+    const entry = 'wiki/issues/WK-9259.md';
+    const result = await checkAdmission(chainedHandoff({ base_ref: null, base_sha: head, read_first: [entry] }), repo);
+    expect(result.ok).toBe(true);
+    expect(await readFirstEntryExists(entry, null, repo)).toBe(true);
   });
 
   // Why: the worker reads the base_ref copy, so a dirty main-checkout copy is irrelevant, not "uncommitted input".
@@ -149,5 +175,7 @@ describe('WK-0258 chained read_first — nested-private wiki', () => {
     if (missing.ok) return;
     expect(missing.error).toBe('MISSING_READ_FIRST');
     expect(missing.message).not.toContain('base_ref tree');
+    expect(await readFirstEntryExists('wiki/handoffs/HO-9000.response.md', 'dispatch/HO-9000', repo)).toBe(true);
+    expect(await readFirstEntryExists('wiki/handoffs/HO-9999.response.md', 'dispatch/HO-9000', repo)).toBe(false);
   });
 });
