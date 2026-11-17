@@ -31,6 +31,7 @@ import { checkAdmission } from '../packages/dispatch-core/src/admission.js';
 import { createHandoff } from '../packages/dispatch-core/src/create-handoff.js';
 import type { CreateHandoffOpts } from '../packages/dispatch-core/src/types.js';
 import { deriveReview } from '../packages/dispatch-core/src/derive-review.js';
+import { mergeDelivery } from '../packages/dispatch-core/src/merge-delivery.js';
 import { parseHandoff } from '../packages/dispatch-core/src/ho.js';
 
 async function setupBootstrappedRepo(repoRoot: string): Promise<void> {
@@ -887,5 +888,196 @@ describe('deriveReview — WK-0132 Slice 2', () => {
       if (result.ok) return;
       expect(result.message).toContain('does not exist');
     });
+  });
+});
+
+describe('deriveReview: a review after a finished review covers only the fix-up', () => {
+  let tempDir: string;
+
+  beforeEach(async () => {
+    tempDir = await mkdtemp(join(tmpdir(), 'derive-review-fixup-'));
+    await setupBootstrappedRepo(tempDir);
+    await writeFile(join(tempDir, 'AGENTS.md'), '# rules\n', 'utf-8');
+    await mkdir(join(tempDir, 'docs'), { recursive: true });
+    for (const name of ['a-only', 'f1-only', 'f2-only']) await writeFile(join(tempDir, 'docs', `${name}.md`), `${name}\n`, 'utf-8');
+    execFileSync('git', ['add', '-A'], { cwd: tempDir });
+    execFileSync('git', ['commit', '-q', '-m', 'docs'], { cwd: tempDir });
+  });
+
+  afterEach(async () => {
+    await rm(tempDir, { recursive: true, force: true });
+  });
+
+  const git = (...args: string[]): string => execFileSync('git', args, { cwd: tempDir }).toString().trim();
+
+  /** An implement HO authored, committed and delivered on `dispatch/<id>` off `fromRef`; its run and response doc written. */
+  async function deliver(overrides: Partial<CreateHandoffOpts>, fromRef: string): Promise<{ id: string; sha: string }> {
+    const created = await createHandoff(baseImplementOpts({ dir: tempDir, ...overrides }));
+    if (!created.ok) throw new Error(created.message);
+    const id = created.data.handoffId;
+    await writeResponseDoc(tempDir, id);
+    git('add', '-A');
+    git('commit', '-q', '-m', `author ${id}`);
+    const sha = await deliverChainCommit(tempDir, id, fromRef);
+    await writeRunState(join(tempDir, '.agent-runs', 'runs', id, DELIVERED_RUN), {
+      run_id: DELIVERED_RUN,
+      handoff_id: id,
+      status: 'delivered',
+      outcome: 'delivered',
+      branch: `dispatch/${id}`,
+      completed_at: '2026-09-25T10:00:00.000Z',
+    });
+    return { id, sha };
+  }
+
+  const FINDING = { id: 'F1', title: 'Example finding F1', severity: 'high', blocking: true };
+
+  /** The response doc a finished review leaves: frontmatter as capture.ts stamps it. */
+  async function finishReview(reviewId: string, opts: { chars?: number; findings?: boolean } = {}): Promise<void> {
+    const findings = opts.findings === true;
+    await writeFile(
+      join(tempDir, 'wiki', 'handoffs', `${reviewId}.response.md`),
+      [
+        '---',
+        `handoff_id: ${reviewId}`,
+        'outcome: delivered',
+        `recovery_outcome: ${findings ? 'changes_requested' : 'no_findings'}`,
+        'recovery_valid: true',
+        `worker_report_chars: ${opts.chars ?? 500}`,
+        ...(findings ? [`recovery_findings: ${JSON.stringify([FINDING])}`] : []),
+        '---',
+        '',
+        '# Response: Code review',
+        '',
+      ].join('\n'),
+      'utf-8',
+    );
+  }
+
+  async function derive(handoffId: string) {
+    const result = await deriveReview({ dir: tempDir, handoff_id: handoffId });
+    if (!result.ok) throw new Error(`${result.error}: ${result.message}`);
+    const parsed = await parseHandoff(result.data.reviewPath);
+    if (!parsed.ok) throw new Error(parsed.message);
+    return { data: result.data, review: parsed.data, content: await readFile(result.data.reviewPath, 'utf-8') };
+  }
+
+  /** A delivered, reviewed head `A`; the review's response doc is written by `finish` when given. */
+  async function reviewedHead(finish?: Parameters<typeof finishReview>[1]) {
+    const a = await deliver({ acceptance: ['AC-A1: a does x'], read_first: ['README.md', 'docs/a-only.md'] }, 'HEAD');
+    const parentOfA = git('rev-parse', `${a.sha}^`);
+    const first = await derive(a.id);
+    if (finish !== undefined) await finishReview(first.data.reviewId, finish);
+    return { a, parentOfA, first };
+  }
+
+  it('reviews only R..S: the range, the member list and read_first drop the reviewed commits; the findings and the head stamps carry over', async () => {
+    const { a, parentOfA, first } = await reviewedHead({ findings: true });
+    const fixupContext = 'Finding F1:\n- slugify drops digits; fix it';
+    const f = await deliver(
+      { base_ref: `dispatch/${a.id}`, fixup_context: fixupContext, acceptance: ['AC-F1: digits kept'], read_first: ['README.md', 'docs/f1-only.md'] },
+      `dispatch/${a.id}`,
+    );
+
+    const { data, review, content } = await derive(f.id);
+
+    expect(first.data.kind).toBe('whole_chain');
+    expect(data).toMatchObject({ kind: 'fixup', range: `${a.sha}..${f.sha}`, earlierReviewId: first.data.reviewId });
+    expect(content).toContain(`Range under review: ${a.sha}..${f.sha}`);
+    expect(content).toContain(`- ${f.id} (work_item WK-0132): ${a.sha}..${f.sha}`);
+    expect(content).not.toContain(a.id + ' (work_item');
+    expect(content).not.toContain(parentOfA);
+    expect(review.read_first).toEqual(['README.md', 'docs/f1-only.md', 'AGENTS.md']);
+    expect(review.acceptance).toEqual([`[${f.id}] AC-F1: digits kept`]);
+    expect(review.reviewed_sha).toBe(f.sha);
+    expect(review.reviewed_run).toBe(DELIVERED_RUN);
+    expect(review.base_ref).toBe(`dispatch/${f.id}`);
+    expect(content).toContain('### Host Validation Evidence');
+    expect(content).toContain(`### Findings this fix-up was asked to fix\n\n#### ${f.id}\n\n${fixupContext}`);
+    expect(content).toContain(`This review covers only the commits after review ${first.data.reviewId} (${a.sha}).`);
+    expect(content).toContain('each fix has a test that fails before the fix and passes after it');
+    expect(content).toContain('these commits add no new defect');
+    expect(content).toContain('Do not re-review code outside the range, except where these commits change its behaviour.');
+  });
+
+  it('lists a member with no fixup_context as "(none recorded)"', async () => {
+    const { a } = await reviewedHead({});
+    const f = await deliver({ base_ref: `dispatch/${a.id}` }, `dispatch/${a.id}`);
+    const { content } = await derive(f.id);
+    expect(content).toContain(`#### ${f.id}\n\n(none recorded)`);
+  });
+
+  it('two fix-ups after the finished review: the range covers both and both fixup_context texts appear with their ids', async () => {
+    const { a, first } = await reviewedHead({});
+    const f1 = await deliver({ base_ref: `dispatch/${a.id}`, fixup_context: 'first fix text', read_first: ['docs/f1-only.md'] }, `dispatch/${a.id}`);
+    const f2 = await deliver({ base_ref: `dispatch/${f1.id}`, fixup_context: 'second fix text', read_first: ['docs/f2-only.md'] }, `dispatch/${f1.id}`);
+
+    const { data, review, content } = await derive(f2.id);
+
+    expect(data).toMatchObject({ kind: 'fixup', range: `${a.sha}..${f2.sha}`, earlierReviewId: first.data.reviewId });
+    expect(content).toContain(`#### ${f1.id}\n\nfirst fix text\n\n#### ${f2.id}\n\nsecond fix text`);
+    expect(content).toContain(`- ${f1.id} (work_item WK-0132): ${a.sha}..${f1.sha}`);
+    expect(content).toContain(`- ${f2.id} (work_item WK-0132): ${f1.sha}..${f2.sha}`);
+    expect(review.read_first).toEqual(['docs/f2-only.md', 'docs/f1-only.md', 'AGENTS.md']);
+  });
+
+  it.each([
+    ['has no response doc', undefined],
+    ['has an empty report', { chars: 0 }],
+  ])('an earlier review that %s is not finished: the whole chain is reviewed', async (_name, finish) => {
+    const { a, parentOfA } = await reviewedHead(finish);
+    const f = await deliver({ base_ref: `dispatch/${a.id}`, fixup_context: 'fix text' }, `dispatch/${a.id}`);
+    const { data, content } = await derive(f.id);
+    expect(data.kind).toBe('whole_chain');
+    expect(data.range).toBe(`${parentOfA}..${f.sha}`);
+    expect(content).toContain(`Range under review: ${parentOfA}..${f.sha}`);
+    expect(content).not.toContain('Findings this fix-up was asked to fix');
+  });
+
+  it('refuses when a finished review already covers the head, naming the review', async () => {
+    const { a, first } = await reviewedHead({});
+    const again = await deriveReview({ dir: tempDir, handoff_id: a.id });
+    expect(again.ok).toBe(false);
+    if (again.ok) return;
+    expect(again.error).toBe('BAD_RECORD');
+    expect(again.message).toBe(
+      `Review ${first.data.reviewId} already covers the head ${a.sha.slice(0, 12)}; nothing is unreviewed. A second opinion on the same commits needs a hand-authored code_review handoff via create-handoff.`,
+    );
+  });
+
+  it('ignores a finished review whose reviewed_sha is not an ancestor of the head: the whole chain is reviewed', async () => {
+    const { a, parentOfA, first } = await reviewedHead({});
+    const sideCommit = git('commit-tree', 'HEAD^{tree}', '-p', 'HEAD', '-m', 'side line');
+    const reviewPath = first.data.reviewPath;
+    await writeFile(reviewPath, (await readFile(reviewPath, 'utf-8')).replace(a.sha, sideCommit), 'utf-8');
+    const f = await deliver({ base_ref: `dispatch/${a.id}`, fixup_context: 'fix text' }, `dispatch/${a.id}`);
+    const { data } = await derive(f.id);
+    expect(data.kind).toBe('whole_chain');
+    expect(data.range).toBe(`${parentOfA}..${f.sha}`);
+  });
+
+  it('end to end: the fix-up review is derived, finished, and mergeDelivery judges both reviews and merges', async () => {
+    const { a, first } = await reviewedHead({ findings: true });
+    const f = await deliver({ base_ref: `dispatch/${a.id}`, fixup_context: 'Finding F1: fix it' }, `dispatch/${a.id}`);
+    const second = await derive(f.id);
+    expect(second.data.kind).toBe('fixup');
+    await finishReview(second.data.reviewId, { findings: true });
+    git('add', '-A');
+    git('commit', '-q', '-m', 'review docs');
+
+    const merged = await mergeDelivery({
+      dir: tempDir,
+      handoff_id: f.id,
+      judgments: [
+        { review: first.data.reviewId, finding: 'F1', judgment: 'fix' },
+        { review: second.data.reviewId, finding: 'F1', judgment: 'dismiss', reason: 'the fix is covered by its test' },
+      ],
+    });
+    if (!merged.ok) throw new Error(`${merged.error}: ${merged.message}`);
+    expect(merged.data.judgments).toEqual({ total: 2, fix: 1, dismiss: 1, defer: 0 });
+    const record = JSON.parse(await readFile(join(tempDir, 'wiki', 'handoffs', `${f.id}.judgments.json`), 'utf-8')) as {
+      reviews: { review_id: string }[];
+    };
+    expect(record.reviews.map((r) => r.review_id).sort()).toEqual([first.data.reviewId, second.data.reviewId].sort());
   });
 });

@@ -19,6 +19,9 @@ describe('kb-dispatch MCP instructions', () => {
       '`defer`',
       'Do not ask the operator to approve a fix-up',
       'Never run tests yourself',
+      'Each fix adds a test that fails before the fix and passes after it.',
+      '`derive-review` on the fix-up HO then reviews only the fix-up',
+      'with your `judgments` for every finding of every review on the chain',
       'Return to the operator only for',
       HEAD_LAST_SENTENCE,
     ]) {
@@ -31,6 +34,13 @@ describe('kb-dispatch MCP instructions', () => {
     const end = INSTRUCTIONS.indexOf(HEAD_LAST_SENTENCE) + HEAD_LAST_SENTENCE.length;
     expect(end).toBeGreaterThan(0);
     expect(end).toBeLessThanOrEqual(DELIVERED_CHARS - 200);
+  });
+
+  // Why: the full instructions must stay small enough to read; the later recipe must agree with the loop.
+  it('stays under 9,500 characters and no longer says a fix-up needs no review', () => {
+    expect(INSTRUCTIONS.length).toBeLessThan(9500);
+    expect(INSTRUCTIONS).not.toContain('unless you judge the change large enough');
+    expect(INSTRUCTIONS).toContain('`derive-review` covers only the commits it did not see');
   });
 
   // Why: the review advises; the merge gate is test evidence plus judgments, never the review outcome.

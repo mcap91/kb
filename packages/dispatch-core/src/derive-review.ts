@@ -43,6 +43,7 @@ import { promisify } from 'node:util';
 import { allocate } from '@kb/wiki-core';
 
 import { readFirstEntryExists } from './admission.js';
+import { readFinishedChainReviews } from './chain-reviews.js';
 import { parseHandoff, type Handoff } from './ho.js';
 import { renderHandoff } from './create-handoff.js';
 import type { CreateHandoffOpts } from './types.js';
@@ -191,6 +192,77 @@ function buildObjective(params: {
 }
 
 /**
+ * The Objective of a fix-up review: only the commits after the earlier finished review, built
+ * from identifiers and fixed sentences. The range sits alone on its own trailing line.
+ */
+function buildFixupObjective(params: {
+  headId: string;
+  branch: string;
+  reviewedSha: string;
+  mergeTarget: string;
+  earlierReviewId: string;
+  earlierSha: string;
+  headSha: string;
+  membersOldestFirst: readonly ChainMember[];
+}): string {
+  const { headId, branch, reviewedSha, mergeTarget, earlierReviewId, earlierSha, headSha, membersOldestFirst } = params;
+  const memberLines = membersOldestFirst.map(
+    (m) => `- ${m.hoId} (work_item ${m.handoff.work_item ?? 'none'}): ${m.parentSha}..${m.commitSha}`,
+  );
+  return [
+    `Fix-up review for ${headId}, branch ${branch}, reviewed_sha ${reviewedSha}. Merging ${branch} into ${mergeTarget} ships these commits after the code already reviewed.`,
+    `This review covers only the commits after review ${earlierReviewId} (${earlierSha}).`,
+    'Check that each finding listed under "Findings this fix-up was asked to fix" in Context is fixed, and that each fix has a test that fails before the fix and passes after it.',
+    'Check that these commits add no new defect.',
+    'Do not re-review code outside the range, except where these commits change its behaviour.',
+    '',
+    'Members (oldest first):',
+    ...memberLines,
+    '',
+    `Range under review: ${earlierSha}..${headSha}`,
+  ].join('\n');
+}
+
+/** The Context section that carries what each fix-up member was asked to fix, verbatim. */
+function buildFixupFindingsSection(membersOldestFirst: readonly ChainMember[]): string {
+  const entries = membersOldestFirst.map(
+    (m) => `#### ${m.hoId}\n\n${m.handoff.fixup_context?.trim() ? m.handoff.fixup_context : '(none recorded)'}`,
+  );
+  return `### Findings this fix-up was asked to fix\n\n${entries.join('\n\n')}`;
+}
+
+/**
+ * The finished review nearest to `headSha` among those whose `reviewed_sha` is the head or an
+ * ancestor of it; a finished review on another line of history is ignored. `null` when none.
+ */
+async function nearestCoveringReview(
+  targetDir: string,
+  chainBranches: ReadonlySet<string>,
+  headSha: string,
+): Promise<DispatchResult<{ id: string; sha: string } | null>> {
+  const finished = await readFinishedChainReviews(targetDir, chainBranches);
+  if (!finished.ok) return finished;
+  let nearest: { id: string; sha: string; distance: number } | null = null;
+  for (const review of finished.data) {
+    try {
+      await execFile('git', ['merge-base', '--is-ancestor', review.reviewed_sha, headSha], { cwd: targetDir });
+    } catch (err) {
+      if ((err as { code?: unknown }).code === 1) continue; // not an ancestor of the head: another line of history
+      return fail('BAD_RECORD', `Failed to compare review ${review.id} (${review.reviewed_sha}) with ${headSha} in ${targetDir}.`, err);
+    }
+    let distance: number;
+    try {
+      const { stdout } = await execFile('git', ['rev-list', '--count', `${review.reviewed_sha}..${headSha}`], { cwd: targetDir });
+      distance = Number.parseInt(stdout.trim(), 10);
+    } catch (err) {
+      return fail('BAD_RECORD', `Failed to measure ${review.reviewed_sha}..${headSha} in ${targetDir}.`, err);
+    }
+    if (nearest === null || distance < nearest.distance) nearest = { id: review.id, sha: review.reviewed_sha, distance };
+  }
+  return ok(nearest === null ? null : { id: nearest.id, sha: nearest.sha });
+}
+
+/**
  * WK-0270 Specification 2: the Expected Output, built only from identifiers —
  * asks for a verdict per member, findings that cite a file and a concrete
  * failing case, and the recovery block. Never copied from the implement HO's
@@ -291,6 +363,12 @@ export interface DeriveReviewResult {
   reviewedRunId: string;
   /** Host validation evidence written to the implement run dir (WK-0294). */
   validation: ValidationEvidence;
+  /** `fixup` when a finished review already covers the earlier commits, `whole_chain` otherwise. */
+  kind: 'whole_chain' | 'fixup';
+  /** The range the review covers: `<rangeBase>..<head>` for the whole chain, `<earlier reviewed sha>..<head>` for a fix-up. */
+  range: string;
+  /** The finished review a fix-up review follows; absent for a whole-chain review. */
+  earlierReviewId?: string;
   /** read_first entries dropped because they fail readFirstEntryExists (WK-0270 Specification 4). */
   droppedReadFirst: string[];
 }
@@ -357,6 +435,29 @@ export async function deriveReview(opts: DeriveReviewOpts): Promise<DispatchResu
     return fail('ADMISSION_FAILED', `Failed to resolve the merge target branch (git rev-parse --abbrev-ref HEAD) in ${targetDir}.`, err);
   }
 
+  // A finished review of an earlier chain member covers its commits: review only what follows it.
+  const chainBranches = new Set(membersNewestFirst.map((m) => `dispatch/${m.hoId}`));
+  const covering = await nearestCoveringReview(targetDir, chainBranches, deliverySha);
+  if (!covering.ok) return covering;
+  if (covering.data?.sha === deliverySha) {
+    return fail(
+      'BAD_RECORD',
+      `Review ${covering.data.id} already covers the head ${deliverySha.slice(0, 12)}; nothing is unreviewed. A second opinion on the same commits needs a hand-authored code_review handoff via create-handoff.`,
+    );
+  }
+  let reviewMembersNewestFirst = membersNewestFirst;
+  if (covering.data !== null) {
+    let afterReview: Set<string>;
+    try {
+      const { stdout } = await execFile('git', ['rev-list', `${covering.data.sha}..${deliverySha}`], { cwd: targetDir });
+      afterReview = new Set(stdout.split('\n').map((l) => l.trim()).filter((l) => l.length > 0));
+    } catch (err) {
+      return fail('BAD_RECORD', `Failed to list ${covering.data.sha}..${deliverySha} in ${targetDir}.`, err);
+    }
+    reviewMembersNewestFirst = membersNewestFirst.filter((m) => afterReview.has(m.commitSha));
+  }
+  const reviewMembersOldestFirst = [...reviewMembersNewestFirst].reverse();
+
   const registry = await loadValidationRegistry(targetDir);
   if (!registry.ok) return registry;
   const validation = await evidenceForDelivery({
@@ -371,13 +472,13 @@ export async function deriveReview(opts: DeriveReviewOpts): Promise<DispatchResu
 
   // WK-0270 Specification 4: union of every member's read_first (head first, then older members).
   const { readFirst, dropped } = await buildFilteredReadFirst(
-    membersNewestFirst.map((m) => m.handoff.read_first),
+    reviewMembersNewestFirst.map((m) => m.handoff.read_first),
     deliveryBranch,
     targetDir,
   );
 
   // WK-0270 Specification 5: union of every member's acceptance, oldest first, each prefixed [HO-XXXX].
-  const acceptance = membersOldestFirst.flatMap((m) => m.handoff.acceptance.map((c) => `[${m.hoId}] ${c}`));
+  const acceptance = reviewMembersOldestFirst.flatMap((m) => m.handoff.acceptance.map((c) => `[${m.hoId}] ${c}`));
 
   const allocResult = await allocate({ dir: targetDir, prefix: 'HO' });
   if (!allocResult.ok) return fail('ALLOCATION_FAILED', allocResult.message);
@@ -401,16 +502,28 @@ export async function deriveReview(opts: DeriveReviewOpts): Promise<DispatchResu
     export_mounts: [],
     read_first: readFirst,
     // WK-0270 Specification 2: fixed sentences from identifiers only — never implement prose.
-    objective: buildObjective({
-      headId: implement.id,
-      branch: deliveryBranch,
-      reviewedSha: deliverySha,
-      mergeTarget,
-      rangeBase,
-      headSha: deliverySha,
-      membersOldestFirst,
-    }),
-    expected_output: buildExpectedOutput({ headId: implement.id, reviewedSha: deliverySha, membersOldestFirst }),
+    objective:
+      covering.data === null
+        ? buildObjective({
+            headId: implement.id,
+            branch: deliveryBranch,
+            reviewedSha: deliverySha,
+            mergeTarget,
+            rangeBase,
+            headSha: deliverySha,
+            membersOldestFirst,
+          })
+        : buildFixupObjective({
+            headId: implement.id,
+            branch: deliveryBranch,
+            reviewedSha: deliverySha,
+            mergeTarget,
+            earlierReviewId: covering.data.id,
+            earlierSha: covering.data.sha,
+            headSha: deliverySha,
+            membersOldestFirst: reviewMembersOldestFirst,
+          }),
+    expected_output: buildExpectedOutput({ headId: implement.id, reviewedSha: deliverySha, membersOldestFirst: reviewMembersOldestFirst }),
     acceptance,
     validation: REVIEW_VALIDATION,
     credentials: implement.credentials,
@@ -419,7 +532,10 @@ export async function deriveReview(opts: DeriveReviewOpts): Promise<DispatchResu
     vars: implement.vars,
     reviewed_run: reviewedRunId,
     reviewed_sha: deliverySha,
-    context: `### Host Validation Evidence\n\n${renderValidationEvidence(validation.data)}`,
+    context: [
+      ...(covering.data === null ? [] : [buildFixupFindingsSection(reviewMembersOldestFirst)]),
+      `### Host Validation Evidence\n\n${renderValidationEvidence(validation.data)}`,
+    ].join('\n\n'),
   };
 
   const content = renderHandoff(reviewId, createOpts);
@@ -439,6 +555,9 @@ export async function deriveReview(opts: DeriveReviewOpts): Promise<DispatchResu
     implementId: implement.id,
     reviewedRunId,
     validation: validation.data,
+    kind: covering.data === null ? 'whole_chain' : 'fixup',
+    range: covering.data === null ? `${rangeBase}..${deliverySha}` : `${covering.data.sha}..${deliverySha}`,
+    ...(covering.data === null ? {} : { earlierReviewId: covering.data.id }),
     droppedReadFirst: dropped,
   });
 }

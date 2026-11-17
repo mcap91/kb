@@ -109,7 +109,7 @@ export const tools: ToolDef[] = [
   },
   {
     name: 'derive-review',
-    description: 'Create a code_review HO from a delivered implement HO. Does NOT dispatch it — use dispatch separately.',
+    description: 'Create a code_review HO from a delivered implement HO. After a finished review it covers only the commits that review did not see. Does NOT dispatch it — use dispatch separately.',
     inputSchema: z.object({
       dir: z.string().describe('Target repo directory'),
       handoff_id: z.string().describe('The implement HO id (e.g. HO-0034)'),

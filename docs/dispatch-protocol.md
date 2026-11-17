@@ -494,6 +494,31 @@ names no such line) and tells the reviewer to check the change against the repos
 as well as the acceptance criteria, naming the specific rule in each finding that cites a rule violation.
 This applies to every `code_review` HO, not only derived ones.
 
+**Coverage: a review after a finished review covers only what follows it.** A chain review is
+*finished* when it is a `code_review` HO whose `base_ref` is a chain member's branch, it has a
+`reviewed_sha`, and its response doc carries a non-empty report (`worker_report_chars > 0`; the same
+frontmatter `merge-delivery` reads). Among the finished reviews whose `reviewed_sha` is the head or an
+ancestor of it, the nearest to the head is the earlier review `R`; a finished review whose sha is not an
+ancestor of the head is ignored.
+
+- No such review: the whole chain is reviewed, as described above.
+- `R` is the head: `BAD_RECORD` — `Review <id> already covers the head <short sha>; nothing is
+  unreviewed.` A second opinion on the same commits needs a hand-authored `code_review` handoff via
+  `create-handoff`.
+- `R` is before the head: a fix-up review. The range under review is `R..<head>`; only the chain members
+  whose delivery commit is in that range are listed, and `read_first` and `acceptance` come from them
+  alone (`AGENTS.md` still added). The Objective keeps its fixed-text form and says that the review covers
+  only the commits after review `<R id>`, that each finding under "Findings this fix-up was asked to fix"
+  must be fixed with a test that fails before the fix and passes after it, that these commits must add
+  no new defect, and that code outside the range is not re-reviewed except where these commits change
+  its behaviour. The Context gains a "Findings this fix-up was asked to fix" section holding each covered
+  member's `fixup_context` verbatim under its HO id (`(none recorded)` when it has none). Stamps
+  (`reviewed_run`, `reviewed_sha` = the head), the Host Validation Evidence, the copied fields and
+  `base_ref: dispatch/<head>` are as for a whole-chain review.
+
+`DeriveReviewResult` reports `kind` (`whole_chain` or `fixup`), the `range` covered, and for a fix-up the
+`earlierReviewId`. `merge-delivery` still requires one judgment per finding of every review on the chain.
+
 Does NOT auto-dispatch — the orchestrator dispatches separately (two-step review chain).
 
 Refusals: implement not found, mode != implement, not delivered (response doc missing), no delivered run
@@ -711,13 +736,15 @@ orchestrator derives review      → derive-review (reuses the delivery's eviden
 orchestrator dispatches review   → dispatch + watch (same cycle)
 orchestrator judges each finding → fix | dismiss | defer (reason required for dismiss and defer)
 orchestrator sends one fix-up    → create-handoff (base_ref: dispatch/<reviewed HO>, fixup_context = the findings to fix) + dispatch
-orchestrator merges the chain    → merge-delivery on the last HO, with `judgments`
+orchestrator reviews the fix-up  → derive-review on the fix-up HO (covers only the fix-up) + dispatch
+orchestrator merges the chain    → merge-delivery on the last HO, with a judgment for every finding of every review on the chain
 ```
 
 The review audits the delivered code. Its findings advise the orchestrator; the review outcome does not
 block a merge by itself. The merge is refused while a finding has no judgment, while a `fix` judgment has
 no implement delivery after the review, or while the host validation of the last delivery is not green.
-A fix-up needs no new review; the orchestrator may derive one when it judges the change large enough.
+Each fix adds a test that fails before the fix and passes after it. `derive-review` on the fix-up HO then
+reviews only the fix-up; it is cheap, so skip it only for a trivial fix-up.
 Red tests: send a fix-up, or report. An override of red or missing test evidence needs an explicit
 operator instruction. The orchestrator does not ask the operator to approve a fix-up.
 
