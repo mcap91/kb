@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import {
+  FINDING_JUDGMENTS,
   checkEnvironment,
   cleanup,
   createHandoff,
@@ -10,6 +11,7 @@ import {
   restamp,
   status,
   stopRun,
+  type MergeJudgment,
 } from '@kb/dispatch-core';
 
 export interface ToolDef {
@@ -60,7 +62,7 @@ export const tools: ToolDef[] = [
       export_mounts: z.array(z.string()).optional(),
       runtime_envs: z.array(z.string()).optional(),
       base_ref: z.string().optional(),
-      fixup_context: z.string().optional().describe('Review findings a fix-up handoff (base_ref dispatch/<id>) repairs, injected verbatim into the worker prompt. State each fix as a property of the whole branch with the command that proves it. Restate every standing property of the tests the fix-up touches.'),
+      fixup_context: z.string().optional().describe('Review findings a fix-up handoff (base_ref dispatch/<id>) repairs, injected verbatim into the worker prompt. State each fix as a property of the whole branch with the command that proves it. Restate every standing property of the tests the fix-up touches. Each fix adds a test that fails before the fix and passes after it.'),
       vars: z.array(z.string()).optional(),
     }),
     handler: async (input) => createHandoff(input as unknown as Parameters<typeof createHandoff>[0]),
@@ -125,17 +127,29 @@ export const tools: ToolDef[] = [
   {
     name: 'merge-delivery',
     description:
-      'Merge a dispatch delivery branch into the target branch after review pass. Gates on review evidence and on host validation evidence (derive-review). Missing, failing, or stale-registry evidence refuses unless override_reason and override_actor are both given; an override commits a provenance record first. No remote push.',
+      "Merge the chain's last delivery branch into the target branch. Gates on test evidence (host validation, from derive-review) and on one judgment per review finding. A review advises; it does not veto. Missing, failing, or stale-registry evidence refuses unless override_reason and override_actor are both given; an override commits a provenance record first and never replaces a judgment. The judgments are committed as a record before the merge. No remote push.",
     inputSchema: z.object({
       dir: z.string().describe('Target repo directory'),
       handoff_id: z.string().describe('The implement HO id whose delivery branch to merge (e.g. HO-0034)'),
       override_reason: z.string().optional().describe('OPERATOR-AUTHORIZED ONLY: pass only on an explicit operator instruction in this session, never on your own judgment. Overrides the host validation gate; states why merging without passing evidence is acceptable.'),
       override_actor: z.string().optional().describe('OPERATOR-AUTHORIZED ONLY (see override_reason): the operator who authorized the override. Self-reported and recorded as unauthenticated.'),
+      judgments: z
+        .array(
+          z.object({
+            review: z.string().optional().describe('The review handoff id; optional only when exactly one review on the chain has findings.'),
+            finding: z.string().describe('The finding id from the review.'),
+            judgment: z.enum(FINDING_JUDGMENTS).describe('fix: a delivery after the review fixes it. dismiss: not a defect. defer: real, not fixed now.'),
+            reason: z.string().optional().describe('Required for dismiss and defer.'),
+          }),
+        )
+        .optional()
+        .describe('One judgment per review finding on the chain. Omit only when no review has findings.'),
     }),
     handler: async (input) =>
       mergeDelivery({
         dir: input.dir as string,
         handoff_id: input.handoff_id as string,
+        ...(input.judgments !== undefined ? { judgments: input.judgments as MergeJudgment[] } : {}),
         ...(input.override_reason !== undefined || input.override_actor !== undefined
           ? {
               override: {

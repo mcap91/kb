@@ -615,11 +615,10 @@ Preconditions (checked in order, fail-closed):
    `dispatch/<id>` for any member of the chain, the head included. A fix-up delivery on top of a
    reviewed delivery needs no new review. The governing review has a response doc. Evidence is read from that doc's frontmatter — `recovery_outcome`, `recovery_valid`,
    `worker_report_chars` (see "Capture and Provenance") — never by re-parsing the rendered
-   `## Worker Report` markdown. DEC-0037: review is prose-first — `recovery_valid: true` with a
-   passing `recovery_outcome` (`no_findings`/`passed_no_blocking_or_medium_findings`) merges with
-   `verdict: structured`; a passing-shaped block reporting anything else (e.g. `changes_requested`)
-   refuses, no operator override in this slice; `recovery_valid` false/absent with `worker_report_chars >
-   0` still merges, as `verdict: advisory` (the orchestrator/operator reads the prose) — only
+   `## Worker Report` markdown. Review is prose-first. `recovery_valid: true` merges with
+   `verdict: structured` whatever the outcome: a review advises and never vetoes, so
+   `changes_requested` alone does not refuse. `recovery_valid` false/absent with `worker_report_chars >
+   0` merges as `verdict: advisory` (the orchestrator/operator reads the prose). Only
    `worker_report_chars === 0`, a missing review HO/doc, or a response doc predating these frontmatter
    fields (all three absent — no legacy regex fallback) refuses outright.
 2. Delivery branch exists. This is checked before the review lookup, because the chain is read from
@@ -635,19 +634,49 @@ Preconditions (checked in order, fail-closed):
    it, and every commit after it must be a dispatch delivery (`dispatch: HO-XXXX`) of an implement
    handoff in the chain. Any other commit — a hand edit, a merge, a commit outside the chain — refuses,
    naming the commit sha and subject; derive a review for the new head. No override applies, because
-   that code was never reviewed. A review with no `reviewed_sha` skips this check and refuses at step 5.
-5. Host validation evidence is for the chain head, not the reviewed commit. The gate takes the head's
+   that code was never reviewed. A review with no `reviewed_sha` skips this check and refuses at step 6.
+5. Judgments (see below). Checked after the chain is walked and before anything is committed.
+6. Host validation evidence is for the chain head, not the reviewed commit. The gate takes the head's
    latest delivered run and asks for evidence for the head sha (`evidenceForDelivery`): a passing
    record in that run dir for the same sha and registry is reused; otherwise the registered commands run
    now and the record is rewritten. It refuses when the review has no `reviewed_run` or `reviewed_sha`,
    the head has no delivered run, the evidence cannot be read or produced, the evidence belongs to
-   another run, or the evidence `outcome` is `fail`. An override can clear each of these. The reviewer's
+   another run, or the evidence `outcome` is `fail`. An override can clear each of these, and only these. The reviewer's
    copy of the evidence is never read.
-6. Merge succeeds (fast-forward or a real merge). The merge names the evidence sha, not the branch; it
+7. Merge succeeds (fast-forward or a real merge). The merge names the evidence sha, not the branch; it
    aborts and refuses on conflict
 
+**Judgments.** The findings to judge are the findings of every `code_review` on the chain (its
+`base_ref` is a chain member's branch) whose response has a valid structured block. Capture stamps them
+into the response frontmatter as `recovery_findings`, a one-line JSON array of `{id, title, severity,
+blocking}`; a malformed value refuses. A review with no response doc, an empty report, or no valid block
+adds no findings. The orchestrator passes `judgments`, a list of `{ review?, finding, judgment, reason? }`:
+- `judgment` is `fix`, `dismiss` or `defer`. `dismiss` and `defer` need a non-blank `reason`.
+- Every finding gets exactly one judgment. `review` (the review handoff id) may be left out only when
+  exactly one review on the chain has findings.
+- A `fix` needs at least one implement delivery of the chain after that review's `reviewed_sha`. If none
+  exists, dispatch a fix-up with `base_ref: dispatch/<handoff_id>`, or judge the finding `dismiss` or
+  `defer` with a reason. A review with no `reviewed_sha` cannot back a `fix`.
+- The merge refuses, with nothing committed, when a finding has no judgment (the message lists each as
+  `<review id>/<finding id> [<severity>] <title>`), when a judgment names an unknown review or finding or
+  repeats one, or when a rule above fails. A judgment passed when no review has findings is an unknown
+  finding. Passing none then is fine.
+- `override` never stands in for a judgment.
+
+When any finding exists, dispatch writes `wiki/handoffs/<handoff_id>.judgments.json` and commits it with
+the same isolated-index commit as the override record, before the merge (if the commit fails, the file is
+removed and the merge refuses). The record holds `schema: kb-dispatch-merge-judgments.v1`, the head
+handoff id, the head sha, a timestamp, and for each review its id, `reviewed_sha`, outcome, and every
+finding with its `judgment` and `reason`. The result reports `judgments: { total, fix, dismiss, defer }`
+and `judgmentsRecord` (set only when a record was written).
+
+Response docs written before the `recovery_findings` stamp have a valid block but no stamp. For these,
+merge-delivery reads the findings table that capture rendered under `## Recovery Signal`, and nothing
+looser. If the table cannot be read, the merge refuses and says to dispatch a new review. This fallback
+goes away once no unmerged chain predates the stamp.
+
 **Override (DEC-0047 A2 R8).** `override_reason` and `override_actor` (MCP; `override: { reason, actor,
-surface }` in the API) let an operator merge past a step-5 refusal. Both must be non-empty. Before the
+surface }` in the API) let an operator merge past a step-6 refusal. Both must be non-empty. Before the
 merge, dispatch writes `wiki/handoffs/<handoff_id>.merge-override.json` and commits it with the
 isolated-index pattern. The record holds the reason, the actor (with `actor_authenticated: false`: it is
 self-reported, because no identity exists on the MCP path), the call surface, the merged sha, the run id,

@@ -853,6 +853,14 @@ export async function writeResponseDoc(opts: CaptureOpts): Promise<DispatchResul
   frontmatterLines.push(`recovery_outcome: ${recoveryOutcome}`);
   frontmatterLines.push(`recovery_valid: ${recoveryValid}`);
   frontmatterLines.push(`worker_report_chars: ${workerReportChars}`);
+  // The findings merge-delivery needs one judgment for, as one JSON line the frontmatter reader
+  // carries. Written only for a valid block that has findings; every other doc is unchanged.
+  const findings = opts.recoveryEvidence?.valid ? (opts.recoveryEvidence.result?.findings ?? []) : [];
+  if (findings.length > 0) {
+    frontmatterLines.push(
+      `recovery_findings: ${JSON.stringify(findings.map(({ id, title, severity, blocking }) => ({ id, title, severity, blocking })))}`,
+    );
+  }
   frontmatterLines.push('---', '');
   const frontmatter = frontmatterLines.join('\n');
 

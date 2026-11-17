@@ -310,8 +310,8 @@ export { extractRecoveryBlock, validateRecoveryPayload, KB_DISPATCH_RECOVERY_VER
 // the target branch after review evidence confirms a pass. Local only.
 // ---------------------------------------------------------------------------
 
-export type { MergeDeliveryOpts, MergeDeliveryResult, MergeOverride } from './merge-delivery.js';
-export { mergeDelivery } from './merge-delivery.js';
+export type { FindingJudgment, MergeDeliveryOpts, MergeDeliveryResult, MergeJudgment, MergeOverride } from './merge-delivery.js';
+export { FINDING_JUDGMENTS, mergeDelivery } from './merge-delivery.js';
 
 // ---------------------------------------------------------------------------
 // Stop run (WK-0144) — kills a running dispatch by run-id and marks its state

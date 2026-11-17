@@ -96,6 +96,7 @@ Command Options:
     --fixup-context <text>   Optional review findings a fix-up handoff (with --base-ref dispatch/<id>) repairs, any length.
                              State each fix as a property of the whole branch with the command that proves it.
                              Restate every standing property of the tests the fix-up touches.
+                             Each fix adds a test that fails before the fix and passes after it.
     --vars <csv>             Optional KEY=value vars, comma-separated
 
   cleanup

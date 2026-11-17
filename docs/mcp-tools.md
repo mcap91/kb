@@ -53,7 +53,7 @@ a background Bash call (`run_in_background: true`) to be notified when the run r
 | `derive-review` | Create a `code_review` HO from a delivered `implement` HO. Does not dispatch it — dispatch separately | `dir`, `handoff_id` | — | operator |
 | `init-dispatch` | Scaffold `wiki/.dispatch/` config tables (`models.json`, `backends.json`, `profiles.json`) + write-once README | `dir` | — | operator |
 | `restamp` | Set an HO's `base_sha` (and `base_wiki_sha`, when declared) to current HEAD — the remediation for a `BASE_DRIFT` refusal. Re-read the declared files first; this does not re-read them | `dir`, `handoff` | — | |
-| `merge-delivery` | Merge a delivery branch into the target after review pass; gates on review evidence | `dir`, `handoff_id` | — | operator, destructive |
+| `merge-delivery` | Merge the chain's last delivery into the target; gates on test evidence and one judgment per review finding | `dir`, `handoff_id` | `judgments`, `override_reason`, `override_actor` | operator, destructive; `judgments` is a list of `{ review?, finding, judgment: fix\|dismiss\|defer, reason? }` |
 | `stop-run` | Kill a running dispatch by run-id and mark its state cancelled. Already-terminal runs return `ok` with a note, not an error | `dir`, `run_id` | — | operator, destructive |
 
 ## Not applicable (by design)

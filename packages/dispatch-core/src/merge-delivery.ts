@@ -17,14 +17,12 @@
  *      (`<review_id>.response.md`). Evidence is read from the response
  *      doc's frontmatter (`recovery_outcome`, `recovery_valid`,
  *      `worker_report_chars` — stamped by capture.ts's `writeResponseDoc`),
- *      never re-derived by parsing the rendered markdown body (WK-0166: the
- *      old `## Worker Report` regex stopped at the FIRST `\n## `, which is
- *      the worker's own heading when its report starts with one). A
- *      `recovery_valid: true` doc reporting `no_findings` or
- *      `passed_no_blocking_or_medium_findings` merges with
- *      `verdict: 'structured'`; a non-passing outcome refuses
- *      (ADMISSION_FAILED) — there is no operator override in this slice.
- *      DEC-0037: code_review/redteam is prose-first, so an absent or
+ *      never re-derived by parsing the rendered markdown body (the old
+ *      `## Worker Report` regex stopped at the first `\n## `, which is the
+ *      worker's own heading when its report starts with one). A
+ *      `recovery_valid: true` doc merges with `verdict: 'structured'` whatever
+ *      its outcome: a review advises, it does not veto (see 2b).
+ *      code_review/redteam is prose-first, so an absent or
  *      invalid block is not itself a gate — when `worker_report_chars > 0`,
  *      the merge proceeds with `verdict: 'advisory'` (the
  *      orchestrator/operator reads the prose). Only a missing review HO, a
@@ -34,6 +32,13 @@
  *   2. Commits after the review: its `reviewed_sha` is the head or an ancestor of
  *      it, and every later commit is a dispatch delivery (a hand edit refuses, no
  *      override); every commit in the range is a chain member (`walkChain`).
+ *   2b. Judgments: every finding of every `code_review` on the chain that has a
+ *      valid structured block (stamped in the response doc's `recovery_findings`
+ *      frontmatter) needs exactly one judgment — `fix`, `dismiss` or `defer`;
+ *      `dismiss` and `defer` carry a reason; a `fix` needs a delivery after that
+ *      review's `reviewed_sha`. Any gap refuses before anything is committed. The
+ *      judgments are committed as `<id>.judgments.json` before the merge. An
+ *      `override` never substitutes for a judgment.
  *   3. The working tree is clean within the merge's change set — not
  *      repo-wide. Anything staged (the index differs from HEAD) refuses
  *      outright, listing the staged paths: git aborts any merge whose index
@@ -44,8 +49,7 @@
  *      other, matching git's own refusal on a local/branch path clash —
  *      refuses, listing just the colliding paths. An unrelated dirty file
  *      anywhere else in the repo never blocks the merge.
- *   3b. Host validation evidence (WK-0294, DEC-0047 A1 ruling 2, A2 R6/R8,
- *      A4.1/A4.5): the evidence is the chain head's — `evidenceForDelivery`
+ *   3b. Host validation evidence: the evidence is the chain head's — `evidenceForDelivery`
  *      for the head's latest delivered run and the head sha, reused when it
  *      passed for that sha and registry, produced now otherwise. Missing
  *      stamps on the review, a head with no delivered run, evidence that
@@ -78,6 +82,7 @@ import type { DispatchResult } from './errors.js';
 import { ok, fail } from './errors.js';
 import { evidenceForDelivery, JAIL_HERMETICITY_TEACHING_SENTENCE, type ValidationEvidence } from './host-validation.js';
 import { loadValidationRegistry } from './repo-config.js';
+import { FINDING_SEVERITIES } from './recovery-block.js';
 
 const execFile = promisify(execFileCb);
 
@@ -92,10 +97,24 @@ export interface MergeOverride {
   surface: 'mcp' | 'cli' | 'api';
 }
 
+/** The orchestrator's call on one review finding. */
+export const FINDING_JUDGMENTS = ['fix', 'dismiss', 'defer'] as const;
+export type FindingJudgment = (typeof FINDING_JUDGMENTS)[number];
+
+export interface MergeJudgment {
+  /** The review handoff id; may be omitted only when exactly one review on the chain has findings. */
+  review?: string;
+  finding: string;
+  judgment: FindingJudgment;
+  /** Required (non-blank) for `dismiss` and `defer`. */
+  reason?: string;
+}
+
 export interface MergeDeliveryOpts {
   dir: string;
   handoff_id: string;
   override?: MergeOverride;
+  judgments?: MergeJudgment[];
 }
 
 export interface MergeDeliveryResult {
@@ -116,6 +135,10 @@ export interface MergeDeliveryResult {
   mergedSha: string;
   /** Repo-relative path of the committed override provenance record; set only when `gate` is `override`. */
   overrideRecord?: string;
+  /** Judgments recorded for the chain's review findings; all zero when no review has findings. */
+  judgments: { total: number; fix: number; dismiss: number; defer: number };
+  /** Repo-relative path of the committed judgments record; set only when a review had findings. */
+  judgmentsRecord?: string;
   /** `code_review` handoffs on chain members that have a response doc. */
   reviewCount: number;
   /** Implement delivery members of the chain (the head included). */
@@ -126,13 +149,20 @@ export interface MergeDeliveryResult {
   keptBranches: { branch: string; reason: string }[];
 }
 
-/** `FindingsOutcome` values that gate a merge open (recovery-block.ts's `FINDINGS_OUTCOMES` minus `changes_requested`). */
-const PASSING_OUTCOMES: readonly string[] = ['no_findings', 'passed_no_blocking_or_medium_findings'];
+/** One finding of a review, as capture.ts stamps it into the response doc's `recovery_findings` frontmatter. */
+interface ReviewFinding {
+  id: string;
+  title: string;
+  severity: string;
+  blocking: boolean;
+}
 
 interface ResponseDocEvidence {
   recoveryOutcome: string | undefined;
   recoveryValid: boolean | undefined;
   workerReportChars: number | undefined;
+  /** The raw one-line JSON of `recovery_findings`; `undefined` when the line is absent. */
+  recoveryFindings: string | undefined;
 }
 
 /**
@@ -141,7 +171,7 @@ interface ResponseDocEvidence {
  * `worker_report_chars`. Mirrors the `---`-delimited split + line-oriented
  * `key: value` scan used elsewhere in this codebase (ho.ts's
  * `splitFrontmatter`/`parseFrontmatterYaml`, pipeline.ts's
- * `mergeProvenanceFrontmatter`), scoped to just these three scalars. A field
+ * `mergeProvenanceFrontmatter`), scoped to these three scalars plus the raw `recovery_findings` line. A field
  * is `undefined` only when its line is entirely absent — distinct from an
  * empty string value, which means present-but-blank.
  */
@@ -149,7 +179,7 @@ function parseResponseDocFrontmatter(content: string): ResponseDocEvidence {
   const normalized = content.replace(/\r\n/g, '\n');
   const match = normalized.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
   if (!match) {
-    return { recoveryOutcome: undefined, recoveryValid: undefined, workerReportChars: undefined };
+    return { recoveryOutcome: undefined, recoveryValid: undefined, workerReportChars: undefined, recoveryFindings: undefined };
   }
 
   const fields: Record<string, string> = {};
@@ -163,7 +193,64 @@ function parseResponseDocFrontmatter(content: string): ResponseDocEvidence {
     recoveryOutcome: fields.recovery_outcome,
     recoveryValid: fields.recovery_valid === undefined ? undefined : fields.recovery_valid === 'true',
     workerReportChars: fields.worker_report_chars === undefined ? undefined : Number.parseInt(fields.worker_report_chars, 10),
+    recoveryFindings: fields.recovery_findings,
   };
+}
+
+/** The stamped `recovery_findings` JSON line; a malformed value is a failure, never "no findings". */
+function parseStampedFindings(raw: string, reviewId: string): DispatchResult<ReviewFinding[]> {
+  const malformed = (why: string, cause?: unknown): DispatchResult<ReviewFinding[]> =>
+    fail('ADMISSION_FAILED', `Review ${reviewId} response doc has a malformed recovery_findings field: ${why}`, cause);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    return malformed('not valid JSON', err);
+  }
+  if (!Array.isArray(parsed)) return malformed('not a JSON array');
+  const findings: ReviewFinding[] = [];
+  for (const entry of parsed as unknown[]) {
+    const f = entry as Partial<ReviewFinding> | null;
+    if (
+      typeof f !== 'object' || f === null ||
+      typeof f.id !== 'string' || f.id === '' ||
+      typeof f.title !== 'string' ||
+      typeof f.severity !== 'string' ||
+      typeof f.blocking !== 'boolean'
+    ) {
+      return malformed('every entry needs a string id, title, severity and a boolean blocking');
+    }
+    findings.push({ id: f.id, title: f.title, severity: f.severity, blocking: f.blocking });
+  }
+  return ok(findings);
+}
+
+/**
+ * shortcut: parses the `### Findings` table that capture.ts's `formatRecoveryBlockSection`
+ * rendered into the body of response docs written before the `recovery_findings` stamp existed
+ * (rows `| id | severity | yes/no | title |`, inside the last `## Recovery Signal` section only);
+ * remove when no unmerged chain predates the stamp. A row that does not match refuses.
+ */
+function parseLegacyFindings(content: string, outcome: string | undefined, reviewId: string): DispatchResult<ReviewFinding[]> {
+  const refuse = (why: string): DispatchResult<ReviewFinding[]> =>
+    fail(
+      'ADMISSION_FAILED',
+      `Review ${reviewId} response predates the findings stamp and its findings list could not be read (${why}) — dispatch a new review of the chain`,
+    );
+  const signal = content.replace(/\r\n/g, '\n');
+  const section = signal.slice(signal.lastIndexOf('\n## Recovery Signal\n') + 1);
+  const header = '### Findings\n| ID | Severity | Blocking | Title |\n|----|----------|----------|-------|\n';
+  const at = section.indexOf(header);
+  if (at === -1) return outcome === 'changes_requested' ? refuse('no findings table in the body') : ok([]);
+  const row = new RegExp(`^\\| (.+?) \\| (${FINDING_SEVERITIES.join('|')}) \\| (yes|no) \\| (.*) \\|$`);
+  const findings: ReviewFinding[] = [];
+  for (const line of section.slice(at + header.length).split('\n')) {
+    if (line === '') break;
+    const m = row.exec(line);
+    if (m === null) return refuse(`unreadable row "${line}"`);
+    findings.push({ id: m[1]!, title: m[4]!, severity: m[2]!, blocking: m[3] === 'yes' });
+  }
+  return findings.length > 0 ? ok(findings) : refuse('empty findings table');
 }
 
 /**
@@ -234,14 +321,39 @@ async function hasResponseDoc(dir: string, reviewId: string): Promise<boolean> {
 }
 
 /**
+ * The findings a review put in front of the orchestrator: those of a valid structured block
+ * (the stamped `recovery_findings`, or for a doc that predates the stamp the table it rendered).
+ * A review with no response doc, or an advisory (no valid block) one, has none.
+ */
+async function readReviewFindings(dir: string, reviewId: string): Promise<DispatchResult<{ outcome: string; findings: ReviewFinding[] }>> {
+  const path = join(dir, 'wiki', 'handoffs', `${reviewId}.response.md`);
+  let content: string;
+  try {
+    content = await readFile(path, 'utf8');
+  } catch (err) {
+    if ((err as { code?: unknown }).code === 'ENOENT') return ok({ outcome: '', findings: [] });
+    return fail('ADMISSION_FAILED', `Could not read review response doc ${reviewId}.response.md`, err);
+  }
+  const doc = parseResponseDocFrontmatter(content);
+  if (doc.recoveryValid !== true) return ok({ outcome: '', findings: [] });
+  const outcome = doc.recoveryOutcome ?? '';
+  const found =
+    doc.recoveryFindings !== undefined
+      ? parseStampedFindings(doc.recoveryFindings, reviewId)
+      : outcome === 'no_findings'
+        ? ok<ReviewFinding[]>([])
+        : parseLegacyFindings(content, outcome, reviewId);
+  return found.ok ? ok({ outcome, findings: found.data }) : found;
+}
+
+/**
  * Read the governing review's response doc frontmatter evidence fields
- * (WK-0166 — no markdown re-parsing). Fails closed on: no response doc, a
- * response doc that predates frontmatter-based evidence (all three fields
- * absent), an empty report (`worker_report_chars === 0`), or a structured
- * block reporting a non-passing outcome. A missing/invalid block backed by
- * real review content (`worker_report_chars > 0`) returns
- * `verdict: 'advisory'` instead of failing (DEC-0037 — the block is optional
- * metadata, never a gate, for code_review/redteam).
+ * (no markdown re-parsing). Fails closed on: no response doc, a response doc
+ * that predates frontmatter-based evidence (all three fields absent), or an
+ * empty report (`worker_report_chars === 0`). The outcome never refuses; the
+ * findings are judged separately. A missing/invalid block backed by real
+ * review content (`worker_report_chars > 0`) returns `verdict: 'advisory'`
+ * (the block is optional metadata, never a gate, for code_review/redteam).
  */
 async function checkReviewEvidence(
   dir: string,
@@ -260,8 +372,7 @@ async function checkReviewEvidence(
 
   // A response doc predating frontmatter-based evidence has none of the
   // three fields — refuse loudly rather than silently falling back to a
-  // legacy markdown re-parse (WK-0166: no regex fallback, no dual-path
-  // parsing).
+  // legacy markdown re-parse (no regex fallback, no dual-path parsing).
   if (recoveryOutcome === undefined && recoveryValid === undefined && workerReportChars === undefined) {
     return fail(
       'ADMISSION_FAILED',
@@ -269,14 +380,12 @@ async function checkReviewEvidence(
     );
   }
 
+  // A valid block passes whatever its outcome: a review advises; its findings are judged, not vetoed.
   if (recoveryValid === true) {
-    if (recoveryOutcome !== undefined && PASSING_OUTCOMES.includes(recoveryOutcome)) {
-      return ok({ outcome: recoveryOutcome, verdict: 'structured' as const });
-    }
-    return fail('ADMISSION_FAILED', `Review ${reviewId} outcome is "${recoveryOutcome}" — merge blocked`);
+    return ok({ outcome: recoveryOutcome ?? '', verdict: 'structured' as const });
   }
 
-  // DEC-0037: code_review/redteam is prose-first — the recovery block is optional
+  // code_review/redteam is prose-first — the recovery block is optional
   // structured metadata, never a gate. A missing/invalid block still merges as long
   // as the response doc has real review content; only a genuinely empty report (no
   // evidence a review ran at all) fails closed.
@@ -465,19 +574,36 @@ async function checkValidationEvidence(
 }
 
 /**
- * Write and commit the override provenance record (A2 R8) before merging.
- * Fail-closed: if the record cannot be committed, the file is removed and
- * the merge is refused.
+ * Write a JSON record under `wiki/handoffs/` and commit it (in whichever repo holds the wiki)
+ * before the merge. Fail-closed: if the record cannot be committed, the file is removed and the
+ * merge is refused.
  */
-async function commitOverrideRecord(
+async function commitRecord(dir: string, relativePath: string, label: string, record: unknown, message: string): Promise<DispatchResult<string>> {
+  const path = join(dir, relativePath);
+  try {
+    await writeFile(path, `${JSON.stringify(record, null, 2)}\n`, 'utf8');
+  } catch (err) {
+    return fail('FILE_WRITE_ERROR', `Failed to write ${label} ${relativePath}; merge refused.`, err);
+  }
+  const committed = await commitPaths({ cwd: join(dir, 'wiki', 'handoffs'), paths: [path], message });
+  if (!committed.ok || committed.data === null) {
+    await rm(path, { force: true }).catch(() => {});
+    return fail(
+      'FILE_WRITE_ERROR',
+      `${label[0]!.toUpperCase()}${label.slice(1)} ${relativePath} could not be committed; merge refused (fail-closed). ${committed.ok ? 'Nothing was staged.' : committed.message}`,
+    );
+  }
+  return ok(relativePath);
+}
+
+/** The override provenance record (A2 R8), committed before the merge. */
+function commitOverrideRecord(
   dir: string,
   handoffId: string,
   reviewId: string,
   override: MergeOverride,
   gate: ValidationGate,
 ): Promise<DispatchResult<string>> {
-  const relativePath = `wiki/handoffs/${handoffId}.merge-override.json`;
-  const path = join(dir, relativePath);
   const record = {
     schema_version: 1,
     handoff_id: handoffId,
@@ -501,24 +627,114 @@ async function commitOverrideRecord(
           },
     recorded_at: new Date().toISOString(),
   };
-  try {
-    await writeFile(path, `${JSON.stringify(record, null, 2)}\n`, 'utf8');
-  } catch (err) {
-    return fail('FILE_WRITE_ERROR', `Failed to write override record ${relativePath}; merge refused.`, err);
+  return commitRecord(
+    dir,
+    `wiki/handoffs/${handoffId}.merge-override.json`,
+    'override record',
+    record,
+    `chore: merge-delivery override for ${handoffId} (${override.surface}, actor self-reported: ${override.actor})`,
+  );
+}
+
+/** One review's findings with the judgment each was given. */
+interface JudgedReview {
+  review_id: string;
+  reviewed_sha: string | undefined;
+  outcome: string;
+  findings: (ReviewFinding & { judgment: FindingJudgment; reason: string | null })[];
+}
+
+const JUDGMENT_ENTRY_SHAPE = '{"review": "<review id>", "finding": "<finding id>", "judgment": "fix" | "dismiss" | "defer", "reason": "<required for dismiss and defer>"}';
+
+/**
+ * One judgment per finding of the chain's reviews, or a refusal naming every gap. A `fix` needs a
+ * dispatch delivery after its review's `reviewed_sha` (`deliveredShas`: the unmerged chain commits).
+ * Nothing is written; a refusal here leaves the repo untouched.
+ */
+async function judgeFindings(
+  dir: string,
+  branchName: string,
+  deliveredShas: ReadonlySet<string>,
+  reviews: { id: string; sha: string | undefined; outcome: string; findings: ReviewFinding[] }[],
+  judgments: readonly MergeJudgment[],
+): Promise<DispatchResult<JudgedReview[]>> {
+  const withFindings = reviews.filter((r) => r.findings.length > 0);
+  const problems: string[] = [];
+  const given = new Map<string, MergeJudgment>();
+  for (const j of judgments) {
+    const reviewId = j.review ?? (withFindings.length === 1 ? withFindings[0]!.id : undefined);
+    if (reviewId === undefined) {
+      problems.push(
+        withFindings.length === 0
+          ? `judgment for finding "${j.finding}" is unknown: no review on the chain has findings`
+          : `judgment for finding "${j.finding}" names no review; ${withFindings.length} reviews have findings (${withFindings.map((r) => r.id).join(', ')}), so "review" is required`,
+      );
+      continue;
+    }
+    const review = withFindings.find((r) => r.id === reviewId);
+    if (review === undefined) {
+      problems.push(`judgment for ${reviewId}/${j.finding} names an unknown review: no findings to judge in ${reviewId}`);
+      continue;
+    }
+    if (!review.findings.some((f) => f.id === j.finding)) {
+      problems.push(`judgment for ${reviewId}/${j.finding} names an unknown finding of ${reviewId}`);
+      continue;
+    }
+    const key = `${reviewId}/${j.finding}`;
+    if (!(FINDING_JUDGMENTS as readonly string[]).includes(j.judgment)) {
+      problems.push(`judgment for ${key} is "${String(j.judgment)}", not one of ${FINDING_JUDGMENTS.join(', ')}`);
+    } else if (j.judgment !== 'fix' && (j.reason ?? '').trim() === '') {
+      problems.push(`judgment ${j.judgment} for ${key} needs a non-blank reason`);
+    }
+    if (given.has(key)) problems.push(`finding ${key} is judged twice`);
+    else given.set(key, j);
   }
-  const committed = await commitPaths({
-    cwd: join(dir, 'wiki', 'handoffs'),
-    paths: [path],
-    message: `chore: merge-delivery override for ${handoffId} (${override.surface}, actor self-reported: ${override.actor})`,
-  });
-  if (!committed.ok || committed.data === null) {
-    await rm(path, { force: true }).catch(() => {});
+
+  const unjudged: string[] = [];
+  for (const review of withFindings) {
+    for (const f of review.findings) {
+      if (!given.has(`${review.id}/${f.id}`)) unjudged.push(`${review.id}/${f.id} [${f.severity}] ${f.title}`);
+    }
+  }
+  if (unjudged.length > 0) problems.push(`no judgment for: ${unjudged.join('; ')}`);
+
+  // A `fix` is only real when a delivery follows the review that raised the finding.
+  for (const review of withFindings) {
+    const fixes = review.findings.filter((f) => given.get(`${review.id}/${f.id}`)?.judgment === 'fix');
+    if (fixes.length === 0) continue;
+    const names = fixes.map((f) => `${review.id}/${f.id}`).join(', ');
+    if (review.sha === undefined) {
+      problems.push(`${names} judged fix, but review ${review.id} carries no reviewed_sha stamp, so no delivery can be shown to follow it; judge dismiss or defer with a reason`);
+      continue;
+    }
+    const after = await listUnmergedCommits(dir, `${review.sha}..${branchName}`);
+    if (!after.ok) return after;
+    const delivered = after.data.some((c) => deliveredShas.has(c.sha) && DISPATCH_COMMIT_SUBJECT.test(c.subject));
+    if (!delivered) {
+      problems.push(
+        `${names} judged fix, but no delivery follows review ${review.id} (reviewed ${review.sha}); dispatch a fix-up handoff with base_ref ${branchName}, or judge it dismiss or defer with a reason`,
+      );
+    }
+  }
+
+  if (problems.length > 0) {
     return fail(
-      'FILE_WRITE_ERROR',
-      `Override record ${relativePath} could not be committed; merge refused (fail-closed). ${committed.ok ? 'Nothing was staged.' : committed.message}`,
+      'ADMISSION_FAILED',
+      `Merge of ${branchName} refused: each review finding needs exactly one judgment. ${problems.join('. ')}. Pass judgments as a list of entries shaped ${JUDGMENT_ENTRY_SHAPE}.`,
+      { problems },
     );
   }
-  return ok(relativePath);
+  return ok(
+    withFindings.map((r) => ({
+      review_id: r.id,
+      reviewed_sha: r.sha,
+      outcome: r.outcome,
+      findings: r.findings.map((f) => {
+        const j = given.get(`${r.id}/${f.id}`)!;
+        return { ...f, judgment: j.judgment, reason: j.reason?.trim() ?? null };
+      }),
+    })),
+  );
 }
 
 /**
@@ -556,8 +772,8 @@ async function deleteMergedBranches(
 
 /**
  * Merge a dispatch delivery chain's head branch (`dispatch/<handoff_id>`) into
- * the current branch after confirming a passing code review of the chain
- * exists. Local only — never pushes to a remote (WK-0132 Slice 3: push is the
+ * the current branch after confirming a code review of the chain exists and
+ * every finding of its reviews is judged. Local only — never pushes to a remote (WK-0132 Slice 3: push is the
  * operator's decision). Never throws — every failure path returns a
  * `DispatchResult`.
  */
@@ -594,7 +810,7 @@ export async function mergeDelivery(opts: MergeDeliveryOpts): Promise<DispatchRe
   const reviewedRun = reviewHandoff.reviewed_run;
   const reviewedSha = reviewHandoff.reviewed_sha;
 
-  // 3. The review must pass; the head may sit past the reviewed sha only on dispatch deliveries.
+  // 3. The review must exist with evidence; the head may sit past the reviewed sha only on dispatch deliveries.
   const reviewCheck = await checkReviewEvidence(dir, reviewHandoff);
   if (!reviewCheck.ok) return reviewCheck;
   const { outcome, verdict } = reviewCheck.data;
@@ -611,6 +827,16 @@ export async function mergeDelivery(opts: MergeDeliveryOpts): Promise<DispatchRe
   for (const review of chainReviews) {
     if (members.some((m) => review.base_ref === `dispatch/${m.hoId}`) && (await hasResponseDoc(dir, review.id))) reviewCount += 1;
   }
+
+  // 4b. One judgment per review finding on the chain — nothing is written yet.
+  const chainFindings: { id: string; sha: string | undefined; outcome: string; findings: ReviewFinding[] }[] = [];
+  for (const review of chainReviews) {
+    const read = await readReviewFindings(dir, review.id);
+    if (!read.ok) return read;
+    chainFindings.push({ id: review.id, sha: review.reviewed_sha, outcome: read.data.outcome, findings: read.data.findings });
+  }
+  const judged = await judgeFindings(dir, branchName, new Set(unmerged.data.map((c) => c.sha)), chainFindings, opts.judgments ?? []);
+  if (!judged.ok) return judged;
 
   // 5. Working tree must be clean within the merge's change set — see header.
   const dirtyCheck = await checkScopedDirtyRepo(dir, branchName);
@@ -645,7 +871,27 @@ export async function mergeDelivery(opts: MergeDeliveryOpts): Promise<DispatchRe
     overrideRecord = recorded.data;
   }
 
-  // 4. Merge the gated sha — fast-forward if possible, a real merge if needed, abort + refuse on conflict.
+  // 5c. The judgments are on record before the merge, like an override.
+  let judgmentsRecord: string | undefined;
+  if (judged.data.length > 0) {
+    const recorded = await commitRecord(
+      dir,
+      `wiki/handoffs/${handoff_id}.judgments.json`,
+      'judgments record',
+      {
+        schema: 'kb-dispatch-merge-judgments.v1',
+        handoff_id,
+        head_sha: gate.sha,
+        recorded_at: new Date().toISOString(),
+        reviews: judged.data,
+      },
+      `chore: merge-delivery judgments for ${handoff_id}`,
+    );
+    if (!recorded.ok) return recorded;
+    judgmentsRecord = recorded.data;
+  }
+
+  // 6. Merge the gated sha — fast-forward if possible, a real merge if needed, abort + refuse on conflict.
   try {
     await execFile('git', ['merge', gate.sha], { cwd: dir });
   } catch {
@@ -653,6 +899,7 @@ export async function mergeDelivery(opts: MergeDeliveryOpts): Promise<DispatchRe
     return fail('ADMISSION_FAILED', `Merge conflict with ${branchName} — surface to operator`);
   }
 
+  const allJudged = judged.data.flatMap((r) => r.findings);
   let mergeSha: string;
   try {
     const { stdout } = await execFile('git', ['rev-parse', 'HEAD'], { cwd: dir });
@@ -673,10 +920,17 @@ export async function mergeDelivery(opts: MergeDeliveryOpts): Promise<DispatchRe
     verdict,
     gate: overrideRecord === undefined ? 'evidence' : 'override',
     mergedSha: gate.sha,
+    judgments: {
+      total: allJudged.length,
+      fix: allJudged.filter((f) => f.judgment === 'fix').length,
+      dismiss: allJudged.filter((f) => f.judgment === 'dismiss').length,
+      defer: allJudged.filter((f) => f.judgment === 'defer').length,
+    },
     reviewCount,
     implementDeliveries: members.length,
     deletedBranches: branches.deleted,
     keptBranches: branches.kept,
     ...(overrideRecord !== undefined ? { overrideRecord } : {}),
+    ...(judgmentsRecord !== undefined ? { judgmentsRecord } : {}),
   });
 }
