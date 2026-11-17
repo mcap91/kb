@@ -39,6 +39,7 @@ import { join } from 'node:path';
 import { createClone, removeClone } from './clone.js';
 import type { DispatchResult } from './errors.js';
 import { fail, ok } from './errors.js';
+import { execBash } from './exec-direct.js';
 import { buildBwrapPlan } from './jail.js';
 import { isMountableRoot } from './mountability.js';
 import { getRunDir, isRunId } from './paths.js';
@@ -101,7 +102,16 @@ export interface ValidationEvidence {
   commands: ValidationStepResult[];
   /** `pass` only when setup (if any) and every registered command passed. */
   outcome: 'pass' | 'fail';
+  /**
+   * Present only when the delivery run failed: the same registered steps run
+   * on the base commit. Never changes `outcome`.
+   */
+  baseline?: ValidationBaseline;
 }
+
+export type ValidationBaseline =
+  | { status: 'ran'; base_sha: string; setup: ValidationStepResult | null; commands: ValidationStepResult[] }
+  | { status: 'not_run'; reason: string };
 
 export interface RunHostValidationOpts {
   /** Mother repo root. */
@@ -182,83 +192,126 @@ async function runStep(opts: {
   });
 }
 
+interface RegistrySteps {
+  setup: ValidationStepResult | null;
+  commands: ValidationStepResult[];
+}
+
+/**
+ * Run the registry's setup and commands against `sha` in a fresh clone inside
+ * the jail. The one code path for the delivery run and the base-commit
+ * baseline, so both run under identical jail conditions.
+ */
+async function runRegistrySteps(opts: { dir: string; sha: string; registry: ValidationRegistry | null }): Promise<DispatchResult<RegistrySteps>> {
+  const registry = opts.registry;
+  let setup: ValidationStepResult | null = null;
+  const commands: ValidationStepResult[] = [];
+  if (registry === null || (registry.setup === null && registry.commands.length === 0)) return ok({ setup, commands });
+
+  const runtime = await resolveRuntimePaths(registry.runtime_paths);
+  if (!runtime.ok) return runtime;
+
+  const clone = await createClone({ motherRepo: opts.dir, runId: `RUN-${randomUUID()}`, baseSha: opts.sha });
+  if (!clone.ok) return clone;
+  const { clonePath } = clone.data;
+  try {
+    if (clone.data.baseSha !== opts.sha) {
+      return fail('PIPELINE_FAILED', `Validation clone resolved ${clone.data.baseSha}, expected ${opts.sha}.`);
+    }
+    const path = [...runtime.data.map((p) => `${p}/bin`), BASE_PATH].join(':');
+    const env = { ...registry.env, PATH: path, HOME: '/tmp', TMPDIR: '/tmp' };
+    const step = { clonePath, runtimePaths: runtime.data };
+
+    if (registry.setup !== null) {
+      // DECISION: npm lifecycle scripts are forced off for setup (A4.2 "scripts ignored"),
+      // after the registry env so a registry value cannot turn them back on.
+      const ran = await runStep({
+        ...step,
+        name: 'setup',
+        argv: registry.setup.argv,
+        timeoutMs: registry.setup.timeout_ms,
+        network: true,
+        env: { ...env, npm_config_ignore_scripts: 'true' },
+      });
+      if (!ran.ok) return ran;
+      setup = ran.data;
+    }
+
+    if (setup === null || setup.result === 'pass') {
+      for (const command of registry.commands) {
+        const ran = await runStep({
+          ...step,
+          name: command.name,
+          argv: command.argv,
+          timeoutMs: command.timeout_ms,
+          network: false,
+          env,
+        });
+        if (!ran.ok) return ran;
+        commands.push(ran.data);
+      }
+    }
+  } finally {
+    const removed = await removeClone(clonePath);
+    if (!removed.ok) process.stderr.write(`[host-validation] warning: ${removed.message}\n`);
+  }
+  return ok({ setup, commands });
+}
+
+function stepsFailed(steps: RegistrySteps): boolean {
+  return (steps.setup !== null && steps.setup.result === 'fail') || steps.commands.some((c) => c.result === 'fail');
+}
+
+/**
+ * The same registered steps on the merge-base of the delivery and the mother
+ * repo's HEAD (the merge target). Facts only: it never touches the outcome,
+ * and a baseline that cannot run is recorded with its reason, not an error.
+ */
+async function runBaseline(opts: RunHostValidationOpts): Promise<ValidationBaseline> {
+  const base = await execBash({
+    scriptContent: 'git merge-base "$KB_DELIVERY_SHA" HEAD',
+    cwd: opts.dir,
+    env: { KB_DELIVERY_SHA: opts.deliverySha },
+  });
+  if (!base.ok) return { status: 'not_run', reason: base.message };
+  const baseSha = base.data.stdout.trim();
+  if (base.data.exitCode !== 0 || baseSha === '') {
+    return { status: 'not_run', reason: `no merge-base of ${opts.deliverySha} and HEAD: ${base.data.stderr.trim() || 'empty output'}` };
+  }
+  const ran = await runRegistrySteps({ dir: opts.dir, sha: baseSha, registry: opts.registry });
+  if (!ran.ok) return { status: 'not_run', reason: ran.message };
+  return { status: 'ran', base_sha: baseSha, ...ran.data };
+}
+
 /**
  * Run the registry against `deliverySha` and write the evidence JSON into
  * the implement run dir (atomic write). A failing command is evidence, not
- * an error: the result is `ok` with `outcome: 'fail'`. Only a run that could
+ * an error: the result is `ok` with `outcome: 'fail'`, and the same steps then
+ * also run on the base commit (`baseline`). Only a delivery run that could
  * not be carried out at all (bad runtime path, clone failure, bwrap spawn
  * failure, unwritable run dir) is a `DispatchResult` failure — and then no
  * evidence file is written, so the merge gate sees evidence as missing.
  */
 export async function runHostValidation(opts: RunHostValidationOpts): Promise<DispatchResult<ValidationEvidence>> {
   const startedAt = new Date().toISOString();
-  const registry = opts.registry;
-  let setup: ValidationStepResult | null = null;
-  const commands: ValidationStepResult[] = [];
-
-  if (registry !== null && (registry.setup !== null || registry.commands.length > 0)) {
-    const runtime = await resolveRuntimePaths(registry.runtime_paths);
-    if (!runtime.ok) return runtime;
-
-    const clone = await createClone({ motherRepo: opts.dir, runId: `RUN-${randomUUID()}`, baseSha: opts.deliverySha });
-    if (!clone.ok) return clone;
-    const { clonePath } = clone.data;
-    try {
-      if (clone.data.baseSha !== opts.deliverySha) {
-        return fail('PIPELINE_FAILED', `Validation clone resolved ${clone.data.baseSha}, expected delivery sha ${opts.deliverySha}.`);
-      }
-      const path = [...runtime.data.map((p) => `${p}/bin`), BASE_PATH].join(':');
-      const env = { ...registry.env, PATH: path, HOME: '/tmp', TMPDIR: '/tmp' };
-      const step = { clonePath, runtimePaths: runtime.data };
-
-      if (registry.setup !== null) {
-        // DECISION: npm lifecycle scripts are forced off for setup (A4.2 "scripts ignored"),
-        // after the registry env so a registry value cannot turn them back on.
-        const ran = await runStep({
-          ...step,
-          name: 'setup',
-          argv: registry.setup.argv,
-          timeoutMs: registry.setup.timeout_ms,
-          network: true,
-          env: { ...env, npm_config_ignore_scripts: 'true' },
-        });
-        if (!ran.ok) return ran;
-        setup = ran.data;
-      }
-
-      if (setup === null || setup.result === 'pass') {
-        for (const command of registry.commands) {
-          const ran = await runStep({
-            ...step,
-            name: command.name,
-            argv: command.argv,
-            timeoutMs: command.timeout_ms,
-            network: false,
-            env,
-          });
-          if (!ran.ok) return ran;
-          commands.push(ran.data);
-        }
-      }
-    } finally {
-      const removed = await removeClone(clonePath);
-      if (!removed.ok) process.stderr.write(`[host-validation] warning: ${removed.message}\n`);
-    }
-  }
-
-  const failed = (setup !== null && setup.result === 'fail') || commands.some((c) => c.result === 'fail');
+  const ran = await runRegistrySteps({ dir: opts.dir, sha: opts.deliverySha, registry: opts.registry });
+  if (!ran.ok) return ran;
+  const { setup, commands } = ran.data;
+  const failed = stepsFailed(ran.data);
+  const baseline = failed ? await runBaseline(opts) : undefined;
   const evidence: ValidationEvidence = {
     schema_version: 1,
     handoff_id: opts.handoffId,
     run_id: opts.runId,
     delivery_branch: opts.deliveryBranch,
     delivery_sha: opts.deliverySha,
-    registry_fingerprint: validationRegistryFingerprint(registry),
+    registry_fingerprint: validationRegistryFingerprint(opts.registry),
     started_at: startedAt,
     completed_at: new Date().toISOString(),
     setup,
     commands,
     outcome: failed ? 'fail' : 'pass',
+    ...(baseline === undefined ? {} : { baseline }),
   };
 
   const pathCheck = validationEvidencePath(opts.dir, opts.handoffId, opts.runId);
@@ -270,6 +323,13 @@ export async function runHostValidation(opts: RunHostValidationOpts): Promise<Di
     return fail('FILE_WRITE_ERROR', `Failed to write validation evidence to ${evidencePath}.`, err);
   }
   return ok(evidence);
+}
+
+function isValidBaseline(b: unknown): boolean {
+  if (b === null || typeof b !== 'object') return false;
+  const x = b as Record<string, unknown>;
+  if (x.status === 'not_run') return typeof x.reason === 'string';
+  return x.status === 'ran' && typeof x.base_sha === 'string' && Array.isArray(x.commands) && (x.setup === null || (typeof x.setup === 'object' && x.setup !== undefined));
 }
 
 /**
@@ -300,7 +360,8 @@ export async function readValidationEvidence(path: string): Promise<DispatchResu
     typeof e.delivery_sha !== 'string' ||
     typeof e.registry_fingerprint !== 'string' ||
     (e.outcome !== 'pass' && e.outcome !== 'fail') ||
-    !Array.isArray(e.commands)
+    !Array.isArray(e.commands) ||
+    (e.baseline !== undefined && !isValidBaseline(e.baseline))
   ) {
     return fail('BAD_RECORD', `Validation evidence at ${path} does not match schema_version 1.`);
   }
@@ -310,9 +371,10 @@ export async function readValidationEvidence(path: string): Promise<DispatchResu
 /**
  * The one way to get host validation evidence for a delivery. Reuses the
  * evidence already in the run dir when it is for the same delivery sha AND
- * the current registry fingerprint; otherwise runs `runHostValidation`
- * (which rewrites the file). The delivery pipeline step and `deriveReview`
- * both call this, so the suite runs once per (sha, registry) pair. A
+ * the current registry fingerprint AND it passed; otherwise runs
+ * `runHostValidation` (which rewrites the file). A stored red is re-checked so
+ * a flaky failure never sticks to a delivery; a stored green is never re-run.
+ * The delivery pipeline step and `deriveReview` both call this. A
  * malformed evidence file is a failure, never treated as absent.
  */
 export async function evidenceForDelivery(opts: RunHostValidationOpts): Promise<DispatchResult<ValidationEvidence>> {
@@ -321,22 +383,36 @@ export async function evidenceForDelivery(opts: RunHostValidationOpts): Promise<
   const existing = await readValidationEvidence(pathCheck.data);
   if (!existing.ok) return existing;
   const e = existing.data;
-  if (e !== null && e.delivery_sha === opts.deliverySha && e.registry_fingerprint === validationRegistryFingerprint(opts.registry)) {
+  if (e !== null && e.outcome === 'pass' && e.delivery_sha === opts.deliverySha && e.registry_fingerprint === validationRegistryFingerprint(opts.registry)) {
     return ok(e);
   }
   return runHostValidation(opts);
 }
 
+/** Facts from the base-commit run: which delivery-failed steps also fail there, or why it did not run. */
+export type HostValidationBaselineSummary = { status: 'ran'; alsoFailing: string[] } | { status: 'not_run'; reason: string };
+
 /** One-line host validation result carried in the run result and the response doc. */
 export type HostValidationSummary =
   | { status: 'pass'; commandCount: number }
-  | { status: 'fail'; failedCommands: string[] }
+  | { status: 'fail'; failedCommands: string[]; baseline?: HostValidationBaselineSummary }
   | { status: 'not_run'; reason: string };
+
+/** Lookup of a step by name in a ran baseline (setup included). */
+function baselineStep(b: Extract<ValidationBaseline, { status: 'ran' }>): (name: string) => ValidationStepResult | undefined {
+  const steps = [...(b.setup === null ? [] : [b.setup]), ...b.commands];
+  return (name) => steps.find((s) => s.name === name);
+}
 
 export function summarizeValidation(evidence: ValidationEvidence): HostValidationSummary {
   if (evidence.outcome === 'pass') return { status: 'pass', commandCount: evidence.commands.length };
   const steps = [...(evidence.setup === null ? [] : [evidence.setup]), ...evidence.commands];
-  return { status: 'fail', failedCommands: steps.filter((s) => s.result === 'fail').map((s) => s.name) };
+  const failedCommands = steps.filter((s) => s.result === 'fail').map((s) => s.name);
+  const b = evidence.baseline;
+  if (b === undefined) return { status: 'fail', failedCommands };
+  if (b.status === 'not_run') return { status: 'fail', failedCommands, baseline: b };
+  const onBase = baselineStep(b);
+  return { status: 'fail', failedCommands, baseline: { status: 'ran', alsoFailing: failedCommands.filter((n) => onBase(n)?.result === 'fail') } };
 }
 
 /**
@@ -419,6 +495,18 @@ function fence(text: string): string {
   return `${ticks}\n${text.replace(/\n$/, '')}\n${ticks}`;
 }
 
+/** Facts only: the step's result on the delivery next to its result on the base commit. */
+function renderBaselineNote(step: ValidationStepResult, baseline: ValidationBaseline | undefined): string[] {
+  if (step.result !== 'fail' || baseline === undefined || baseline.status !== 'ran') return [];
+  const short = baseline.base_sha.slice(0, 12);
+  const onBase = baselineStep(baseline)(step.name);
+  const there =
+    onBase === undefined
+      ? `did not run on the base commit \`${short}\``
+      : `${onBase.result === 'fail' ? 'failed' : 'passed'} on the base commit \`${short}\``;
+  return [`Result: failed on the delivery; ${there}.`, ''];
+}
+
 function renderStep(step: ValidationStepResult): string[] {
   const status = step.timed_out ? 'timed out' : step.signal !== null ? `signal ${step.signal}` : `exit ${step.exit_code}`;
   const lines = [
@@ -457,11 +545,14 @@ export function renderValidationEvidence(evidence: ValidationEvidence): string {
   if (evidence.setup === null && evidence.commands.length === 0) {
     lines.push('No validation commands are registered (`wiki/.dispatch/validation.json`), so the host ran nothing.', '');
   }
-  if (evidence.setup !== null) lines.push(...renderStep(evidence.setup));
+  if (evidence.setup !== null) lines.push(...renderStep(evidence.setup), ...renderBaselineNote(evidence.setup, evidence.baseline));
   if (evidence.setup !== null && evidence.setup.result === 'fail') {
     lines.push('Setup failed, so no registered command ran.', '');
   }
-  for (const command of evidence.commands) lines.push(...renderStep(command));
+  for (const command of evidence.commands) lines.push(...renderStep(command), ...renderBaselineNote(command, evidence.baseline));
+  if (evidence.baseline?.status === 'not_run') {
+    lines.push(`The same steps did not run on the base commit: ${evidence.baseline.reason.replace(/\s+/g, ' ').trim()}.`, '');
+  }
   if (evidence.commands.some((c) => c.result === 'fail')) {
     lines.push(`_${JAIL_HERMETICITY_TEACHING_SENTENCE}_`, '');
   }

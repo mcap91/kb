@@ -178,20 +178,28 @@ describe('host validation at delivery (mocked spawnIsolated)', () => {
     expect(await readFile(result.data.responsePath, 'utf8')).toContain('\nHost validation: pass.\n');
   });
 
-  it('a red suite leaves the run delivered, records the failure, and names the failed command', async () => {
+  it('a red suite leaves the run delivered, records the failure and the base-commit result, and names the failed command', async () => {
     const repo = await setupRepo({ mode: 'implement', registry: REGISTRY });
     repos.push(repo);
-    mockSpawns('fail');
+    const spawns = mockSpawns('fail');
     stubClaudeOnPath();
     const result = await dispatchFixture(repo);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.data.delivery.status).toBe('delivered');
-    expect(result.data.hostValidation).toEqual({ status: 'fail', failedCommands: ['unit'] });
-    expect(JSON.parse(await readFile(await evidenceFile(result.data), 'utf8')).outcome).toBe('fail');
+    // One run on the delivery, one on the base commit.
+    expect(spawns.suiteCalls()).toBe(2);
+    expect(result.data.hostValidation).toEqual({
+      status: 'fail',
+      failedCommands: ['unit'],
+      baseline: { status: 'ran', alsoFailing: ['unit'] },
+    });
+    const evidence = JSON.parse(await readFile(await evidenceFile(result.data), 'utf8'));
+    expect(evidence.outcome).toBe('fail');
+    expect(evidence.baseline.status).toBe('ran');
     const doc = await readFile(result.data.responsePath, 'utf8');
     expect(doc).toContain('outcome: delivered');
-    expect(doc).toContain('\nHost validation: fail (unit).\n');
+    expect(doc).toContain('\nHost validation: fail (unit). Also failing on the base commit: unit.\n');
   });
 
   it('a jail failure leaves the run delivered, writes no evidence, and records why', async () => {

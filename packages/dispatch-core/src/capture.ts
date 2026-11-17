@@ -25,7 +25,7 @@ import type { BackendFingerprint } from './model-registry.js';
 import type { RecoveryBlockEvidence, RecoveryBlockPayload } from './recovery-block.js';
 import type { PiCompaction } from './adapters/pi.js';
 import type { BackendFamily } from './repo-config.js';
-import type { HostValidationSummary } from './host-validation.js';
+import type { HostValidationBaselineSummary, HostValidationSummary } from './host-validation.js';
 
 /**
  * kb-owned location of the vendored LiteLLM rate snapshot (WK-0123) — mirrors
@@ -605,12 +605,18 @@ function deriveVerdict(
   return { outcome: 'failed', reason: 'unknown_mode' };
 }
 
+function describeBaseline(b: HostValidationBaselineSummary | undefined): string {
+  if (b === undefined) return '';
+  if (b.status === 'not_run') return ` The same steps did not run on the base commit (${b.reason.replace(/\s+/g, ' ').trim()}).`;
+  return ` Also failing on the base commit: ${b.alsoFailing.length === 0 ? 'none' : b.alsoFailing.join(', ')}.`;
+}
+
 function describeHostValidation(v: HostValidationSummary): string {
   switch (v.status) {
     case 'pass':
       return v.commandCount === 0 ? 'Host validation: pass (no commands registered).' : 'Host validation: pass.';
     case 'fail':
-      return `Host validation: fail (${v.failedCommands.join(', ')}).`;
+      return `Host validation: fail (${v.failedCommands.join(', ')}).${describeBaseline(v.baseline)}`;
     case 'not_run':
       return `Host validation: not run (${v.reason.replace(/\s+/g, ' ').trim()}).`;
   }

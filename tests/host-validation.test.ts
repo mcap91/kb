@@ -9,7 +9,7 @@
  * implement run dir keyed to the delivery sha, run id, and registry
  * fingerprint. Temp dirs only (WK-0043); skips loudly without a working bwrap.
  */
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
@@ -29,9 +29,11 @@ import {
   readValidationEvidence,
   renderValidationEvidence,
   runHostValidation,
+  summarizeValidation,
   type ValidationEvidence,
   type ValidationStepResult,
 } from '../packages/dispatch-core/src/host-validation.js';
+import * as spawnIsolatedModule from '../packages/dispatch-core/src/spawn-isolated.js';
 import {
   loadValidationRegistry,
   validationRegistryFingerprint,
@@ -321,6 +323,122 @@ describe.skipIf(!BWRAP_FUNCTIONAL)('runHostValidation (WK-0294) — real bwrap',
     });
   });
 
+  // Why: a stored green is reused (no second run) but a stored red is re-checked, so a flaky failure
+  // never sticks to a delivery and a green never costs a second run.
+  describe('stored evidence reuse by outcome', () => {
+    const opts = (r: ValidationRegistry) => ({
+      dir: repo,
+      handoffId: HANDOFF_ID,
+      runId: RUN_ID,
+      deliveryBranch: `dispatch/${HANDOFF_ID}`,
+      deliverySha,
+      registry: r,
+    });
+
+    it('runs a stored red delivery again and rewrites the evidence', async () => {
+      deliverySha = await deliver({ 'bad.sh': 'exit 1\n' });
+      const reg = registry({ commands: [{ name: 'bad', argv: ['bash', 'bad.sh'], timeout_ms: 30_000 }] });
+      const first = await evidenceForDelivery(opts(reg));
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      const second = await evidenceForDelivery(opts(reg));
+      expect(first.ok && second.ok).toBe(true);
+      if (!first.ok || !second.ok) return;
+      expect(first.data.outcome).toBe('fail');
+      expect(second.data.started_at).not.toBe(first.data.started_at);
+      const onDisk = await readValidationEvidence(join(repo, '.agent-runs', 'runs', HANDOFF_ID, RUN_ID, VALIDATION_EVIDENCE_FILE));
+      expect(onDisk.ok && onDisk.data?.started_at).toBe(second.data.started_at);
+    });
+
+    it('does not run a stored green delivery again', async () => {
+      deliverySha = await deliver({ 'ok.sh': 'echo hi\n' });
+      const reg = registry({ commands: [{ name: 'ok', argv: ['bash', 'ok.sh'], timeout_ms: 30_000 }] });
+      const spy = vi.spyOn(spawnIsolatedModule, 'spawnIsolated');
+      try {
+        await evidenceForDelivery(opts(reg));
+        await evidenceForDelivery(opts(reg));
+        expect(spy).toHaveBeenCalledTimes(1);
+      } finally {
+        spy.mockRestore();
+      }
+    });
+  });
+
+  // Why: a red delivery also runs the same steps on the base commit so a reviewer sees both facts;
+  // the baseline never changes the outcome and never runs for a green delivery.
+  describe('baseline on the base commit when the delivery is red', () => {
+    const cmd = registry({ commands: [{ name: 'test', argv: ['bash', 't.sh'], timeout_ms: 30_000 }] });
+
+    /** Commit `files` on the current branch (the merge target); returns the new HEAD. */
+    async function commitOnBase(files: Record<string, string>): Promise<string> {
+      for (const [path, content] of Object.entries(files)) await writeFile(join(repo, path), content);
+      git(repo, 'add', '-A');
+      git(repo, 'commit', '-q', '-m', 'base change');
+      return git(repo, 'rev-parse', 'HEAD');
+    }
+
+    it('records a failing baseline for the same command and still reports fail', async () => {
+      const baseSha = await commitOnBase({ 't.sh': 'exit 1\n' });
+      deliverySha = await deliver({ 'extra.txt': 'x\n' });
+      const result = await run(cmd);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.data.outcome).toBe('fail');
+      expect(result.data.baseline).toMatchObject({ status: 'ran', base_sha: baseSha });
+      const rendered = renderValidationEvidence(result.data);
+      expect(rendered).toContain(`failed on the delivery; failed on the base commit \`${baseSha.slice(0, 12)}\``);
+      expect(summarizeValidation(result.data)).toEqual({
+        status: 'fail',
+        failedCommands: ['test'],
+        baseline: { status: 'ran', alsoFailing: ['test'] },
+      });
+    });
+
+    it('records a passing baseline when the base commit is green, and still reports fail', async () => {
+      const baseSha = await commitOnBase({ 't.sh': 'exit 0\n' });
+      deliverySha = await deliver({ 't.sh': 'exit 1\n' });
+      const result = await run(cmd);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.data.outcome).toBe('fail');
+      expect(result.data.baseline).toMatchObject({ status: 'ran', base_sha: baseSha, commands: [{ name: 'test', result: 'pass' }] });
+      expect(renderValidationEvidence(result.data)).toContain(`failed on the delivery; passed on the base commit \`${baseSha.slice(0, 12)}\``);
+      expect(summarizeValidation(result.data)).toMatchObject({ baseline: { status: 'ran', alsoFailing: [] } });
+    });
+
+    it('runs no baseline for a green delivery', async () => {
+      await commitOnBase({ 't.sh': 'exit 1\n' });
+      deliverySha = await deliver({ 't.sh': 'exit 0\n' });
+      const spy = vi.spyOn(spawnIsolatedModule, 'spawnIsolated');
+      try {
+        const result = await run(cmd);
+        expect(result.ok).toBe(true);
+        if (!result.ok) return;
+        expect(result.data.outcome).toBe('pass');
+        expect('baseline' in result.data).toBe(false);
+        expect(spy).toHaveBeenCalledTimes(1);
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it('records why when the baseline cannot run, and still reports fail', async () => {
+      deliverySha = await deliver({ 't.sh': 'exit 1\n' });
+      // The merge target now has no history in common with the delivery: no merge-base.
+      git(repo, 'checkout', '-q', '--orphan', 'unrelated');
+      git(repo, 'rm', '-rfq', '.');
+      await writeFile(join(repo, 'other.txt'), 'other\n');
+      git(repo, 'add', '-A');
+      git(repo, 'commit', '-q', '-m', 'unrelated root');
+      const result = await run(cmd);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.data.outcome).toBe('fail');
+      expect(result.data.baseline).toMatchObject({ status: 'not_run', reason: expect.stringContaining('no merge-base') });
+      expect(renderValidationEvidence(result.data)).toContain('did not run on the base commit');
+      expect(summarizeValidation(result.data)).toMatchObject({ baseline: { status: 'not_run' } });
+    });
+  });
+
   // Why: HO validation text is never executed — with no registry the host runs nothing and clones nothing.
   it('runs nothing without a registry and still records evidence', async () => {
     deliverySha = await deliver({ 'x.txt': 'x\n' });
@@ -366,6 +484,38 @@ describe('readValidationEvidence (WK-0294)', () => {
     const bad = await readValidationEvidence(join(dir, 'x', 'bad.json'));
     expect(bad.ok).toBe(false);
     expect(await readFile(join(dir, 'x', 'bad.json'), 'utf8')).toContain('maybe');
+  });
+});
+
+describe('readValidationEvidence baseline field', () => {
+  let dir: string;
+  const base = { schema_version: 1, run_id: RUN_ID, delivery_sha: 'abc', registry_fingerprint: 'fp', outcome: 'fail', commands: [] };
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'kb-evidence-baseline-'));
+  });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  async function read(value: unknown) {
+    const path = join(dir, 'e.json');
+    await writeFile(path, JSON.stringify(value));
+    return readValidationEvidence(path);
+  }
+
+  it('accepts evidence with and without a baseline', async () => {
+    expect((await read(base)).ok).toBe(true);
+    expect((await read({ ...base, baseline: { status: 'not_run', reason: 'no merge-base' } })).ok).toBe(true);
+    expect((await read({ ...base, baseline: { status: 'ran', base_sha: 'def', setup: null, commands: [] } })).ok).toBe(true);
+  });
+
+  it('rejects a malformed baseline', async () => {
+    expect((await read({ ...base, baseline: 'nope' })).ok).toBe(false);
+    expect((await read({ ...base, baseline: { status: 'ran', base_sha: 'def' } })).ok).toBe(false);
+    expect((await read({ ...base, baseline: { status: 'not_run' } })).ok).toBe(false);
+    expect((await read({ ...base, baseline: { status: 'maybe', reason: 'x' } })).ok).toBe(false);
   });
 });
 
