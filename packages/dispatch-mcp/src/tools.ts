@@ -36,14 +36,14 @@ export const tools: ToolDef[] = [
   },
   {
     name: 'create-handoff',
-    description: 'Create a repo-local HO handoff document. Pass wk + slice to generate it from a slice row of the work item (derives title, write_scope, read_first, validation, and an objective and acceptance that bound the work to the slice and name the other slices as out of scope; mode defaults to implement); otherwise title, mode, acceptance and validation are required.',
+    description: 'Create a repo-local HO handoff document. Pass wk + slice to generate it from a slice row of the work item (derives title, write_scope, read_first, validation, and an objective and acceptance copied from the work item\'s ### Slice <id> section, with the work item objective as context; mode defaults to implement); otherwise title, mode, acceptance and validation are required.',
     inputSchema: dirSchema.extend({
       title: z.string().optional(),
       subject: z.string(),
       allowed_agents: z.array(z.string()),
       mode: z.enum(['implement', 'code_review', 'redteam', 'research', 'explore_code']).optional(),
       wk: z.string().optional().describe('Work item id (WK-NNNN) whose ## Slices table holds the slice row; requires slice'),
-      slice: z.string().optional().describe('Slice row id (e.g. s1); requires wk'),
+      slice: z.string().optional().describe("Slice row id (e.g. s1); requires wk. Task text and acceptance come from the work item's '### Slice <id>' section ('#### Acceptance' list); required unless the table has one row"),
       status: z.enum(['draft', 'reviewed', 'launched', 'completed', 'failed']).optional(),
       depends_on: z.array(z.string()).optional(),
       area: z.string().optional(),

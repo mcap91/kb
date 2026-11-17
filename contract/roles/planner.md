@@ -20,6 +20,8 @@ When the work is a multi-stage build, this check could help (a small or single-c
 Every WK you hand off carries checkable acceptance criteria, a stated write scope, and a validation command — a WK with none of these is not ready to leave planning.
 Specs for pipeline work include as an acceptance criterion: a quick e2e smoke run on small real fixtures passes; if none exists, the spec includes creating one.
 
+A WK with more than one slice gives every slice a `### Slice <id>` section after the Slices table: what this slice builds, written for a worker with no other context, then an `#### Acceptance` list of its own criteria. Code copies that section into the handoff verbatim, and the orchestrator does not rewrite it; a row alone does not say which part of the WK a slice builds, and `create-handoff` refuses a slice without a section.
+
 ## Each decision
 
 For a design choice, check one comparable system and cite it (file and function), or say plainly that none was found. Read a cited source's full text, never a summary of it.

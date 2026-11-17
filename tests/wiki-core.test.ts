@@ -26,6 +26,7 @@ import {
   writeManagedBlock,
   readBodyTable,
   readSlices,
+  readSliceSection,
   readHardening,
   readResolutions,
   renderBootstrapSurface,
@@ -4901,5 +4902,48 @@ describe('lint AC_MISSING (WK-0197, presence check only)', () => {
       const missing = result.data.diagnostics.filter(d => d.code === 'AC_MISSING');
       expect(missing).toEqual([]);
     }
+  });
+});
+
+describe('readSliceSection', () => {
+  const body = [
+    '# WK-0001',
+    '',
+    '## Slices',
+    '',
+    '| id | title | write_scope | depends_on | validation | status |',
+    '|----|-------|-------------|------------|------------|--------|',
+    '| s1 | One | a.ts | | npm test | todo |',
+    '',
+    '### Slice s1',
+    '',
+    'Build one.',
+    '',
+    'Second paragraph.',
+    '',
+    '#### Acceptance',
+    '',
+    '- It works',
+    '',
+    '## Notes',
+    '',
+    '### Slice s2',
+    '',
+    'Build two.',
+    '',
+    '### Slice s10',
+    '',
+    'Ten.',
+    '',
+  ].join('\n');
+
+  it('reads the task before #### Acceptance and the text after it, stopping at the next heading of level 1-3', () => {
+    expect(readSliceSection(body, 's1')).toEqual({ task: 'Build one.\n\nSecond paragraph.', acceptance: '- It works' });
+  });
+
+  it('finds a section after another ## section, reports a missing Acceptance heading as null, and matches the id exactly', () => {
+    expect(readSliceSection(body, 's2')).toEqual({ task: 'Build two.', acceptance: null });
+    expect(readSliceSection(body, 's1')?.task).not.toContain('Ten.');
+    expect(readSliceSection(body, 's3')).toBeNull();
   });
 });

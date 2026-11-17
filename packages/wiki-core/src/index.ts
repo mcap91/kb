@@ -198,6 +198,7 @@ export { lint } from './lint.js';
 export {
   readBodyTable,
   readSection,
+  readSliceSection,
   readSlices,
   SLICE_COLUMNS,
   readHardening,
@@ -205,7 +206,7 @@ export {
   HARDENING_COLUMNS,
   RESOLUTIONS_COLUMNS,
 } from './body-table.js';
-export type { BodyTableRow } from './body-table.js';
+export type { BodyTableRow, SliceSection } from './body-table.js';
 
 // Dependency readiness projection (WK-0115: ready/blocked/done + cycle detection)
 export { buildDependencyProjection } from './deps.js';

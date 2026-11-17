@@ -31,29 +31,36 @@ A work item with a `## Slices` table can generate its handoff instead of retypin
 `create-handoff --wk WK-NNNN --slice s1` (MCP: `wk`, `slice`) reads the row and the work item and
 writes the HO. `write_scope` and `validation` come from the row; `read_first` is the row's files that
 exist at generation time (a new slice's files do not exist yet, and admission refuses a missing
-`read_first` path) plus the work item path; `objective` comes from the work item's `## Objective`
-and `acceptance` from its `## Acceptance criteria` items, both bounded to the slice (below); `title` defaults to the row title and
-`mode` to `implement`; `work_item` and `slice` are recorded. `--subject` and `--allowed-agents` are
-still required.
+`read_first` path) plus the work item path; `title` defaults to the row title and `mode` to
+`implement`; `work_item` and `slice` are recorded. `--subject` and `--allowed-agents` are still
+required.
 
-The slice bounds the work. The objective starts with a generated paragraph that names the slice, its
-title and the work item, says to build this slice only, and lists every other slice of the table by
-id and title as out of scope; then comes `Work item objective, for context:` and the `## Objective`
-text unchanged. The acceptance list starts with one generated item saying that only this slice is
-built and that a criterion needing another slice is out of scope; the work item's items follow
-unchanged, in order. A table with one row gets neither the out-of-scope clause nor the generated item.
+`objective` and `acceptance` come from the slice's own section in the work item, a `### Slice <id>`
+heading that ends at the next heading of level 3 or higher. The text before its `#### Acceptance`
+heading is the task; the list items under it are the acceptance. The objective starts with one
+generated paragraph that names the slice, its title and the work item, says to build this slice only,
+and lists the other slices by id and title as out of scope; then comes the task text verbatim, then
+`Work item objective, for context only:` and the `## Objective` text unchanged. The acceptance is the
+slice's items verbatim and nothing else: no generated item, none from the work item. The planner
+writes the section once; code copies it.
+
+With no such section, a table with one row means the slice is the whole work item: `objective` is
+the `## Objective` text and `acceptance` the `## Acceptance criteria` items. A table with several rows
+is refused, because a row alone does not say which part of the work item the slice builds.
 
 `--timeout-secs <n>` (MCP: `timeout_secs`) writes the `timeout_secs` field on either path; it must be
 a positive integer, and `create-handoff` refuses anything else.
 
-An acceptance item is a top-level list entry (`-`, `*`, `1.` or `1)`, with an optional `[ ]`/`[x]`
+An acceptance item, in a slice section or the work item list, is a top-level list entry (`-`, `*`, `1.` or `1)`, with an optional `[ ]`/`[x]`
 box). The lines indented under it (wrapped text, sub-bullets, a fenced block) belong to it and are
 joined with single spaces; a sub-bullet loses its marker. Lines inside a fenced block are never
 items. Any other non-blank text in the section is refused, naming the line.
 
 `create-handoff` refuses, writing nothing, when `wk` or `slice` is given without the other, the work
 item or the slice id does not exist, the work item has no `## Slices` table, the work item has no
-`## Objective` text or no parseable `## Acceptance criteria` items, the row has an empty validation
+`## Objective` text, the slice has no section and the table has several rows, a slice section has no
+task text, no `#### Acceptance` heading or no items, the criteria text is not parseable (a one-row
+table reads the `## Acceptance criteria` items), the row has an empty validation
 cell, `work_item` is given and differs from `wk`, or any derived field (`write_scope`, `read_first`,
 `objective`, `acceptance`, `validation`) is also passed. A work item
 with no Slices table keeps the explicit-options path. Editing the work item or the row after

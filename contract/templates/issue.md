@@ -79,7 +79,8 @@ Optional "## Slices" body table (WK-0211). Uncomment and fill in only if this WK
 work naturally splits into separately written, separately reviewed units. Header is
 fixed. `write_scope` and `depends_on` are comma-separated; `depends_on` holds row ids
 from this same table. `status` reuses the WK status enum and is written by
-merge-delivery, never by hand. Free text per slice may follow under "### Slice <id>".
+merge-delivery, never by hand. With more than one slice, each slice needs its own
+"### Slice <id>" section; a handoff generated from the slice copies it verbatim.
 
 ## Slices
 
@@ -90,7 +91,20 @@ merge-delivery, never by hand. Free text per slice may follow under "### Slice <
 
 ### Slice s1
 
-_free text about this slice_
+_what this slice builds, written for a worker with no other context_
+
+#### Acceptance
+
+- _a checkable criterion for this slice_
+- _another criterion_
+
+### Slice s2
+
+_what the second slice builds_
+
+#### Acceptance
+
+- _a criterion for the second slice_
 -->
 
 <!--

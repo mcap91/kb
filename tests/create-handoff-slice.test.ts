@@ -55,7 +55,7 @@ function wkText(slicesSection: string, parts: WkParts = {}): string {
   ].join('\n');
 }
 
-const TWO_SLICES = [
+const TWO_SLICE_TABLE = [
   '## Slices',
   '',
   '| id | title | write_scope | depends_on | validation | status |',
@@ -64,6 +64,22 @@ const TWO_SLICES = [
   '| s2 | Second slice | src/other.ts | s1 | npm run typecheck | todo |',
   '',
 ].join('\n');
+
+/** One `### Slice <id>` section; a null acceptance omits the `#### Acceptance` heading. */
+function sliceSection(id: string, task: string, acceptance: string[] | null): string {
+  return [`### Slice ${id}`, '', task, '', ...(acceptance === null ? [] : ['#### Acceptance', '', ...acceptance, '']), ''].join('\n');
+}
+
+const S1_TASK = 'Build the S1 part: the parser.\n\nIt reads `input` (UTF-8): nothing else.';
+const S1_ITEMS = ['S1 parses `input` (UTF-8): done', 'S1 is tested'];
+const S2_TASK = 'Build the S2 part: the writer.';
+const S2_ITEMS = ['S2 writes the output', 'S2 is tested'];
+
+const TWO_SLICES = TWO_SLICE_TABLE
+  + sliceSection('s1', S1_TASK, S1_ITEMS.map((item) => `- [ ] ${item}`))
+  + sliceSection('s2', S2_TASK, S2_ITEMS.map((item) => `- [ ] ${item}`));
+
+const ONE_ROW_TABLE = TWO_SLICE_TABLE.split('\n').filter((line) => !line.startsWith('| s2')).join('\n');
 
 async function objectiveOf(handoffPath: string): Promise<string> {
   const text = await readFile(handoffPath, 'utf8');
@@ -122,14 +138,15 @@ describe('createHandoff from a slice row', () => {
       write_scope: ['src/other.ts'],
       read_first: ['src/other.ts', `wiki/issues/${WK_ID}.md`],
       validation: ['npm run typecheck'],
-      acceptance: [expect.stringContaining('Only slice s2 (Second slice)'), 'The thing is done', 'The thing is tested'],
+      acceptance: S2_ITEMS,
     });
     const content = await readFile(created.data.handoffPath, 'utf8');
     expect(content).toContain('Make the fixture do the thing.');
+    expect(content).toContain(S2_TASK);
   });
 
-  // Why: the worker of s1 built every function of the work item, so s2 had nothing left; the slice must bound the work.
-  it('bounds the objective to the slice and names the other slices as out of scope', async () => {
+  // Why: the worker of s1 built every function of the work item, so s2 had nothing left; the slice section is the task.
+  it('writes the slice task, then the work item objective as context, and never another slice\'s task', async () => {
     await setup(wkText(TWO_SLICES));
     const created = await createHandoff(input({ slice: 's1' }));
     if (!created.ok) throw new Error(created.message);
@@ -140,44 +157,94 @@ describe('createHandoff from a slice row', () => {
     expect(lead).toContain('this slice only');
     expect(lead).toMatch(/out of scope[^]*s2 \(Second slice\)/);
     expect(lead).not.toMatch(/out of scope[^]*s1/);
-    expect(rest.join('\n\n')).toBe('Work item objective, for context:\nMake the fixture do the thing.');
+    expect(rest.join('\n\n')).toBe(`${S1_TASK}\n\nWork item objective, for context only:\nMake the fixture do the thing.`);
+    expect(await readFile(created.data.handoffPath, 'utf8')).not.toContain(S2_TASK);
   });
 
-  it('puts one generated item before the work item acceptance items, unchanged and in order', async () => {
+  // Why: the worker had to guess which work item criteria belonged to its slice.
+  it('writes exactly the slice\'s own acceptance items, none of the work item\'s or another slice\'s', async () => {
     await setup(wkText(TWO_SLICES));
     const created = await createHandoff(input({ slice: 's1' }));
     if (!created.ok) throw new Error(created.message);
     const parsed = await parseHandoff(created.data.handoffPath);
     if (!parsed.ok) throw new Error(parsed.message);
-    const [generated, ...items] = parsed.data.acceptance;
-    expect(generated).toContain('s1');
-    expect(generated).toContain('First slice');
-    expect(generated).toContain('another slice is out of scope');
-    expect(items).toEqual(['The thing is done', 'The thing is tested']);
+    expect(parsed.data.acceptance).toEqual(S1_ITEMS);
   });
 
-  it('adds no out-of-scope clause and no generated acceptance item when the table has one row', async () => {
-    const oneRow = TWO_SLICES.split('\n').filter((line) => !line.startsWith('| s2')).join('\n');
-    await setup(wkText(oneRow));
+  // Why: a row holds no task text; with several rows nothing says which part of the work item the slice builds.
+  it('refuses a slice with no section when the table has several rows, naming the file and the heading to write', async () => {
+    await setup(wkText(TWO_SLICE_TABLE + sliceSection('s1', S1_TASK, ['- one'])));
+    const created = await createHandoff(input({ slice: 's2' }));
+    expect(created.ok).toBe(false);
+    if (created.ok) return;
+    expect(created.error).toBe('MISSING_FIELD');
+    expect(created.message).toContain(`wiki/issues/${WK_ID}.md`);
+    expect(created.message).toContain('### Slice s2');
+    expect(created.message).toContain('#### Acceptance');
+  });
+
+  it('refuses a slice section with no Acceptance heading, an empty list, or empty task text', async () => {
+    const cases: [string, string][] = [
+      [sliceSection('s1', S1_TASK, null), '#### Acceptance'],
+      [sliceSection('s1', S1_TASK, []), '#### Acceptance'],
+      [sliceSection('s1', '', ['- one']), 'task text'],
+    ];
+    for (const [section, mention] of cases) {
+      await rm(repo, { recursive: true, force: true });
+      repo = await mkdtemp(join(tmpdir(), 'kb-slice-handoff-'));
+      await setup(wkText(TWO_SLICE_TABLE + section + sliceSection('s2', S2_TASK, ['- two'])));
+      const created = await createHandoff(input());
+      expect(created.ok).toBe(false);
+      if (created.ok) continue;
+      expect(created.error).toBe('MISSING_FIELD');
+      expect(created.message).toContain(`wiki/issues/${WK_ID}.md`);
+      expect(created.message).toContain('### Slice s1');
+      expect(created.message).toContain(mention);
+    }
+  });
+
+  it('takes objective and acceptance from the work item when the table has one row and no section', async () => {
+    await setup(wkText(ONE_ROW_TABLE));
     const created = await createHandoff(input({ slice: 's1' }));
     if (!created.ok) throw new Error(created.message);
-    const objective = await objectiveOf(created.data.handoffPath);
-    expect(objective).not.toContain('out of scope');
-    expect(objective).toContain('Make the fixture do the thing.');
+    expect(await objectiveOf(created.data.handoffPath)).toBe('Make the fixture do the thing.');
     const parsed = await parseHandoff(created.data.handoffPath);
     if (!parsed.ok) throw new Error(parsed.message);
     expect(parsed.data.acceptance).toEqual(['The thing is done', 'The thing is tested']);
   });
 
+  it('prefers the slice section over the work item when the table has one row', async () => {
+    await setup(wkText(ONE_ROW_TABLE + sliceSection('s1', S1_TASK, S1_ITEMS.map((item) => `- ${item}`))));
+    const created = await createHandoff(input({ slice: 's1' }));
+    if (!created.ok) throw new Error(created.message);
+    expect(await objectiveOf(created.data.handoffPath)).toContain(S1_TASK);
+    const parsed = await parseHandoff(created.data.handoffPath);
+    if (!parsed.ok) throw new Error(parsed.message);
+    expect(parsed.data.acceptance).toEqual(S1_ITEMS);
+  });
+
+  it('finds a slice section that sits after the Slices section, under another heading', async () => {
+    const section = sliceSection('s1', S1_TASK, ['- one']) + sliceSection('s2', S2_TASK, ['- two']);
+    await setup(wkText(`${TWO_SLICE_TABLE}## Design\n\nProse.\n\n${section}`));
+    const created = await createHandoff(input({ slice: 's2' }));
+    if (!created.ok) throw new Error(created.message);
+    const parsed = await parseHandoff(created.data.handoffPath);
+    if (!parsed.ok) throw new Error(parsed.message);
+    expect(parsed.data.acceptance).toEqual(['two']);
+  });
+
   // Why: a slice title with YAML-significant characters must not break the frontmatter.
-  it('round-trips a generated acceptance item built from a title with punctuation', async () => {
+  it('round-trips a multi-paragraph objective and criteria with backticks, colons and parentheses', async () => {
     await setup(wkText(TWO_SLICES.replace('First slice', 'countWords `with` tests: (a, b)')));
     const created = await createHandoff(input({ slice: 's1' }));
     if (!created.ok) throw new Error(created.message);
     const parsed = await parseHandoff(created.data.handoffPath);
     if (!parsed.ok) throw new Error(parsed.message);
-    expect(parsed.data.acceptance[0]).toContain('countWords `with` tests: (a, b)');
-    expect(parsed.data.acceptance.slice(1)).toEqual(['The thing is done', 'The thing is tested']);
+    expect(parsed.data.title).toBe('countWords `with` tests: (a, b)');
+    expect(parsed.data.acceptance).toEqual(S1_ITEMS);
+    const objective = await objectiveOf(created.data.handoffPath);
+    expect(objective).toContain('countWords `with` tests: (a, b)');
+    expect(objective).toContain('It reads `input` (UTF-8): nothing else.');
   });
 
   it('writes timeout_secs on the slice path and on the explicit path, and refuses a bad value', async () => {
@@ -316,7 +383,7 @@ describe('createHandoff from a slice row', () => {
   });
 
   async function acceptanceOf(lines: string[]) {
-    await setup(wkText(TWO_SLICES, { acceptance: lines }));
+    await setup(wkText(TWO_SLICE_TABLE + sliceSection('s1', S1_TASK, ['- one']) + sliceSection('s2', S2_TASK, lines)));
     return createHandoff(input({ slice: 's2' }));
   }
 
@@ -325,7 +392,7 @@ describe('createHandoff from a slice row', () => {
     if (!created.ok) throw new Error(created.message);
     const parsed = await parseHandoff(created.data.handoffPath);
     if (!parsed.ok) throw new Error(parsed.message);
-    return parsed.data.acceptance.slice(1); // item 0 is the generated slice bound
+    return parsed.data.acceptance;
   }
 
   // Why: real work items wrap long criteria; a truncated criterion is a weaker spec for the worker.
@@ -371,6 +438,7 @@ describe('createHandoff from a slice row', () => {
     expect(created.error).toBe('MISSING_FIELD');
     expect(created.message).toContain('Stray paragraph.');
     expect(created.message).toContain(`wiki/issues/${WK_ID}.md`);
+    expect(created.message).toContain('### Slice s2');
   });
 
   // Why: an empty objective would hand the worker a handoff with no statement of the job.
@@ -403,7 +471,7 @@ describe('createHandoff from a slice row', () => {
   });
 
   it('refuses a work item with no Acceptance criteria section', async () => {
-    await setup(wkText(TWO_SLICES, { acceptance: null }));
+    await setup(wkText(ONE_ROW_TABLE, { acceptance: null }));
     const created = await createHandoff(input());
     expect(created.ok).toBe(false);
     if (created.ok) return;
@@ -478,7 +546,7 @@ describe('createHandoff from a slice row', () => {
       slice: 's2',
       write_scope: ['src/other.ts'],
       validation: ['npm run typecheck'],
-      acceptance: [expect.stringContaining('Only slice s2 (Second slice)'), 'The thing is done', 'The thing is tested'],
+      acceptance: S2_ITEMS,
     });
   });
 

@@ -4,7 +4,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
-import { allocate, readSection, readSlices } from '@kb/wiki-core';
+import { allocate, readSection, readSliceSection, readSlices } from '@kb/wiki-core';
 
 import type { CreateHandoffInput, CreateHandoffOpts, CreateHandoffResult } from './types.js';
 import type { DispatchResult } from './errors.js';
@@ -251,9 +251,10 @@ const SLICE_DERIVED_FIELDS = ['write_scope', 'read_first', 'objective', 'accepta
  * `validation` from the slice row, `read_first` = the row's files that exist
  * now (a new slice's files do not exist yet and admission refuses a missing
  * read_first path) plus the WK path, `objective` and `acceptance` from the WK
- * body. The slice bounds the work: a generated paragraph and a generated
- * acceptance item name the slice and the other slices as out of scope, ahead
- * of the WK text, which stays unchanged. Supplying any derived field alongside a slice is refused, never merged.
+ * body. The slice's `### Slice <id>` section is the task and the acceptance,
+ * copied verbatim, with the WK objective after it as context only; with no
+ * section, a one-row table means the slice is the whole WK, and several rows
+ * are refused. Supplying any derived field alongside a slice is refused, never merged.
  */
 async function resolveSliceOpts(input: CreateHandoffInput, targetDir: string): Promise<DispatchResult<CreateHandoffOpts>> {
   const { wk, slice } = input;
@@ -296,11 +297,45 @@ async function resolveSliceOpts(input: CreateHandoffInput, targetDir: string): P
   if (!objective) {
     return fail('MISSING_FIELD', `${wkRelativePath} has no "## Objective" text to derive the objective from.`);
   }
-  const listed = listItems(readSection(wkText, 'Acceptance criteria') ?? '', `${wkRelativePath} "## Acceptance criteria"`);
-  if (!listed.ok) return listed;
-  const acceptance = listed.data;
-  if (acceptance.length === 0) {
-    return fail('MISSING_FIELD', `${wkRelativePath} has no "## Acceptance criteria" items to derive acceptance from.`);
+  const sliceHeading = `### Slice ${slice}`;
+  const section = readSliceSection(wkText, slice);
+  let sliceObjective: string;
+  let acceptance: string[];
+  if (section) {
+    if (section.task === '') {
+      return fail('MISSING_FIELD', `${wkRelativePath} "${sliceHeading}" has no task text before its "#### Acceptance" heading.`);
+    }
+    if (section.acceptance === null) {
+      return fail('MISSING_FIELD', `${wkRelativePath} "${sliceHeading}" has no "#### Acceptance" heading.`);
+    }
+    const listed = listItems(section.acceptance, `${wkRelativePath} "${sliceHeading}" "#### Acceptance"`);
+    if (!listed.ok) return listed;
+    if (listed.data.length === 0) {
+      return fail('MISSING_FIELD', `${wkRelativePath} "${sliceHeading}" has no "#### Acceptance" items.`);
+    }
+    acceptance = listed.data;
+    const others = slices.data.filter((candidate) => candidate.id !== slice);
+    const scopeClause = others.length === 0
+      ? ''
+      : ` These slices are out of scope: ${others.map((other) => `${other.id} (${other.title})`).join(', ')}.`;
+    sliceObjective =
+      `This handoff is slice ${slice} (${row.title}) of ${wk}. Build this slice only.${scopeClause}\n\n` +
+      `${section.task}\n\n` +
+      `Work item objective, for context only:\n${objective}`;
+  } else if (slices.data.length === 1) {
+    const listed = listItems(readSection(wkText, 'Acceptance criteria') ?? '', `${wkRelativePath} "## Acceptance criteria"`);
+    if (!listed.ok) return listed;
+    if (listed.data.length === 0) {
+      return fail('MISSING_FIELD', `${wkRelativePath} has no "## Acceptance criteria" items to derive acceptance from.`);
+    }
+    acceptance = listed.data;
+    sliceObjective = objective;
+  } else {
+    return fail(
+      'MISSING_FIELD',
+      `${wkRelativePath} has no "${sliceHeading}" section. A row alone does not say which part of the work item this slice builds: ` +
+        `write "${sliceHeading}" with the task text and a "#### Acceptance" list.`,
+    );
   }
   if (row.validation === '') {
     return fail('MISSING_FIELD', `Slice ${slice} of ${wk} has an empty validation cell.`);
@@ -311,18 +346,6 @@ async function resolveSliceOpts(input: CreateHandoffInput, targetDir: string): P
     if (await readFirstEntryExists(file, input.base_ref ?? null, targetDir)) existing.push(file);
   }
 
-  const slicePhrase = `slice ${slice} (${row.title}) of ${wk}`;
-  const others = slices.data.filter((candidate) => candidate.id !== slice);
-  const scopeClause = others.length === 0
-    ? ''
-    : ` These slices are out of scope: ${others.map((other) => `${other.id} (${other.title})`).join(', ')}.`;
-  const sliceObjective =
-    `This handoff is ${slicePhrase}. Build this slice only.${scopeClause}\n\n` +
-    `Work item objective, for context:\n${objective}`;
-  const sliceAcceptance = others.length === 0
-    ? acceptance
-    : [`Only ${slicePhrase} is built; a criterion below that needs another slice is out of scope for this handoff.`, ...acceptance];
-
   return ok({
     ...input,
     title: input.title ?? row.title,
@@ -332,7 +355,7 @@ async function resolveSliceOpts(input: CreateHandoffInput, targetDir: string): P
     write_scope: row.write_scope,
     read_first: [...existing, wkRelativePath],
     objective: sliceObjective,
-    acceptance: sliceAcceptance,
+    acceptance,
     validation: [row.validation],
   });
 }

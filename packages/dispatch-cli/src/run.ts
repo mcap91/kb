@@ -81,8 +81,9 @@ Command Options:
     --wk <WK-id>             Generate from a slice of this work item's ## Slices table (needs --slice)
     --slice <id>             Slice row id, e.g. s1 (needs --wk); derives write scope, validation,
                              read-first, objective and acceptance, so those flags are refused with it.
-                             The objective and acceptance start with generated text that bounds the
-                             work to this slice and names the other slices as out of scope
+                             Objective and acceptance are copied from the work item's "### Slice <id>"
+                             section (task text; "#### Acceptance" list), with the work item objective
+                             as context. A table with several rows and no such section is refused
     --timeout-secs <n>       Optional worker watchdog override in seconds (positive integer; default 1800)
     --work-item <WK-id>      Optional linked work item
     --write-scope <csv>      Optional write scope paths

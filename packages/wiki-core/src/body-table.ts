@@ -92,6 +92,35 @@ export function readSection(body: string, heading: string): string | null {
   return getSectionContent(body, heading).trim();
 }
 
+/** The own text of one `### Slice <id>` section: the task, and the text under its `#### Acceptance` heading. */
+export interface SliceSection {
+  task: string;
+  /** Text under `#### Acceptance`, trimmed; null when the section has no such heading. */
+  acceptance: string | null;
+}
+
+/**
+ * Read a work item's `### Slice <id>` section, or null when it has none. It may
+ * sit anywhere in the body (inside `## Slices` or after it) and ends at the
+ * next heading of level 1 to 3. The task is the text before `#### Acceptance`.
+ * Ignores HTML comments.
+ */
+export function readSliceSection(body: string, id: string): SliceSection | null {
+  const stripped = stripHtmlComments(body);
+  const start = new RegExp(`^###\\s+Slice\\s+${escapeRegExp(id)}\\s*$`, 'm').exec(stripped);
+  if (!start) return null;
+
+  const rest = stripped.slice(start.index + start[0].length);
+  const end = /^#{1,3}\s/m.exec(rest);
+  const section = end ? rest.slice(0, end.index) : rest;
+  const split = /^####\s+Acceptance\s*$/m.exec(section);
+  if (!split) return { task: section.trim(), acceptance: null };
+  return {
+    task: section.slice(0, split.index).trim(),
+    acceptance: section.slice(split.index + split[0].length).trim(),
+  };
+}
+
 /**
  * Split one markdown table row into cells. Mirrors validate-plan.ts's splitTableRow
  * (strip the leading/trailing `|`, trim each cell), plus the GFM escape rule: `\|`
