@@ -447,6 +447,17 @@ describe('code_review framing names the implement delivery (WK-0152)', () => {
     expect(result.data.text).toContain('git diff HEAD~1 HEAD');
     expect(result.data.text).not.toContain('dispatch/HO-9153');
   });
+
+  // Why: a reviewer who thinks its outcome decides the merge inflates or softens severity to steer it.
+  it('tells the reviewer its findings advise the orchestrator and do not decide the merge', async () => {
+    const parsed = parseHandoffContent(REVIEW_HO, 'HO-9153.md');
+    if (!parsed.ok) throw new Error(parsed.message);
+    const result = await assemblePrompt(parsed.data, repo);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.text).toContain('Your findings advise the orchestrator, which judges each one; they do not decide the merge.');
+    expect(result.data.text).toContain('do not inflate or soften severity to steer the merge');
+  });
 });
 
 const HO_PATH = 'wiki/handoffs/HO-9152.md';

@@ -62,14 +62,14 @@ generation trips the Base Drift Gate at `dispatch`; regenerate the HO.
 | `base_sha` / `base_wiki_sha` | string | Authoring-time commit stamps — see "Base Drift Gate" |
 | `slice` | string | Slice row id (e.g. `s1`) of the work item's `## Slices` table this HO was generated from; set by `create-handoff --wk --slice`, never read by admission |
 | `reviewed_run` | string | Run id a `code_review` HO targets. Must be a dispatch run id (`RUN-<uuid>`); anything else is `BAD_RECORD` at parse |
-| `reviewed_sha` | string | Delivery-branch commit a derived `code_review` HO was derived for (full sha; anything else is `BAD_RECORD` at parse). Dispatch refuses unless `base_ref` resolves to it; `merge-delivery` requires the branch head to equal it |
+| `reviewed_sha` | string | Delivery-branch commit a derived `code_review` HO was derived for (full sha; anything else is `BAD_RECORD` at parse). Dispatch refuses unless `base_ref` resolves to it; `merge-delivery` accepts a head past it only when every later commit is a dispatch implement delivery |
 | `web` | boolean | Default `false`. Never allowed for `code_review`/`redteam` |
 | `credentials` | string[] | Names from `wiki/.dispatch/profiles.json`. Mutually exclusive with `web: true` |
 | `data_mounts` / `export_mounts` | string[] | Absolute host paths *outside* the repo root, bound `ro` / `rw` into the jail. Must already exist |
 | `runtime_envs` | string[] | Absolute paths to pre-installed runtime env roots (e.g. a conda/mamba env), implement-mode only — see "Runtime Env Projection" below |
 | `read_first` | string[] | Repo-relative paths; each must exist where the worker reads it at dispatch time (`MISSING_READ_FIRST`; see "Where read_first resolves") |
 | `vars` | string[] | `"KEY=value"` non-secret literal env for the worker |
-| `fixup_context` | string | Prior review findings injected verbatim on a re-dispatch |
+| `fixup_context` | string | Prior review findings injected verbatim on a re-dispatch. `create-handoff --fixup-context` writes it as a one-line JSON string, so any text survives. State each fix as a property of the whole branch with the command that proves it; restate every standing property of the tests the fix-up touches |
 | `work_item` | string | `WK-####`; required for `mode: implement`, and its `wiki/issues/<id>.md` must exist |
 | `timeout_secs` | integer | Positive integer; overrides the pipeline's default 1800s worker watchdog. Absent = 1800s. Refused above the operator cap (`WORKER_TIMEOUT_EXCEEDS_CAP`; see "Model and Backend Configuration") — never clamped |
 
@@ -106,7 +106,7 @@ here is a persisted review state — it all re-runs, every time, against the liv
 | `write_scope` empty outside `implement`, or `web: true` for `code_review`/`redteam` | `ENVELOPE_EXCEEDS_MODE` |
 | `implement` with empty `write_scope` | `MISSING_WRITE_SCOPE` |
 | Every `write_scope` entry is repo-relative and resolves inside the repo; no entry has a `.git` path segment or resolves (plain string form, `""`/`.`/`./`/`/`) to the repo root; resolving the entry through its nearest EXISTING ancestor's realpath (joined with the not-yet-existing remainder) must not land on the repo root or touch `.git` either — for every family, naming only the entry, and before anything is created from it | `STALE_WRITE_SCOPE` |
-| Every `read_first` entry exists — in the `base_ref` tree for a chained HO's non-wiki entries, else in the working tree | `MISSING_READ_FIRST` |
+| Every `read_first` entry exists — in the `base_ref` tree for a chained HO's entries (wiki entries too when `wiki/` is tracked by the repo), else in the working tree | `MISSING_READ_FIRST` |
 | Repo is clean (`git status --porcelain` over `write_scope` paths only; with an empty `write_scope` — every advisory mode — the scan is skipped and declared-path staleness is covered by the base-drift gate) | `DIRTY_REPO` |
 | Every `read_first` entry is committed — no modified, staged, or untracked file under it (wiki entries checked in the wiki repo when nested-private); checked before base drift | `UNCOMMITTED_READ_FIRST` (see below) |
 | `base_ref`, if set, starts with `dispatch/` and exists | `BAD_BASE_REF` |
@@ -124,13 +124,19 @@ here is a persisted review state — it all re-runs, every time, against the liv
 The worker's clone is cut from `base_ref` (or HEAD when it is null), so admission checks each `read_first`
 entry where the worker will read it:
 
-1. `wiki/…` entries resolve against the wiki working tree, in both wiki shapes.
-2. For a chained HO (`base_ref` set), every other entry resolves against the `base_ref` tree
+1. `wiki/…` entries of a nested-private wiki (its own git repo, bound live into the jail) resolve against
+   the wiki working tree. The same holds for any HO with `base_ref` null.
+2. For a chained HO (`base_ref` set), every other entry resolves against the `base_ref` tree — and so does
+   a `wiki/…` entry when the repo tracks `wiki/` itself, because the clone carries the `base_ref` copy of
+   `wiki/`. If the wiki shape cannot be probed, wiki entries fall back to the working tree and the
+   other gates report the broken wiki source.
    (`git cat-file -e <base_ref>:<path>`). A file that exists only on that branch is admitted. A file
    that exists only on `main` is not in the clone, so admission refuses `MISSING_READ_FIRST` with
    guidance: dispatch artifacts (the implement response, validation evidence) reach the worker through
-   the run-dir evidence channel, and other content belongs in the HO context. Nothing is copied into the
-   clone.
+   the run-dir evidence channel, review findings a fix-up needs belong in the `fixup_context` field, and
+   other content belongs in the HO context. Nothing is copied into the clone. A tracked-wiki file that
+   exists in both trees but changed on main after the branch was cut is still admitted; the worker reads
+   the older `base_ref` copy.
 3. For an HO with `base_ref` null, every other entry resolves against the working tree.
 
 A few checks need facts the admission gate doesn't have yet and run later in the same `dispatch` call,
@@ -407,8 +413,8 @@ For the wiki stamp, substitute `base_wiki_sha` / `git -C wiki rev-parse HEAD`. W
 
 **Uncommitted read_first inputs (DEC-0047 A2 R9).** Before the base-drift check, admission
 refuses `UNCOMMITTED_READ_FIRST` when any `read_first` entry the worker reads from a working tree has
-uncommitted changes, in either wiki shape. A chained HO's non-wiki entries resolve against `base_ref`
-(committed by construction) and are not checked.
+uncommitted changes, in either wiki shape. A chained HO's entries that resolve against `base_ref` (see "Where read_first resolves")
+are committed by construction and are not checked.
 The clone is cut from a commit, so uncommitted code-repo bytes never reach the worker; a nested-private
 wiki is bound live, so its uncommitted bytes reach the worker, but the response's `wiki_commit` does not
 record them. The message names the files and the remedy:
@@ -473,8 +479,7 @@ text is never copied. Unchanged: `title`, `subject`, `allowed_agents`, `mode`, `
 
 **read_first (Specification 4).** The union of every chain member's `read_first` (head first, then older
 members), plus `AGENTS.md`, deduplicated, then filtered through `readFirstEntryExists` — the one
-existence predicate shared with admission's `checkMissingReadFirst` (wiki paths against the wiki working
-tree; other paths against `git cat-file -e <base_ref>:<path>`). `DeriveReviewResult.droppedReadFirst`
+existence predicate shared with admission's `checkMissingReadFirst` (the rule in "Where read_first resolves"). `DeriveReviewResult.droppedReadFirst`
 lists every entry the filter dropped (e.g. a file the implement deleted on its branch), so the derived
 review's own `read_first` never carries an entry admission would refuse.
 
@@ -567,8 +572,21 @@ it is recorded in the evidence. If validation cannot run at all (unreadable regi
 delivery stands, no evidence file is written, and the response doc says `not run` with the cause. The
 response doc carries one line under `## Outcome`: `Host validation: pass.`, `Host validation: fail
 (<failed command names>).`, or `Host validation: not run (<reason>).` `derive-review` reuses the evidence on
-disk when it is for the same delivery sha and the current registry fingerprint, and runs the suite again
-only when either changed. Other modes never run host validation.
+disk when it is for the same delivery sha and the current registry fingerprint and it passed; it runs the
+suite again when either changed. A stored red result is always re-checked (a flaky failure must not stick
+to a delivery) and the evidence file is rewritten; a stored green is never re-run. Other modes never run
+host validation.
+
+**Baseline on red.** When a validation run of a delivery ends red, the host also runs the same registered
+setup and commands, in the same jail conditions, on the base commit: the merge-base of the delivery sha and
+the mother repo's current `HEAD`. The result goes into `validation-evidence.json` under the optional
+`baseline` field: `{ "status": "ran", "base_sha", "setup", "commands" }` with steps in the same shape, or
+`{ "status": "not_run", "reason" }` when it could not run (no merge-base, clone or jail failure). The
+baseline never changes `outcome`: red stays red. It does not run when the delivery is green, and a baseline
+that cannot run does not fail the validation. The evidence block in the review HO states, for each failed
+step, its result on the delivery next to its result on the base commit, and the response-doc line adds
+`Also failing on the base commit: <names>.` (or says the baseline did not run, with the reason). These are
+facts only; the host draws no conclusion from them.
 
 **Evidence.** The pipeline (or, when it must be refreshed, `derive-review`) writes `validation-evidence.json` into the delivered implement run's dir
 (`.agent-runs/runs/<implement_id>/<run_id>/`). It holds `handoff_id`, `run_id`, `delivery_branch`,
@@ -587,12 +605,15 @@ belong to the reviewer only: the merge gate never reads them.
 
 ### `merge-delivery`
 
-Merges `dispatch/<handoff_id>` into the current branch and deletes the delivery branch. Local only — no
-remote push.
+Merges the chain head `dispatch/<handoff_id>` into the current branch. A fix-up delivery builds on the
+branch it fixes, so the head's history carries every earlier member (`HEAD..dispatch/<handoff_id>`, the
+same chain `derive-review` walks). After the merge it deletes the head's branch and each other member's
+branch that git confirms is fully merged (`git branch -d`, never forced). Local only — no remote push.
 
 Preconditions (checked in order, fail-closed):
-1. Review evidence: a `code_review` HO whose `base_ref` is `dispatch/<handoff_id>` has a response doc.
-   Evidence is read from that doc's frontmatter — `recovery_outcome`, `recovery_valid`,
+1. Review evidence: the governing review is the newest `code_review` HO whose `base_ref` is
+   `dispatch/<id>` for any member of the chain, the head included. A fix-up delivery on top of a
+   reviewed delivery needs no new review. The governing review has a response doc. Evidence is read from that doc's frontmatter — `recovery_outcome`, `recovery_valid`,
    `worker_report_chars` (see "Capture and Provenance") — never by re-parsing the rendered
    `## Worker Report` markdown. DEC-0037: review is prose-first — `recovery_valid: true` with a
    passing `recovery_outcome` (`no_findings`/`passed_no_blocking_or_medium_findings`) merges with
@@ -601,7 +622,8 @@ Preconditions (checked in order, fail-closed):
    0` still merges, as `verdict: advisory` (the orchestrator/operator reads the prose) — only
    `worker_report_chars === 0`, a missing review HO/doc, or a response doc predating these frontmatter
    fields (all three absent — no legacy regex fallback) refuses outright.
-2. Delivery branch exists
+2. Delivery branch exists. This is checked before the review lookup, because the chain is read from
+   it.
 3. Working tree clean within the merge's change set — not repo-wide. Any staged path
    (the index differs from HEAD) refuses outright, listing the staged paths: git aborts any merge
    whose index differs from HEAD regardless of path (git-merge(1) PRE-MERGE CHECKS). Otherwise, only
@@ -609,27 +631,34 @@ Preconditions (checked in order, fail-closed):
    reports — exact match, or either path a directory prefix of the other — refuses, listing just the
    colliding paths. A rename on the branch counts both its old and new path (the diff runs with
    renames off). An unrelated uncommitted file anywhere else in the repo never blocks the merge.
-4. Host validation evidence. The gate reads only the host original: the
-   `validation-evidence.json` in the implement run dir named by the review's `reviewed_run`, never the
-   reviewer's copy. It refuses when the review has no `reviewed_run` or `reviewed_sha`, the evidence is
-   missing or unreadable, the evidence belongs to another run, the evidence `outcome` is `fail`, or the
-   `registry_fingerprint` differs from the current `validation.json` (revalidate by re-running
-   `derive-review`). An override can clear each of these. A delivery branch whose head is not the review's
-   `reviewed_sha` or the evidence `delivery_sha` always refuses, because the reviewed commit is not what
-   would merge; no override applies. The review's own stamp is the binding: re-running `derive-review`
-   for the same run overwrites that run's evidence, so evidence for a new head says nothing about which
-   head an older review saw.
-5. Merge succeeds (fast-forward or a real merge). The merge names the evidence sha, not the branch; it
+4. Commits after the review. The governing review's `reviewed_sha` must be the head or an ancestor of
+   it, and every commit after it must be a dispatch delivery (`dispatch: HO-XXXX`) of an implement
+   handoff in the chain. Any other commit — a hand edit, a merge, a commit outside the chain — refuses,
+   naming the commit sha and subject; derive a review for the new head. No override applies, because
+   that code was never reviewed. A review with no `reviewed_sha` skips this check and refuses at step 5.
+5. Host validation evidence is for the chain head, not the reviewed commit. The gate takes the head's
+   latest delivered run and asks for evidence for the head sha (`evidenceForDelivery`): a passing
+   record in that run dir for the same sha and registry is reused; otherwise the registered commands run
+   now and the record is rewritten. It refuses when the review has no `reviewed_run` or `reviewed_sha`,
+   the head has no delivered run, the evidence cannot be read or produced, the evidence belongs to
+   another run, or the evidence `outcome` is `fail`. An override can clear each of these. The reviewer's
+   copy of the evidence is never read.
+6. Merge succeeds (fast-forward or a real merge). The merge names the evidence sha, not the branch; it
    aborts and refuses on conflict
 
 **Override (DEC-0047 A2 R8).** `override_reason` and `override_actor` (MCP; `override: { reason, actor,
-surface }` in the API) let an operator merge past a step-4 refusal. Both must be non-empty. Before the
+surface }` in the API) let an operator merge past a step-5 refusal. Both must be non-empty. Before the
 merge, dispatch writes `wiki/handoffs/<handoff_id>.merge-override.json` and commits it with the
 isolated-index pattern. The record holds the reason, the actor (with `actor_authenticated: false`: it is
 self-reported, because no identity exists on the MCP path), the call surface, the merged sha, the run id,
 the refusal reasons, and the per-command results. If that commit fails, the file is removed and the merge
 refuses. An orchestrator passes the override only on an explicit operator instruction. The result reports
 `gate: "evidence"` or `gate: "override"`, plus `mergedSha` and, for an override, `overrideRecord`.
+
+The result also reports `reviewCount` (`code_review` handoffs on chain members that have a response doc),
+`implementDeliveries` (implement deliveries in the chain), `deletedBranches`, and `keptBranches` (each
+with the reason it stayed, for example a branch not fully merged). A branch that stays is not a merge
+failure.
 
 ### `cleanup`
 
@@ -639,21 +668,29 @@ a stale run can never resurface as "latest."
 
 ### Orchestration Recipe
 
-The full dispatch loop with lifecycle tools:
+The full dispatch loop with lifecycle tools. One slice of a work item is one handoff. Code runs the
+gates; the orchestrator decides what is next.
 
 ```
-orchestrator authors HO         → create-handoff
-orchestrator dispatches         → dispatch + watch
-pipeline executes + delivers    → automatic
-pipeline auto-commits artifacts → DEC-0038 (automatic)
-orchestrator reads result       → HO-XXXX.response.md
-pipeline validates the delivery → host runs validation.json, records evidence (automatic)
-orchestrator derives review     → derive-review (reuses current evidence)
-orchestrator dispatches review  → dispatch + watch (same cycle)
-pipeline auto-commits review    → DEC-0038 (automatic)
-orchestrator reads review       → review response.md
-orchestrator merges on pass     → merge-delivery
+orchestrator authors HO          → create-handoff (--wk --slice when the work item has a Slices table)
+orchestrator dispatches          → dispatch + watch
+pipeline executes + delivers     → automatic
+pipeline validates the delivery  → host runs the repo's test suite, writes the `Host validation:` line (automatic, every implement delivery)
+pipeline auto-commits artifacts  → automatic
+orchestrator reads result        → HO-XXXX.response.md (the orchestrator never runs tests)
+orchestrator derives review      → derive-review (reuses the delivery's evidence)
+orchestrator dispatches review   → dispatch + watch (same cycle)
+orchestrator judges each finding → fix | dismiss | defer (reason required for dismiss and defer)
+orchestrator sends one fix-up    → create-handoff (base_ref: dispatch/<reviewed HO>, fixup_context = the findings to fix) + dispatch
+orchestrator merges the chain    → merge-delivery on the last HO, with `judgments`
 ```
+
+The review audits the delivered code. Its findings advise the orchestrator; the review outcome does not
+block a merge by itself. The merge is refused while a finding has no judgment, while a `fix` judgment has
+no implement delivery after the review, or while the host validation of the last delivery is not green.
+A fix-up needs no new review; the orchestrator may derive one when it judges the change large enough.
+Red tests: send a fix-up, or report. An override of red or missing test evidence needs an explicit
+operator instruction. The orchestrator does not ask the operator to approve a fix-up.
 
 ## Refusal Codes
 

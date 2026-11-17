@@ -273,6 +273,9 @@ function getModeParts(handoff: Handoff, opts: AssembleOpts): ModeParts {
           'Flag iterative fix-up patterns (multiple small patches to the same region, ' +
           'trial-and-error artifacts, debug residue) as a quality finding — do not auto-reject; ' +
           'the orchestrator decides disposition.\n\n' +
+          'Your findings advise the orchestrator, which judges each one; they do not decide the merge. ' +
+          'Report every real defect with a concrete failing case, and do not inflate or soften severity ' +
+          'to steer the merge.\n\n' +
           // DEC-0047: advisory workers never execute the toolchain; the host ran the registered
           // validation commands and the evidence is attached (see "Host Validation Evidence").
           'Executing tests, builds, or any project toolchain is out of scope for this review: the host ' +
