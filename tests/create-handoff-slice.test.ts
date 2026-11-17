@@ -678,7 +678,9 @@ describe('createHandoff from a slice row — fix-up and drift', () => {
     expect(lead).toContain('First slice');
     expect(lead).toContain(WK_ID);
     expect(lead).toContain('`dispatch/HO-0001`');
-    expect(lead).toContain(FIXUP_FINDINGS_HEADING);
+    expect(lead).toContain(
+      `Your task is to fix what this handoff's \`fixup_context\` lists, shown to you under "${FIXUP_FINDINGS_HEADING}".`,
+    );
     expect(lead).toContain('fails before the fix and passes after it');
     expect(objective).not.toContain('Build this slice only');
     expect(rest.join('\n\n')).toBe(

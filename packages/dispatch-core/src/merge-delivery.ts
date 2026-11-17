@@ -435,7 +435,7 @@ interface ValidationGate {
 }
 
 /**
- * Host-validation gate (WK-0294). The evidence is the chain head's: taken from
+ * Host-validation gate. The evidence is the chain head's: taken from
  * the head's latest delivered run for the head sha, reused when it matches the
  * sha and registry, produced on the spot otherwise (`evidenceForDelivery`).
  * Whether the reviewed commits are what merges is `checkCommitsAfterReview`'s

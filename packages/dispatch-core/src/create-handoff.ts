@@ -293,7 +293,7 @@ async function resolveSliceOpts(input: CreateHandoffInput, targetDir: string): P
   const sliceHeading = `### Slice ${slice}`;
   const fixupLead =
     `This handoff is a fix-up of slice ${slice} (${row.title}) of ${wk}, on branch \`${input.base_ref}\`. ` +
-    `The slice is already built on that branch. Your task is to fix what is listed under "${FIXUP_FINDINGS_HEADING}" in this handoff. ` +
+    `The slice is already built on that branch. Your task is to fix what this handoff's \`fixup_context\` lists, shown to you under "${FIXUP_FINDINGS_HEADING}". ` +
     `Each fix adds a test that fails before the fix and passes after it. The branch must still satisfy the slice text below.`;
   const section = readSliceSection(wkText, slice);
   let sliceObjective: string;

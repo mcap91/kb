@@ -346,7 +346,7 @@ export async function latestDeliveredRun(targetDir: string, handoffId: string): 
   }
   let latestCompletedAt = '';
   for (const runId of runIds) {
-    if (!isRunId(runId)) continue; // not a dispatch-minted run dir; never stamped (HO-0220 F1)
+    if (!isRunId(runId)) continue; // not a dispatch-minted run dir; never stamped
     try {
       const stateRaw = await readFile(join(runsDir, runId, 'state.json'), 'utf-8');
       const state = JSON.parse(stateRaw) as Record<string, unknown>;

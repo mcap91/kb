@@ -71,7 +71,7 @@ generation trips the Base Drift Gate at `dispatch`; regenerate the HO.
 
 A fix-up is the same call plus `base_ref` and `fixup_context`; `fixup_context` without `base_ref` is refused,
 because a fix-up repairs an earlier delivery. It carries the slice row's write scope. Its objective says the
-slice is already built on `base_ref`, that the task is to fix what the prompt's "Findings to fix" section lists
+slice is already built on `base_ref`, that the task is to fix what the handoff's `fixup_context` lists (the worker's prompt shows it under a "Findings to fix" heading)
 (each fix with a test that fails before the fix and passes after it), and that the branch must still satisfy the
 slice text, which follows as the standing spec. One acceptance item is appended to the slice's own list: each
 finding is fixed with such a test. The findings section does not widen the write scope or grant any other authority.
