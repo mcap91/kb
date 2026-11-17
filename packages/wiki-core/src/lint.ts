@@ -57,6 +57,14 @@
  *                                     entry contains a glob character
  *   - SLICES_INVALID_STATUS         — (error, WK, WK-0211) a "## Slices" row's status is
  *                                     not in the WK status enum
+ *   - SLICES_REQUIRED               — (warning, WK, status-scoped, dispatch layer only) a
+ *                                     todo/in_progress/blocked/review WK has no "## Slices"
+ *                                     table row
+ *   - SLICES_SECTION_MISSING        — (error, WK, status-scoped, dispatch layer only) a
+ *                                     todo/in_progress/blocked/review row of a multi-row
+ *                                     "## Slices" table has no "### Slice <id>" section, or
+ *                                     the section has no task text, no "#### Acceptance"
+ *                                     heading, or no list item under it
  *   - HARDENING_TABLE_INVALID       — (error, WK, WK-0212) a WK's "## Hardening" section
  *                                     is present but its table is malformed (header
  *                                     mismatch or a row with the wrong cell count)
@@ -122,7 +130,8 @@ import {
 } from './schemas.js';
 import { debug, setVerbose } from './debug.js';
 import { buildDependencyProjection } from './deps.js';
-import { readSlices, readHardening, readResolutions } from './body-table.js';
+import { readSlices, readHardening, readResolutions, readSliceSection } from './body-table.js';
+import { dispatchInstalled } from './agent-instructions.js';
 
 // ---------------------------------------------------------------------------
 // Frontmatter parsing
@@ -552,6 +561,7 @@ export async function lint(opts: LintOpts): Promise<Result<LintResult>> {
 
   const targetDir = path.resolve(opts.dir);
   debug(`lint: target=${targetDir}`);
+  const dispatchLayer = dispatchInstalled(targetDir);
 
   // 1. Load manifest
   const manifestResult = loadManifest();
@@ -1063,6 +1073,40 @@ export async function lint(opts: LintOpts): Promise<Result<LintResult>> {
               message: `Slice row "${row.id}" status "${row.status}" is not a valid WK status`,
               severity: 'error',
             });
+          }
+        }
+      }
+
+      // Rules: SLICES_REQUIRED, SLICES_SECTION_MISSING — dispatch layer only: a handoff
+      // is generated from a slice, so a buildable WK needs a table, and a slice of a
+      // multi-slice WK needs its own section. Other layers keep the table optional.
+      const SLICE_OPEN_STATUSES = ['todo', 'in_progress', 'blocked', 'review'];
+      if (dispatchLayer && slicesResult.ok && SLICE_OPEN_STATUSES.includes(String(fm['status']))) {
+        const rows = slicesResult.data;
+        if (rows.length === 0) {
+          diagnostics.push({
+            file: rec.relPath,
+            code: 'SLICES_REQUIRED',
+            message: `This repo dispatches work, and a handoff is generated from a slice, so ${rec.relPath} needs a "## Slices" table; write one, one row is enough`,
+            severity: 'warning',
+          });
+        } else if (rows.length > 1) {
+          for (const row of rows) {
+            if (!SLICE_OPEN_STATUSES.includes(row.status)) continue;
+            const section = readSliceSection(rec.body, row.id);
+            let missing: string | null = null;
+            if (!section) missing = `has no "### Slice ${row.id}" section`;
+            else if (section.task === '') missing = 'has empty task text';
+            else if (section.acceptance === null) missing = 'has no "#### Acceptance" heading';
+            else if (!/^\s*(?:[-*+]|\d+[.)])\s+\S/m.test(section.acceptance)) missing = 'has an empty "#### Acceptance" list';
+            if (missing) {
+              diagnostics.push({
+                file: rec.relPath,
+                code: 'SLICES_SECTION_MISSING',
+                message: `Slice row "${row.id}" of a multi-slice work item ${missing}; each open slice needs a "### Slice ${row.id}" section with task text and an "#### Acceptance" list`,
+                severity: 'error',
+              });
+            }
           }
         }
       }

@@ -2544,6 +2544,136 @@ describe('lint "## Slices" rules (WK-0211)', () => {
       expect(diags.length).toBe(1);
     }
   });
+
+  describe('SLICES_REQUIRED and SLICES_SECTION_MISSING (dispatch layer only)', () => {
+    const TABLE_HEAD = [
+      '## Slices',
+      '',
+      '| id | title | write_scope | depends_on | validation | status |',
+      '|----|-------|-------------|------------|------------|--------|',
+    ];
+    const row = (id: string, status = 'todo') => `| ${id} | Slice ${id} | path/${id}.ts |  | npm test | ${status} |`;
+    const twoRows = [...TABLE_HEAD, row('s1'), row('s2')].join('\n');
+    const oneRow = [...TABLE_HEAD, row('s1')].join('\n');
+    const GOOD_SECTION = '\n\n### Slice s1\n\nBuild the first part.\n\n#### Acceptance\n\n- [ ] it works\n';
+
+    const created: TmpRepo[] = [];
+    afterEach(() => {
+      for (const repo of created.splice(0)) repo.cleanup();
+    });
+
+    async function repoWith(
+      body: string,
+      opts: { dispatch?: boolean; planning?: boolean; status?: string } = {},
+    ): Promise<TmpRepo> {
+      const repo = await createBootstrappedRepo();
+      created.push(repo);
+      writeRecord(repo.dir, 'wiki/initiatives/IN-0001.md', {
+        id: 'IN-0001',
+        title: 'Init',
+        status: 'todo',
+        priority: 'medium',
+        owner: 'test',
+        created: '2025-01-01',
+        updated: '2025-01-01',
+      });
+      writeRecord(
+        repo.dir,
+        'wiki/issues/WK-0001.md',
+        { ...BASE_FRONTMATTER, status: opts.status ?? 'todo' },
+        `# WK-0001\n\n## Acceptance criteria\n\n- [ ] real criterion\n\n${body}\n`,
+      );
+      if (opts.dispatch) fs.mkdirSync(path.join(repo.dir, 'wiki', '.dispatch'), { recursive: true });
+      if (opts.planning) {
+        const stampPath = path.join(repo.dir, 'wiki', '.wiki-contract.json');
+        const stamp = fs.existsSync(stampPath) ? JSON.parse(fs.readFileSync(stampPath, 'utf-8')) : {};
+        fs.writeFileSync(stampPath, JSON.stringify({ ...stamp, layers: ['planning'] }));
+      }
+      return repo;
+    }
+
+    async function codes(repo: TmpRepo, code: string) {
+      const result = await lint({ dir: repo.dir });
+      expect(result.ok).toBe(true);
+      return result.ok ? result.data.diagnostics.filter(d => d.code === code) : [];
+    }
+
+    it('SLICES_REQUIRED warns for a buildable WK with no Slices table when dispatch is installed', async () => {
+      for (const status of ['todo', 'in_progress', 'blocked', 'review']) {
+        tmp = await repoWith('no table here', { dispatch: true, status });
+        const diags = await codes(tmp, 'SLICES_REQUIRED');
+        expect(diags.length).toBe(1);
+        expect(diags[0].severity).toBe('warning');
+        expect(diags[0].file).toBe('wiki/issues/WK-0001.md');
+        expect(diags[0].message).toContain('## Slices');
+        expect(diags[0].message).toContain('wiki/issues/WK-0001.md');
+      }
+    });
+
+    it('SLICES_REQUIRED is silent without wiki/.dispatch, with or without the planning layer', async () => {
+      tmp = await repoWith('no table here');
+      expect(await codes(tmp, 'SLICES_REQUIRED')).toHaveLength(0);
+      tmp = await repoWith('no table here', { planning: true });
+      expect(await codes(tmp, 'SLICES_REQUIRED')).toHaveLength(0);
+    });
+
+    it('SLICES_REQUIRED is silent for inbox and done, and when a one-row table exists', async () => {
+      tmp = await repoWith('no table here', { dispatch: true, status: 'inbox' });
+      expect(await codes(tmp, 'SLICES_REQUIRED')).toHaveLength(0);
+      tmp = await repoWith('no table here', { dispatch: true, status: 'done' });
+      expect(await codes(tmp, 'SLICES_REQUIRED')).toHaveLength(0);
+      tmp = await repoWith(oneRow, { dispatch: true });
+      expect(await codes(tmp, 'SLICES_REQUIRED')).toHaveLength(0);
+    });
+
+    it('SLICES_SECTION_MISSING errors once per open row of a multi-slice WK, naming the missing part', async () => {
+      tmp = await repoWith(twoRows, { dispatch: true });
+      let diags = await codes(tmp, 'SLICES_SECTION_MISSING');
+      expect(diags.map(d => d.severity)).toEqual(['error', 'error']);
+      expect(diags[0].message).toContain('"s1"');
+      expect(diags[0].message).toContain('no "### Slice s1" section');
+      expect(diags[1].message).toContain('"s2"');
+
+      tmp = await repoWith(`${twoRows}\n\n### Slice s1\n\n#### Acceptance\n\n- [ ] ok\n`, { dispatch: true });
+      diags = await codes(tmp, 'SLICES_SECTION_MISSING');
+      expect(diags.filter(d => d.message.includes('"s1"')).map(d => d.message)).toEqual([
+        expect.stringContaining('empty task text'),
+      ]);
+
+      tmp = await repoWith(`${twoRows}\n\n### Slice s1\n\nBuild it.\n`, { dispatch: true });
+      diags = await codes(tmp, 'SLICES_SECTION_MISSING');
+      expect(diags.filter(d => d.message.includes('"s1"')).map(d => d.message)).toEqual([
+        expect.stringContaining('no "#### Acceptance" heading'),
+      ]);
+
+      tmp = await repoWith(`${twoRows}\n\n### Slice s1\n\nBuild it.\n\n#### Acceptance\n\nprose only\n`, { dispatch: true });
+      diags = await codes(tmp, 'SLICES_SECTION_MISSING');
+      expect(diags.filter(d => d.message.includes('"s1"')).map(d => d.message)).toEqual([
+        expect.stringContaining('empty "#### Acceptance" list'),
+      ]);
+    });
+
+    it('SLICES_SECTION_MISSING is silent for a complete section, a one-row table, and a done row', async () => {
+      tmp = await repoWith(`${twoRows}${GOOD_SECTION}\n### Slice s2\n\nBuild more.\n\n#### Acceptance\n\n- [ ] ok\n`, { dispatch: true });
+      expect(await codes(tmp, 'SLICES_SECTION_MISSING')).toHaveLength(0);
+      tmp = await repoWith(oneRow, { dispatch: true });
+      expect(await codes(tmp, 'SLICES_SECTION_MISSING')).toHaveLength(0);
+      tmp = await repoWith([...TABLE_HEAD, row('s1'), row('s2', 'done')].join('\n') + GOOD_SECTION, { dispatch: true });
+      expect(await codes(tmp, 'SLICES_SECTION_MISSING')).toHaveLength(0);
+    });
+
+    it('SLICES_SECTION_MISSING is silent without wiki/.dispatch, with or without the planning layer', async () => {
+      tmp = await repoWith(twoRows);
+      expect(await codes(tmp, 'SLICES_SECTION_MISSING')).toHaveLength(0);
+      tmp = await repoWith(twoRows, { planning: true });
+      expect(await codes(tmp, 'SLICES_SECTION_MISSING')).toHaveLength(0);
+    });
+
+    it('SLICES_SECTION_MISSING is silent for a WK whose own status is closed', async () => {
+      tmp = await repoWith(twoRows, { dispatch: true, status: 'done' });
+      expect(await codes(tmp, 'SLICES_SECTION_MISSING')).toHaveLength(0);
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------

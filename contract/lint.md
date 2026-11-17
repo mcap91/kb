@@ -150,6 +150,26 @@ all — it does not judge criterion quality or verifiability. Extended 2026-10-3
 (operator ruling, WK-0197) to an error for this presence check; a prior verifiability
 shape check (`AC_UNVERIFIABLE`, warning) was dropped entirely under the same ruling.
 
+## Slices Rules (dispatch layer only)
+
+These two rules run only in a repo with the dispatch layer set up (`wiki/.dispatch/` exists).
+A wiki-only repo and a wiki + planning repo never get them; there a `## Slices` table stays
+optional. Both apply to WK records whose `status` is `todo`, `in_progress`, `blocked`, or
+`review`. `inbox`, `parked`, and closed statuses are exempt.
+
+### SLICES_REQUIRED (warning)
+
+The WK has no `## Slices` table rows. A repo that dispatches work generates a handoff from a
+slice, so the WK needs a table; one row is enough.
+
+### SLICES_SECTION_MISSING (error)
+
+The `## Slices` table has two or more rows, and a row whose own `status` is `todo`,
+`in_progress`, `blocked`, or `review` has no complete `### Slice <id>` section. One finding
+per row, naming what is missing: the section, its task text, the `#### Acceptance` heading, or
+a list item under that heading. A one-row table needs no section. A row with any other status
+is exempt.
+
 ## Output Format
 
 Lint results are reported as a list of diagnostics:
