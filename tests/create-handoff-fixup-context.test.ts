@@ -10,7 +10,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
 import { bootstrap } from '@kb/wiki-core';
-import { createHandoff, renderHandoff } from '../packages/dispatch-core/src/create-handoff.js';
+import { FIXUP_AUTHORING_RULES, createHandoff, renderHandoff } from '../packages/dispatch-core/src/create-handoff.js';
 import { parseHandoff, parseHandoffContent } from '../packages/dispatch-core/src/ho.js';
 import type { CreateHandoffOpts } from '../packages/dispatch-core/src/types.js';
 import { tools } from '../packages/dispatch-mcp/src/tools.js';
@@ -94,6 +94,15 @@ describe('fixup_context parsing', () => {
       expect(parsed.message).toContain('JSON-style double-quoted string on one line');
     }
   });
+
+  // Why: a hand-written value with inner quotes and a backslash used to parse as plain text; it now fails loudly instead of being read wrongly.
+  it('refuses a hand-written double-quoted value with inner quotes and a backslash, naming the field', () => {
+    const parsed = parseHandoffContent(frontmatter('fixup_context: "see "x" in C:\\tmp"'), 'HO-0001.md');
+    expect(parsed.ok).toBe(false);
+    if (parsed.ok) return;
+    expect(parsed.message).toContain('fixup_context');
+    expect(parsed.message).toContain('JSON-style double-quoted string on one line');
+  });
 });
 
 describe('fixup_context through createHandoff, the CLI and the MCP tool', () => {
@@ -139,5 +148,16 @@ describe('fixup_context through createHandoff, the CLI and the MCP tool', () => 
     const text = await readFile(join(repo, 'wiki', 'handoffs', 'HO-0001.md'), 'utf8');
     const parsed = parseHandoffContent(text, 'HO-0001.md');
     expect(parsed.ok && parsed.data.fixup_context).toBe(HARD_TEXT);
+  });
+});
+
+describe('fixup authoring rules have one source', () => {
+  // Why: two typed copies drift; the MCP description and the CLI help must carry the one constant.
+  it('the MCP fixup_context description and the CLI help both carry FIXUP_AUTHORING_RULES', () => {
+    const tool = tools.find((t) => t.name === 'create-handoff')!;
+    const shape = (tool.inputSchema as unknown as { shape: Record<string, { description?: string }> }).shape;
+    expect(shape.fixup_context.description).toContain(FIXUP_AUTHORING_RULES);
+    const help = execFileSync(TSX, [CLI, '--help'], { cwd: ROOT, stdio: 'pipe' }).toString().replace(/\s+/g, ' ');
+    expect(help).toContain(FIXUP_AUTHORING_RULES);
   });
 });

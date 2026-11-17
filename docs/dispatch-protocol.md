@@ -36,11 +36,21 @@ and `acceptance` from its `## Acceptance criteria` items; `title` defaults to th
 `mode` to `implement`; `work_item` and `slice` are recorded. `--subject` and `--allowed-agents` are
 still required.
 
+An acceptance item is a top-level list entry (`-`, `*`, `1.` or `1)`, with an optional `[ ]`/`[x]`
+box). The lines indented under it (wrapped text, sub-bullets, a fenced block) belong to it and are
+joined with single spaces; a sub-bullet loses its marker. Lines inside a fenced block are never
+items. Any other non-blank text in the section is refused, naming the line.
+
 `create-handoff` refuses, writing nothing, when `wk` or `slice` is given without the other, the work
-item or the slice id does not exist, the work item has no `## Slices` table, or any derived field
-(`write_scope`, `read_first`, `objective`, `acceptance`, `validation`) is also passed. A work item
+item or the slice id does not exist, the work item has no `## Slices` table, the work item has no
+`## Objective` text or no parseable `## Acceptance criteria` items, the row has an empty validation
+cell, `work_item` is given and differs from `wk`, or any derived field (`write_scope`, `read_first`,
+`objective`, `acceptance`, `validation`) is also passed. A work item
 with no Slices table keeps the explicit-options path. Editing the work item or the row after
 generation trips the Base Drift Gate at `dispatch`; regenerate the HO.
+
+A fix-up generated with `wk` + `slice` carries the slice row's write scope. A fix-up that must touch
+a file outside the row uses explicit fields instead.
 
 ### Required fields
 
@@ -599,7 +609,9 @@ response doc carries one line under `## Outcome`: `Host validation: pass.`, `Hos
 (<failed command names>).`, or `Host validation: not run (<reason>).` `derive-review` reuses the evidence on
 disk when it is for the same delivery sha and the current registry fingerprint and it passed; it runs the
 suite again when either changed. A stored red result is always re-checked (a flaky failure must not stick
-to a delivery) and the evidence file is rewritten; a stored green is never re-run. Other modes never run
+to a delivery) and the evidence file is rewritten; a stored green is never re-run. A stored file that is
+unreadable or malformed counts as stale: the cause goes to stderr, the suite runs again, and the file is
+rewritten. Other modes never run
 host validation.
 
 **Baseline on red.** When a validation run of a delivery ends red, the host also runs the same registered
@@ -635,52 +647,68 @@ branch it fixes, so the head's history carries every earlier member (`HEAD..disp
 same chain `derive-review` walks). After the merge it deletes the head's branch and each other member's
 branch that git confirms is fully merged (`git branch -d`, never forced). Local only — no remote push.
 
+Trust boundary: a chain commit is recognised as a dispatch delivery by its commit subject and its
+handoff's mode, not by a recorded run sha, so write access to the repository is trusted.
+
 Preconditions (checked in order, fail-closed):
-1. Review evidence: the governing review is the newest `code_review` HO whose `base_ref` is
-   `dispatch/<id>` for any member of the chain, the head included. A fix-up delivery on top of a
-   reviewed delivery needs no new review. The governing review has a response doc. Evidence is read from that doc's frontmatter — `recovery_outcome`, `recovery_valid`,
-   `worker_report_chars` (see "Capture and Provenance") — never by re-parsing the rendered
-   `## Worker Report` markdown. Review is prose-first. `recovery_valid: true` merges with
-   `verdict: structured` whatever the outcome: a review advises and never vetoes, so
-   `changes_requested` alone does not refuse. `recovery_valid` false/absent with `worker_report_chars >
-   0` merges as `verdict: advisory` (the orchestrator/operator reads the prose). Only
-   `worker_report_chars === 0`, a missing review HO/doc, or a response doc predating these frontmatter
-   fields (all three absent — no legacy regex fallback) refuses outright.
-2. Delivery branch exists. This is checked before the review lookup, because the chain is read from
+1. Delivery branch exists. This is checked before the review lookup, because the chain is read from
    it.
-3. Working tree clean within the merge's change set — not repo-wide. Any staged path
+2. Review evidence: the governing review is the newest finished `code_review` HO whose `base_ref` is
+   `dispatch/<id>` for any member of the chain, the head included. A fix-up delivery on top of a
+   reviewed delivery needs no new review. A review is finished when its response doc exists with a
+   non-empty report. A review that was derived and never finished (no response doc, or an empty
+   report) is ignored for governing, so it never forces another review. When the chain has reviews and
+   none is finished, the merge refuses, naming each review with its state (`no response doc` or `empty
+   report`) and the next step: dispatch it, or run `derive-review`. A review handoff file that cannot
+   be read or parsed and names a chain branch as its `base_ref` refuses, naming the file and the
+   problem: a hidden review must not change which review governs. Evidence is read from the governing
+   doc's frontmatter — `recovery_outcome`, `recovery_valid`, `worker_report_chars` (see "Capture and
+   Provenance") — never by re-parsing the rendered `## Worker Report` markdown. Review is prose-first.
+   `recovery_valid: true` merges with `verdict: structured` whatever the outcome: a review advises and
+   never vetoes, so `changes_requested` alone does not refuse. `recovery_valid` false/absent with
+   `worker_report_chars > 0` merges as `verdict: advisory` (the orchestrator/operator reads the prose).
+   A response doc predating these frontmatter fields (all three absent — no legacy regex fallback)
+   refuses outright when it is the newest finished candidate.
+3. Commits after the review. The governing review's `reviewed_sha` must be the head or an ancestor of
+   it, and every commit after it must be a dispatch delivery (`dispatch: HO-XXXX`) of an implement
+   handoff in the chain. Any other commit — a hand edit, a merge, a commit outside the chain — refuses,
+   naming the commit sha and subject; derive a review for the new head. No override applies, because
+   that code was never reviewed. A review with no `reviewed_sha` skips this check and refuses at step 6.
+4. Chain walk: every commit in `HEAD..dispatch/<handoff_id>` is a delivery of an implement handoff.
+5. Judgments (see below). Checked after the chain is walked and before anything is committed.
+6. Working tree clean within the merge's change set — not repo-wide. Any staged path
    (the index differs from HEAD) refuses outright, listing the staged paths: git aborts any merge
    whose index differs from HEAD regardless of path (git-merge(1) PRE-MERGE CHECKS). Otherwise, only
    a dirty path (unstaged or untracked) that collides with the paths `git diff HEAD...<branch>`
    reports — exact match, or either path a directory prefix of the other — refuses, listing just the
    colliding paths. A rename on the branch counts both its old and new path (the diff runs with
    renames off). An unrelated uncommitted file anywhere else in the repo never blocks the merge.
-4. Commits after the review. The governing review's `reviewed_sha` must be the head or an ancestor of
-   it, and every commit after it must be a dispatch delivery (`dispatch: HO-XXXX`) of an implement
-   handoff in the chain. Any other commit — a hand edit, a merge, a commit outside the chain — refuses,
-   naming the commit sha and subject; derive a review for the new head. No override applies, because
-   that code was never reviewed. A review with no `reviewed_sha` skips this check and refuses at step 6.
-5. Judgments (see below). Checked after the chain is walked and before anything is committed.
-6. Host validation evidence is for the chain head, not the reviewed commit. The gate takes the head's
+7. Host validation evidence is for the chain head, not the reviewed commit. The gate takes the head's
    latest delivered run and asks for evidence for the head sha (`evidenceForDelivery`): a passing
    record in that run dir for the same sha and registry is reused; otherwise the registered commands run
-   now and the record is rewritten. It refuses when the review has no `reviewed_run` or `reviewed_sha`,
-   the head has no delivered run, the evidence cannot be read or produced, the evidence belongs to
-   another run, or the evidence `outcome` is `fail`. An override can clear each of these, and only these. The reviewer's
-   copy of the evidence is never read.
-7. Merge succeeds (fast-forward or a real merge). The merge names the evidence sha, not the branch; it
-   aborts and refuses on conflict
+   now and the record is rewritten. A stored file that is unreadable or malformed counts as stale: the
+   commands run again and the file is rewritten. It refuses when the review has no `reviewed_run` or
+   `reviewed_sha`, the head has no delivered run, the evidence cannot be produced, the evidence belongs
+   to another run, or the evidence `outcome` is `fail`. An override can clear each of these, and only
+   these. The reviewer's copy of the evidence is never read.
+8. Records: the override record and the judgments record are committed (see below).
+9. Merge succeeds (fast-forward or a real merge). The merge names the evidence sha, not the branch. When
+   `git merge` fails, the merge is aborted and the refusal carries git's output, says whether the abort
+   itself failed, and names the record files already committed before the merge (they stay in history).
 
-**Judgments.** The findings to judge are the findings of every `code_review` on the chain (its
-`base_ref` is a chain member's branch) whose response has a valid structured block. Capture stamps them
+**Judgments.** Judgments cover `code_review` findings only; `redteam` handoffs are not judged at merge.
+The findings to judge are the findings of every finished `code_review` on the chain (its `base_ref` is a
+chain member's branch) whose response has a valid structured block. Deriving another review hides
+nothing: the findings of every finished review still need judgments. Capture stamps them
 into the response frontmatter as `recovery_findings`, a one-line JSON array of `{id, title, severity,
-blocking}`; a malformed value refuses. A review with no response doc, an empty report, or no valid block
-adds no findings. The orchestrator passes `judgments`, a list of `{ review?, finding, judgment, reason? }`:
+blocking}`; a malformed value, including one that lists an id twice, refuses. A review with no response
+doc, an empty report, or no valid block adds no findings. The orchestrator passes `judgments`, a list of `{ review?, finding, judgment, reason? }`:
 - `judgment` is `fix`, `dismiss` or `defer`. `dismiss` and `defer` need a non-blank `reason`.
 - Every finding gets exactly one judgment. `review` (the review handoff id) may be left out only when
   exactly one review on the chain has findings.
-- A `fix` needs at least one implement delivery of the chain after that review's `reviewed_sha`. If none
-  exists, dispatch a fix-up with `base_ref: dispatch/<handoff_id>`, or judge the finding `dismiss` or
+- A `fix` needs that review's `reviewed_sha` to be part of the branch (an ancestor of the head) and at
+  least one implement delivery of the chain after it. If the sha is not on the branch (the branch was
+  reset or delivered again), judge the finding `dismiss` or `defer` with a reason. If no delivery follows, dispatch a fix-up with `base_ref: dispatch/<handoff_id>`, or judge the finding `dismiss` or
   `defer` with a reason. A review with no `reviewed_sha` cannot back a `fix`.
 - The merge refuses, with nothing committed, when a finding has no judgment (the message lists each as
   `<review id>/<finding id> [<severity>] <title>`), when a judgment names an unknown review or finding or
@@ -742,9 +770,12 @@ orchestrator merges the chain    → merge-delivery on the last HO, with a judgm
 
 The review audits the delivered code. Its findings advise the orchestrator; the review outcome does not
 block a merge by itself. The merge is refused while a finding has no judgment, while a `fix` judgment has
-no implement delivery after the review, or while the host validation of the last delivery is not green.
+no implement delivery after the review, while the chain has no finished review, or while the host
+validation of the last delivery is not green.
 Each fix adds a test that fails before the fix and passes after it. `derive-review` on the fix-up HO then
-reviews only the fix-up; it is cheap, so skip it only for a trivial fix-up.
+reviews only the fix-up; skip it only for a trivial fix-up. One budget covers every fix-up on a chain,
+review-driven or not: at most two; past that, the orchestrator stops and reports to the operator,
+because the slice or the spec is wrong.
 Red tests: send a fix-up, or report. An override of red or missing test evidence needs an explicit
 operator instruction. The orchestrator does not ask the operator to approve a fix-up.
 

@@ -178,4 +178,18 @@ describe('WK-0258 chained read_first — nested-private wiki', () => {
     expect(await readFirstEntryExists('wiki/handoffs/HO-9000.response.md', 'dispatch/HO-9000', repo)).toBe(true);
     expect(await readFirstEntryExists('wiki/handoffs/HO-9999.response.md', 'dispatch/HO-9000', repo)).toBe(false);
   });
+
+  // Why: when the wiki-shape probe fails, existence falls back to the working-tree rule; the broken wiki source is still refused, by the gate that reports it.
+  it('falls back to the working-tree rule when the wiki probe fails, and admission still refuses', async () => {
+    await rm(join(repo, 'wiki', '.git'), { recursive: true, force: true });
+    git(join(repo, 'wiki'), 'init');
+    const entry = 'wiki/handoffs/HO-9000.response.md';
+    // The wiki is its own repo with no commit: the probe's `git rev-parse HEAD` fails.
+    expect(await readFirstEntryExists(entry, 'dispatch/HO-9000', repo)).toBe(true);
+    const result = await checkAdmission(chainedHandoff({ read_first: [entry] }), repo);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toBe('ADMISSION_FAILED');
+    expect(result.message).toContain('wiki/ is not tracked');
+  });
 });

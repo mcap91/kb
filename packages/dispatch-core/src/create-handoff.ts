@@ -16,6 +16,12 @@ const THIS_DIR = dirname(fileURLToPath(import.meta.url));
 const KB_ROOT = resolve(THIS_DIR, '..', '..', '..');
 const execFile = promisify(execFileCb);
 
+/** How a fix-up's `fixup_context` is written; shown in the CLI help and the MCP tool description. */
+export const FIXUP_AUTHORING_RULES =
+  'State each fix as a property of the whole branch with the command that proves it. ' +
+  'Restate every standing property of the tests the fix-up touches. ' +
+  'Each fix adds a test that fails before the fix and passes after it.';
+
 function quote(value: string): string {
   return `"${value.replace(/"/g, '\\"')}"`;
 }
@@ -193,14 +199,42 @@ async function checkWriteScopeEntriesForAuthoring(targetDir: string, writeScope:
   return ok(null);
 }
 
-/** Checklist items (`- [ ] text`, `- [x] text`, `- text`) of a WK section, marker stripped. */
-function listItems(section: string): string[] {
-  const items: string[] = [];
+const LIST_MARKER = /^(\s*)(?:[-*]|\d+[.)])\s+(?:\[[ xX]\]\s+)?(\S.*?)\s*$/;
+const FENCE = /^\s*(```|~~~)/;
+
+/**
+ * List items of a WK section, each as one string. An item is a top-level list
+ * entry (`-`, `*`, `N.` or `N)`, optional `[ ]`/`[x]` box); every following
+ * line indented deeper than its marker (wrapped text, sub-bullets, a fenced
+ * block) belongs to it, marker stripped, joined with single spaces. Lines
+ * inside a fence are never items. Any other non-blank line is refused, naming
+ * it: the section is not parseable without guessing.
+ */
+function listItems(section: string, label: string): DispatchResult<string[]> {
+  const items: { indent: number; parts: string[] }[] = [];
+  let fence: string | null = null;
   for (const line of section.split('\n')) {
-    const match = /^\s*[-*]\s+(?:\[[ xX]\]\s+)?(.+?)\s*$/.exec(line);
-    if (match) items.push(match[1]);
+    const current = items[items.length - 1];
+    if (fence !== null) {
+      current.parts.push(line.trim());
+      if (line.trim().startsWith(fence)) fence = null;
+      continue;
+    }
+    if (line.trim() === '') continue;
+    const indent = line.length - line.trimStart().length;
+    if (current && indent > current.indent) {
+      const fenced = FENCE.exec(line);
+      if (fenced) fence = fenced[1];
+      current.parts.push(LIST_MARKER.exec(line)?.[2] ?? line.trim());
+      continue;
+    }
+    const marker = LIST_MARKER.exec(line);
+    if (!marker) {
+      return fail('MISSING_FIELD', `${label} has text that is neither a list item nor a continuation of one: "${line.trim()}".`);
+    }
+    items.push({ indent, parts: [marker[2]] });
   }
-  return items;
+  return ok(items.map((item) => item.parts.join(' ')));
 }
 
 const SLICE_DERIVED_FIELDS = ['write_scope', 'read_first', 'objective', 'acceptance', 'validation'] as const;
@@ -219,6 +253,9 @@ async function resolveSliceOpts(input: CreateHandoffInput, targetDir: string): P
   }
   if (!/^WK-\d{4}$/.test(wk)) {
     return fail('MISSING_FIELD', `wk must match /^WK-\\d{4}$/; got: ${wk}`);
+  }
+  if (input.work_item !== undefined && input.work_item !== wk) {
+    return fail('INVALID_HANDOFF', `work_item ${input.work_item} differs from wk ${wk}; wk is the work item of a slice handoff.`);
   }
   const conflicts = SLICE_DERIVED_FIELDS.filter((field) => {
     const value = input[field];
@@ -246,7 +283,13 @@ async function resolveSliceOpts(input: CreateHandoffInput, targetDir: string): P
     return fail('MISSING_FIELD', `${wk} has no slice "${slice}"; its slices are: ${slices.data.map((candidate) => candidate.id).join(', ')}.`);
   }
 
-  const acceptance = listItems(readSection(wkText, 'Acceptance criteria') ?? '');
+  const objective = readSection(wkText, 'Objective');
+  if (!objective) {
+    return fail('MISSING_FIELD', `${wkRelativePath} has no "## Objective" text to derive the objective from.`);
+  }
+  const listed = listItems(readSection(wkText, 'Acceptance criteria') ?? '', `${wkRelativePath} "## Acceptance criteria"`);
+  if (!listed.ok) return listed;
+  const acceptance = listed.data;
   if (acceptance.length === 0) {
     return fail('MISSING_FIELD', `${wkRelativePath} has no "## Acceptance criteria" items to derive acceptance from.`);
   }
@@ -267,7 +310,7 @@ async function resolveSliceOpts(input: CreateHandoffInput, targetDir: string): P
     slice,
     write_scope: row.write_scope,
     read_first: [...existing, wkRelativePath],
-    objective: readSection(wkText, 'Objective') ?? '',
+    objective,
     acceptance,
     validation: [row.validation],
   });

@@ -8,17 +8,33 @@ import { describe, expect, it, beforeEach, afterEach } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 
 import { bootstrap } from '@kb/wiki-core';
 import { checkAdmission } from '../packages/dispatch-core/src/admission.js';
 import { createHandoff } from '../packages/dispatch-core/src/create-handoff.js';
 import { parseHandoff } from '../packages/dispatch-core/src/ho.js';
 import type { CreateHandoffInput } from '../packages/dispatch-core/src/types.js';
+import { tools } from '../packages/dispatch-mcp/src/tools.js';
+
+const ROOT = resolve(process.cwd());
+const TSX = resolve(ROOT, 'node_modules/.bin/tsx');
+const CLI = resolve(ROOT, 'packages/dispatch-cli/src/index.ts');
 
 const WK_ID = 'WK-9213';
 
-function wkText(slicesSection: string): string {
+interface WkParts {
+  /** Objective section body lines; null omits the heading. */
+  objective?: string[] | null;
+  /** Acceptance section body lines; null omits the heading. */
+  acceptance?: string[] | null;
+}
+
+function wkText(slicesSection: string, parts: WkParts = {}): string {
+  const objective = parts.objective === undefined ? ['Make the fixture do the thing.'] : parts.objective;
+  const acceptance = parts.acceptance === undefined
+    ? ['- [ ] The thing is done', '- [x] The thing is tested']
+    : parts.acceptance;
   return [
     '---',
     `id: "${WK_ID}"`,
@@ -29,15 +45,8 @@ function wkText(slicesSection: string): string {
     '',
     `# ${WK_ID}: Fixture work item`,
     '',
-    '## Objective',
-    '',
-    'Make the fixture do the thing.',
-    '',
-    '## Acceptance criteria',
-    '',
-    '- [ ] The thing is done',
-    '- [x] The thing is tested',
-    '',
+    ...(objective === null ? [] : ['## Objective', '', ...objective, '']),
+    ...(acceptance === null ? [] : ['## Acceptance criteria', '', ...acceptance, '']),
     '## Notes',
     '',
     'Free text.',
@@ -202,6 +211,206 @@ describe('createHandoff from a slice row', () => {
     expect(created.ok).toBe(false);
     if (created.ok) return;
     expect(created.error).toBe('MISSING_FIELD');
+  });
+
+  async function acceptanceOf(lines: string[]) {
+    await setup(wkText(TWO_SLICES, { acceptance: lines }));
+    return createHandoff(input({ slice: 's2' }));
+  }
+
+  async function writtenAcceptance(lines: string[]): Promise<string[]> {
+    const created = await acceptanceOf(lines);
+    if (!created.ok) throw new Error(created.message);
+    const parsed = await parseHandoff(created.data.handoffPath);
+    if (!parsed.ok) throw new Error(parsed.message);
+    return parsed.data.acceptance;
+  }
+
+  // Why: real work items wrap long criteria; a truncated criterion is a weaker spec for the worker.
+  it('keeps the continuation lines of a wrapped acceptance item', async () => {
+    expect(await writtenAcceptance([
+      '- [ ] The stale test is corrected, and',
+      '  the new test pins it',
+      '- [ ] Second',
+    ])).toEqual(['The stale test is corrected, and the new test pins it', 'Second']);
+  });
+
+  // Why: a sub-bullet is detail of its criterion, not a separate criterion.
+  it('folds sub-bullets into their item, joined with a space', async () => {
+    expect(await writtenAcceptance([
+      '- [ ] Parent criterion',
+      '  - child one',
+      '  * child two',
+      '- Next',
+    ])).toEqual(['Parent criterion child one child two', 'Next']);
+  });
+
+  // Why: numbered lists are common in work items and used to yield no criteria at all.
+  it('reads a numbered list, with either `.` or `)` markers', async () => {
+    expect(await writtenAcceptance(['1. First', '2) Second', '10. [x] Third'])).toEqual(['First', 'Second', 'Third']);
+  });
+
+  // Why: bullet-looking lines inside a code block are example text, not criteria.
+  it('keeps a fenced block inside an item as that item\'s text and never reads its bullets as items', async () => {
+    expect(await writtenAcceptance([
+      '- [ ] Output looks like:',
+      '  ```',
+      '- not an item',
+      '  ```',
+      '- [ ] Second',
+    ])).toEqual(['Output looks like: ``` - not an item ```', 'Second']);
+  });
+
+  // Why: text that is neither an item nor a continuation cannot be parsed without guessing.
+  it('refuses acceptance text that is not a list item or a continuation, naming the line', async () => {
+    const created = await acceptanceOf(['- [ ] First', 'Stray paragraph.', '- [ ] Second']);
+    expect(created.ok).toBe(false);
+    if (created.ok) return;
+    expect(created.error).toBe('MISSING_FIELD');
+    expect(created.message).toContain('Stray paragraph.');
+    expect(created.message).toContain(`wiki/issues/${WK_ID}.md`);
+  });
+
+  // Why: an empty objective would hand the worker a handoff with no statement of the job.
+  it('refuses a work item with a missing or empty Objective, naming the file and heading', async () => {
+    for (const objective of [null, ['']]) {
+      await rm(repo, { recursive: true, force: true });
+      repo = await mkdtemp(join(tmpdir(), 'kb-slice-handoff-'));
+      await setup(wkText(TWO_SLICES, { objective }));
+      const created = await createHandoff(input());
+      expect(created.ok).toBe(false);
+      if (created.ok) continue;
+      expect(created.error).toBe('MISSING_FIELD');
+      expect(created.message).toContain(`wiki/issues/${WK_ID}.md`);
+      expect(created.message).toContain('## Objective');
+    }
+  });
+
+  // Why: wk decides the record written; a different work_item would be dropped without a word.
+  it('refuses work_item that differs from wk, and accepts an equal one', async () => {
+    await setup(wkText(TWO_SLICES));
+    const differs = await createHandoff(input({ work_item: 'WK-0001' }));
+    expect(differs.ok).toBe(false);
+    if (!differs.ok) {
+      expect(differs.error).toBe('INVALID_HANDOFF');
+      expect(differs.message).toContain('WK-0001');
+      expect(differs.message).toContain(WK_ID);
+    }
+    const same = await createHandoff(input({ work_item: WK_ID }));
+    expect(same.ok).toBe(true);
+  });
+
+  it('refuses a work item with no Acceptance criteria section', async () => {
+    await setup(wkText(TWO_SLICES, { acceptance: null }));
+    const created = await createHandoff(input());
+    expect(created.ok).toBe(false);
+    if (created.ok) return;
+    expect(created.error).toBe('MISSING_FIELD');
+    expect(created.message).toContain('## Acceptance criteria');
+  });
+
+  it('refuses a slice row with an empty validation cell', async () => {
+    await setup(wkText(TWO_SLICES.replace('| npm test |', '| |')));
+    const created = await createHandoff(input());
+    expect(created.ok).toBe(false);
+    if (created.ok) return;
+    expect(created.error).toBe('MISSING_FIELD');
+    expect(created.message).toContain('empty validation cell');
+  });
+
+  it('refuses a malformed Slices table as PARSE_ERROR naming the work item file', async () => {
+    await setup(wkText(TWO_SLICES.replace('| id | title |', '| id | name |')));
+    const created = await createHandoff(input());
+    expect(created.ok).toBe(false);
+    if (created.ok) return;
+    expect(created.error).toBe('PARSE_ERROR');
+    expect(created.message).toContain(`wiki/issues/${WK_ID}.md`);
+  });
+
+  it('refuses a wk that is not WK-NNNN', async () => {
+    await setup(wkText(TWO_SLICES));
+    for (const wk of ['WK-12', 'wk-0001', '../WK-9213']) {
+      const created = await createHandoff(input({ wk }));
+      expect(created.ok).toBe(false);
+      if (created.ok) continue;
+      expect(created.error).toBe('MISSING_FIELD');
+      expect(created.message).toContain(wk);
+    }
+  });
+
+  it('honours title and mode overrides over the row title and the implement default', async () => {
+    await setup(wkText(TWO_SLICES));
+    const created = await createHandoff(input({ title: 'Custom title', mode: 'code_review' }));
+    if (!created.ok) throw new Error(created.message);
+    const parsed = await parseHandoff(created.data.handoffPath);
+    if (!parsed.ok) throw new Error(parsed.message);
+    expect(parsed.data).toMatchObject({ title: 'Custom title', mode: 'code_review', write_scope: ['src/existing.ts', 'src/brand-new.ts'] });
+  });
+
+  it('carries a directory write_scope entry through and still refuses a root-aliasing row', async () => {
+    await setup(wkText(TWO_SLICES.replace('src/other.ts |', 'src/ |')));
+    const dirRow = await createHandoff(input({ slice: 's2' }));
+    if (!dirRow.ok) throw new Error(dirRow.message);
+    const parsed = await parseHandoff(dirRow.data.handoffPath);
+    if (!parsed.ok) throw new Error(parsed.message);
+    expect(parsed.data.write_scope).toEqual(['src/']);
+    expect(parsed.data.read_first).toEqual(['src/', `wiki/issues/${WK_ID}.md`]);
+
+    await rm(repo, { recursive: true, force: true });
+    repo = await mkdtemp(join(tmpdir(), 'kb-slice-handoff-'));
+    await setup(wkText(TWO_SLICES.replace('src/other.ts |', './ |')));
+    const rootRow = await createHandoff(input({ slice: 's2' }));
+    expect(rootRow.ok).toBe(false);
+    if (rootRow.ok) return;
+    expect(rootRow.error).toBe('STALE_WRITE_SCOPE');
+  });
+
+  it('the CLI --wk and --slice flags write the handoff generated from the row', async () => {
+    await setup(wkText(TWO_SLICES));
+    execFileSync(TSX, [CLI, 'create-handoff', '--dir', repo, '--subject', 'kb:dispatch', '--allowed-agents', 'claude', '--wk', WK_ID, '--slice', 's2'], { cwd: ROOT, stdio: 'pipe' });
+    const parsed = await parseHandoff(join(repo, 'wiki', 'handoffs', 'HO-0001.md'));
+    if (!parsed.ok) throw new Error(parsed.message);
+    expect(parsed.data).toMatchObject({
+      title: 'Second slice',
+      work_item: WK_ID,
+      slice: 's2',
+      write_scope: ['src/other.ts'],
+      validation: ['npm run typecheck'],
+      acceptance: ['The thing is done', 'The thing is tested'],
+    });
+  });
+
+  it('the MCP create-handoff tool takes wk and slice and writes the handoff generated from the row', async () => {
+    await setup(wkText(TWO_SLICES));
+    const tool = tools.find((t) => t.name === 'create-handoff')!;
+    const result = (await tool.handler({ dir: repo, subject: 'kb:dispatch', allowed_agents: ['claude'], wk: WK_ID, slice: 's2' })) as { ok: boolean };
+    expect(result.ok).toBe(true);
+    const parsed = await parseHandoff(join(repo, 'wiki', 'handoffs', 'HO-0001.md'));
+    if (!parsed.ok) throw new Error(parsed.message);
+    expect(parsed.data).toMatchObject({ work_item: WK_ID, slice: 's2', write_scope: ['src/other.ts'] });
+  });
+
+  // Why: a chained clone is cut from base_ref, so a row file only on main is invisible to the worker.
+  it('leaves a row file that exists only on main out of read_first of a chained slice handoff', async () => {
+    await setup(wkText(TWO_SLICES));
+    git(repo, 'branch', 'dispatch/HO-0001');
+    git(repo, 'checkout', '-q', 'dispatch/HO-0001');
+    await writeRepoFile('src/on-branch.ts', 'export {};\n');
+    git(repo, 'add', '-A');
+    git(repo, 'commit', '-m', 'branch file');
+    git(repo, 'checkout', '-q', '-');
+    git(repo, 'branch', '-f', 'dispatch/HO-0001', 'dispatch/HO-0001');
+    await writeRepoFile('src/main-only.ts', 'export {};\n');
+    git(repo, 'add', '-A');
+    git(repo, 'commit', '-m', 'main file');
+    await writeRepoFile(`wiki/issues/${WK_ID}.md`, wkText(TWO_SLICES.replace('src/other.ts |', 'src/other.ts, src/main-only.ts, src/on-branch.ts |')));
+    git(repo, 'add', '-A');
+    git(repo, 'commit', '-m', 'row');
+    const created = await createHandoff(input({ slice: 's2', base_ref: 'dispatch/HO-0001' }));
+    if (!created.ok) throw new Error(created.message);
+    const parsed = await parseHandoff(created.data.handoffPath);
+    if (!parsed.ok) throw new Error(parsed.message);
+    expect(parsed.data.read_first).toEqual(['src/other.ts', 'src/on-branch.ts', `wiki/issues/${WK_ID}.md`]);
   });
 });
 

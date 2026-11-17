@@ -86,7 +86,7 @@ export type { WorkerEventProjection } from './worker-events.js';
 export { parseWorkerEvents } from './worker-events.js';
 
 // Handoff creation
-export { createHandoff, renderHandoff } from './create-handoff.js';
+export { FIXUP_AUTHORING_RULES, createHandoff, renderHandoff } from './create-handoff.js';
 
 // Review derivation (WK-0132 Slice 2)
 export type { DeriveReviewOpts, DeriveReviewResult } from './derive-review.js';

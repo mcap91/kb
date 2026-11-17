@@ -292,13 +292,13 @@ async function entryExists(
 }
 
 /**
- * Shared read_first existence predicate (WK-0270 Specification 4): a chained
- * HO's entry resolves against `baseRef`'s tree (`git cat-file -e`, WK-0258) —
+ * Shared read_first existence predicate: a chained
+ * HO's entry resolves against `baseRef`'s tree (`git cat-file -e`) —
  * every non-wiki entry, and a wiki entry too in the tracked wiki shape; every
  * other entry resolves against the working tree. An unresolvable (or
  * non-dispatch-owned) `baseRef` is accepted here and left to `checkBaseRef`'s
  * precise refusal. `checkMissingReadFirst` and `deriveReview` both call this —
- * the one copy of the existence rule (rule 65).
+ * the one copy of the existence rule.
  */
 export async function readFirstEntryExists(
   entry: string,
@@ -310,7 +310,7 @@ export async function readFirstEntryExists(
 
 /**
  * §7.5 `missing_read_first` — every declared read_first path must exist where
- * the worker will read it (WK-0258, DEC-0047 A3.4), per `entryExists`.
+ * the worker will read it, per `entryExists`.
  */
 async function checkMissingReadFirst(handoff: Handoff, repoRootResolved: string): Promise<DispatchResult<null>> {
   const shape = await probeReadFirstShape(handoff.base_ref, handoff.read_first, repoRootResolved);
