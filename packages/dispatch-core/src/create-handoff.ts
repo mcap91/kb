@@ -124,6 +124,7 @@ export function renderHandoff(id: string, opts: CreateHandoffOpts, stamps: Hando
     ...listField('export_mounts', opts.export_mounts ?? []),
     ...listField('runtime_envs', opts.runtime_envs ?? []),
     ...listField('vars', opts.vars ?? []),
+    ...(opts.fixup_context?.trim() ? [`fixup_context: ${JSON.stringify(opts.fixup_context)}`] : []),
     ...(opts.reviewed_run ? [`reviewed_run: ${quote(opts.reviewed_run)}`] : []),
     ...(opts.reviewed_sha ? [`reviewed_sha: ${quote(opts.reviewed_sha)}`] : []),
     '---',

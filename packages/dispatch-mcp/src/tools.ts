@@ -60,6 +60,7 @@ export const tools: ToolDef[] = [
       export_mounts: z.array(z.string()).optional(),
       runtime_envs: z.array(z.string()).optional(),
       base_ref: z.string().optional(),
+      fixup_context: z.string().optional().describe('Review findings a fix-up handoff (base_ref dispatch/<id>) repairs, injected verbatim into the worker prompt. State each fix as a property of the whole branch with the command that proves it. Restate every standing property of the tests the fix-up touches.'),
       vars: z.array(z.string()).optional(),
     }),
     handler: async (input) => createHandoff(input as unknown as Parameters<typeof createHandoff>[0]),

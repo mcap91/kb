@@ -93,6 +93,9 @@ Command Options:
     --export-mounts <csv>    Optional export mount paths, comma-separated
     --runtime-envs <csv>     Optional runtime env root paths, comma-separated (implement-mode only)
     --base-ref <ref>         Optional base ref (branch/commit) for the worker
+    --fixup-context <text>   Optional review findings a fix-up handoff (with --base-ref dispatch/<id>) repairs, any length.
+                             State each fix as a property of the whole branch with the command that proves it.
+                             Restate every standing property of the tests the fix-up touches.
     --vars <csv>             Optional KEY=value vars, comma-separated
 
   cleanup
@@ -253,6 +256,7 @@ async function cmdCreateHandoff(args: string[]): Promise<number> {
     export_mounts: parseCsv(getFlagValue(args, '--export-mounts')),
     runtime_envs: parseCsv(getFlagValue(args, '--runtime-envs')),
     base_ref: getFlagValue(args, '--base-ref'),
+    fixup_context: getFlagValue(args, '--fixup-context'),
     vars: parseCsv(getFlagValue(args, '--vars')),
   });
 

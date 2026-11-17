@@ -104,6 +104,23 @@ function parseScalar(raw: string): unknown {
   return unquote(trimmed);
 }
 
+class FieldError extends Error {}
+
+/**
+ * `fixup_context` is the one multi-line field: `create-handoff` writes it as a
+ * JSON string on one line, so a double-quoted value is decoded with JSON.parse.
+ * Unquoted and single-quoted values keep the plain scalar reading.
+ */
+function parseFixupContext(raw: string): unknown {
+  const trimmed = raw.trim();
+  if (!trimmed.startsWith('"')) return parseScalar(raw);
+  try {
+    return JSON.parse(trimmed) as string;
+  } catch {
+    throw new FieldError('Handoff fixup_context must be a JSON-style double-quoted string on one line.');
+  }
+}
+
 /**
  * Minimal frontmatter YAML parser scoped to the §5 HO shape: top-level scalars
  * (string/number/boolean/null), inline `[...]` arrays, and multi-line `- ` block
@@ -139,7 +156,7 @@ function parseFrontmatterYaml(text: string): Record<string, unknown> {
     const rest = kvMatch[2] ?? '';
     currentKey = key;
     currentList = null;
-    result[key] = parseScalar(rest);
+    result[key] = key === 'fixup_context' ? parseFixupContext(rest) : parseScalar(rest);
   }
 
   return result;
@@ -171,6 +188,7 @@ export function parseHandoffContent(content: string, filename: string): Dispatch
   try {
     raw = parseFrontmatterYaml(split.frontmatterText);
   } catch (err) {
+    if (err instanceof FieldError) return fail(err.message);
     return fail('Failed to parse handoff frontmatter.', err);
   }
 

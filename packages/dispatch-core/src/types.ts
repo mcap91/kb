@@ -181,6 +181,7 @@ export interface CreateHandoffOpts {
   export_mounts?: string[];
   runtime_envs?: string[];
   base_ref?: string;
+  fixup_context?: string; // Review findings a fix-up handoff repairs; written as a one-line JSON string
   vars?: string[];
   reviewed_run?: string;  // Run id this review targets (WK-0153 discharge evidence)
   reviewed_sha?: string;  // Delivery-branch commit this review was derived for (WK-0294 F1)

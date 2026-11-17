@@ -204,3 +204,59 @@ describe('createHandoff from a slice row', () => {
     expect(created.error).toBe('MISSING_FIELD');
   });
 });
+
+describe('createHandoff from a slice row — fix-up and drift', () => {
+  let repo: string;
+
+  beforeEach(async () => {
+    repo = await mkdtemp(join(tmpdir(), 'kb-slice-fixup-'));
+    await mkdir(join(repo, 'wiki', '.dispatch'), { recursive: true });
+    const boot = await bootstrap({ dir: repo, repo: 'test/repo' });
+    if (!boot.ok) throw new Error(boot.message);
+    await mkdir(join(repo, 'wiki', 'issues'), { recursive: true });
+    await writeFile(join(repo, 'wiki', 'issues', `${WK_ID}.md`), wkText(TWO_SLICES));
+    await mkdir(join(repo, 'src'), { recursive: true });
+    await writeFile(join(repo, 'src', 'existing.ts'), 'export {};\n');
+    for (const args of [['init'], ['config', 'user.email', 't@example.com'], ['config', 'user.name', 'T'], ['add', '-A'], ['commit', '-m', 'init']]) {
+      git(repo, ...args);
+    }
+  });
+
+  afterEach(async () => {
+    await rm(repo, { recursive: true, force: true });
+  });
+
+  it('takes base_ref and fixup_context alongside wk and slice', async () => {
+    git(repo, 'branch', 'dispatch/HO-0001');
+    const created = await createHandoff({
+      dir: repo, subject: 'kb:dispatch', allowed_agents: ['claude'], wk: WK_ID, slice: 's1',
+      base_ref: 'dispatch/HO-0001', fixup_context: 'Finding 1:\n- "x" fails',
+    });
+    if (!created.ok) throw new Error(created.message);
+    const parsed = await parseHandoff(created.data.handoffPath);
+    if (!parsed.ok) throw new Error(parsed.message);
+    expect(parsed.data).toMatchObject({
+      base_ref: 'dispatch/HO-0001',
+      fixup_context: 'Finding 1:\n- "x" fails',
+      slice: 's1',
+      write_scope: ['src/existing.ts', 'src/brand-new.ts'],
+    });
+  });
+
+  it('admission refuses BASE_DRIFT when the slice row changes after the handoff was generated', async () => {
+    const created = await createHandoff({ dir: repo, subject: 'kb:dispatch', allowed_agents: ['claude'], wk: WK_ID, slice: 's1' });
+    if (!created.ok) throw new Error(created.message);
+    git(repo, 'add', '-A');
+    git(repo, 'commit', '-m', 'handoff');
+    const wkPath = join(repo, 'wiki', 'issues', `${WK_ID}.md`);
+    await writeFile(wkPath, (await readFile(wkPath, 'utf8')).replace('| npm test |', '| npm run typecheck |'));
+    git(repo, 'add', '-A');
+    git(repo, 'commit', '-m', 'edit slice row');
+    const parsed = await parseHandoff(created.data.handoffPath);
+    if (!parsed.ok) throw new Error(parsed.message);
+    const admitted = await checkAdmission(parsed.data, repo);
+    expect(admitted.ok).toBe(false);
+    if (admitted.ok) return;
+    expect(admitted.error).toBe('BASE_DRIFT');
+  });
+});
