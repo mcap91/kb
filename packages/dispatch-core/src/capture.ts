@@ -494,7 +494,10 @@ interface VerdictResult {
  *        tree, so no branch was ever created) -> `failed` (`no_deliverable`
  *        — DEC-0010's "silence plus no deliverable is failure, never
  *        success"). `recoveryEvidence` is never consulted in this branch.
- *      - code_review: checked FIRST, before the block-validity fallback
+ *      - code_review: a crashed/errored worker process (`piResult.outcome`
+ *        `failed`/`error`) fails with reason `process_error`, checked FIRST,
+ *        whatever transcript or block it left. Next, before the
+ *        block-validity fallback
  *        (WK-0187 backstop, below): an empty accumulated transcript ->
  *        `failed` (`empty_transcript`) — structural, mode-wide, since for an
  *        advisory mode the transcript IS the product (no diff ever lands).
@@ -557,6 +560,11 @@ function deriveVerdict(
     if (delivery.status === 'no_delta') return { outcome: 'failed', reason: 'no_deliverable' }; // F2: empty delta
   }
   if (handoffMode === 'code_review') {
+    // A crashed/errored worker process is not a finished review, whatever
+    // transcript or block it left — checked first, as for redteam.
+    if (piResult?.outcome === 'failed' || piResult?.outcome === 'error') {
+      return { outcome: 'failed', reason: 'process_error' };
+    }
     // WK-0187 backstop: structural, mode-wide — see the ladder doc comment.
     if (isEmptyTranscript(accumulatedText)) {
       return { outcome: 'failed', reason: 'empty_transcript' };

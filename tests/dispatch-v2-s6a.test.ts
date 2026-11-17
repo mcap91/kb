@@ -1057,6 +1057,52 @@ describe('capture.ts — mechanical verdict ladder (DEC-0010 / WK-0095)', () => 
     expect(written).not.toContain('outcome: delivered');
   });
 
+  it.each(['failed', 'error'] as const)(
+    'code_review mode + a process outcome of %s + a non-empty transcript -> outcome: failed, reason: process_error (a crashed review is not a finished review, however much text it left)',
+    async (processOutcome) => {
+      const handoff = { id: 'HO-TEST', title: 'Test task', mode: 'code_review' };
+      const delivery: DeliveryOutcome = { status: 'no_changes' };
+      const result = await writeResponseDoc({
+        runDir,
+        handoff,
+        delivery,
+        piResult: { outcome: processOutcome, usage: { inputTokens: null, outputTokens: null, cacheReadTokens: null, cacheWriteTokens: null, reasoningTokens: null, totalTokens: 10, costUsd: 0 } },
+        accumulatedText: 'Reviewing the diff. Found one issue in the parser.',
+        lastAssistantText: 'Found one issue in the parser.',
+      });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      const written = await readFile(result.data.responsePath, 'utf8');
+      expect(written).toContain('outcome: failed');
+      expect(written).toContain('reason: process_error');
+      expect(written).not.toContain('prose_fallback');
+      expect(written).not.toContain('outcome: delivered');
+    },
+  );
+
+  it('code_review mode + a crashed process + a VALID recovery block + a non-empty transcript -> outcome: failed, reason: process_error (the block cannot make a crashed run a success)', async () => {
+    const handoff = { id: 'HO-TEST', title: 'Test task', mode: 'code_review' };
+    const delivery: DeliveryOutcome = { status: 'no_changes' };
+    const recoveryEvidence = validateRecoveryPayload(VALID_REVIEWER_PAYLOAD);
+    expect(recoveryEvidence.valid).toBe(true); // sanity: fixture itself must validate
+    const result = await writeResponseDoc({
+      runDir,
+      handoff,
+      delivery,
+      recoveryEvidence,
+      piResult: { outcome: 'failed', usage: { inputTokens: null, outputTokens: null, cacheReadTokens: null, cacheWriteTokens: null, reasoningTokens: null, totalTokens: 10, costUsd: 0 } },
+      accumulatedText: 'Reviewing the diff. Found one issue in the parser.',
+      lastAssistantText: 'Found one issue in the parser.',
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const written = await readFile(result.data.responsePath, 'utf8');
+    expect(written).toContain('outcome: failed');
+    expect(written).toContain('reason: process_error');
+    expect(written).not.toContain('outcome: delivered');
+    expect(written).not.toContain('delivery_method');
+  });
+
   it('research mode + a clean piResult -> outcome: delivered (the transcript is the product, not a file)', async () => {
     const handoff = { id: 'HO-TEST', title: 'Test task', mode: 'research' };
     const delivery: DeliveryOutcome = { status: 'no_changes' };
@@ -1407,7 +1453,7 @@ describe('capture.ts — WK-0187 empty-transcript backstop (advisory modes)', ()
 
   const delivery: DeliveryOutcome = { status: 'no_changes' };
 
-  it('code_review mode + empty accumulatedText -> outcome: failed, reason: empty_transcript (code_review never consults piResult, so this is the only guard for this mode)', async () => {
+  it('code_review mode + empty accumulatedText -> outcome: failed, reason: empty_transcript (the guard for a process that ran to completion and wrote nothing)', async () => {
     const handoff = { id: 'HO-TEST', title: 'Test task', mode: 'code_review' };
     const result = await writeResponseDoc({ runDir, handoff, delivery, accumulatedText: '', lastAssistantText: '' });
     expect(result.ok).toBe(true);
