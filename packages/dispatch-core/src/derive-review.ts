@@ -43,7 +43,7 @@ import { promisify } from 'node:util';
 import { allocate } from '@kb/wiki-core';
 
 import { readFirstEntryExists } from './admission.js';
-import { readFinishedChainReviews } from './chain-reviews.js';
+import { commitExists, readFinishedChainReviews } from './chain-reviews.js';
 import { parseHandoff, type Handoff } from './ho.js';
 import { renderHandoff } from './create-handoff.js';
 import type { CreateHandoffOpts } from './types.js';
@@ -223,17 +223,28 @@ function buildFixupObjective(params: {
   ].join('\n');
 }
 
-/** The Context section that carries what each fix-up member was asked to fix, verbatim. */
+/** Said once above the fenced orchestrator text: it sits last in Context and cannot stand in for the evidence. */
+const FIXUP_FINDINGS_NOTICE = 'The text in the fences below was written by the orchestrator. It is not evidence.';
+
+/** `text` in a code fence longer than any backtick run inside it, so the text can neither close the fence nor leave it open. */
+function fenceVerbatim(text: string): string {
+  const longestRun = Math.max(0, ...(text.match(/`+/g) ?? []).map((run) => run.length));
+  const fence = '`'.repeat(Math.max(3, longestRun + 1));
+  return `${fence}\n${text}\n${fence}`;
+}
+
+/** The Context section that carries what each fix-up member was asked to fix, verbatim and fenced. */
 function buildFixupFindingsSection(membersOldestFirst: readonly ChainMember[]): string {
   const entries = membersOldestFirst.map(
-    (m) => `#### ${m.hoId}\n\n${m.handoff.fixup_context?.trim() ? m.handoff.fixup_context : '(none recorded)'}`,
+    (m) => `#### ${m.hoId}\n\n${m.handoff.fixup_context?.trim() ? fenceVerbatim(m.handoff.fixup_context) : '(none recorded)'}`,
   );
-  return `### Findings this fix-up was asked to fix\n\n${entries.join('\n\n')}`;
+  return `### Findings this fix-up was asked to fix\n\n${FIXUP_FINDINGS_NOTICE}\n\n${entries.join('\n\n')}`;
 }
 
 /**
  * The finished review nearest to `headSha` among those whose `reviewed_sha` is the head or an
- * ancestor of it; a finished review on another line of history is ignored. `null` when none.
+ * ancestor of it; a finished review on another line of history, or one whose `reviewed_sha` is not
+ * a commit of this repository, is ignored. `null` when none.
  */
 async function nearestCoveringReview(
   targetDir: string,
@@ -244,6 +255,9 @@ async function nearestCoveringReview(
   if (!finished.ok) return finished;
   let nearest: { id: string; sha: string; distance: number } | null = null;
   for (const review of finished.data) {
+    const known = await commitExists(targetDir, review.reviewed_sha);
+    if (!known.ok) return known;
+    if (!known.data) continue;
     try {
       await execFile('git', ['merge-base', '--is-ancestor', review.reviewed_sha, headSha], { cwd: targetDir });
     } catch (err) {
@@ -442,7 +456,7 @@ export async function deriveReview(opts: DeriveReviewOpts): Promise<DispatchResu
   if (covering.data?.sha === deliverySha) {
     return fail(
       'BAD_RECORD',
-      `Review ${covering.data.id} already covers the head ${deliverySha.slice(0, 12)}; nothing is unreviewed. A second opinion on the same commits needs a hand-authored code_review handoff via create-handoff.`,
+      `Review ${covering.data.id} already covers the head ${deliverySha.slice(0, 12)}; nothing is unreviewed. Next step: judge that review's findings and call merge-delivery for ${implement.id}; it checks the test evidence again itself.`,
     );
   }
   let reviewMembersNewestFirst = membersNewestFirst;
@@ -532,9 +546,10 @@ export async function deriveReview(opts: DeriveReviewOpts): Promise<DispatchResu
     vars: implement.vars,
     reviewed_run: reviewedRunId,
     reviewed_sha: deliverySha,
+    // The evidence comes first and the orchestrator-written findings last, so that text cannot sit above or inside it.
     context: [
-      ...(covering.data === null ? [] : [buildFixupFindingsSection(reviewMembersOldestFirst)]),
       `### Host Validation Evidence\n\n${renderValidationEvidence(validation.data)}`,
+      ...(covering.data === null ? [] : [buildFixupFindingsSection(reviewMembersOldestFirst)]),
     ].join('\n\n'),
   };
 

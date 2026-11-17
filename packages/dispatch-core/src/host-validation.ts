@@ -532,7 +532,7 @@ function renderStep(step: ValidationStepResult): string[] {
  * rather than duplicated.
  */
 export const JAIL_HERMETICITY_TEACHING_SENTENCE =
-  "failures may be jail-only: fix the test's host dependency or add a capability probe (jail hermeticity contract, docs/dispatch-protocol.md), then re-run derive-review";
+  "failures may be jail-only: fix the test's host dependency or add a capability probe (jail hermeticity contract, docs/dispatch-protocol.md), then call merge-delivery again; it runs the validation again when the stored result is red";
 
 /**
  * Render the evidence as markdown for the review HO (rule 45: rendered from

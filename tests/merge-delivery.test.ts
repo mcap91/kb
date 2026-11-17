@@ -2110,6 +2110,74 @@ describe('response docs that predate the findings stamp', () => {
   });
 });
 
+describe('mergeDelivery: which reviews are finished', () => {
+  const asRunOutcome = (doc: string, outcome: string): string => doc.replace('outcome: delivered', `outcome: ${outcome}`);
+
+  async function chainWith(files: Record<string, string>): Promise<void> {
+    await writeAndCommit(repoDir, { 'wiki/handoffs/HO-0030.md': makeImplementHO('HO-0030', 'Implement thing', 'WK-0001'), ...files }, 'add HOs');
+    await createDeliveryBranch(repoDir, 'HO-0030');
+  }
+
+  it('a newer review whose run did not complete does not govern, add findings to judge, or count as a review', async () => {
+    await chainWith({
+      'wiki/handoffs/HO-0031.md': makeReviewHO('HO-0031', 'Code review: finished', 'dispatch/HO-0030', 'WK-0001'),
+      'wiki/handoffs/HO-0031.response.md': makeReviewResponse('no_findings', 'HO-0030', false),
+      'wiki/handoffs/HO-0032.md': makeReviewHO('HO-0032', 'Code review: cut short', 'dispatch/HO-0030', 'WK-0001'),
+      'wiki/handoffs/HO-0032.response.md': asRunOutcome(makeReviewResponse('changes_requested', 'HO-0030', true), 'failed'),
+    });
+    const result = await mergeDelivery({ dir: repoDir, handoff_id: 'HO-0030' });
+    if (!result.ok) throw new Error(`${result.error}: ${result.message}`);
+    expect(result.data).toMatchObject({ reviewId: 'HO-0031', reviewCount: 1, judgments: { total: 0 } });
+  });
+
+  it.each(['failed', 'timed_out', 'cancelled', 'refused'])(
+    'refuses when the only review has a run outcome of %s, naming why it is not finished',
+    async (outcome) => {
+      await chainWith({
+        'wiki/handoffs/HO-0031.md': makeReviewHO('HO-0031', 'Code review', 'dispatch/HO-0030', 'WK-0001'),
+        'wiki/handoffs/HO-0031.response.md': asRunOutcome(makeProseOnlyReviewResponse('HO-0030'), outcome),
+      });
+      const message = await refusal(repoDir, 'HO-0030');
+      expect(message).toContain(`HO-0031 (run did not complete: ${outcome})`);
+    },
+  );
+
+  // Pins what the merge does with a review nobody derived: no stamps, so no evidence is bound to it.
+  it('a hand-authored review without stamps governs, but the host validation gate refuses it and only an override passes', async () => {
+    await chainWith({
+      'wiki/handoffs/HO-0031.md': makeReviewHO('HO-0031', 'Code review: by hand', 'dispatch/HO-0030', 'WK-0001', null, null),
+      'wiki/handoffs/HO-0031.response.md': makeReviewResponse('no_findings', 'HO-0030', false),
+    });
+    const message = await refusal(repoDir, 'HO-0030');
+    expect(message).toContain('review HO-0031 carries no reviewed_run stamp');
+    const merged = await mergeDelivery({ dir: repoDir, handoff_id: 'HO-0030', override: { reason: 'by hand', actor: 'op', surface: 'api' } });
+    if (!merged.ok) throw new Error(`${merged.error}: ${merged.message}`);
+    expect(merged.data).toMatchObject({ reviewId: 'HO-0031', gate: 'override' });
+  });
+
+  it('refuses a governing review whose reviewed_sha is not a commit in the repository, override or not', async () => {
+    await chainWith({
+      'wiki/handoffs/HO-0031.md': makeReviewHO('HO-0031', 'Code review', 'dispatch/HO-0030', 'WK-0001', REVIEWED_RUN, 'deadbeef'.repeat(5)),
+      'wiki/handoffs/HO-0031.response.md': makeReviewResponse('no_findings', 'HO-0030', false),
+    });
+    const message = await refusal(repoDir, 'HO-0030');
+    expect(message).toContain('deadbeefdeadbeefdeadbeefdeadbeefdeadbeef is not a commit in the repository');
+    const overridden = await mergeDelivery({ dir: repoDir, handoff_id: 'HO-0030', override: { reason: 'x', actor: 'op', surface: 'api' } });
+    expect(overridden.ok).toBe(false);
+  });
+
+  it('refuses a fix judged on a finding of a review whose reviewed_sha is not a commit, as "not part of the branch"', async () => {
+    await chainWith({
+      'wiki/handoffs/HO-0031.md': makeReviewHO('HO-0031', 'Code review: pruned sha', 'dispatch/HO-0030', 'WK-0001', REVIEWED_RUN, 'deadbeef'.repeat(5)),
+      'wiki/handoffs/HO-0031.response.md': makeReviewResponse('changes_requested', 'HO-0030', true),
+      'wiki/handoffs/HO-0032.md': makeReviewHO('HO-0032', 'Code review: head', 'dispatch/HO-0030', 'WK-0001'),
+      'wiki/handoffs/HO-0032.response.md': makeReviewResponse('no_findings', 'HO-0030', false),
+    });
+    const message = await refusal(repoDir, 'HO-0030', [{ review: 'HO-0031', finding: 'F1', judgment: 'fix' }]);
+    expect(message).toContain('HO-0031/F1 judged fix, but review HO-0031 reviewed deadbeefdeadbeefdeadbeefdeadbeefdeadbeef, which is not part of dispatch/HO-0030');
+  });
+});
+
 describe('merge-delivery MCP tool', () => {
   it('accepts judgments, rejects a judgment word outside fix, dismiss and defer, and returns the judgment counts', async () => {
     const { tools } = await import('../packages/dispatch-mcp/src/tools.js');

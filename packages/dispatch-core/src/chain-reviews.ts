@@ -1,17 +1,31 @@
 /**
  * The reviews of a delivery chain, read from `wiki/handoffs/`: one lookup shared by
- * `merge-delivery` (judges every review's findings) and `derive-review` (reviews only
+ * `merge-delivery` (judges every finished review's findings) and `derive-review` (reviews only
  * what no finished review has covered). Evidence is read from the response doc's
  * frontmatter, never re-parsed from its markdown.
+ *
+ * A review is FINISHED when its worker ran to completion and left a report: the response doc's
+ * `outcome` is `delivered` and it holds a valid block or a non-empty report (`reviewState`).
+ * That one definition decides which review governs a merge, whose findings need judgments, and
+ * which commits a later review skips.
  */
+import { execFile as execFileCb } from 'node:child_process';
 import { readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
+import { promisify } from 'node:util';
 
 import type { DispatchResult } from './errors.js';
 import { ok, fail } from './errors.js';
 import { parseHandoffContent, type Handoff } from './ho.js';
 
+const execFile = promisify(execFileCb);
+
+/** The response doc `outcome` of a review run that ran to completion (capture.ts's `deriveVerdict`: a `code_review` that wrote a transcript). */
+const COMPLETED_RUN_OUTCOME = 'delivered';
+
 export interface ResponseDocEvidence {
+  /** The run's mechanical outcome (`delivered`, `failed`, `refused`, ...), stamped by `writeResponseDoc` as `outcome`. */
+  runOutcome: string | undefined;
   recoveryOutcome: string | undefined;
   recoveryValid: boolean | undefined;
   workerReportChars: number | undefined;
@@ -20,12 +34,12 @@ export interface ResponseDocEvidence {
 }
 
 /**
- * Parse a response doc's YAML frontmatter for the three fields capture.ts's
- * `writeResponseDoc` stamps: `recovery_outcome`, `recovery_valid`,
+ * Parse a response doc's YAML frontmatter for the fields capture.ts's
+ * `writeResponseDoc` stamps: `outcome`, `recovery_outcome`, `recovery_valid`,
  * `worker_report_chars`. Mirrors the `---`-delimited split + line-oriented
  * `key: value` scan used elsewhere in this codebase (ho.ts's
  * `splitFrontmatter`/`parseFrontmatterYaml`, pipeline.ts's
- * `mergeProvenanceFrontmatter`), scoped to these three scalars plus the raw `recovery_findings` line. A field
+ * `mergeProvenanceFrontmatter`), scoped to these scalars plus the raw `recovery_findings` line. A field
  * is `undefined` only when its line is entirely absent — distinct from an
  * empty string value, which means present-but-blank.
  */
@@ -33,7 +47,7 @@ export function parseResponseDocFrontmatter(content: string): ResponseDocEvidenc
   const normalized = content.replace(/\r\n/g, '\n');
   const match = normalized.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
   if (!match) {
-    return { recoveryOutcome: undefined, recoveryValid: undefined, workerReportChars: undefined, recoveryFindings: undefined };
+    return { runOutcome: undefined, recoveryOutcome: undefined, recoveryValid: undefined, workerReportChars: undefined, recoveryFindings: undefined };
   }
 
   const fields: Record<string, string> = {};
@@ -44,6 +58,7 @@ export function parseResponseDocFrontmatter(content: string): ResponseDocEvidenc
   }
 
   return {
+    runOutcome: fields.outcome,
     recoveryOutcome: fields.recovery_outcome,
     recoveryValid: fields.recovery_valid === undefined ? undefined : fields.recovery_valid === 'true',
     workerReportChars: fields.worker_report_chars === undefined ? undefined : Number.parseInt(fields.worker_report_chars, 10),
@@ -63,7 +78,7 @@ function frontmatterBaseRef(content: string): string | undefined {
  * (it may be a review of the chain) is a failure, and so is any read error other than "not found" —
  * a review nobody can see must not change which review governs or which findings are judged.
  */
-export async function readCodeReviews(dir: string, chainBranches: ReadonlySet<string>): Promise<DispatchResult<Handoff[]>> {
+async function readCodeReviews(dir: string, chainBranches: ReadonlySet<string>): Promise<DispatchResult<Handoff[]>> {
   const handoffsDir = join(dir, 'wiki', 'handoffs');
 
   let files: string[];
@@ -100,7 +115,7 @@ export async function readCodeReviews(dir: string, chainBranches: ReadonlySet<st
 }
 
 /** A review's response doc, or `null` when it has none; a read error other than "not found" is a failure. */
-export async function readResponseDoc(dir: string, reviewId: string): Promise<DispatchResult<string | null>> {
+async function readResponseDoc(dir: string, reviewId: string): Promise<DispatchResult<string | null>> {
   try {
     return ok(await readFile(join(dir, 'wiki', 'handoffs', `${reviewId}.response.md`), 'utf8'));
   } catch (err) {
@@ -109,38 +124,68 @@ export async function readResponseDoc(dir: string, reviewId: string): Promise<Di
   }
 }
 
-/** Where a review stands: `finished` once its response doc holds a report (or a valid block). */
-export type ReviewState = 'finished' | 'no response doc' | 'empty report';
+/** Where a review stands: `finished`, or why it is not. */
+export type ReviewState = 'finished' | 'no response doc' | 'empty report' | `run did not complete: ${string}`;
 
 /**
- * A response doc with none of the evidence fields predates them and counts as finished: the
- * merge refuses it with its own message, never silently passes over it.
+ * A review is finished when its run completed (the response doc's `outcome` is `delivered`) and
+ * the doc holds a valid block or a non-empty report. A doc with none of the block and report
+ * fields predates them and counts as finished: the merge refuses it with its own message, never
+ * silently passes over it. A doc with no `outcome` line is judged on the block and report alone.
  */
-export function reviewState(responseDoc: string | null): ReviewState {
+function reviewState(responseDoc: string | null): ReviewState {
   if (responseDoc === null) return 'no response doc';
-  const { recoveryOutcome, recoveryValid, workerReportChars } = parseResponseDocFrontmatter(responseDoc);
+  const { runOutcome, recoveryOutcome, recoveryValid, workerReportChars } = parseResponseDocFrontmatter(responseDoc);
+  if (runOutcome !== undefined && runOutcome !== COMPLETED_RUN_OUTCOME) return `run did not complete: ${runOutcome}`;
   if (recoveryOutcome === undefined && recoveryValid === undefined && workerReportChars === undefined) return 'finished';
   return recoveryValid === true || (workerReportChars ?? 0) > 0 ? 'finished' : 'empty report';
 }
 
-/**
- * The chain's finished reviews: `code_review` HOs based on one of `chainBranches`, stamped
- * with a `reviewed_sha`, whose response doc carries a non-empty report.
- */
+export interface ChainReview {
+  handoff: Handoff;
+  /** The response doc text; `null` when the review has none. */
+  doc: string | null;
+  state: ReviewState;
+}
+
+/** Every `code_review` HO whose `base_ref` is a branch of `chainBranches`, with its response doc and state. */
+export async function readChainReviews(dir: string, chainBranches: ReadonlySet<string>): Promise<DispatchResult<ChainReview[]>> {
+  const reviews = await readCodeReviews(dir, chainBranches);
+  if (!reviews.ok) return reviews;
+  const chain: ChainReview[] = [];
+  for (const handoff of reviews.data) {
+    if (handoff.base_ref === null || !chainBranches.has(handoff.base_ref)) continue;
+    const doc = await readResponseDoc(dir, handoff.id);
+    if (!doc.ok) return doc;
+    chain.push({ handoff, doc: doc.data, state: reviewState(doc.data) });
+  }
+  return ok(chain);
+}
+
+/** The chain's finished reviews that carry a `reviewed_sha` stamp, which a later review can build on. */
 export async function readFinishedChainReviews(
   dir: string,
   chainBranches: ReadonlySet<string>,
 ): Promise<DispatchResult<(Handoff & { reviewed_sha: string })[]>> {
-  const reviews = await readCodeReviews(dir, chainBranches);
-  if (!reviews.ok) return reviews;
+  const chain = await readChainReviews(dir, chainBranches);
+  if (!chain.ok) return chain;
   const finished: (Handoff & { reviewed_sha: string })[] = [];
-  for (const review of reviews.data) {
-    if (review.base_ref === null || !chainBranches.has(review.base_ref) || review.reviewed_sha === undefined) continue;
-    const doc = await readResponseDoc(dir, review.id);
-    if (!doc.ok) return doc;
-    if (doc.data === null) continue;
-    const chars = parseResponseDocFrontmatter(doc.data).workerReportChars;
-    if (chars !== undefined && chars > 0) finished.push({ ...review, reviewed_sha: review.reviewed_sha });
+  for (const { handoff, state } of chain.data) {
+    if (state === 'finished' && handoff.reviewed_sha !== undefined) finished.push({ ...handoff, reviewed_sha: handoff.reviewed_sha });
   }
   return ok(finished);
+}
+
+/**
+ * Whether `sha` names a commit in the repository at `dir`. A stamp that was hand-edited, or whose
+ * commit was pruned, is `false`; any other git failure is a failure.
+ */
+export async function commitExists(dir: string, sha: string): Promise<DispatchResult<boolean>> {
+  try {
+    await execFile('git', ['rev-parse', '--verify', '--quiet', '--end-of-options', `${sha}^{commit}`], { cwd: dir });
+    return ok(true);
+  } catch (err) {
+    if ((err as { code?: unknown }).code === 1) return ok(false);
+    return fail('BAD_RECORD', `Failed to look up ${sha} in ${dir}.`, err);
+  }
 }

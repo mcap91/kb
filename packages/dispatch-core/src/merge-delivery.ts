@@ -17,11 +17,13 @@
  *   1. Branch `dispatch/<handoff_id>` exists as a local branch.
  *   2. Review evidence: the governing review is the newest FINISHED
  *      `code_review` HO in `wiki/handoffs/` whose `base_ref` is `dispatch/<id>`
- *      for any chain member (the head included). Finished means its response
- *      doc (`<review_id>.response.md`) exists with a non-empty report; a review
- *      that was derived and never finished is ignored for governing. When the
- *      chain has reviews and none is finished, the merge refuses, naming each
- *      one and its state. Evidence is read from the response doc's frontmatter
+ *      for any chain member (the head included). Finished (chain-reviews.ts)
+ *      means its response doc (`<review_id>.response.md`) exists, records a run
+ *      that completed (`outcome: delivered`), and holds a valid block or a
+ *      non-empty report; a review that was derived and never finished, or whose
+ *      run failed, timed out or was cancelled, is ignored for governing and
+ *      judging. When the chain has reviews and none is finished, the merge
+ *      refuses, naming each one and its state. Evidence is read from the response doc's frontmatter
  *      (`recovery_outcome`, `recovery_valid`, `worker_report_chars` — stamped by
  *      capture.ts's `writeResponseDoc`), never re-derived by parsing the
  *      rendered markdown body (the old `## Worker Report` regex stopped at the
@@ -91,7 +93,7 @@ import { porcelainPaths } from './admission.js';
 import { commitPaths } from './commit-artifacts.js';
 import { DISPATCH_COMMIT_SUBJECT, latestDeliveredRun, walkChain } from './derive-review.js';
 import { type Handoff } from './ho.js';
-import { parseResponseDocFrontmatter, readCodeReviews, readResponseDoc, reviewState, type ReviewState } from './chain-reviews.js';
+import { commitExists, parseResponseDocFrontmatter, readChainReviews } from './chain-reviews.js';
 import type { DispatchResult } from './errors.js';
 import { ok, fail } from './errors.js';
 import { evidenceForDelivery, JAIL_HERMETICITY_TEACHING_SENTENCE, type ValidationEvidence } from './host-validation.js';
@@ -153,7 +155,7 @@ export interface MergeDeliveryResult {
   judgments: { total: number; fix: number; dismiss: number; defer: number };
   /** Repo-relative path of the committed judgments record; set only when a review had findings. */
   judgmentsRecord?: string;
-  /** `code_review` handoffs on chain members that have a response doc. */
+  /** Finished `code_review` handoffs on chain members. */
   reviewCount: number;
   /** Implement delivery members of the chain (the head included). */
   implementDeliveries: number;
@@ -355,6 +357,10 @@ async function checkCommitsAfterReview(
     );
   if (review.sha === branchSha) return ok(null);
 
+  const known = await commitExists(dir, review.sha);
+  if (!known.ok) return fail('ADMISSION_FAILED', known.message, known);
+  if (!known.data) return moved(`${review.sha} is not a commit in the repository`);
+
   try {
     await execFile('git', ['merge-base', '--is-ancestor', review.sha, branchSha], { cwd: dir });
   } catch (err) {
@@ -464,7 +470,7 @@ async function checkValidationEvidence(
 
   const runId = await latestDeliveredRun(dir, handoffId);
   if (runId === undefined) {
-    return unbound(null, `${handoffId} has no delivered run to hold host validation evidence (dispatch it, or run derive-review)`);
+    return unbound(null, `${handoffId} has no delivered run to hold host validation evidence (dispatch it)`);
   }
   const registry = await loadValidationRegistry(dir);
   if (!registry.ok) return registry;
@@ -624,13 +630,22 @@ async function judgeFindings(
       problems.push(`${names} judged fix, but review ${review.id} carries no reviewed_sha stamp, so no delivery can be shown to follow it; judge dismiss or defer with a reason`);
       continue;
     }
+    const notOnBranch = (): void => {
+      problems.push(
+        `${names} judged fix, but review ${review.id} reviewed ${review.sha}, which is not part of ${branchName} (the branch was reset or delivered again), so no delivery can be shown to follow it; judge it dismiss or defer with a reason`,
+      );
+    };
+    const known = await commitExists(dir, review.sha);
+    if (!known.ok) return fail('ADMISSION_FAILED', known.message, known);
+    if (!known.data) {
+      notOnBranch();
+      continue;
+    }
     try {
       await execFile('git', ['merge-base', '--is-ancestor', review.sha, branchName], { cwd: dir });
     } catch (err) {
       if ((err as { code?: unknown }).code !== 1) return fail('ADMISSION_FAILED', `Failed to compare ${review.sha} with ${branchName} in ${dir}.`, err);
-      problems.push(
-        `${names} judged fix, but review ${review.id} reviewed ${review.sha}, which is not part of ${branchName} (the branch was reset or delivered again), so no delivery can be shown to follow it; judge it dismiss or defer with a reason`,
-      );
+      notOnBranch();
       continue;
     }
     const after = await listUnmergedCommits(dir, `${review.sha}..${branchName}`);
@@ -732,19 +747,14 @@ export async function mergeDelivery(opts: MergeDeliveryOpts): Promise<DispatchRe
     if (id !== undefined) chainIds.add(id);
   }
   const chainBranches = new Set([...chainIds].map((id) => `dispatch/${id}`));
-  const reviews = await readCodeReviews(dir, chainBranches);
-  if (!reviews.ok) return reviews;
-  const chainReviews: { handoff: Handoff; doc: string | null; state: ReviewState }[] = [];
-  for (const handoff of reviews.data) {
-    if (handoff.base_ref === null || !chainBranches.has(handoff.base_ref)) continue;
-    const doc = await readResponseDoc(dir, handoff.id);
-    if (!doc.ok) return doc;
-    chainReviews.push({ handoff, doc: doc.data, state: reviewState(doc.data) });
-  }
+  const read = await readChainReviews(dir, chainBranches);
+  if (!read.ok) return read;
+  const chainReviews = read.data;
   if (chainReviews.length === 0) {
     return fail('ADMISSION_FAILED', `No code_review HO found with base_ref: ${[...chainBranches].join(' or ')}`);
   }
-  const reviewHandoff = selectLatestReview(chainReviews.filter((r) => r.state === 'finished').map((r) => r.handoff));
+  const finishedReviews = chainReviews.filter((r) => r.state === 'finished');
+  const reviewHandoff = selectLatestReview(finishedReviews.map((r) => r.handoff));
   if (!reviewHandoff) {
     const unfinished = chainReviews.map((r) => `${r.handoff.id} (${r.state})`).join(', ');
     return fail(
@@ -757,7 +767,7 @@ export async function mergeDelivery(opts: MergeDeliveryOpts): Promise<DispatchRe
   const reviewedSha = reviewHandoff.reviewed_sha;
 
   // 3. The review's evidence; the head may sit past the reviewed sha only on dispatch deliveries.
-  const reviewCheck = checkReviewEvidence(reviewId, chainReviews.find((r) => r.handoff.id === reviewId)!.doc!);
+  const reviewCheck = checkReviewEvidence(reviewId, finishedReviews.find((r) => r.handoff.id === reviewId)!.doc!);
   if (!reviewCheck.ok) return reviewCheck;
   const { outcome, verdict } = reviewCheck.data;
   if (reviewedSha !== undefined) {
@@ -769,15 +779,15 @@ export async function mergeDelivery(opts: MergeDeliveryOpts): Promise<DispatchRe
   const chain = await walkChain(dir, branchName, handoff_id);
   if (!chain.ok) return chain;
   const members = chain.data.membersNewestFirst;
-  const reviewCount = chainReviews.filter((r) => r.doc !== null && members.some((m) => r.handoff.base_ref === `dispatch/${m.hoId}`)).length;
+  const reviewCount = finishedReviews.filter((r) => members.some((m) => r.handoff.base_ref === `dispatch/${m.hoId}`)).length;
 
   // 4b. One judgment per review finding on the chain — nothing is written yet. An unfinished review
-  // has no findings, and a finished one is never skipped, so deriving another review hides nothing.
+  // has no findings to judge, and a finished one is never skipped, so deriving another review hides nothing.
   const chainFindings: { id: string; sha: string | undefined; outcome: string; findings: ReviewFinding[] }[] = [];
-  for (const review of chainReviews) {
-    const read = readReviewFindings(review.handoff.id, review.doc);
-    if (!read.ok) return read;
-    chainFindings.push({ id: review.handoff.id, sha: review.handoff.reviewed_sha, outcome: read.data.outcome, findings: read.data.findings });
+  for (const review of finishedReviews) {
+    const found = readReviewFindings(review.handoff.id, review.doc);
+    if (!found.ok) return found;
+    chainFindings.push({ id: review.handoff.id, sha: review.handoff.reviewed_sha, outcome: found.data.outcome, findings: found.data.findings });
   }
   const judged = await judgeFindings(dir, branchName, new Set(unmerged.data.map((c) => c.sha)), chainFindings, opts.judgments ?? []);
   if (!judged.ok) return judged;
@@ -803,7 +813,7 @@ export async function mergeDelivery(opts: MergeDeliveryOpts): Promise<DispatchRe
         : '';
       return fail(
         'ADMISSION_FAILED',
-        `Host validation gate refused merge of ${branchName}: ${gate.problems.join('; ')}. Fix and re-derive, or merge with an override carrying a reason.${teaching}`,
+        `Host validation gate refused merge of ${branchName}: ${gate.problems.join('; ')}. Fix the cause and call merge-delivery again — it runs the validation again when the stored result is red, missing or stale — or merge with an override carrying a reason.${teaching}`,
         { problems: gate.problems },
       );
     }

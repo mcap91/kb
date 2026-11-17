@@ -506,23 +506,29 @@ This applies to every `code_review` HO, not only derived ones.
 
 **Coverage: a review after a finished review covers only what follows it.** A chain review is
 *finished* when it is a `code_review` HO whose `base_ref` is a chain member's branch, it has a
-`reviewed_sha`, and its response doc carries a non-empty report (`worker_report_chars > 0`; the same
-frontmatter `merge-delivery` reads). Among the finished reviews whose `reviewed_sha` is the head or an
-ancestor of it, the nearest to the head is the earlier review `R`; a finished review whose sha is not an
-ancestor of the head is ignored.
+`reviewed_sha`, and its response doc records a run that completed (`outcome: delivered`) and holds a
+valid block or a non-empty report (`recovery_valid`, `worker_report_chars > 0`; the same frontmatter
+`merge-delivery` reads, through the same definition). A review whose run failed, timed out or was
+cancelled is not finished, whatever text it left. Among the finished reviews whose `reviewed_sha` is the
+head or an ancestor of it, the nearest to the head is the earlier review `R`; a finished review whose
+sha is not an ancestor of the head, or is not a commit in the repository, is ignored.
 
 - No such review: the whole chain is reviewed, as described above.
 - `R` is the head: `BAD_RECORD` — `Review <id> already covers the head <short sha>; nothing is
-  unreviewed.` A second opinion on the same commits needs a hand-authored `code_review` handoff via
-  `create-handoff`.
+  unreviewed. Next step: judge that review's findings and call merge-delivery for <implement id>; it
+  checks the test evidence again itself.` A hand-authored `code_review` carries no `reviewed_run` or
+  `reviewed_sha` stamp, so it is not a coverage candidate and cannot pass the merge gate without an
+  override.
 - `R` is before the head: a fix-up review. The range under review is `R..<head>`; only the chain members
   whose delivery commit is in that range are listed, and `read_first` and `acceptance` come from them
   alone (`AGENTS.md` still added). The Objective keeps its fixed-text form and says that the review covers
   only the commits after review `<R id>`, that each finding under "Findings this fix-up was asked to fix"
   must be fixed with a test that fails before the fix and passes after it, that these commits must add
   no new defect, and that code outside the range is not re-reviewed except where these commits change
-  its behaviour. The Context gains a "Findings this fix-up was asked to fix" section holding each covered
-  member's `fixup_context` verbatim under its HO id (`(none recorded)` when it has none). Stamps
+  its behaviour. The Context gains, after the Host Validation Evidence, a "Findings this fix-up was asked
+  to fix" section holding each covered member's `fixup_context` verbatim under its HO id, in a code fence
+  longer than any backtick run inside the text (`(none recorded)` when it has none). One fixed sentence
+  above the fences says the text was written by the orchestrator and is not evidence. Stamps
   (`reviewed_run`, `reviewed_sha` = the head), the Host Validation Evidence, the copied fields and
   `base_ref: dispatch/<head>` are as for a whole-chain review.
 
@@ -606,8 +612,8 @@ delivery has evidence before anyone reviews it. A red suite does not change the 
 it is recorded in the evidence. If validation cannot run at all (unreadable registry, jail failure), the
 delivery stands, no evidence file is written, and the response doc says `not run` with the cause. The
 response doc carries one line under `## Outcome`: `Host validation: pass.`, `Host validation: fail
-(<failed command names>).`, or `Host validation: not run (<reason>).` `derive-review` reuses the evidence on
-disk when it is for the same delivery sha and the current registry fingerprint and it passed; it runs the
+(<failed command names>).`, or `Host validation: not run (<reason>).` `derive-review` and `merge-delivery` reuse the evidence on
+disk when it is for the same delivery sha and the current registry fingerprint and it passed; they run the
 suite again when either changed. A stored red result is always re-checked (a flaky failure must not stick
 to a delivery) and the evidence file is rewritten; a stored green is never re-run. A stored file that is
 unreadable or malformed counts as stale: the cause goes to stderr, the suite runs again, and the file is
@@ -625,7 +631,7 @@ step, its result on the delivery next to its result on the base commit, and the 
 `Also failing on the base commit: <names>.` (or says the baseline did not run, with the reason). These are
 facts only; the host draws no conclusion from them.
 
-**Evidence.** The pipeline (or, when it must be refreshed, `derive-review`) writes `validation-evidence.json` into the delivered implement run's dir
+**Evidence.** The pipeline writes `validation-evidence.json` into the delivered implement run's dir; `derive-review` and `merge-delivery` write it again when the stored result is red, missing or stale
 (`.agent-runs/runs/<implement_id>/<run_id>/`). It holds `handoff_id`, `run_id`, `delivery_branch`,
 `delivery_sha`, `registry_fingerprint` (sha256 of the effective registry), per-step `argv`, `exit_code`,
 `signal`, `timed_out`, `duration_ms`, `stdout_tail`, `stderr_tail`, `result`, and an overall `outcome`
@@ -655,11 +661,12 @@ Preconditions (checked in order, fail-closed):
    it.
 2. Review evidence: the governing review is the newest finished `code_review` HO whose `base_ref` is
    `dispatch/<id>` for any member of the chain, the head included. A fix-up delivery on top of a
-   reviewed delivery needs no new review. A review is finished when its response doc exists with a
-   non-empty report. A review that was derived and never finished (no response doc, or an empty
-   report) is ignored for governing, so it never forces another review. When the chain has reviews and
-   none is finished, the merge refuses, naming each review with its state (`no response doc` or `empty
-   report`) and the next step: dispatch it, or run `derive-review`. A review handoff file that cannot
+   reviewed delivery needs no new review. A review is finished when its response doc exists, records a run
+   that completed (`outcome: delivered`), and holds a valid block or a non-empty report. A review that
+   was derived and never finished (no response doc, a run that did not complete, or an empty report) is
+   ignored for governing and judging, so it never forces another review. When the chain has reviews and
+   none is finished, the merge refuses, naming each review with its state (`no response doc`, `run did
+   not complete: <outcome>` or `empty report`) and the next step: dispatch it, or run `derive-review`. A review handoff file that cannot
    be read or parsed and names a chain branch as its `base_ref` refuses, naming the file and the
    problem: a hidden review must not change which review governs. Evidence is read from the governing
    doc's frontmatter — `recovery_outcome`, `recovery_valid`, `worker_report_chars` (see "Capture and
@@ -670,7 +677,7 @@ Preconditions (checked in order, fail-closed):
    A response doc predating these frontmatter fields (all three absent — no legacy regex fallback)
    refuses outright when it is the newest finished candidate.
 3. Commits after the review. The governing review's `reviewed_sha` must be the head or an ancestor of
-   it, and every commit after it must be a dispatch delivery (`dispatch: HO-XXXX`) of an implement
+   it (a sha that is not a commit in the repository refuses too), and every commit after it must be a dispatch delivery (`dispatch: HO-XXXX`) of an implement
    handoff in the chain. Any other commit — a hand edit, a merge, a commit outside the chain — refuses,
    naming the commit sha and subject; derive a review for the new head. No override applies, because
    that code was never reviewed. A review with no `reviewed_sha` skips this check and refuses at step 6.
@@ -702,13 +709,13 @@ chain member's branch) whose response has a valid structured block. Deriving ano
 nothing: the findings of every finished review still need judgments. Capture stamps them
 into the response frontmatter as `recovery_findings`, a one-line JSON array of `{id, title, severity,
 blocking}`; a malformed value, including one that lists an id twice, refuses. A review with no response
-doc, an empty report, or no valid block adds no findings. The orchestrator passes `judgments`, a list of `{ review?, finding, judgment, reason? }`:
+doc, a run that did not complete, an empty report, or no valid block adds no findings. The orchestrator passes `judgments`, a list of `{ review?, finding, judgment, reason? }`:
 - `judgment` is `fix`, `dismiss` or `defer`. `dismiss` and `defer` need a non-blank `reason`.
 - Every finding gets exactly one judgment. `review` (the review handoff id) may be left out only when
   exactly one review on the chain has findings.
 - A `fix` needs that review's `reviewed_sha` to be part of the branch (an ancestor of the head) and at
-  least one implement delivery of the chain after it. If the sha is not on the branch (the branch was
-  reset or delivered again), judge the finding `dismiss` or `defer` with a reason. If no delivery follows, dispatch a fix-up with `base_ref: dispatch/<handoff_id>`, or judge the finding `dismiss` or
+  least one implement delivery of the chain after it. If the sha is not on the branch or not a commit in the repository (the branch was
+  reset or delivered again, or the stamp was edited), judge the finding `dismiss` or `defer` with a reason. If no delivery follows, dispatch a fix-up with `base_ref: dispatch/<handoff_id>`, or judge the finding `dismiss` or
   `defer` with a reason. A review with no `reviewed_sha` cannot back a `fix`.
 - The merge refuses, with nothing committed, when a finding has no judgment (the message lists each as
   `<review id>/<finding id> [<severity>] <title>`), when a judgment names an unknown review or finding or
