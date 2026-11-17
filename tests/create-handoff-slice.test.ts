@@ -560,6 +560,46 @@ describe('createHandoff from a slice row', () => {
     expect(parsed.data).toMatchObject({ work_item: WK_ID, slice: 's2', write_scope: ['src/other.ts'] });
   });
 
+  // Why: a hand-specified implement handoff is the shape the slice rule removes; the CLI must refuse it, not write it.
+  it('the CLI refuses an explicit implement handoff, naming the slice rule, and writes nothing', async () => {
+    await setup(wkText(TWO_SLICES));
+    const run = () => execFileSync(
+      TSX,
+      [CLI, 'create-handoff', '--dir', repo, '--subject', 'kb:dispatch', '--allowed-agents', 'claude', '--title', 'T', '--mode', 'implement', '--work-item', WK_ID, '--acceptance', 'a', '--validation', 'v'],
+      { cwd: ROOT, stdio: 'pipe' },
+    );
+    expect(run).toThrow(/generated from a slice/);
+    await expect(readFile(join(repo, 'wiki', 'handoffs', 'HO-0001.md'), 'utf8')).rejects.toThrow();
+  });
+
+  it('the CLI still writes an explicit redteam, research and explore_code handoff', async () => {
+    await setup(wkText(TWO_SLICES));
+    for (const [index, mode] of (['redteam', 'research', 'explore_code'] as const).entries()) {
+      execFileSync(
+        TSX,
+        [CLI, 'create-handoff', '--dir', repo, '--subject', 'kb:dispatch', '--allowed-agents', 'claude', '--title', 'T', '--mode', mode, '--acceptance', 'a', '--validation', 'v'],
+        { cwd: ROOT, stdio: 'pipe' },
+      );
+      const parsed = await parseHandoff(join(repo, 'wiki', 'handoffs', `HO-000${index + 1}.md`));
+      if (!parsed.ok) throw new Error(parsed.message);
+      expect(parsed.data.mode).toBe(mode);
+    }
+  });
+
+  it('the MCP create-handoff tool refuses an explicit implement handoff and still takes the advisory modes', async () => {
+    await setup(wkText(TWO_SLICES));
+    const tool = tools.find((t) => t.name === 'create-handoff')!;
+    const explicit = { dir: repo, subject: 'kb:dispatch', allowed_agents: ['claude'], title: 'T', acceptance: ['a'], validation: ['v'] };
+    const refused = (await tool.handler({ ...explicit, mode: 'implement', work_item: WK_ID })) as { ok: boolean; error?: string; message?: string };
+    expect(refused.ok).toBe(false);
+    expect(refused.error).toBe('MISSING_FIELD');
+    expect(refused.message).toContain('generated from a slice');
+    for (const mode of ['redteam', 'research', 'explore_code']) {
+      const written = (await tool.handler({ ...explicit, mode })) as { ok: boolean };
+      expect(written.ok, mode).toBe(true);
+    }
+  });
+
   // Why: a chained clone is cut from base_ref, so a row file only on main is invisible to the worker.
   it('leaves a row file that exists only on main out of read_first of a chained slice handoff', async () => {
     await setup(wkText(TWO_SLICES));

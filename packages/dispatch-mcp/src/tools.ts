@@ -36,13 +36,13 @@ export const tools: ToolDef[] = [
   },
   {
     name: 'create-handoff',
-    description: 'Create a repo-local HO handoff document. Pass wk + slice to generate it from a slice row of the work item (derives title, write_scope, read_first, validation, and an objective and acceptance copied from the work item\'s ### Slice <id> section, with the work item objective as context; mode defaults to implement); otherwise title, mode, acceptance and validation are required.',
+    description: 'Create a repo-local HO handoff document. An implement handoff is always generated from a slice: pass wk + slice (derives title, write_scope, read_first, validation, and an objective and acceptance copied from the work item\'s ### Slice <id> section, with the work item objective as context; mode defaults to implement). The work item needs a ## Slices table; one row is enough. A fix-up is the same call plus base_ref and fixup_context. redteam, research and explore_code take explicit title, mode, acceptance and validation instead.',
     inputSchema: dirSchema.extend({
       title: z.string().optional(),
       subject: z.string(),
       allowed_agents: z.array(z.string()),
       mode: z.enum(['implement', 'code_review', 'redteam', 'research', 'explore_code']).optional(),
-      wk: z.string().optional().describe('Work item id (WK-NNNN) whose ## Slices table holds the slice row; requires slice'),
+      wk: z.string().optional().describe('Work item id (WK-NNNN) whose ## Slices table holds the slice row; requires slice. Required for mode implement'),
       slice: z.string().optional().describe("Slice row id (e.g. s1); requires wk. Task text and acceptance come from the work item's '### Slice <id>' section ('#### Acceptance' list); required unless the table has one row"),
       status: z.enum(['draft', 'reviewed', 'launched', 'completed', 'failed']).optional(),
       depends_on: z.array(z.string()).optional(),

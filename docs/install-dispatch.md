@@ -82,15 +82,21 @@ not ship a weaker-permission fallback profile by default.
 
 ### 2. Write a Handoff
 
-Create a durable handoff in your repo:
+An implement handoff is generated from a slice of a work item. The work item declares a
+`## Slices` table in its body (one row is enough: `id`, `title`, `write_scope`, `depends_on`,
+`validation`, `status`) and an `## Objective` and `## Acceptance criteria` list; a work item with
+several rows also gives each slice a `### Slice <id>` section. Generate the handoff from the row:
 
 ```
-npm run dispatch -- create-handoff --dir "$MY_REPO" --title "Fix authentication bug" --subject "Authentication" --allowed-agents codex,claude --mode implement --work-item WK-0001 --write-scope src/auth.ts,tests/auth.test.ts --read-first AGENTS.md,wiki/issues/WK-0001.md
+npm run dispatch -- create-handoff --dir "$MY_REPO" --subject "Authentication" --allowed-agents codex,claude --wk WK-NNNN --slice s1
 ```
 
-This writes `wiki/handoffs/HO-XXXX.md`. You can also author handoffs manually if needed, but `dispatch create-handoff` is the default path.
+This writes `wiki/handoffs/HO-XXXX.md` with the title, `write_scope`, `validation`, objective and
+acceptance taken from the work item. `dispatch` refuses an `implement` handoff whose `work_item`
+or `slice` row does not exist. `code_review`, `redteam`, `research` and `explore_code` handoffs take
+explicit fields instead (`--title`, `--mode`, `--acceptance`, `--validation`).
 
-Fill in or refine:
+The handoff holds:
 
 - `allowed_agents`
 - `mode`: `implement`, `code_review`, `redteam`, `research`, or `explore_code`

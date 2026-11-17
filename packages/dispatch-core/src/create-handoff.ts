@@ -163,28 +163,6 @@ export function renderHandoff(id: string, opts: CreateHandoffOpts, stamps: Hando
 }
 
 /**
- * WK-0120: mirrors admission.ts's `checkWorkItemExists` gate at authoring
- * time. An implement-mode HO with no (or malformed) work_item would pass
- * authoring only to be refused later at dispatch with WORK_ITEM_NOT_FOUND
- * (WK-0116; narrowed by DEC-0036 WK-0121) — refuse here instead, before a
- * broken HO ever hits disk. Non-implement modes (code_review, redteam) stay
- * work_item-optional (DEC-0035).
- */
-function checkWorkItemForImplement(opts: CreateHandoffOpts): DispatchResult<null> {
-  if (opts.mode !== 'implement') return ok(null);
-
-  const workItem = opts.work_item;
-  if (workItem === undefined || workItem.trim() === '' || !/^WK-\d{4}$/.test(workItem)) {
-    return fail(
-      'MISSING_FIELD',
-      'mode=implement requires work_item matching /^WK-\\d{4}$/; without it, dispatch refuses with WORK_ITEM_NOT_FOUND.',
-    );
-  }
-
-  return ok(null);
-}
-
-/**
  * Refuses to author an HO whose write_scope entry fails the shared
  * entry-shape rule (`checkWriteScopeEntryShape`, admission.ts) — the same
  * `.git`-segment / root-aliasing refusal admission applies at dispatch time,
@@ -244,6 +222,9 @@ function checkTimeoutSecs(timeoutSecs: number | undefined): DispatchResult<null>
   return fail('INVALID_HANDOFF', `timeout_secs must be a positive integer; got: ${timeoutSecs}`);
 }
 
+const IMPLEMENT_FROM_SLICE =
+  'An implement handoff is generated from a slice: pass wk and slice; the work item needs a "## Slices" table, and one row is enough.';
+
 const SLICE_DERIVED_FIELDS = ['write_scope', 'read_first', 'objective', 'acceptance', 'validation'] as const;
 
 /**
@@ -259,7 +240,7 @@ const SLICE_DERIVED_FIELDS = ['write_scope', 'read_first', 'objective', 'accepta
 async function resolveSliceOpts(input: CreateHandoffInput, targetDir: string): Promise<DispatchResult<CreateHandoffOpts>> {
   const { wk, slice } = input;
   if (!wk || !slice) {
-    return fail('MISSING_FIELD', 'wk and slice must be given together; use work_item and explicit fields for a work item with no Slices table.');
+    return fail('MISSING_FIELD', `wk and slice must be given together. ${IMPLEMENT_FROM_SLICE}`);
   }
   if (!/^WK-\d{4}$/.test(wk)) {
     return fail('MISSING_FIELD', `wk must match /^WK-\\d{4}$/; got: ${wk}`);
@@ -286,7 +267,7 @@ async function resolveSliceOpts(input: CreateHandoffInput, targetDir: string): P
   const slices = readSlices(wkText);
   if (!slices.ok) return fail('PARSE_ERROR', `${wkRelativePath}: ${slices.message}`, slices);
   if (slices.data.length === 0) {
-    return fail('MISSING_FIELD', `${wk} has no "## Slices" table; use work_item and explicit fields instead of wk and slice.`);
+    return fail('MISSING_FIELD', `${wk} has no "## Slices" table. ${IMPLEMENT_FROM_SLICE}`);
   }
   const row = slices.data.find((candidate) => candidate.id === slice);
   if (!row) {
@@ -360,11 +341,14 @@ async function resolveSliceOpts(input: CreateHandoffInput, targetDir: string): P
   });
 }
 
-/** Explicit path: the fields the slice path derives must all be present. */
+/** Explicit path, for every mode but implement: the fields the slice path derives must all be present. */
 function requireExplicitFields(input: CreateHandoffInput): DispatchResult<CreateHandoffOpts> {
   const { title, mode, acceptance, validation } = input;
   if (title === undefined || mode === undefined || acceptance === undefined || validation === undefined) {
     return fail('MISSING_FIELD', 'title, mode, acceptance and validation are required unless wk and slice are given.');
+  }
+  if (mode === 'implement') {
+    return fail('MISSING_FIELD', IMPLEMENT_FROM_SLICE);
   }
   return ok({ ...input, title, mode, acceptance, validation });
 }
@@ -381,9 +365,6 @@ export async function createHandoff(
 
   const timeoutCheck = checkTimeoutSecs(opts.timeout_secs);
   if (!timeoutCheck.ok) return timeoutCheck;
-
-  const workItemCheck = checkWorkItemForImplement(opts);
-  if (!workItemCheck.ok) return workItemCheck;
 
   const writeScopeCheck = await checkWriteScopeEntriesForAuthoring(targetDir, opts.write_scope ?? []);
   if (!writeScopeCheck.ok) return writeScopeCheck;

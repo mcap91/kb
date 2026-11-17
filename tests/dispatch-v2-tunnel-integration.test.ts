@@ -124,6 +124,7 @@ import {
 } from '../packages/dispatch-core/src/tunnel.js';
 import { buildPiBaseUrl, runDispatch, summarizeProviderUsage, type ProviderUsageRecord } from '../packages/dispatch-core/src/pipeline.js';
 import * as spawnIsolatedModule from '../packages/dispatch-core/src/spawn-isolated.js';
+import { slicesSection } from './helpers/slice-fixture.js';
 
 function readFixtureFile(name: string): string {
   return readFileSync(join(__dirname, 'fixtures', name), 'utf8');
@@ -1003,6 +1004,7 @@ data_mounts: []
 read_first: []
 vars: []
 work_item: WK-9160
+slice: s1
 acceptance:
   - "AC-1: placeholder -- spawnIsolated is mocked, no worker actually runs"
 validation: ["true"]
@@ -1021,7 +1023,7 @@ mocked below, so this body is never read by a real worker.
     await mkdir(join(repoRoot, 'wiki', 'issues'), { recursive: true });
     await writeFile(
       join(repoRoot, 'wiki', 'issues', 'WK-9160.md'),
-      '---\nid: "WK-9160"\ntitle: "Fixture WK"\nstatus: todo\ninitiative: IN-9160\n---\n\n# WK-9160: Fixture\n',
+      `---\nid: "WK-9160"\ntitle: "Fixture WK"\nstatus: todo\ninitiative: IN-9160\n---\n\n# WK-9160: Fixture\n\n${slicesSection()}`,
       'utf8',
     );
     await mkdir(join(repoRoot, 'wiki', 'initiatives'), { recursive: true });

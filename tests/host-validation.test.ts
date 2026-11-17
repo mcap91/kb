@@ -20,6 +20,7 @@ import { join } from 'node:path';
 import { bootstrap } from '@kb/wiki-core';
 
 import { createHandoff } from '../packages/dispatch-core/src/create-handoff.js';
+import { SLICE_ID, writeSliceWorkItem } from './helpers/slice-fixture.js';
 import { deriveReview } from '../packages/dispatch-core/src/derive-review.js';
 import { mergeDelivery } from '../packages/dispatch-core/src/merge-delivery.js';
 import {
@@ -707,6 +708,7 @@ describe.skipIf(!BWRAP_FUNCTIONAL)('derive-review -> merge-delivery with a real 
     const boot = await bootstrap({ dir: repo, repo: 'test/repo' });
     if (!boot.ok) throw new Error(boot.message);
     await writeFile(join(repo, '.gitignore'), '.agent-runs/\n');
+    await writeSliceWorkItem(repo, 'WK-9294', { write_scope: ['src/'], validation: 'npm test' });
     await writeFile(
       join(repo, 'wiki', '.dispatch', 'validation.json'),
       JSON.stringify({
@@ -733,14 +735,10 @@ describe.skipIf(!BWRAP_FUNCTIONAL)('derive-review -> merge-delivery with a real 
   it('derives a review carrying the failing tail, then gates the merge on it', async () => {
     const implement = await createHandoff({
       dir: repo,
-      title: 'Chain fixture',
       subject: 'kb:dispatch',
       allowed_agents: ['claude'],
-      mode: 'implement',
-      work_item: 'WK-9294',
-      write_scope: ['src/'],
-      acceptance: ['AC-1: works'],
-      validation: ['npm test'],
+      wk: 'WK-9294',
+      slice: SLICE_ID,
     });
     if (!implement.ok) throw new Error(implement.message);
     const id = implement.data.handoffId;

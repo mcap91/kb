@@ -20,6 +20,7 @@ import * as spawnIsolatedModule from '../packages/dispatch-core/src/spawn-isolat
 import * as execDirectModule from '../packages/dispatch-core/src/exec-direct.js';
 import { ok as dispatchOk } from '../packages/dispatch-core/src/errors.js';
 import { runDispatch } from '../packages/dispatch-core/src/pipeline.js';
+import { SLICE_ID, slicesSection, writeSliceWorkItem } from './helpers/slice-fixture.js';
 
 const TESTS_DIR = resolve(process.cwd(), 'tests');
 
@@ -278,21 +279,23 @@ describe('dispatch', () => {
       await setupBootstrappedRepo(repoRoot);
       const { createHandoff } = await import('@kb/dispatch-core');
 
+      await writeSliceWorkItem(repoRoot, 'WK-0001', {
+        title: 'Implement reviewed bundle launch',
+        write_scope: ['packages/dispatch-core/src/launch.ts'],
+        objective: 'Launch agents from reviewed bundles instead of the live repo root.',
+        acceptance: ['Feature works as described'],
+        validation: 'npm run typecheck && npm test',
+      });
+
       const result = await createHandoff({
         dir: repoRoot,
-        title: 'Implement reviewed bundle launch',
         subject: 'kb:dispatch',
         allowed_agents: ['codex', 'claude'],
-        mode: 'implement',
-        work_item: 'WK-0001',
-        write_scope: ['packages/dispatch-core/src/launch.ts'],
-        read_first: ['AGENTS.md', 'docs/dispatch.md'],
-        objective: 'Launch agents from reviewed bundles instead of the live repo root.',
+        wk: 'WK-0001',
+        slice: SLICE_ID,
         constraints: ['Preserve signed review and launch tokens.'],
         expected_output: 'Updated dispatch core, CLI, MCP, and tests.',
         context: 'This handoff was authored by dispatch-core for operator review.',
-        acceptance: ['Feature works as described'],
-        validation: ['npm run typecheck && npm test'],
       });
 
       expect(result.ok).toBe(true);
@@ -308,8 +311,7 @@ describe('dispatch', () => {
       expect(content).toContain('work_item: "WK-0001"');
       expect(content).toContain('- codex');
       expect(content).toContain('- claude');
-      expect(content).toContain('- AGENTS.md');
-      expect(content).toContain('- docs/dispatch.md');
+      expect(content).toContain('- wiki/issues/WK-0001.md');
       expect(content).toContain('Launch agents from reviewed bundles instead of the live repo root.');
       expect(content).toContain('acceptance:');
       expect(content).toContain('- Feature works as described');
@@ -323,15 +325,15 @@ describe('dispatch', () => {
       await setupBootstrappedRepo(repoRoot);
       const { createHandoff } = await import('@kb/dispatch-core');
 
+      await writeSliceWorkItem(repoRoot, 'WK-0001', { title: 'First handoff' });
+      await writeSliceWorkItem(repoRoot, 'WK-0002', { title: 'Second handoff' });
+
       const r1 = await createHandoff({
         dir: repoRoot,
-        title: 'First handoff',
         subject: 'kb:dispatch',
         allowed_agents: ['codex'],
-        mode: 'implement',
-        work_item: 'WK-0001',
-        acceptance: ['Feature works as described'],
-        validation: ['npm run typecheck && npm test'],
+        wk: 'WK-0001',
+        slice: SLICE_ID,
       });
       expect(r1.ok).toBe(true);
       if (!r1.ok) return;
@@ -339,13 +341,10 @@ describe('dispatch', () => {
 
       const r2 = await createHandoff({
         dir: repoRoot,
-        title: 'Second handoff',
         subject: 'kb:dispatch',
         allowed_agents: ['codex'],
-        mode: 'implement',
-        work_item: 'WK-0002',
-        acceptance: ['Feature works as described'],
-        validation: ['npm run typecheck && npm test'],
+        wk: 'WK-0002',
+        slice: SLICE_ID,
       });
       expect(r2.ok).toBe(true);
       if (!r2.ok) return;
@@ -356,21 +355,23 @@ describe('dispatch', () => {
       await setupBootstrappedRepo(repoRoot);
       const { createHandoff, parseHandoff } = await import('@kb/dispatch-core');
 
+      await writeSliceWorkItem(repoRoot, 'WK-0003', {
+        title: 'Round-trip test handoff',
+        acceptance: ['Feature X works end-to-end', 'No regressions in existing tests'],
+        validation: 'npm run typecheck && npm test',
+        write_scope: ['packages/dispatch-core/src/'],
+      });
+
       const result = await createHandoff({
         dir: repoRoot,
-        title: 'Round-trip test handoff',
         subject: 'kb:dispatch',
         allowed_agents: ['claude'],
-        mode: 'implement',
-        work_item: 'WK-0003',
-        acceptance: ['Feature X works end-to-end', 'No regressions in existing tests'],
-        validation: ['npm run typecheck && npm test'],
-        write_scope: ['packages/dispatch-core/src/'],
+        wk: 'WK-0003',
+        slice: SLICE_ID,
         web: true,
         credentials: ['GITHUB_TOKEN'],
         data_mounts: ['/data/models'],
         base_ref: 'main',
-        read_first: ['AGENTS.md'],
         vars: ['DEBUG=1'],
       });
 
@@ -393,8 +394,10 @@ describe('dispatch', () => {
       expect(parsed.data.credentials).toEqual(['GITHUB_TOKEN']);
       expect(parsed.data.data_mounts).toEqual(['/data/models']);
       expect(parsed.data.base_ref).toBe('main');
-      expect(parsed.data.read_first).toEqual(['AGENTS.md']);
+      expect(parsed.data.read_first).toEqual(['packages/dispatch-core/src/', 'wiki/issues/WK-0003.md']);
       expect(parsed.data.vars).toEqual(['DEBUG=1']);
+      expect(parsed.data.work_item).toBe('WK-0003');
+      expect(parsed.data.slice).toBe(SLICE_ID);
     });
   });
 
@@ -419,6 +422,7 @@ describe('dispatch', () => {
         id: 'HO-0002',
         title: 'WK-0116 gate test handoff',
         mode: 'implement',
+        slice: SLICE_ID,
         write_scope: ['src/'],
         base_ref: null,
         web: false,
@@ -440,7 +444,7 @@ describe('dispatch', () => {
       const initiativeLine = opts.initiative !== undefined ? `initiative: ${opts.initiative}\n` : '';
       await writeFile(
         join(repo, 'wiki', 'issues', `${id}.md`),
-        `---\nid: "${id}"\ntitle: "Fixture ${id}"\nstatus: todo\n${initiativeLine}---\n\n# ${id}: Fixture\n`,
+        `---\nid: "${id}"\ntitle: "Fixture ${id}"\nstatus: todo\n${initiativeLine}---\n\n# ${id}: Fixture\n\n${slicesSection()}`,
         'utf-8',
       );
     }
@@ -810,7 +814,8 @@ web: false
 credentials: []
 data_mounts: []
 read_first: []
-work_item: WK-9244${timeoutLine}
+work_item: WK-9244
+slice: s1${timeoutLine}
 acceptance:
   - "AC-1: placeholder — spawnIsolated is mocked, so this HO is never actually dispatched to a worker"
 validation: ["node --test test/"]
@@ -828,7 +833,7 @@ Placeholder fixture for the WK-0244 watchdog test; spawnIsolated is mocked so th
   await mkdir(join(repoRoot, 'wiki', 'issues'), { recursive: true });
   await writeFile(
     join(repoRoot, 'wiki', 'issues', 'WK-9244.md'),
-    '---\nid: "WK-9244"\ntitle: "Fixture WK"\nstatus: todo\ninitiative: IN-9244\n---\n\n# WK-9244: Fixture\n',
+    `---\nid: "WK-9244"\ntitle: "Fixture WK"\nstatus: todo\ninitiative: IN-9244\n---\n\n# WK-9244: Fixture\n\n${slicesSection()}`,
     'utf8',
   );
   await mkdir(join(repoRoot, 'wiki', 'initiatives'), { recursive: true });

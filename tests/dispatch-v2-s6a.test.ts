@@ -29,6 +29,7 @@ import { readFileSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { SLICE_ID, slicesSection } from './helpers/slice-fixture.js';
 
 import {
   extractRecoveryBlock,
@@ -648,6 +649,7 @@ function makeHandoff(overrides: Partial<Handoff> = {}): Handoff {
     status: 'draft',
     // WK-0116: resolves via the wiki/issues + wiki/initiatives fixtures written in beforeEach.
     work_item: 'WK-9002',
+    slice: SLICE_ID,
     ...overrides,
   };
 }
@@ -666,7 +668,7 @@ describe('admission.ts — base_ref-aware baseSha resolution (S6a)', () => {
     await mkdir(join(repoRoot, 'wiki', 'issues'), { recursive: true });
     await writeFile(
       join(repoRoot, 'wiki', 'issues', 'WK-9002.md'),
-      '---\nid: "WK-9002"\ntitle: "Fixture WK"\nstatus: todo\ninitiative: IN-9002\n---\n\n# WK-9002: Fixture\n',
+      `---\nid: "WK-9002"\ntitle: "Fixture WK"\nstatus: todo\ninitiative: IN-9002\n---\n\n# WK-9002: Fixture\n\n${slicesSection()}`,
       'utf8',
     );
     await mkdir(join(repoRoot, 'wiki', 'initiatives'), { recursive: true });

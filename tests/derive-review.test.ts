@@ -33,6 +33,7 @@ import type { CreateHandoffOpts } from '../packages/dispatch-core/src/types.js';
 import { deriveReview } from '../packages/dispatch-core/src/derive-review.js';
 import { mergeDelivery } from '../packages/dispatch-core/src/merge-delivery.js';
 import { parseHandoff } from '../packages/dispatch-core/src/ho.js';
+import { SLICE_ID, sliceWorkItemText } from './helpers/slice-fixture.js';
 
 async function setupBootstrappedRepo(repoRoot: string): Promise<void> {
   // WK-0261: wiki/handoffs/ (and the handoff.md template) now ship only once
@@ -77,8 +78,45 @@ function baseImplementOpts(overrides: Partial<CreateHandoffOpts> = {}): CreateHa
   };
 }
 
+/**
+ * An implement HO is generated from a slice, so the fixture's implement fields become a work
+ * item with a one-row Slices table: the row carries the write_scope (plus the read_first files,
+ * which the slice path reads from the row) and the validation, the work item the acceptance. The
+ * work item is committed, so it exists in the tree of every delivery branch cut after it.
+ */
+async function authorWorkItem(opts: CreateHandoffOpts): Promise<void> {
+  const id = opts.work_item;
+  if (id === undefined) throw new Error('an implement fixture needs a work_item');
+  const relativePath = `wiki/issues/${id}.md`;
+  await mkdir(join(opts.dir, 'wiki', 'issues'), { recursive: true });
+  await writeFile(
+    join(opts.dir, relativePath),
+    sliceWorkItemText(id, {
+      title: opts.title,
+      write_scope: [...new Set([...(opts.read_first ?? []), ...(opts.write_scope ?? [])])],
+      validation: opts.validation[0],
+      acceptance: opts.acceptance,
+    }),
+    'utf-8',
+  );
+  if (execFileSync('git', ['status', '--porcelain', '--', relativePath], { cwd: opts.dir }).toString() === '') return;
+  execFileSync('git', ['add', relativePath], { cwd: opts.dir });
+  execFileSync('git', ['commit', '-q', '-m', `work item ${id}`, '--', relativePath], { cwd: opts.dir });
+}
+
+/** The fields the slice path derives from the work item and its row; it refuses them alongside a slice. */
+const DERIVED_FIELDS = new Set(['title', 'mode', 'work_item', 'write_scope', 'read_first', 'acceptance', 'validation']);
+
+/** `createHandoff` for the fixtures: an implement HO from the slice of its authored work item; any other mode as given. */
+async function createFixtureHandoff(opts: CreateHandoffOpts) {
+  if (opts.mode !== 'implement') return createHandoff(opts);
+  await authorWorkItem(opts);
+  const rest = Object.fromEntries(Object.entries(opts).filter(([field]) => !DERIVED_FIELDS.has(field)));
+  return createHandoff({ ...rest, dir: opts.dir, subject: opts.subject, allowed_agents: opts.allowed_agents, wk: opts.work_item, slice: SLICE_ID });
+}
+
 async function deliverImplementHo(tempDir: string) {
-  const created = await createHandoff(baseImplementOpts({ dir: tempDir }));
+  const created = await createFixtureHandoff(baseImplementOpts({ dir: tempDir }));
   if (!created.ok) throw new Error(created.message);
   return created.data;
 }
@@ -203,7 +241,7 @@ describe('deriveReview — WK-0132 Slice 2', () => {
       // WK-0270 Specification 4: read_first is the implement's list plus AGENTS.md, filtered
       // through admission's shared existence predicate (was the implement's list copied as-is);
       // bootstrap() writes AGENTS.md into the fixture repo root, so it survives the filter here.
-      expect(review.read_first).toEqual(['README.md', 'AGENTS.md']);
+      expect(review.read_first).toEqual(['README.md', 'wiki/issues/WK-0132.md', 'AGENTS.md']);
       expect(review.title).toBe('Code review: Add a slugify utility');
 
       // WK-0270 Specification 2 (new): Objective and Expected Output are fixed sentences from
@@ -215,7 +253,7 @@ describe('deriveReview — WK-0132 Slice 2', () => {
     });
 
     it('copies initiative, area and work_item from the implement HO', async () => {
-      const created = await createHandoff(baseImplementOpts({ dir: tempDir, area: 'dispatch', initiative: 'IN-0007' }));
+      const created = await createFixtureHandoff(baseImplementOpts({ dir: tempDir, area: 'dispatch', initiative: 'IN-0007' }));
       if (!created.ok) throw new Error(created.message);
       await writeResponseDoc(tempDir, created.data.handoffId);
       await markDelivered(tempDir, created.data.handoffId);
@@ -242,7 +280,7 @@ describe('deriveReview — WK-0132 Slice 2', () => {
         const exportDir = await mkdtemp(join(tmpdir(), 'derive-review-export-'));
         const dataMountDir = await mkdtemp(join(tmpdir(), 'derive-review-data-'));
 
-        const created = await createHandoff(
+        const created = await createFixtureHandoff(
           baseImplementOpts({
             dir: tempDir,
             web: true,
@@ -293,7 +331,7 @@ describe('deriveReview — WK-0132 Slice 2', () => {
       execFileSync('git', ['add', '-A'], { cwd: tempDir });
       execFileSync('git', ['commit', '-m', 'add AGENTS.md and a file the implement deletes'], { cwd: tempDir });
 
-      const created = await createHandoff(
+      const created = await createFixtureHandoff(
         baseImplementOpts({ dir: tempDir, read_first: ['README.md', 'deleted-on-branch.md'] }),
       );
       if (!created.ok) throw new Error(created.message);
@@ -326,7 +364,7 @@ describe('deriveReview — WK-0132 Slice 2', () => {
       const parsed = await parseHandoff(result.data.reviewPath);
       expect(parsed.ok).toBe(true);
       if (!parsed.ok) return;
-      expect(parsed.data.read_first).toEqual(['README.md', 'AGENTS.md']);
+      expect(parsed.data.read_first).toEqual(['README.md', 'wiki/issues/WK-0132.md', 'AGENTS.md']);
 
       const admitted = await checkAdmission(parsed.data, tempDir);
       expect(admitted.ok).toBe(true);
@@ -342,7 +380,15 @@ describe('deriveReview — WK-0132 Slice 2', () => {
       await writeFile(join(tempDir, 'docs', 'a-only.md'), 'a only\n', 'utf-8');
       await writeFile(join(tempDir, 'docs', 'b-only.md'), 'b only\n', 'utf-8');
 
-      const a = await createHandoff(
+      // B's work item must exist in the tree A's delivery branch (B's base_ref) is cut from.
+      const bOpts = baseImplementOpts({
+        dir: tempDir,
+        work_item: 'WK-0002',
+        acceptance: ['AC-B1: b does y'],
+        read_first: ['README.md', 'docs/b-only.md'],
+      });
+      await authorWorkItem(bOpts);
+      const a = await createFixtureHandoff(
         baseImplementOpts({
           dir: tempDir,
           work_item: 'WK-0001',
@@ -355,15 +401,7 @@ describe('deriveReview — WK-0132 Slice 2', () => {
       execFileSync('git', ['commit', '-q', '-m', 'author A'], { cwd: tempDir });
       await deliverChainCommit(tempDir, a.data.handoffId, 'HEAD');
 
-      const b = await createHandoff(
-        baseImplementOpts({
-          dir: tempDir,
-          work_item: 'WK-0002',
-          acceptance: ['AC-B1: b does y'],
-          base_ref: `dispatch/${a.data.handoffId}`,
-          read_first: ['README.md', 'docs/b-only.md'],
-        }),
-      );
+      const b = await createFixtureHandoff({ ...bOpts, base_ref: `dispatch/${a.data.handoffId}` });
       if (!b.ok) throw new Error(b.message);
       await writeResponseDoc(tempDir, b.data.handoffId);
       execFileSync('git', ['add', '-A'], { cwd: tempDir });
@@ -389,7 +427,14 @@ describe('deriveReview — WK-0132 Slice 2', () => {
       expect(parsed.ok).toBe(true);
       if (!parsed.ok) return;
       // Specification 4: head (B) first, then A's entries not already present, then AGENTS.md.
-      expect(parsed.data.read_first).toEqual(['README.md', 'docs/b-only.md', 'docs/a-only.md', 'AGENTS.md']);
+      expect(parsed.data.read_first).toEqual([
+        'README.md',
+        'docs/b-only.md',
+        'wiki/issues/WK-0002.md',
+        'docs/a-only.md',
+        'wiki/issues/WK-0001.md',
+        'AGENTS.md',
+      ]);
     });
   });
 
@@ -415,14 +460,14 @@ describe('deriveReview — WK-0132 Slice 2', () => {
     });
 
     it('two-HO chain (B on A): acceptance holds both, oldest first, each prefixed; Objective and Expected Output name the head HO, reviewed_sha, and every member\'s range', async () => {
-      const a = await createHandoff(baseImplementOpts({ dir: tempDir, work_item: 'WK-0001', acceptance: ['AC-A1: a does x'] }));
+      const a = await createFixtureHandoff(baseImplementOpts({ dir: tempDir, work_item: 'WK-0001', acceptance: ['AC-A1: a does x'] }));
       if (!a.ok) throw new Error(a.message);
       execFileSync('git', ['add', '-A'], { cwd: tempDir });
       execFileSync('git', ['commit', '-q', '-m', 'author A'], { cwd: tempDir });
       const authorASha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: tempDir }).toString().trim();
       const aSha = await deliverChainCommit(tempDir, a.data.handoffId, 'HEAD');
 
-      const b = await createHandoff(
+      const b = await createFixtureHandoff(
         baseImplementOpts({
           dir: tempDir,
           work_item: 'WK-0002',
@@ -470,7 +515,7 @@ describe('deriveReview — WK-0132 Slice 2', () => {
     });
 
     it('excludes a member already merged into HEAD from the chain', async () => {
-      const a = await createHandoff(baseImplementOpts({ dir: tempDir, work_item: 'WK-0001', acceptance: ['AC-A1: a does x'] }));
+      const a = await createFixtureHandoff(baseImplementOpts({ dir: tempDir, work_item: 'WK-0001', acceptance: ['AC-A1: a does x'] }));
       if (!a.ok) throw new Error(a.message);
       execFileSync('git', ['add', '-A'], { cwd: tempDir });
       execFileSync('git', ['commit', '-q', '-m', 'author A'], { cwd: tempDir });
@@ -480,7 +525,7 @@ describe('deriveReview — WK-0132 Slice 2', () => {
       execFileSync('git', ['merge', '--ff-only', `dispatch/${a.data.handoffId}`], { cwd: tempDir });
       expect(execFileSync('git', ['rev-parse', 'HEAD'], { cwd: tempDir }).toString().trim()).toBe(aSha);
 
-      const b = await createHandoff(
+      const b = await createFixtureHandoff(
         baseImplementOpts({
           dir: tempDir,
           work_item: 'WK-0002',
@@ -518,7 +563,7 @@ describe('deriveReview — WK-0132 Slice 2', () => {
     });
 
     it('refuses a merge commit in the chain range', async () => {
-      const created = await createHandoff(baseImplementOpts({ dir: tempDir }));
+      const created = await createFixtureHandoff(baseImplementOpts({ dir: tempDir }));
       if (!created.ok) throw new Error(created.message);
       await writeResponseDoc(tempDir, created.data.handoffId);
 
@@ -555,7 +600,7 @@ describe('deriveReview — WK-0132 Slice 2', () => {
     });
 
     it('refuses a commit in the chain range whose subject is not "dispatch: HO-XXXX"', async () => {
-      const created = await createHandoff(baseImplementOpts({ dir: tempDir }));
+      const created = await createFixtureHandoff(baseImplementOpts({ dir: tempDir }));
       if (!created.ok) throw new Error(created.message);
       await writeResponseDoc(tempDir, created.data.handoffId);
 
@@ -584,7 +629,7 @@ describe('deriveReview — WK-0132 Slice 2', () => {
     });
 
     it('refuses an empty chain range (the delivery branch is already merged)', async () => {
-      const created = await createHandoff(baseImplementOpts({ dir: tempDir }));
+      const created = await createFixtureHandoff(baseImplementOpts({ dir: tempDir }));
       if (!created.ok) throw new Error(created.message);
       await writeResponseDoc(tempDir, created.data.handoffId);
 
@@ -608,10 +653,10 @@ describe('deriveReview — WK-0132 Slice 2', () => {
     });
 
     it("refuses when the newest commit in the range is not the handoff's own delivery", async () => {
-      const target = await createHandoff(baseImplementOpts({ dir: tempDir, work_item: 'WK-0003' }));
+      const target = await createFixtureHandoff(baseImplementOpts({ dir: tempDir, work_item: 'WK-0003' }));
       if (!target.ok) throw new Error(target.message);
       await writeResponseDoc(tempDir, target.data.handoffId);
-      const decoy = await createHandoff(baseImplementOpts({ dir: tempDir, work_item: 'WK-0004' }));
+      const decoy = await createFixtureHandoff(baseImplementOpts({ dir: tempDir, work_item: 'WK-0004' }));
       if (!decoy.ok) throw new Error(decoy.message);
 
       const current = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: tempDir }).toString().trim();
@@ -651,7 +696,7 @@ describe('deriveReview — WK-0132 Slice 2', () => {
       execFileSync('git', ['commit', '-q', '-m', 'dispatch: HO-9999'], { cwd: tempDir });
       execFileSync('git', ['checkout', '-q', current], { cwd: tempDir });
 
-      const target = await createHandoff(baseImplementOpts({ dir: tempDir }));
+      const target = await createFixtureHandoff(baseImplementOpts({ dir: tempDir }));
       if (!target.ok) throw new Error(target.message);
       await writeResponseDoc(tempDir, target.data.handoffId);
       await deliverChainCommit(tempDir, target.data.handoffId, 'dispatch/HO-9999');
@@ -675,13 +720,13 @@ describe('deriveReview — WK-0132 Slice 2', () => {
 
     it('refuses an older chain member whose commit names a non-implement HO', async () => {
       // A valid, but non-implement (code_review), HO underneath a real implement target.
-      const olderReview = await createHandoff(
+      const olderReview = await createFixtureHandoff(
         baseImplementOpts({ dir: tempDir, mode: 'code_review', write_scope: [], work_item: undefined }),
       );
       if (!olderReview.ok) throw new Error(olderReview.message);
       await deliverChainCommit(tempDir, olderReview.data.handoffId, 'HEAD');
 
-      const target = await createHandoff(baseImplementOpts({ dir: tempDir }));
+      const target = await createFixtureHandoff(baseImplementOpts({ dir: tempDir }));
       if (!target.ok) throw new Error(target.message);
       await writeResponseDoc(tempDir, target.data.handoffId);
       await deliverChainCommit(tempDir, target.data.handoffId, `dispatch/${olderReview.data.handoffId}`);
@@ -719,7 +764,7 @@ describe('deriveReview — WK-0132 Slice 2', () => {
 
   describe('refusal on non-implement mode', () => {
     it('refuses a code_review HO passed as the source', async () => {
-      const created = await createHandoff(baseImplementOpts({
+      const created = await createFixtureHandoff(baseImplementOpts({
         dir: tempDir,
         mode: 'code_review',
         work_item: undefined,
@@ -867,7 +912,7 @@ describe('deriveReview — WK-0132 Slice 2', () => {
     // Why: HO validation strings are untrusted input — the host never runs them (A1 ruling 1, A2 R6).
     it('never executes the HO validation text', async () => {
       const marker = join(tempDir, 'ho-validation-ran');
-      const created = await createHandoff(baseImplementOpts({ dir: tempDir, validation: [`touch ${marker}`] }));
+      const created = await createFixtureHandoff(baseImplementOpts({ dir: tempDir, validation: [`touch ${marker}`] }));
       if (!created.ok) throw new Error(created.message);
       await writeResponseDoc(tempDir, created.data.handoffId);
       await markDelivered(tempDir, created.data.handoffId);
@@ -912,7 +957,7 @@ describe('deriveReview: a review after a finished review covers only the fix-up'
 
   /** An implement HO authored, committed and delivered on `dispatch/<id>` off `fromRef`; its run and response doc written. */
   async function deliver(overrides: Partial<CreateHandoffOpts>, fromRef: string): Promise<{ id: string; sha: string }> {
-    const created = await createHandoff(baseImplementOpts({ dir: tempDir, ...overrides }));
+    const created = await createFixtureHandoff(baseImplementOpts({ dir: tempDir, ...overrides }));
     if (!created.ok) throw new Error(created.message);
     const id = created.data.handoffId;
     await writeResponseDoc(tempDir, id);
@@ -989,7 +1034,7 @@ describe('deriveReview: a review after a finished review covers only the fix-up'
     expect(content).toContain(`- ${f.id} (work_item WK-0132): ${a.sha}..${f.sha}`);
     expect(content).not.toContain(a.id + ' (work_item');
     expect(content).not.toContain(parentOfA);
-    expect(review.read_first).toEqual(['README.md', 'docs/f1-only.md', 'AGENTS.md']);
+    expect(review.read_first).toEqual(['README.md', 'docs/f1-only.md', 'wiki/issues/WK-0132.md', 'AGENTS.md']);
     expect(review.acceptance).toEqual([`[${f.id}] AC-F1: digits kept`]);
     expect(review.reviewed_sha).toBe(f.sha);
     expect(review.reviewed_run).toBe(DELIVERED_RUN);
@@ -1020,7 +1065,7 @@ describe('deriveReview: a review after a finished review covers only the fix-up'
     expect(content).toContain(`#### ${f1.id}\n\n\`\`\`\nfirst fix text\n\`\`\`\n\n#### ${f2.id}\n\n\`\`\`\nsecond fix text\n\`\`\``);
     expect(content).toContain(`- ${f1.id} (work_item WK-0132): ${a.sha}..${f1.sha}`);
     expect(content).toContain(`- ${f2.id} (work_item WK-0132): ${f1.sha}..${f2.sha}`);
-    expect(review.read_first).toEqual(['docs/f2-only.md', 'docs/f1-only.md', 'AGENTS.md']);
+    expect(review.read_first).toEqual(['docs/f2-only.md', 'wiki/issues/WK-0132.md', 'docs/f1-only.md', 'AGENTS.md']);
   });
 
   it.each([
@@ -1116,7 +1161,7 @@ describe('deriveReview: a review after a finished review covers only the fix-up'
 
   it('a hand-authored code_review without stamps is not a coverage candidate', async () => {
     const a = await deliver({}, 'HEAD');
-    const created = await createHandoff(
+    const created = await createFixtureHandoff(
       baseImplementOpts({ dir: tempDir, mode: 'code_review', write_scope: [], base_ref: `dispatch/${a.id}`, acceptance: ['AC: reviewed'] }),
     );
     if (!created.ok) throw new Error(created.message);

@@ -22,7 +22,8 @@ import { deriveReview } from '../packages/dispatch-core/src/derive-review.js';
 import type { Handoff } from '../packages/dispatch-core/src/ho.js';
 import { runDispatch } from '../packages/dispatch-core/src/pipeline.js';
 import { restamp } from '../packages/dispatch-core/src/restamp.js';
-import type { CreateHandoffOpts } from '../packages/dispatch-core/src/types.js';
+import type { CreateHandoffInput, CreateHandoffOpts } from '../packages/dispatch-core/src/types.js';
+import { SLICE_ID, sliceWorkItemText } from './helpers/slice-fixture.js';
 
 function git(cwd: string, ...args: string[]): string {
   return execFileSync('git', args, { cwd }).toString().trim();
@@ -40,7 +41,7 @@ function commitAll(dir: string, message: string): string {
   return git(dir, 'rev-parse', 'HEAD');
 }
 
-const WK_BODY = '---\nid: "WK-9272"\ntitle: "Fixture WK"\nstatus: todo\ninitiative: IN-9272\n---\n\n# WK-9272: Fixture\n';
+const WK_BODY = sliceWorkItemText('WK-9272', { write_scope: ['src/'] });
 
 function makeHandoff(overrides: Partial<Handoff> = {}): Handoff {
   return {
@@ -230,13 +231,19 @@ describe('WK-0272 admission — nested-private wiki', () => {
   });
 });
 
-function implementOpts(dir: string, overrides: Partial<CreateHandoffOpts> = {}): CreateHandoffOpts {
+/** The implement handoff of the fixture work item: generated from its one slice. */
+function sliceOpts(dir: string): CreateHandoffInput {
+  return { dir, subject: 'kb:dispatch', allowed_agents: ['claude'], wk: 'WK-9272', slice: SLICE_ID };
+}
+
+/** Explicit fields for a code_review handoff; an implement handoff comes from `sliceOpts`. */
+function advisoryOpts(dir: string, overrides: Partial<CreateHandoffOpts> = {}): CreateHandoffOpts {
   return {
     dir,
     title: 'Full-path fixture',
     subject: 'kb:dispatch',
     allowed_agents: ['claude'],
-    mode: 'implement',
+    mode: 'code_review',
     work_item: 'WK-9272',
     write_scope: ['src/'],
     read_first: ['README.md'],
@@ -294,14 +301,14 @@ describe('WK-0272 full path — create/derive then dispatch with no manual commi
   // Why: the operator report — every advisory dispatch needed a manual commit of what create-handoff just wrote,
   // and two parallel sessions' uncommitted stamps blocked each other.
   it('create-handoff -> dispatch of an advisory HO is admitted with the tool outputs and a parallel stamp uncommitted', async () => {
-    const other = await createHandoff(implementOpts(repo));
+    const other = await createHandoff(sliceOpts(repo));
     if (!other.ok) throw new Error(other.message);
     commitAll(repo, 'parallel session HO');
     // The parallel session's dispatch stamp: an uncommitted edit to its own HO file.
     const otherContent = await readFile(other.data.handoffPath, 'utf8');
     await writeFile(other.data.handoffPath, otherContent.replace('status: draft', 'status: dispatched'));
 
-    const created = await createHandoff(implementOpts(repo, { mode: 'code_review', write_scope: [], work_item: undefined }));
+    const created = await createHandoff(advisoryOpts(repo, { mode: 'code_review', write_scope: [], work_item: undefined }));
     if (!created.ok) throw new Error(created.message);
     const dirty = git(repo, 'status', '--porcelain');
     expect(dirty).toContain(created.data.handoffRelativePath);
@@ -315,7 +322,7 @@ describe('WK-0272 full path — create/derive then dispatch with no manual commi
 
   // Why: derive-review writes the review HO and id-state; the review dispatch must not need a commit in between.
   it('derive-review -> dispatch of the derived review is admitted with no manual commit', async () => {
-    const implement = await createHandoff(implementOpts(repo));
+    const implement = await createHandoff(sliceOpts(repo));
     if (!implement.ok) throw new Error(implement.message);
     await writeFile(
       join(repo, 'wiki', 'handoffs', `${implement.data.handoffId}.response.md`),
@@ -353,7 +360,7 @@ describe('WK-0272 full path — create/derive then dispatch with no manual commi
   // Why: commitArtifacts is best-effort and swallows failures; the uncommitted response it leaves is not in the
   // base_ref tree the tracked-shape worker is cut from, so it must surface as a typed refusal naming the file, not a silent stale read.
   it('a response left uncommitted by a swallowed commitArtifacts failure refuses MISSING_READ_FIRST', async () => {
-    const implement = await createHandoff(implementOpts(repo));
+    const implement = await createHandoff(sliceOpts(repo));
     if (!implement.ok) throw new Error(implement.message);
     commitAll(repo, 'implement HO');
     git(repo, 'branch', `dispatch/${implement.data.handoffId}`);
@@ -361,7 +368,7 @@ describe('WK-0272 full path — create/derive then dispatch with no manual commi
     await writeFile(join(repo, responsePath), `---\nhandoff_id: ${implement.data.handoffId}\n---\n\n# Response\n`);
 
     const review = await createHandoff(
-      implementOpts(repo, {
+      advisoryOpts(repo, {
         mode: 'code_review',
         write_scope: [],
         base_ref: `dispatch/${implement.data.handoffId}`,

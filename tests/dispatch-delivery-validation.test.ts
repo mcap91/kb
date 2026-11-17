@@ -19,6 +19,7 @@ import * as execDirectModule from '../packages/dispatch-core/src/exec-direct.js'
 import * as spawnIsolatedModule from '../packages/dispatch-core/src/spawn-isolated.js';
 import { ok as dispatchOk } from '../packages/dispatch-core/src/errors.js';
 import { VALIDATION_EVIDENCE_FILE } from '../packages/dispatch-core/src/host-validation.js';
+import { slicesSection } from './helpers/slice-fixture.js';
 
 const SUITE_COMMAND = 'check-suite';
 
@@ -45,6 +46,7 @@ data_mounts: []
 read_first: []
 vars: []
 work_item: WK-9005
+slice: s1
 acceptance:
   - "AC-1: placeholder"
 validation: ["node --test test/"]
@@ -60,7 +62,7 @@ Fixture body.
   await mkdir(join(repo, 'wiki', 'issues'), { recursive: true });
   await writeFile(
     join(repo, 'wiki', 'issues', 'WK-9005.md'),
-    '---\nid: "WK-9005"\ntitle: "Fixture WK"\nstatus: todo\ninitiative: IN-9005\n---\n\n# WK-9005: Fixture\n',
+    `---\nid: "WK-9005"\ntitle: "Fixture WK"\nstatus: todo\ninitiative: IN-9005\n---\n\n# WK-9005: Fixture\n\n${slicesSection()}`,
     'utf8',
   );
   await mkdir(join(repo, 'wiki', 'initiatives'), { recursive: true });

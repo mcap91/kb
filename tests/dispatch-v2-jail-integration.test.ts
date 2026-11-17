@@ -48,6 +48,7 @@ import { checkMaskPathsNotSymlinks, createClone, removeClone } from '../packages
 import { spawnIsolated } from '../packages/dispatch-core/src/spawn-isolated.js';
 import * as spawnIsolatedModule from '../packages/dispatch-core/src/spawn-isolated.js';
 import * as tierModule from '../packages/dispatch-core/src/tier.js';
+import { slicesSection } from './helpers/slice-fixture.js';
 
 // ---------------------------------------------------------------------------
 // Bwrap availability gate — FUNCTIONAL probe (WK-0159 rewrite plan item 2),
@@ -610,7 +611,7 @@ describe('runDispatch() wiring -- skeleton functions run before plan build/spawn
       await mkdir(join(wikiDir, '.dispatch'), { recursive: true });
       await writeFile(
         join(wikiDir, 'issues', 'WK-9159.md'),
-        '---\nid: "WK-9159"\ntitle: "Fixture WK"\nstatus: todo\ninitiative: IN-9159\n---\n\n# WK-9159: Fixture\n',
+        `---\nid: "WK-9159"\ntitle: "Fixture WK"\nstatus: todo\ninitiative: IN-9159\n---\n\n# WK-9159: Fixture\n\n${slicesSection()}`,
       );
       await writeFile(
         join(wikiDir, 'initiatives', 'IN-9159.md'),
@@ -648,6 +649,7 @@ data_mounts: []
 read_first: []
 vars: []
 work_item: WK-9159
+slice: s1
 acceptance:
   - "AC-1: placeholder -- this HO is never actually dispatched to a real worker"
 validation: ["true"]

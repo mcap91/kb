@@ -15,6 +15,7 @@ import { join } from 'node:path';
 import { checkAdmission } from '../packages/dispatch-core/src/admission.js';
 import { parseHandoff, type Handoff } from '../packages/dispatch-core/src/ho.js';
 import { restamp } from '../packages/dispatch-core/src/restamp.js';
+import { SLICE_ID, sliceWorkItemText } from './helpers/slice-fixture.js';
 
 function git(cwd: string, ...args: string[]): string {
   return execFileSync('git', args, { cwd }).toString().trim();
@@ -32,7 +33,7 @@ function commitAll(dir: string, message: string): string {
   return git(dir, 'rev-parse', 'HEAD');
 }
 
-const WK_BODY = '---\nid: "WK-9175"\ntitle: "Fixture WK"\nstatus: todo\ninitiative: IN-9175\n---\n\n# WK-9175: Fixture\n';
+const WK_BODY = sliceWorkItemText('WK-9175', { write_scope: ['src/'] });
 const HO_PATH = 'wiki/handoffs/HO-9175.md';
 
 function hoMarkdown(overrides: { baseSha: string; baseWikiSha?: string }): string {
@@ -50,6 +51,7 @@ data_mounts: []
 read_first: ["README.md"]
 vars: []
 work_item: WK-9175
+slice: s1
 acceptance:
   - "AC-1: placeholder"
 validation: ["true"]
@@ -89,7 +91,7 @@ describe('restamp (WK-0175) — tracked wiki (the normal repo shape)', () => {
     const newHead = commitAll(repo, 'touch app');
 
     const before = await checkAdmission(
-      { id: 'HO-9175', title: 'x', mode: 'implement', write_scope: ['src/'], base_ref: null, base_sha: stampSha, web: false, credentials: [], data_mounts: [], export_mounts: [], runtime_envs: [], read_first: ['README.md'], vars: [], work_item: 'WK-9175', acceptance: ['a'], validation: ['true'], status: 'draft' } as Handoff,
+      { id: 'HO-9175', title: 'x', mode: 'implement', write_scope: ['src/'], base_ref: null, base_sha: stampSha, web: false, credentials: [], data_mounts: [], export_mounts: [], runtime_envs: [], read_first: ['README.md'], vars: [], work_item: 'WK-9175', slice: SLICE_ID, acceptance: ['a'], validation: ['true'], status: 'draft' } as Handoff,
       repo,
     );
     expect(before.ok).toBe(false);
@@ -178,7 +180,7 @@ describe('restamp (WK-0175) — nested-private wiki (wiki/ is its own repo)', ()
 
   // Why: nested-private HOs carry two stamps — both must move to their respective HEADs.
   it('updates both base_sha and base_wiki_sha to current HEAD', async () => {
-    await writeFile(join(wikiDir, 'issues', 'WK-9175.md'), 'changed\n');
+    await writeFile(join(wikiDir, 'issues', 'WK-9175.md'), `${WK_BODY}\nchanged\n`);
     const newWikiHead = commitAll(wikiDir, 'touch ticket');
 
     const result = await restamp({ dir: repo, handoff: HO_PATH });
@@ -231,6 +233,7 @@ describe('BASE_DRIFT refusal message names restamp (WK-0175)', () => {
       read_first: ['README.md'],
       vars: [],
       work_item: 'WK-9175',
+      slice: SLICE_ID,
       acceptance: ['a'],
       validation: ['true'],
       status: 'draft',

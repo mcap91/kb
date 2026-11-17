@@ -18,8 +18,10 @@
  */
 import { execFile as execFileCb } from 'node:child_process';
 import { isAbsolute, join, relative, resolve } from 'node:path';
-import { realpath, stat } from 'node:fs/promises';
+import { readFile, realpath, stat } from 'node:fs/promises';
 import { promisify } from 'node:util';
+
+import { readSlices } from '@kb/wiki-core';
 
 import type { DispatchResult } from './errors.js';
 import { fail, ok } from './errors.js';
@@ -639,13 +641,16 @@ async function checkWorkerTimeoutCap(handoff: Handoff, repoRoot: string): Promis
 }
 
 /**
- * v2 work-item-existence gate (DEC-0036 WK-0121), narrowed from the original
- * IN-0006 WK-0116 initiative-resolution gate: an `implement`-mode HO must
+ * v2 slice gate, extending the work-item-existence gate (DEC-0036 WK-0121,
+ * narrowed from the original IN-0006 WK-0116 initiative-resolution gate): an
+ * `implement`-mode HO is generated from a slice of its work item, so it must
  * declare a `work_item` (WK-####) whose `wiki/issues/<work_item>.md` file
- * exists on disk. Non-implement modes are WK-optional (DEC-0035) and skip
- * this check entirely. DEC-0036 moved WK→IN connectedness off dispatch
- * admission entirely — that link is now enforced by lint.ts's status-scoped
- * `ORPHAN_WK` check, not here.
+ * is readable and a `slice` that is a row of that file's `## Slices` table.
+ * The file is read from the working tree in both wiki shapes: the nested-private
+ * wiki is a git repo at `<repo>/wiki`, so the path is the same. Non-implement
+ * modes are WK-optional (DEC-0035) and skip this check entirely. DEC-0036 moved
+ * WK→IN connectedness off dispatch admission entirely — that link is now
+ * enforced by lint.ts's status-scoped `ORPHAN_WK` check, not here.
  */
 export async function checkWorkItemExists(
   handoff: Handoff,
@@ -653,22 +658,45 @@ export async function checkWorkItemExists(
 ): Promise<DispatchResult<null>> {
   if (handoff.mode !== 'implement') return ok(null);
 
+  const fix = 'Generate the handoff with create-handoff from a slice (wk + slice); the work item needs a "## Slices" table, and one row is enough.';
   const workItem = handoff.work_item;
   if (workItem === undefined || workItem.trim() === '') {
     return fail(
       'WORK_ITEM_NOT_FOUND',
-      `Handoff ${handoff.id} (mode=implement) does not declare a work_item; implement HOs must reference an existing WK.`,
+      `Handoff ${handoff.id} (mode=implement) does not declare a work_item; an implement handoff is generated from a slice of an existing work item. ${fix}`,
+    );
+  }
+  if (handoff.slice === undefined) {
+    return fail(
+      'BAD_RECORD',
+      `Handoff ${handoff.id} (mode=implement) declares work_item "${workItem}" but no slice; an implement handoff is generated from a slice of its work item. ${fix}`,
+      { work_item: workItem },
     );
   }
 
-  const repoRootResolved = resolve(repoRoot);
-  const wkPath = join(repoRootResolved, 'wiki', 'issues', `${workItem}.md`);
-
-  if (!(await pathExists(wkPath))) {
+  const wkRelativePath = `wiki/issues/${workItem}.md`;
+  let wkText: string;
+  try {
+    wkText = await readFile(join(resolve(repoRoot), wkRelativePath), 'utf-8');
+  } catch (err) {
     return fail(
       'WORK_ITEM_NOT_FOUND',
-      `Handoff ${handoff.id} declares work_item "${workItem}", but wiki/issues/${workItem}.md does not exist.`,
-      { work_item: workItem },
+      `Handoff ${handoff.id} declares work_item "${workItem}", but ${wkRelativePath} cannot be read. ${fix}`,
+      err,
+    );
+  }
+
+  const slices = readSlices(wkText);
+  if (!slices.ok) {
+    return fail('BAD_RECORD', `Handoff ${handoff.id}: ${wkRelativePath} ${slices.message}`, slices);
+  }
+  if (!slices.data.some((row) => row.id === handoff.slice)) {
+    const rows = slices.data.length === 0 ? 'it has no "## Slices" table' : `its rows are: ${slices.data.map((row) => row.id).join(', ')}`;
+    return fail(
+      'BAD_RECORD',
+      `Handoff ${handoff.id} declares slice "${handoff.slice}" of ${workItem}, but ${wkRelativePath} has no such row in its "## Slices" table (${rows}). ` +
+        'Add the row to the work item, or generate the handoff with create-handoff from a row that exists.',
+      { work_item: workItem, slice: handoff.slice },
     );
   }
 

@@ -70,6 +70,7 @@ import * as spawnIsolatedModule from '../packages/dispatch-core/src/spawn-isolat
 import * as execDirectModule from '../packages/dispatch-core/src/exec-direct.js';
 import { ok as dispatchOk } from '../packages/dispatch-core/src/errors.js';
 import { runDispatch } from '../packages/dispatch-core/src/pipeline.js';
+import { slicesSection } from './helpers/slice-fixture.js';
 
 /**
  * Stub the one host dependency `resolveToolchainPaths` (pipeline.ts) has:
@@ -113,6 +114,7 @@ credentials: []
 data_mounts: []
 read_first: ["README.md"]
 work_item: WK-9004
+slice: s1
 acceptance:
   - "AC-1: greet('World') returns 'Hello, World!'"
   - "AC-2: \`node --test test/\` passes"
@@ -162,7 +164,7 @@ async function setupRepo(): Promise<string> {
   await mkdir(join(repoRoot, 'wiki', 'issues'), { recursive: true });
   await writeFile(
     join(repoRoot, 'wiki', 'issues', 'WK-9004.md'),
-    '---\nid: "WK-9004"\ntitle: "Fixture WK"\nstatus: todo\ninitiative: IN-9004\n---\n\n# WK-9004: Fixture\n',
+    `---\nid: "WK-9004"\ntitle: "Fixture WK"\nstatus: todo\ninitiative: IN-9004\n---\n\n# WK-9004: Fixture\n\n${slicesSection()}`,
     'utf8',
   );
   await mkdir(join(repoRoot, 'wiki', 'initiatives'), { recursive: true });
@@ -682,6 +684,7 @@ data_mounts: []
 read_first: []
 vars: ${JSON.stringify(vars)}
 work_item: WK-9003
+slice: s1
 acceptance:
   - "AC-1: placeholder — this HO is never actually dispatched to a worker"
 validation: ["node --test test/"]
@@ -703,7 +706,7 @@ clone/jail/worker step runs, so this body is never read by a worker.
   await mkdir(join(repoRoot, 'wiki', 'issues'), { recursive: true });
   await writeFile(
     join(repoRoot, 'wiki', 'issues', 'WK-9003.md'),
-    '---\nid: "WK-9003"\ntitle: "Fixture WK"\nstatus: todo\ninitiative: IN-9003\n---\n\n# WK-9003: Fixture\n',
+    `---\nid: "WK-9003"\ntitle: "Fixture WK"\nstatus: todo\ninitiative: IN-9003\n---\n\n# WK-9003: Fixture\n\n${slicesSection()}`,
     'utf8',
   );
   await mkdir(join(repoRoot, 'wiki', 'initiatives'), { recursive: true });

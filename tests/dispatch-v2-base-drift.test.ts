@@ -20,8 +20,9 @@ import { assemblePrompt } from '../packages/dispatch-core/src/assemble.js';
 import { createHandoff } from '../packages/dispatch-core/src/create-handoff.js';
 import { parseHandoff, parseHandoffContent, type Handoff } from '../packages/dispatch-core/src/ho.js';
 import { runDispatch } from '../packages/dispatch-core/src/pipeline.js';
-import type { CreateHandoffOpts } from '../packages/dispatch-core/src/types.js';
+import type { CreateHandoffInput } from '../packages/dispatch-core/src/types.js';
 import { probeWikiSource } from '../packages/dispatch-core/src/wiki-source.js';
+import { SLICE_ID, sliceWorkItemText, writeSliceWorkItem } from './helpers/slice-fixture.js';
 
 function git(cwd: string, ...args: string[]): string {
   return execFileSync('git', args, { cwd }).toString().trim();
@@ -39,7 +40,7 @@ function commitAll(dir: string, message: string): string {
   return git(dir, 'rev-parse', 'HEAD');
 }
 
-const WK_BODY = '---\nid: "WK-9152"\ntitle: "Fixture WK"\nstatus: todo\ninitiative: IN-9152\n---\n\n# WK-9152: Fixture\n';
+const WK_BODY = sliceWorkItemText('WK-9152', { write_scope: ['src/'] });
 
 function makeHandoff(overrides: Partial<Handoff> = {}): Handoff {
   return {
@@ -47,6 +48,7 @@ function makeHandoff(overrides: Partial<Handoff> = {}): Handoff {
     title: 'Base drift fixture',
     mode: 'implement',
     work_item: 'WK-9152',
+    slice: SLICE_ID,
     write_scope: ['src/'],
     base_ref: null,
     web: false,
@@ -137,7 +139,8 @@ describe('BASE_DRIFT (WK-0152) — tracked wiki (the normal repo shape)', () => 
 
   // Why: instructions built on a changed read_first file or ticket may be wrong (decision 3).
   it.each(['README.md', 'wiki/issues/WK-9152.md'])('refuses when declared file %s changed', async (path) => {
-    await writeFile(join(repo, path), 'changed\n');
+    // The ticket keeps its Slices row: a ticket that lost it is refused by the slice gate, not as drift.
+    await writeFile(join(repo, path), path === 'README.md' ? 'changed\n' : `${WK_BODY}\nchanged\n`);
     commitAll(repo, `touch ${path}`);
     const result = await checkAdmission(makeHandoff({ base_sha: stampSha }), repo);
     expect(result.ok).toBe(false);
@@ -214,7 +217,7 @@ describe('BASE_DRIFT (WK-0152) — nested-private wiki (wiki/ is its own repo)',
 
   // Why: a committed ticket change in the wiki repo is drift the code-repo diff cannot see (decision 6).
   it('refuses when the ticket changed in the wiki repo', async () => {
-    await writeFile(join(wikiDir, 'issues', 'WK-9152.md'), 'changed\n');
+    await writeFile(join(wikiDir, 'issues', 'WK-9152.md'), `${WK_BODY}\nchanged\n`);
     commitAll(wikiDir, 'touch ticket');
     const result = await checkAdmission(makeHandoff({ base_sha: stampSha, base_wiki_sha: wikiSha }), repo);
     expect(result.ok).toBe(false);
@@ -227,7 +230,7 @@ describe('BASE_DRIFT (WK-0152) — nested-private wiki (wiki/ is its own repo)',
 
   // Why: the jail binds the live wiki dir (DEC-0039), so the worker would see an uncommitted ticket edit.
   it('refuses an uncommitted ticket edit', async () => {
-    await writeFile(join(wikiDir, 'issues', 'WK-9152.md'), 'changed\n');
+    await writeFile(join(wikiDir, 'issues', 'WK-9152.md'), `${WK_BODY}\nchanged\n`);
     const result = await checkAdmission(makeHandoff({ base_sha: stampSha, base_wiki_sha: wikiSha }), repo);
     expect(result.ok).toBe(false);
     if (result.ok) return;
@@ -310,17 +313,13 @@ describe('probeWikiSource (WK-0152)', () => {
   });
 });
 
-function handoffOpts(dir: string, overrides: Partial<CreateHandoffOpts> = {}): CreateHandoffOpts {
+function handoffOpts(dir: string, overrides: Partial<CreateHandoffInput> = {}): CreateHandoffInput {
   return {
     dir,
-    title: 'Stamping fixture',
     subject: 'kb:dispatch',
     allowed_agents: ['claude'],
-    mode: 'implement',
-    work_item: 'WK-9152',
-    write_scope: ['src/'],
-    acceptance: ['AC-1: example'],
-    validation: ['true'],
+    wk: 'WK-9152',
+    slice: SLICE_ID,
     ...overrides,
   };
 }
@@ -336,6 +335,7 @@ describe('createHandoff stamping (WK-0152)', () => {
     await mkdir(join(repo, 'wiki', '.dispatch'), { recursive: true });
     const boot = await bootstrap({ dir: repo, repo: 'test/repo' });
     if (!boot.ok) throw new Error(boot.message);
+    await writeSliceWorkItem(repo, 'WK-9152', { write_scope: ['src/'] });
   });
 
   afterEach(async () => {
@@ -476,6 +476,7 @@ data_mounts: []
 read_first: ["README.md"]
 vars: []
 work_item: WK-9152
+slice: s1
 acceptance:
   - "AC-1: placeholder — never dispatched to a worker"
 validation: ["true"]

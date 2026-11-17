@@ -150,19 +150,77 @@ Dispatch must never target the `kb` checkout itself — always a disposable cons
    generated `wiki/.dispatch/README.md` and `docs/dispatch-protocol.md`'s "Model and Backend
    Configuration" for field meaning. Point `api_key_env`/`secrets_file` at a credentials file
    holding your API key, or leave both `null` to ride the CLI's own logged-in session.
-4. Create a work-item stub: implement-mode admission requires `work_item` to name an existing
-   `wiki/issues/WK-NNNN.md` **inside the target repo**, not inside `kb`. A minimal stub (a title
-   and one `## Objective` line noting it exists only to satisfy admission) is enough; reuse the
-   same stub across every implement fixture below.
+4. Create a work item with slices: every implement handoff is generated from a slice, so admission
+   requires `work_item` to name an existing `wiki/issues/WK-NNNN.md` **inside the target repo**,
+   not inside `kb`, whose `## Slices` table has the handoff's `slice` row. One file serves every
+   implement fixture below, one slice row each (with several rows, each row needs its own
+   `### Slice <id>` section). Commit it:
+
+   ```markdown
+   ---
+   id: "WK-NNNN"
+   title: "Dispatch smoke slices"
+   type: feature
+   status: todo
+   ---
+
+   # WK-NNNN: Dispatch smoke slices
+
+   ## Objective
+
+   Exists only to give the smoke fixtures their slices.
+
+   ## Slices
+
+   | id | title | write_scope | depends_on | validation | status |
+   |----|-------|-------------|------------|------------|--------|
+   | s1 | Golden smoke | tests/golden/smoke.txt | | test -f tests/golden/smoke.txt | todo |
+   | s2 | Chain step | tests/golden/smoke-b.txt | | test -f tests/golden/smoke-b.txt | todo |
+   | s3 | Pi smoke | tests/golden/smoke-pi.txt | | test -f tests/golden/smoke-pi.txt | todo |
+   | s4 | Mount proof | tests/golden/mount-marker.txt | | test -f tests/golden/mount-marker.txt | todo |
+
+   ### Slice s1
+
+   Write exactly `GOLDEN_DISPATCH_OK` to `tests/golden/smoke.txt`. Nothing else.
+
+   #### Acceptance
+
+   - `tests/golden/smoke.txt` contains exactly `GOLDEN_DISPATCH_OK`
+
+   ### Slice s2
+
+   Write exactly `GOLDEN_CHAIN_OK` to `tests/golden/smoke-b.txt`. Nothing else.
+
+   #### Acceptance
+
+   - `tests/golden/smoke-b.txt` contains exactly `GOLDEN_CHAIN_OK`
+
+   ### Slice s3
+
+   Write exactly `GOLDEN_PI_OK` to `tests/golden/smoke-pi.txt`. Nothing else.
+
+   #### Acceptance
+
+   - `tests/golden/smoke-pi.txt` contains exactly `GOLDEN_PI_OK`
+
+   ### Slice s4
+
+   Write `MOUNT_TRAVERSAL_OK` to `data/artifacts/proof.txt` through the committed `data` symlink,
+   and write `ok` to `tests/golden/mount-marker.txt`.
+
+   #### Acceptance
+
+   - `data/artifacts/proof.txt` contains `MOUNT_TRAVERSAL_OK`
+   - `tests/golden/mount-marker.txt` exists
+   ```
 
 ### Golden smoke fixture (implement)
 
 The minimal repeatable case: one file, one line, all nine pipeline stages.
 
-1. `create-handoff` (`kb-dispatch` MCP): required `title`/`subject` strings, `mode: "implement"`,
-   `write_scope: ["tests/golden/smoke.txt"]`, `objective` describing the task (e.g. "Write exactly
-   `GOLDEN_DISPATCH_OK` to `tests/golden/smoke.txt`. Nothing else."), non-empty
-   `acceptance`/`validation` arrays, and `work_item` set to the stub from setup. `allowed_agents`
+1. `create-handoff` (`kb-dispatch` MCP): `wk` = the work item from setup, `slice: "s1"`, and the
+   required `subject` string. The row supplies `write_scope` (`tests/golden/smoke.txt`) and
+   `validation`; the slice section supplies the objective and the acceptance. `allowed_agents`
    is also required by the tool's own schema but is a dead v1 field the v2 pipeline never reads
    (adapter selection is `backend.family` alone) — any value satisfies it.
    - The target path does not need to exist yet, nor does its parent directory (`tests/golden/`,
@@ -228,9 +286,8 @@ against a real two-member chain, rather than the single-member case above. Do th
 
 1. Deliver A: the golden smoke fixture's HO (call its id HO-A), already dispatched and delivered
    per "Golden smoke fixture" above — do not merge it yet.
-2. `create-handoff`: a second HO (HO-B) with `base_ref: dispatch/HO-A` and a `write_scope` entry
-   distinct from HO-A's (e.g. a second line in `tests/golden/smoke.txt` or a second file), targeting
-   the same `work_item` stub. `dispatch` it the same way as the golden fixture — it lands as a
+2. `create-handoff`: a second HO (HO-B) with `wk` = the same work item, `slice: "s2"` (a
+   `write_scope` entry distinct from HO-A's) and `base_ref: dispatch/HO-A`. `dispatch` it the same way as the golden fixture — it lands as a
    second commit, subject `dispatch: HO-B`, on top of HO-A's commit on `dispatch/HO-A` (chained HOs
    are exempt from the `BASE_DRIFT` stamp, so no `base_sha` is needed).
 3. `derive-review`: `handoff_id` = HO-B. Assert the derived review HO's rendered body:
@@ -243,7 +300,7 @@ against a real two-member chain, rather than the single-member case above. Do th
 
 ### Pi-family fixture
 
-Same recipe as the golden smoke fixture, targeting a distinct file (e.g.
+Same recipe as the golden smoke fixture, generated from slice `s3` (target
 `tests/golden/smoke-pi.txt`) and dispatched with your model alias/backend name for a
 `backends.json` entry whose `family` is `"pi"` — any Pi-compatible backend works (a hosted
 aggregator, a local server, or a direct provider).
@@ -268,8 +325,8 @@ hard-wired to a delivered diff — so plan or spec review is redteam's job.
 
 1. Commit a small doc with at least one attackable factual or design claim (or reuse one already
    committed in the consuming repo).
-2. `create-handoff` (plus the baseline required fields from the golden fixture): `mode:
-   "redteam"`, `write_scope: []`, `web: false`, `read_first: [<that doc's repo-relative path>]`,
+2. `create-handoff` (explicit fields; only `implement` is generated from a slice): `title`,
+   `subject`, `allowed_agents`, `mode: "redteam"`, `write_scope: []`, `web: false`, `read_first: [<that doc's repo-relative path>]`,
    acceptance criteria framed as questions the attack must answer.
 3. `dispatch` the same way as the golden fixture.
 4. Assert the advisory shape (no branch, `RD/state.json` has `delivery_status: "no_changes"`) plus
@@ -289,10 +346,10 @@ data outside the repo would rely on.
 2. Commit an **absolute** symlink inside the repo pointing at it, e.g. `data ->
    /path/to/mount-target`. A relative symlink breaks after cloning — the clone lands under a
    different parent directory.
-3. `create-handoff` (plus the baseline required fields from the golden fixture): `mode:
-   "implement"`, `export_mounts: ["/path/to/mount-target"]`, task: write a marker (e.g.
-   `MOUNT_TRAVERSAL_OK`) to `data/artifacts/proof.txt` through the symlink. Also declare a normal,
-   non-empty `write_scope` entry (e.g. a small marker file under a repo-tracked path) — admission
+3. `create-handoff`: `wk` = the work item from setup, `slice: "s4"`, `subject`, and
+   `export_mounts: ["/path/to/mount-target"]`. The slice's task writes a marker
+   (`MOUNT_TRAVERSAL_OK`) to `data/artifacts/proof.txt` through the symlink. Its row carries a normal,
+   non-empty `write_scope` entry (a small marker file under a repo-tracked path) — admission
    still refuses an empty `write_scope` for implement mode even when `export_mounts` is non-empty
    (`MISSING_WRITE_SCOPE`; WK-0164 Gap 1, deferred until a real mount-only job materializes). The
    symlink path itself needs no `write_scope` entry — mounts are the permission; `write_scope`

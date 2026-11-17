@@ -27,9 +27,12 @@ pipeline after the run (see "Capture and Provenance").
 
 ### Generating an HO from a slice row
 
-A work item with a `## Slices` table can generate its handoff instead of retyping it:
-`create-handoff --wk WK-NNNN --slice s1` (MCP: `wk`, `slice`) reads the row and the work item and
-writes the HO. `write_scope` and `validation` come from the row; `read_first` is the row's files that
+An `implement` handoff is always generated from a slice of a work item, and a work item that is built
+declares a `## Slices` table; one row is enough. `create-handoff --wk WK-NNNN --slice s1` (MCP: `wk`,
+`slice`) reads the row and the work item and writes the HO. A hand-specified `implement` handoff
+(explicit `title`, `acceptance`, `validation`) is refused at authoring, and `dispatch` refuses one
+whose `slice` is not a row of its work item. The explicit-fields path stays for `redteam`, `research`
+and `explore_code`. `write_scope` and `validation` come from the row; `read_first` is the row's files that
 exist at generation time (a new slice's files do not exist yet, and admission refuses a missing
 `read_first` path) plus the work item path; `title` defaults to the row title and `mode` to
 `implement`; `work_item` and `slice` are recorded. `--subject` and `--allowed-agents` are still
@@ -56,18 +59,18 @@ box). The lines indented under it (wrapped text, sub-bullets, a fenced block) be
 joined with single spaces; a sub-bullet loses its marker. Lines inside a fenced block are never
 items. Any other non-blank text in the section is refused, naming the line.
 
-`create-handoff` refuses, writing nothing, when `wk` or `slice` is given without the other, the work
+`create-handoff` refuses, writing nothing, when `mode` is `implement` and `wk` and `slice` are not both
+given, when `wk` or `slice` is given without the other, the work
 item or the slice id does not exist, the work item has no `## Slices` table, the work item has no
 `## Objective` text, the slice has no section and the table has several rows, a slice section has no
 task text, no `#### Acceptance` heading or no items, the criteria text is not parseable (a one-row
 table reads the `## Acceptance criteria` items), the row has an empty validation
 cell, `work_item` is given and differs from `wk`, or any derived field (`write_scope`, `read_first`,
-`objective`, `acceptance`, `validation`) is also passed. A work item
-with no Slices table keeps the explicit-options path. Editing the work item or the row after
+`objective`, `acceptance`, `validation`) is also passed. Editing the work item or the row after
 generation trips the Base Drift Gate at `dispatch`; regenerate the HO.
 
-A fix-up generated with `wk` + `slice` carries the slice row's write scope. A fix-up that must touch
-a file outside the row uses explicit fields instead.
+A fix-up is the same call plus `base_ref` and `fixup_context`; it carries the slice row's write scope.
+A fix-up that must touch a file outside the row needs the row widened first.
 
 ### Required fields
 
@@ -87,7 +90,7 @@ a file outside the row uses explicit fields instead.
 |-------|------|-------|
 | `base_ref` | string \| null | `null` = fresh HEAD; otherwise must start with `dispatch/` and name an existing ref (chained review/fix-up HOs) |
 | `base_sha` / `base_wiki_sha` | string | Authoring-time commit stamps — see "Base Drift Gate" |
-| `slice` | string | Slice row id (e.g. `s1`) of the work item's `## Slices` table this HO was generated from; set by `create-handoff --wk --slice`, never read by admission |
+| `slice` | string | Slice row id (e.g. `s1`) of the work item's `## Slices` table this HO was generated from; set by `create-handoff --wk --slice`; required for `mode: implement`, and admission refuses an `implement` HO whose `slice` is not a row of its work item |
 | `reviewed_run` | string | Run id a `code_review` HO targets. Must be a dispatch run id (`RUN-<uuid>`); anything else is `BAD_RECORD` at parse |
 | `reviewed_sha` | string | Delivery-branch commit a derived `code_review` HO was derived for (full sha; anything else is `BAD_RECORD` at parse). Dispatch refuses unless `base_ref` resolves to it; `merge-delivery` accepts a head past it only when every later commit is a dispatch implement delivery |
 | `web` | boolean | Default `false`. Never allowed for `code_review`/`redteam` |
@@ -97,7 +100,7 @@ a file outside the row uses explicit fields instead.
 | `read_first` | string[] | Repo-relative paths; each must exist where the worker reads it at dispatch time (`MISSING_READ_FIRST`; see "Where read_first resolves") |
 | `vars` | string[] | `"KEY=value"` non-secret literal env for the worker |
 | `fixup_context` | string | Prior review findings injected verbatim on a re-dispatch. `create-handoff --fixup-context` writes it as a one-line JSON string, so any text survives. State each fix as a property of the whole branch with the command that proves it; restate every standing property of the tests the fix-up touches |
-| `work_item` | string | `WK-####`; required for `mode: implement`, and its `wiki/issues/<id>.md` must exist |
+| `work_item` | string | `WK-####`; required for `mode: implement`, and its `wiki/issues/<id>.md` must exist and declare the HO's `slice` |
 | `timeout_secs` | integer | Positive integer; overrides the pipeline's default 1800s worker watchdog. Absent = 1800s. Refused above the operator cap (`WORKER_TIMEOUT_EXCEEDS_CAP`; see "Model and Backend Configuration") — never clamped |
 
 ### Written back by the pipeline after a run
@@ -142,7 +145,8 @@ here is a persisted review state — it all re-runs, every time, against the liv
 | Every `runtime_envs` entry canonicalizes (realpath) to an absolute, existing, mountable path that is not `$HOME` itself and has a `bin/` dir | `BAD_RUNTIME_ENV` |
 | No `runtime_envs` entry overlaps a `export_mounts` entry in either direction | `RUNTIME_EXPORT_OVERLAP` |
 | `timeout_secs`, if declared, does not exceed the operator cap (`wiki/.dispatch/limits.json`'s `max_worker_timeout_secs`; absent = 1800s) | `WORKER_TIMEOUT_EXCEEDS_CAP` |
-| `implement` declares a `work_item` whose `wiki/issues/<id>.md` exists | `WORK_ITEM_NOT_FOUND` |
+| `implement` declares a `work_item` whose `wiki/issues/<id>.md` can be read (read from the working tree, in both wiki shapes) | `WORK_ITEM_NOT_FOUND` |
+| `implement` declares a `slice` that is a row of that work item's `## Slices` table | `BAD_RECORD` |
 | An HO carrying `reviewed_sha`: the commit it would clone (`base_ref`, else HEAD) is that sha — a derived review runs only against the head it was derived for | `REVIEWED_SHA_MISMATCH` |
 | Fresh-HEAD HOs: declared paths haven't changed since `base_sha`/`base_wiki_sha` | `BASE_DRIFT` (see below) |
 
@@ -788,7 +792,7 @@ The full dispatch loop with lifecycle tools. One slice of a work item is one han
 gates; the orchestrator decides what is next.
 
 ```
-orchestrator authors HO          → create-handoff (--wk --slice when the work item has a Slices table)
+orchestrator authors HO          → create-handoff (--wk --slice; every implement handoff comes from a slice)
 orchestrator dispatches          → dispatch + watch
 pipeline executes + delivers     → automatic
 pipeline validates the delivery  → host runs the repo's test suite, writes the `Host validation:` line (automatic, every implement delivery)
@@ -797,7 +801,7 @@ orchestrator reads result        → HO-XXXX.response.md (the orchestrator never
 orchestrator derives review      → derive-review (reuses the delivery's evidence)
 orchestrator dispatches review   → dispatch + watch (same cycle)
 orchestrator judges each finding → fix | dismiss | defer (reason required for dismiss and defer)
-orchestrator sends one fix-up    → create-handoff (base_ref: dispatch/<reviewed HO>, fixup_context = the findings to fix) + dispatch
+orchestrator sends one fix-up    → create-handoff (--wk --slice, base_ref: dispatch/<reviewed HO>, fixup_context = the findings to fix) + dispatch
 orchestrator reviews the fix-up  → derive-review on the fix-up HO (covers only the fix-up) + dispatch
 orchestrator merges the chain    → merge-delivery on the last HO, with a judgment for every finding of every review on the chain
 ```

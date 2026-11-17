@@ -19,6 +19,7 @@ import { checkAdmission } from '../packages/dispatch-core/src/admission.js';
 import { getDefaultRegistry, resolveModel } from '../packages/dispatch-core/src/model-registry.js';
 import { assemblePrompt } from '../packages/dispatch-core/src/assemble.js';
 import { buildInvocation, buildModelsJson, parsePiOutput } from '../packages/dispatch-core/src/adapters/pi.js';
+import { SLICE_ID, slicesSection } from './helpers/slice-fixture.js';
 import { extractRecoveryBlock, validateRecoveryPayload } from '../packages/dispatch-core/src/recovery-block.js';
 
 // ---------------------------------------------------------------------------
@@ -128,6 +129,7 @@ function makeHandoff(overrides: Partial<Handoff> = {}): Handoff {
     status: 'draft',
     // WK-0116: resolves via the wiki/issues + wiki/initiatives fixtures written in beforeEach.
     work_item: 'WK-9001',
+    slice: SLICE_ID,
     ...overrides,
   };
 }
@@ -258,7 +260,7 @@ describe('admission.ts — S0 admission checks', () => {
     await mkdir(join(repoRoot, 'wiki', 'issues'), { recursive: true });
     await writeFile(
       join(repoRoot, 'wiki', 'issues', 'WK-9001.md'),
-      '---\nid: "WK-9001"\ntitle: "Fixture WK"\nstatus: todo\ninitiative: IN-9001\n---\n\n# WK-9001: Fixture\n',
+      `---\nid: "WK-9001"\ntitle: "Fixture WK"\nstatus: todo\ninitiative: IN-9001\n---\n\n# WK-9001: Fixture\n\n${slicesSection()}`,
       'utf8',
     );
     await mkdir(join(repoRoot, 'wiki', 'initiatives'), { recursive: true });

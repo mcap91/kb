@@ -1,3 +1,4 @@
+import type { HandoffMode as V2HandoffMode } from './ho.js';
 import type { BwrapProbeResult } from './tier.js';
 
 // ---------------------------------------------------------------------------
@@ -161,7 +162,7 @@ export interface CreateHandoffOpts {
   title: string;
   subject: string;
   allowed_agents: string[];
-  mode: HandoffMode;
+  mode: V2HandoffMode;
   status?: HandoffStatus;
   depends_on?: string[];
   area?: string;
@@ -191,10 +192,11 @@ export interface CreateHandoffOpts {
 }
 
 /**
- * What `createHandoff` accepts: explicit options, or `wk` + `slice` with the
- * title, write_scope, read_first, objective, acceptance and validation derived
- * from the WK's `## Slices` row and body (objective and acceptance bounded to the slice). `mode` defaults to implement on the
- * slice path.
+ * What `createHandoff` accepts: `wk` + `slice` with the title, write_scope,
+ * read_first, objective, acceptance and validation derived from the WK's
+ * `## Slices` row and body (objective and acceptance bounded to the slice), or
+ * explicit options for every mode but implement. `mode` defaults to implement
+ * on the slice path.
  */
 export type CreateHandoffInput = Omit<CreateHandoffOpts, 'title' | 'mode' | 'acceptance' | 'validation' | 'slice'> &
   Partial<Pick<CreateHandoffOpts, 'title' | 'mode' | 'acceptance' | 'validation'>> & {

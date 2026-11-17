@@ -14,6 +14,7 @@ import { FIXUP_AUTHORING_RULES, createHandoff, renderHandoff } from '../packages
 import { parseHandoff, parseHandoffContent } from '../packages/dispatch-core/src/ho.js';
 import type { CreateHandoffOpts } from '../packages/dispatch-core/src/types.js';
 import { tools } from '../packages/dispatch-mcp/src/tools.js';
+import { SLICE_ID, writeSliceWorkItem } from './helpers/slice-fixture.js';
 
 const ROOT = resolve(process.cwd());
 const TSX = resolve(ROOT, 'node_modules/.bin/tsx');
@@ -113,6 +114,7 @@ describe('fixup_context through createHandoff, the CLI and the MCP tool', () => 
     await mkdir(join(repo, 'wiki', '.dispatch'), { recursive: true });
     const boot = await bootstrap({ dir: repo, repo: 'test/repo' });
     if (!boot.ok) throw new Error(boot.message);
+    await writeSliceWorkItem(repo, 'WK-0001');
     for (const args of [['init'], ['config', 'user.email', 't@example.com'], ['config', 'user.name', 'T'], ['add', '-A'], ['commit', '-m', 'init']]) {
       execFileSync('git', args, { cwd: repo });
     }
@@ -123,7 +125,7 @@ describe('fixup_context through createHandoff, the CLI and the MCP tool', () => 
   });
 
   it('round-trips through a written file', async () => {
-    const created = await createHandoff(opts({ dir: repo, fixup_context: HARD_TEXT }));
+    const created = await createHandoff({ dir: repo, subject: 'kb:dispatch', allowed_agents: ['claude'], wk: 'WK-0001', slice: SLICE_ID, fixup_context: HARD_TEXT });
     if (!created.ok) throw new Error(created.message);
     const parsed = await parseHandoff(created.data.handoffPath);
     expect(parsed.ok && parsed.data.fixup_context).toBe(HARD_TEXT);
@@ -131,8 +133,8 @@ describe('fixup_context through createHandoff, the CLI and the MCP tool', () => 
 
   it('the CLI --fixup-context flag reaches the file', async () => {
     execFileSync(TSX, [CLI,
-      'create-handoff', '--dir', repo, '--subject', 's', '--allowed-agents', 'claude', '--title', 'Fix-up',
-      '--mode', 'implement', '--work-item', 'WK-0001', '--acceptance', 'a', '--validation', 'v',
+      'create-handoff', '--dir', repo, '--subject', 's', '--allowed-agents', 'claude',
+      '--wk', 'WK-0001', '--slice', SLICE_ID,
       '--fixup-context', HARD_TEXT,
     ], { cwd: ROOT, stdio: 'pipe' });
     const parsed = await parseHandoff(join(repo, 'wiki', 'handoffs', 'HO-0001.md'));
@@ -143,7 +145,7 @@ describe('fixup_context through createHandoff, the CLI and the MCP tool', () => 
     const tool = tools.find((t) => t.name === 'create-handoff')!;
     const shape = (tool.inputSchema as unknown as { shape: Record<string, unknown> }).shape;
     expect(Object.keys(shape)).toContain('fixup_context');
-    const result = (await tool.handler({ ...opts({ dir: repo }), fixup_context: HARD_TEXT })) as { ok: boolean };
+    const result = (await tool.handler({ dir: repo, subject: 'kb:dispatch', allowed_agents: ['claude'], wk: 'WK-0001', slice: SLICE_ID, fixup_context: HARD_TEXT })) as { ok: boolean };
     expect(result.ok).toBe(true);
     const text = await readFile(join(repo, 'wiki', 'handoffs', 'HO-0001.md'), 'utf8');
     const parsed = parseHandoffContent(text, 'HO-0001.md');

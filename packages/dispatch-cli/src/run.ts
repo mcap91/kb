@@ -17,10 +17,10 @@ import type {
   CheckEnvironmentResult,
   CleanupReport,
   CreateHandoffResult,
-  HandoffMode,
   InitDispatchResult,
   RestampResult,
   StatusResult,
+  V2HandoffMode,
   WaitForRunResult,
 } from '@kb/dispatch-core';
 
@@ -74,10 +74,12 @@ Command Options:
     --dir <path>             Repository root directory (required)
     --subject <text>         Handoff subject (required)
     --allowed-agents <csv>   Allowed agents, comma-separated (required)
+    An implement handoff is always generated from a slice: pass --wk and --slice (a fix-up adds
+    --base-ref and --fixup-context). The work item needs a "## Slices" table; one row is enough.
     --title <text>           Handoff title (required; defaults to the slice title with --slice)
-    --mode <mode>            implement | code_review | redteam | research | explore_code (required; defaults to implement with --slice)
-    --acceptance <csv>       Acceptance criteria, comma-separated (required without --slice)
-    --validation <csv>       Validation commands, comma-separated (required without --slice)
+    --mode <mode>            implement | code_review | redteam | research | explore_code (required; defaults to implement with --slice; implement needs --wk and --slice)
+    --acceptance <csv>       Acceptance criteria, comma-separated (required without --slice; not for implement)
+    --validation <csv>       Validation commands, comma-separated (required without --slice; not for implement)
     --wk <WK-id>             Generate from a slice of this work item's ## Slices table (needs --slice)
     --slice <id>             Slice row id, e.g. s1 (needs --wk); derives write scope, validation,
                              read-first, objective and acceptance, so those flags are refused with it.
@@ -231,17 +233,12 @@ async function cmdCreateHandoff(args: string[]): Promise<number> {
     return 1;
   }
 
-  if (!fromSlice && mode === 'implement' && !getFlagValue(args, '--work-item')) {
-    console.error('Error: --work-item is required when --mode is implement (WORK_ITEM_NOT_FOUND gate)');
-    return 1;
-  }
-
   const result = await createHandoff({
     dir,
     title,
     subject,
     allowed_agents: allowedAgents,
-    mode: mode as HandoffMode | undefined,
+    mode: mode as V2HandoffMode | undefined,
     wk,
     slice,
     work_item: getFlagValue(args, '--work-item'),
