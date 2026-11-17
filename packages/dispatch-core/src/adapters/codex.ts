@@ -22,9 +22,12 @@
  *   that already confines it.
  * - `--json` produces JSON-lines events on stdout. Exit code is 0 for BOTH a
  *   successful run and a sandbox-blocked run (same fixture) — never usable
- *   alone as an outcome signal, mirroring the Pi adapter's WK-0091 ruling;
- *   the pipeline, not this adapter, owns outcome policy beyond parse-level
- *   facts.
+ *   alone as an outcome signal, mirroring the Pi adapter.
+ *   The stream's turn-ending events are the outcome signal: a successful run
+ *   ends with `turn.completed` (`codex-exec-output-stream-json.jsonl`), a run
+ *   whose model call failed ends with `turn.failed`
+ *   (`codex-exec-output-turn-failed.jsonl`, exit code 1). A sandbox-blocked
+ *   run still ends with `turn.completed`, so it stays `completed`.
  * - `-o <file>` mirrors the run's last agent_message text to a file; this
  *   adapter reports that path in the invocation shape (`outputLastMessagePath`)
  *   but never reads or writes it itself.
@@ -177,6 +180,7 @@ export function parseCodexOutput(stdout: string): DispatchResult<CodexResult> {
   let parsedCount = 0;
   let lastAssistantText = '';
   let usage: CodexUsage = ZERO_USAGE;
+  let lastTurnEnd: 'turn.completed' | 'turn.failed' | undefined;
 
   for (const line of lines) {
     let event: unknown;
@@ -199,6 +203,10 @@ export function parseCodexOutput(stdout: string): DispatchResult<CodexResult> {
       }
     }
 
+    if (type === 'turn.completed' || type === 'turn.failed') {
+      lastTurnEnd = type;
+    }
+
     if (type === 'turn.completed' && isRecord(event.usage)) {
       usage = extractUsage(event.usage);
     }
@@ -217,13 +225,17 @@ export function parseCodexOutput(stdout: string): DispatchResult<CodexResult> {
     });
   }
 
-  // Facts-only: exit code 0 covers both success and sandbox-blocked runs
-  // (see the permission-denied fixture), so this adapter never infers
-  // failure from the event stream shape alone. Every stream that parses at
-  // all reports 'completed'; outcome policy beyond parse-level facts belongs
-  // to the launcher/pipeline, not this adapter (mirrors the Pi adapter's
-  // WK-0091 ruling that exit code / event presence alone is not evidence of
-  // true outcome).
+  // Parse-level facts from the stream's last turn-ending event. A top-level
+  // `error` event or an `error` item is not a failure by itself (the failed-turn
+  // capture carries a warning item; a bare `error` can precede a retry).
+  // A sandbox-blocked run still ends with `turn.completed`, so it stays
+  // 'completed'; outcome policy beyond these facts belongs to the pipeline.
+  if (lastTurnEnd === 'turn.failed') {
+    return ok({ outcome: 'error', stopReason: 'turn_failed', usage, lastAssistantText });
+  }
+  if (lastTurnEnd === undefined) {
+    return ok({ outcome: 'failed', stopReason: 'no_turn_completed', usage, lastAssistantText });
+  }
   return ok({
     outcome: 'completed',
     usage,

@@ -112,6 +112,44 @@ describe('adapters/codex.ts — parseCodexOutput (S6c, golden fixture)', () => {
     expect(raw).toContain('reasoning_output_tokens');
   });
 
+  it('reports error/turn_failed for the real failed-turn capture', () => {
+    const stdout = readFileSync(join(__dirname, 'fixtures', 'codex-exec-output-turn-failed.jsonl'), 'utf8');
+
+    const result = parseCodexOutput(stdout);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.outcome).toBe('error');
+    expect(result.data.stopReason).toBe('turn_failed');
+  });
+
+  it('reports failed/no_turn_completed for a stream with events but no turn-ending event', () => {
+    const stdout = [
+      '{"type":"thread.started","thread_id":"t"}',
+      '{"type":"turn.started"}',
+      '{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"partial"}}',
+    ].join('\n');
+
+    const result = parseCodexOutput(stdout);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.outcome).toBe('failed');
+    expect(result.data.stopReason).toBe('no_turn_completed');
+  });
+
+  it('reports error for a turn.failed after an agent_message and keeps the text', () => {
+    const stdout = [
+      '{"type":"turn.started"}',
+      '{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"half a review"}}',
+      '{"type":"turn.failed","error":{"message":"stream disconnected"}}',
+    ].join('\n');
+
+    const result = parseCodexOutput(stdout);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.outcome).toBe('error');
+    expect(result.data.lastAssistantText).toBe('half a review');
+  });
+
   it('reports failed/empty_stream for empty input', () => {
     const result = parseCodexOutput('');
     expect(result.ok).toBe(true);

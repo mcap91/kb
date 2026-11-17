@@ -41,6 +41,7 @@ import {
   checkAdmission,
   writeResponseDoc,
   parsePiOutput,
+  parseCodexOutput,
   type Handoff,
   type DeliveryOutcome,
   type RecoveryBlockEvidence,
@@ -1079,6 +1080,25 @@ describe('capture.ts — mechanical verdict ladder (DEC-0010 / WK-0095)', () => 
       expect(written).not.toContain('outcome: delivered');
     },
   );
+
+  it('code_review mode + the real failed-turn codex capture + a non-empty transcript -> outcome: failed, reason: process_error (the adapter outcome reaches the verdict)', async () => {
+    const parsed = parseCodexOutput(readFileSync(join(__dirname, 'fixtures', 'codex-exec-output-turn-failed.jsonl'), 'utf8'));
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    const result = await writeResponseDoc({
+      runDir,
+      handoff: { id: 'HO-TEST', title: 'Test task', mode: 'code_review' },
+      delivery: { status: 'no_changes' },
+      piResult: { outcome: parsed.data.outcome, usage: { inputTokens: null, outputTokens: null, cacheReadTokens: null, cacheWriteTokens: null, reasoningTokens: null, totalTokens: 10, costUsd: 0 } },
+      accumulatedText: 'Reviewing the diff. Found one issue in the parser.',
+      lastAssistantText: 'Found one issue in the parser.',
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const written = await readFile(result.data.responsePath, 'utf8');
+    expect(written).toContain('outcome: failed');
+    expect(written).toContain('reason: process_error');
+  });
 
   it('code_review mode + a crashed process + a VALID recovery block + a non-empty transcript -> outcome: failed, reason: process_error (the block cannot make a crashed run a success)', async () => {
     const handoff = { id: 'HO-TEST', title: 'Test task', mode: 'code_review' };
