@@ -313,13 +313,20 @@ describe.skipIf(!BWRAP_FUNCTIONAL)('runHostValidation (WK-0294) — real bwrap',
       expect(second.data.started_at).not.toBe(first.data.started_at);
     });
 
-    it('fails on a malformed evidence file instead of treating it as absent', async () => {
+    // Why: the host can always produce the evidence again, so a damaged file must not block the gate for ever.
+    it.each([
+      ['not JSON', '{ not json'],
+      ['JSON of the wrong shape', '{"schema_version": 2}'],
+    ])('treats an evidence file that is %s as stale: runs again and rewrites it', async (_name, damaged) => {
       deliverySha = await deliver({ 'ok.sh': 'echo hi\n' });
       const path = join(repo, '.agent-runs', 'runs', HANDOFF_ID, RUN_ID, VALIDATION_EVIDENCE_FILE);
       await mkdir(join(repo, '.agent-runs', 'runs', HANDOFF_ID, RUN_ID), { recursive: true });
-      await writeFile(path, '{ not json');
+      await writeFile(path, damaged);
       const result = await evidenceForDelivery(opts(deliverySha, reg()));
-      expect(result.ok).toBe(false);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.data).toMatchObject({ delivery_sha: deliverySha, outcome: 'pass' });
+      expect(JSON.parse(await readFile(path, 'utf8'))).toEqual(result.data);
     });
   });
 

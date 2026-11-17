@@ -1084,17 +1084,42 @@ describe('mergeDelivery (WK-0132 Slice 3)', () => {
     expect(await branchExists(repoDir, 'dispatch/HO-0027')).toBe(true);
   });
 
-  it('refuses the merge, naming the newer review id with no fallback, when the newer review has no response doc (WK-0207)', async () => {
+  // A review that was derived and never finished does not govern: the newest finished review does.
+  it.each([
+    ['has no response doc', undefined],
+    ['has an empty report', makeEmptyReviewResponse('HO-0030')],
+  ])('merges on the older finished review when a newer review %s', async (_name, newerResponse) => {
     await writeAndCommit(
       repoDir,
       {
-        'wiki/handoffs/HO-0030.md': makeImplementHO('HO-0030', 'Implement missing-response thing', 'WK-0207'),
-        'wiki/handoffs/HO-0031.md': makeReviewHO('HO-0031', 'Code review: Implement missing-response thing', 'dispatch/HO-0030', 'WK-0207'),
+        'wiki/handoffs/HO-0030.md': makeImplementHO('HO-0030', 'Implement unfinished-review thing', 'WK-0207'),
+        'wiki/handoffs/HO-0031.md': makeReviewHO('HO-0031', 'Code review: Implement unfinished-review thing', 'dispatch/HO-0030', 'WK-0207'),
         'wiki/handoffs/HO-0031.response.md': makeReviewResponse('no_findings', 'HO-0030', false),
-        'wiki/handoffs/HO-0032.md': makeReviewHO('HO-0032', 'Code review: Implement missing-response thing (re-review)', 'dispatch/HO-0030', 'WK-0207'),
-        // Deliberately no HO-0032.response.md.
+        'wiki/handoffs/HO-0032.md': makeReviewHO('HO-0032', 'Code review: Implement unfinished-review thing (re-review)', 'dispatch/HO-0030', 'WK-0207'),
+        ...(newerResponse !== undefined ? { 'wiki/handoffs/HO-0032.response.md': newerResponse } : {}),
       },
-      'add implement HO + older passing review + newer review with no response doc',
+      'add implement HO + older finished review + newer unfinished review',
+    );
+    await createDeliveryBranch(repoDir, 'HO-0030');
+
+    const result = await mergeDelivery({ dir: repoDir, handoff_id: 'HO-0030' });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(`expected ok, got: ${result.error}: ${result.message}`);
+    expect(result.data.reviewId).toBe('HO-0031');
+    expect(await branchExists(repoDir, 'dispatch/HO-0030')).toBe(false);
+  });
+
+  it('refuses, naming each unfinished review with its state and the next step, when no review is finished', async () => {
+    await writeAndCommit(
+      repoDir,
+      {
+        'wiki/handoffs/HO-0030.md': makeImplementHO('HO-0030', 'Implement unfinished-review thing', 'WK-0207'),
+        'wiki/handoffs/HO-0031.md': makeReviewHO('HO-0031', 'Code review: first', 'dispatch/HO-0030', 'WK-0207'),
+        'wiki/handoffs/HO-0032.md': makeReviewHO('HO-0032', 'Code review: second', 'dispatch/HO-0030', 'WK-0207'),
+        'wiki/handoffs/HO-0032.response.md': makeEmptyReviewResponse('HO-0030'),
+      },
+      'add implement HO + two unfinished reviews',
     );
     await createDeliveryBranch(repoDir, 'HO-0030');
 
@@ -1103,8 +1128,26 @@ describe('mergeDelivery (WK-0132 Slice 3)', () => {
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error('expected refusal, got ok');
     expect(result.error).toBe('ADMISSION_FAILED');
-    expect(result.message).toContain('HO-0032');
+    expect(result.message).toContain('HO-0031 (no response doc)');
+    expect(result.message).toContain('HO-0032 (empty report)');
+    expect(result.message).toContain('dispatch it, or run derive-review for HO-0030');
     expect(await branchExists(repoDir, 'dispatch/HO-0030')).toBe(true);
+  });
+
+  // An unfinished newer review must not hide the findings of a finished one.
+  it('still needs a judgment for every finding of a finished review when a newer review is unfinished', async () => {
+    await writeAndCommit(
+      repoDir,
+      {
+        'wiki/handoffs/HO-0030.md': makeImplementHO('HO-0030', 'Implement unfinished-review thing', 'WK-0207'),
+        'wiki/handoffs/HO-0031.md': makeReviewHO('HO-0031', 'Code review: first', 'dispatch/HO-0030', 'WK-0207'),
+        'wiki/handoffs/HO-0031.response.md': makeReviewResponse('changes_requested', 'HO-0030', true),
+        'wiki/handoffs/HO-0032.md': makeReviewHO('HO-0032', 'Code review: second', 'dispatch/HO-0030', 'WK-0207'),
+      },
+      'add implement HO + finished review with a finding + unfinished review',
+    );
+    await createDeliveryBranch(repoDir, 'HO-0030');
+    expect(await refusal(repoDir, 'HO-0030')).toContain('HO-0031/F1');
   });
 });
 
@@ -1145,14 +1188,47 @@ describe('mergeDelivery host validation gate (WK-0294, DEC-0047 A1.2 / A2 R6 R8 
     expect(written).toMatchObject({ delivery_sha: branchSha, outcome: 'pass' });
   });
 
-  it('refuses unreadable (malformed) evidence, without the jail hermeticity teaching sentence', async () => {
+  // Why: a damaged evidence file is stale, not fatal; the host produces it again and the merge goes on.
+  it('validates the head again over a malformed evidence file, rewrites it, and merges', async () => {
     await setupReviewedDelivery();
     await writeFile(evidencePath(repoDir, 'HO-0001'), '{ not valid json');
+    const branchSha = (await execFile('git', ['rev-parse', 'dispatch/HO-0001'], { cwd: repoDir })).stdout.trim();
     const result = await mergeDelivery({ dir: repoDir, handoff_id: 'HO-0001' });
-    expect(result.ok).toBe(false);
-    if (result.ok) return;
-    expect(result.message).toContain('unreadable');
-    expect(result.message).not.toContain(JAIL_HERMETICITY_TEACHING_SENTENCE);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(`expected ok, got: ${result.error}: ${result.message}`);
+    expect(result.data).toMatchObject({ gate: 'evidence', mergedSha: branchSha });
+    expect(JSON.parse(await readFile(evidencePath(repoDir, 'HO-0001'), 'utf8'))).toMatchObject({ delivery_sha: branchSha, outcome: 'pass' });
+  });
+
+  // Why: with no command registered the gate passes with nothing run; the result must say so.
+  it('reports zero validation steps when no command is registered', async () => {
+    await setupReviewedDelivery();
+    const result = await mergeDelivery({ dir: repoDir, handoff_id: 'HO-0001' });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.validationSteps).toBe(0);
+  });
+
+  it.skipIf(!BWRAP_FUNCTIONAL)('reports how many validation steps the evidence holds', async () => {
+    await setupReviewedDelivery();
+    await mkdir(join(repoDir, 'wiki', '.dispatch'), { recursive: true });
+    await writeAndCommit(
+      repoDir,
+      {
+        'wiki/.dispatch/validation.json': JSON.stringify({
+          schema_version: 1,
+          commands: [
+            { name: 'one', argv: ['bash', '-c', 'exit 0'], timeout_ms: 30_000 },
+            { name: 'two', argv: ['bash', '-c', 'exit 0'], timeout_ms: 30_000 },
+          ],
+        }),
+      },
+      'register two passing commands',
+    );
+    const result = await mergeDelivery({ dir: repoDir, handoff_id: 'HO-0001' });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(`expected ok, got: ${result.error}: ${result.message}`);
+    expect(result.data.validationSteps).toBe(2);
   });
 
   it('refuses a review with no reviewed_run stamp', async () => {
@@ -1359,13 +1435,24 @@ describe('mergeDelivery host validation gate (WK-0294, DEC-0047 A1.2 / A2 R6 R8 
   });
 
   // Why: review F3 — the override record must name the head run even when its evidence is unusable.
-  it('records the head run in an override over unreadable evidence', async () => {
+  it('records the head run in an override over evidence that cannot be produced', async () => {
     await setupReviewedDelivery();
-    await writeFile(evidencePath(repoDir, 'HO-0001'), '{ not valid json');
+    await mkdir(join(repoDir, 'wiki', '.dispatch'), { recursive: true });
+    await writeAndCommit(
+      repoDir,
+      {
+        'wiki/.dispatch/validation.json': JSON.stringify({
+          schema_version: 1,
+          commands: [{ name: 'test', argv: ['bash', '-c', 'exit 0'], timeout_ms: 30_000 }],
+          runtime_paths: ['/nonexistent-runtime-root'],
+        }),
+      },
+      'register a command with a runtime path that does not exist',
+    );
     const result = await mergeDelivery({
       dir: repoDir,
       handoff_id: 'HO-0001',
-      override: { reason: 'evidence file was corrupted', actor: 'operator', surface: 'api' },
+      override: { reason: 'the registered runtime root is gone', actor: 'operator', surface: 'api' },
     });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
@@ -1494,6 +1581,22 @@ describe('mergeDelivery over a fix-up chain', () => {
     expect(await branchExists(repoDir, 'dispatch/HO-0002')).toBe(false);
   });
 
+  it('keeps a member branch that is not fully merged, with the reason, and deletes the rest', async () => {
+    await setupFixupChain();
+    // A commit lands on the first member's branch after the head was cut: the merge does not carry it.
+    const base = (await execFile('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: repoDir })).stdout.trim();
+    await execFile('git', ['checkout', 'dispatch/HO-0001'], { cwd: repoDir });
+    await writeAndCommit(repoDir, { 'late.ts': 'export const late = 1;\n' }, 'a commit after the head was cut');
+    await execFile('git', ['checkout', base], { cwd: repoDir });
+
+    const result = await mergeDelivery({ dir: repoDir, handoff_id: 'HO-0002' });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(`expected ok, got: ${result.error}: ${result.message}`);
+    expect(result.data.deletedBranches).toEqual(['dispatch/HO-0002']);
+    expect(result.data.keptBranches).toEqual([{ branch: 'dispatch/HO-0001', reason: 'not fully merged into the merge target' }]);
+    expect(await branchExists(repoDir, 'dispatch/HO-0001')).toBe(true);
+    expect(await branchExists(repoDir, 'dispatch/HO-0002')).toBe(false);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1609,6 +1712,26 @@ describe('mergeDelivery judgments', () => {
     await createDeliveryBranch(repoDir, 'HO-0001');
     const message = await refusal(repoDir, 'HO-0001', [{ finding: 'F1', judgment: 'fix' }]);
     expect(message).toContain('carries no reviewed_sha stamp');
+  });
+
+  // Why: a review of a commit the branch does not hold cannot be followed by a delivery on this branch.
+  it('refuses a fix for a review whose reviewed_sha is not part of the branch', async () => {
+    const stray = (await execFile('git', ['commit-tree', 'HEAD^{tree}', '-m', 'a commit of another history'], { cwd: repoDir })).stdout.trim();
+    await writeAndCommit(
+      repoDir,
+      {
+        'wiki/handoffs/HO-0001.md': makeImplementHO('HO-0001', 'Implement thing', 'WK-0001'),
+        'wiki/handoffs/HO-0002.md': makeReviewHO('HO-0002', 'Code review: reset branch', 'dispatch/HO-0001', 'WK-0001', REVIEWED_RUN, stray),
+        'wiki/handoffs/HO-0002.response.md': makeReviewResponse('changes_requested', 'HO-0001', true),
+        'wiki/handoffs/HO-0003.md': makeReviewHO('HO-0003', 'Code review: head', 'dispatch/HO-0001', 'WK-0001'),
+        'wiki/handoffs/HO-0003.response.md': makeReviewResponse('no_findings', 'HO-0001', false),
+      },
+      'add HOs',
+    );
+    await createDeliveryBranch(repoDir, 'HO-0001');
+    const message = await refusal(repoDir, 'HO-0001', [{ review: 'HO-0002', finding: 'F1', judgment: 'fix' }]);
+    expect(message).toContain(`HO-0002/F1 judged fix, but review HO-0002 reviewed ${stray}, which is not part of dispatch/HO-0001`);
+    expect(message).toContain('judge it dismiss or defer with a reason');
   });
 
   it('refuses a missing judgment, listing the finding with severity and title, and commits nothing', async () => {
@@ -1816,6 +1939,121 @@ describe('findings stamp in the response doc', () => {
     );
     await createDeliveryBranch(repoDir, 'HO-0001');
     expect(await refusal(repoDir, 'HO-0001')).toContain('malformed recovery_findings field');
+  });
+
+  it('refuses a recovery_findings value that lists one id twice', async () => {
+    const doc = (await responseDoc(evidenceFor('changes_requested', ['F1', 'F2']))).replace(/^recovery_findings: .*$/m, (line) => {
+      const entries = JSON.parse(line.slice('recovery_findings: '.length)) as { id: string }[];
+      entries[1]!.id = entries[0]!.id;
+      return `recovery_findings: ${JSON.stringify(entries)}`;
+    });
+    await writeAndCommit(
+      repoDir,
+      {
+        'wiki/handoffs/HO-0001.md': makeImplementHO('HO-0001', 'Implement thing', 'WK-0001'),
+        'wiki/handoffs/HO-0002.md': makeReviewHO('HO-0002', 'Code review', 'dispatch/HO-0001', 'WK-0001'),
+        'wiki/handoffs/HO-0002.response.md': doc,
+      },
+      'add HOs',
+    );
+    await createDeliveryBranch(repoDir, 'HO-0001');
+    const message = await refusal(repoDir, 'HO-0001', [{ finding: 'F1', judgment: 'dismiss', reason: 'x' }]);
+    expect(message).toContain('malformed recovery_findings field');
+    expect(message).toContain('lists finding id F1 twice');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A review handoff the lookup cannot read must not silently change which review governs.
+// ---------------------------------------------------------------------------
+
+describe('mergeDelivery with a review handoff that cannot be read', () => {
+  async function setupReviewed(): Promise<void> {
+    await writeAndCommit(
+      repoDir,
+      {
+        'wiki/handoffs/HO-0001.md': makeImplementHO('HO-0001', 'Implement thing', 'WK-0001'),
+        'wiki/handoffs/HO-0002.md': makeReviewHO('HO-0002', 'Code review', 'dispatch/HO-0001', 'WK-0001'),
+        'wiki/handoffs/HO-0002.response.md': makeReviewResponse('no_findings', 'HO-0001', false),
+      },
+      'add HOs',
+    );
+    await createDeliveryBranch(repoDir, 'HO-0001');
+  }
+
+  it('refuses when an unparsable handoff names a branch of the chain as its base_ref, naming the file and the problem', async () => {
+    await setupReviewed();
+    // A newer review whose frontmatter lost its mode: it would govern if it parsed.
+    await writeAndCommit(
+      repoDir,
+      { 'wiki/handoffs/HO-0003.md': '---\nschema_version: 1\nid: "HO-0003"\ntitle: "Code review"\nbase_ref: dispatch/HO-0001\n---\n\n# broken\n' },
+      'add a review handoff that does not parse',
+    );
+    const before = await headSha(repoDir);
+    const result = await mergeDelivery({ dir: repoDir, handoff_id: 'HO-0001' });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('expected refusal, got ok');
+    expect(result.message).toContain('HO-0003.md');
+    expect(result.message).toContain('Missing required handoff field');
+    expect(await headSha(repoDir)).toBe(before);
+    expect(await branchExists(repoDir, 'dispatch/HO-0001')).toBe(true);
+  });
+
+  it('skips an unparsable handoff that names no branch of the chain', async () => {
+    await setupReviewed();
+    await writeAndCommit(
+      repoDir,
+      { 'wiki/handoffs/HO-0003.md': '---\nid: "HO-0003"\nbase_ref: dispatch/HO-0099\n---\n\n# broken\n' },
+      'add an unrelated handoff that does not parse',
+    );
+    const result = await mergeDelivery({ dir: repoDir, handoff_id: 'HO-0001' });
+    expect(result.ok).toBe(true);
+  });
+
+  it('refuses when a handoff file cannot be read for a reason other than not found, naming the file', async () => {
+    await setupReviewed();
+    await mkdir(join(repoDir, 'wiki', 'handoffs', 'HO-0003.md'));
+    const result = await mergeDelivery({ dir: repoDir, handoff_id: 'HO-0001' });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('expected refusal, got ok');
+    expect(result.message).toContain('HO-0003.md');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A failed `git merge` says why, and says what was already committed.
+// ---------------------------------------------------------------------------
+
+describe('mergeDelivery when git cannot merge', () => {
+  it("includes git's output, aborts the merge, and names the record files already committed", async () => {
+    await writeAndCommit(
+      repoDir,
+      {
+        'wiki/handoffs/HO-0001.md': makeImplementHO('HO-0001', 'Implement thing', 'WK-0001'),
+        'wiki/handoffs/HO-0002.md': makeReviewHO('HO-0002', 'Code review', 'dispatch/HO-0001', 'WK-0001'),
+        'wiki/handoffs/HO-0002.response.md': makeReviewResponse('changes_requested', 'HO-0001', true),
+      },
+      'add HOs',
+    );
+    await createDeliveryBranch(repoDir, 'HO-0001', { 'dummy.txt': 'from the branch\n' });
+    await writeAndCommit(repoDir, { 'dummy.txt': 'from the base\n' }, 'edit the same file on the base');
+
+    const result = await mergeDelivery({
+      dir: repoDir,
+      handoff_id: 'HO-0001',
+      judgments: [{ finding: 'F1', judgment: 'dismiss', reason: 'not a defect' }],
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('expected failure, got ok');
+    expect(result.error).toBe('ADMISSION_FAILED');
+    expect(result.message).toContain('git merge of dispatch/HO-0001 failed');
+    expect(result.message).toContain('CONFLICT');
+    expect(result.message).toContain('dummy.txt');
+    expect(result.message).toContain('merge was aborted');
+    expect(result.message).toContain('already committed before the merge: wiki/handoffs/HO-0001.judgments.json');
+    expect((await execFile('git', ['status', '--porcelain'], { cwd: repoDir })).stdout.trim()).toBe('');
+    expect(await branchExists(repoDir, 'dispatch/HO-0001')).toBe(true);
   });
 });
 

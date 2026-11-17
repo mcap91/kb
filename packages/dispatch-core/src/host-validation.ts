@@ -374,15 +374,16 @@ export async function readValidationEvidence(path: string): Promise<DispatchResu
  * the current registry fingerprint AND it passed; otherwise runs
  * `runHostValidation` (which rewrites the file). A stored red is re-checked so
  * a flaky failure never sticks to a delivery; a stored green is never re-run.
- * The delivery pipeline step and `deriveReview` both call this. A
- * malformed evidence file is a failure, never treated as absent.
+ * The delivery pipeline step and `deriveReview` both call this. A stored file
+ * that is unreadable or malformed is stale, not fatal: the host can always
+ * produce the evidence again, so the cause is logged and the run rewrites it.
  */
 export async function evidenceForDelivery(opts: RunHostValidationOpts): Promise<DispatchResult<ValidationEvidence>> {
   const pathCheck = validationEvidencePath(opts.dir, opts.handoffId, opts.runId);
   if (!pathCheck.ok) return pathCheck;
   const existing = await readValidationEvidence(pathCheck.data);
-  if (!existing.ok) return existing;
-  const e = existing.data;
+  if (!existing.ok) process.stderr.write(`[host-validation] warning: stored evidence is stale, running the validation again: ${existing.message}\n`);
+  const e = existing.ok ? existing.data : null;
   if (e !== null && e.outcome === 'pass' && e.delivery_sha === opts.deliverySha && e.registry_fingerprint === validationRegistryFingerprint(opts.registry)) {
     return ok(e);
   }

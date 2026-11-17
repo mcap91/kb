@@ -51,8 +51,19 @@ export function parseResponseDocFrontmatter(content: string): ResponseDocEvidenc
   };
 }
 
-/** Every `code_review` HO in `wiki/handoffs/`, parsed; unreadable or unparsable files are skipped. */
-export async function readCodeReviews(dir: string): Promise<DispatchResult<Handoff[]>> {
+/** The `base_ref` line of the frontmatter text of a handoff file that did not parse, or `undefined`. */
+function frontmatterBaseRef(content: string): string | undefined {
+  const frontmatter = content.replace(/\r\n/g, '\n').match(/^---\n([\s\S]*?)(?:\n---|$)/)?.[1] ?? '';
+  return frontmatter.match(/^base_ref:\s*["']?([^"'\s]+)["']?\s*$/m)?.[1];
+}
+
+/**
+ * Every `code_review` HO in `wiki/handoffs/`, parsed. A file that cannot be read or parsed is
+ * skipped only when it cannot matter; one that names a branch of `chainBranches` as its `base_ref`
+ * (it may be a review of the chain) is a failure, and so is any read error other than "not found" —
+ * a review nobody can see must not change which review governs or which findings are judged.
+ */
+export async function readCodeReviews(dir: string, chainBranches: ReadonlySet<string>): Promise<DispatchResult<Handoff[]>> {
   const handoffsDir = join(dir, 'wiki', 'handoffs');
 
   let files: string[];
@@ -67,23 +78,49 @@ export async function readCodeReviews(dir: string): Promise<DispatchResult<Hando
     let content: string;
     try {
       content = await readFile(join(handoffsDir, file), 'utf8');
-    } catch {
-      continue;
+    } catch (err) {
+      if ((err as { code?: unknown }).code === 'ENOENT') continue;
+      return fail('ADMISSION_FAILED', `Could not read handoff ${file}`, err);
     }
     const parsed = parseHandoffContent(content, file);
-    if (parsed.ok && parsed.data.mode === 'code_review') reviews.push(parsed.data);
+    if (!parsed.ok) {
+      const baseRef = frontmatterBaseRef(content);
+      if (baseRef !== undefined && chainBranches.has(baseRef)) {
+        return fail(
+          'ADMISSION_FAILED',
+          `Handoff ${file} cannot be parsed (${parsed.message}) and names ${baseRef}, a branch of this chain, as its base_ref; it may be a review of this chain — fix or remove it`,
+          parsed,
+        );
+      }
+      continue;
+    }
+    if (parsed.data.mode === 'code_review') reviews.push(parsed.data);
   }
   return ok(reviews);
 }
 
-/** Whether the review's response doc exists in `wiki/handoffs/`. */
-export async function hasResponseDoc(dir: string, reviewId: string): Promise<boolean> {
+/** A review's response doc, or `null` when it has none; a read error other than "not found" is a failure. */
+export async function readResponseDoc(dir: string, reviewId: string): Promise<DispatchResult<string | null>> {
   try {
-    await readFile(join(dir, 'wiki', 'handoffs', `${reviewId}.response.md`), 'utf8');
-    return true;
-  } catch {
-    return false;
+    return ok(await readFile(join(dir, 'wiki', 'handoffs', `${reviewId}.response.md`), 'utf8'));
+  } catch (err) {
+    if ((err as { code?: unknown }).code === 'ENOENT') return ok(null);
+    return fail('ADMISSION_FAILED', `Could not read review response doc ${reviewId}.response.md`, err);
   }
+}
+
+/** Where a review stands: `finished` once its response doc holds a report (or a valid block). */
+export type ReviewState = 'finished' | 'no response doc' | 'empty report';
+
+/**
+ * A response doc with none of the evidence fields predates them and counts as finished: the
+ * merge refuses it with its own message, never silently passes over it.
+ */
+export function reviewState(responseDoc: string | null): ReviewState {
+  if (responseDoc === null) return 'no response doc';
+  const { recoveryOutcome, recoveryValid, workerReportChars } = parseResponseDocFrontmatter(responseDoc);
+  if (recoveryOutcome === undefined && recoveryValid === undefined && workerReportChars === undefined) return 'finished';
+  return recoveryValid === true || (workerReportChars ?? 0) > 0 ? 'finished' : 'empty report';
 }
 
 /**
@@ -94,19 +131,15 @@ export async function readFinishedChainReviews(
   dir: string,
   chainBranches: ReadonlySet<string>,
 ): Promise<DispatchResult<(Handoff & { reviewed_sha: string })[]>> {
-  const reviews = await readCodeReviews(dir);
+  const reviews = await readCodeReviews(dir, chainBranches);
   if (!reviews.ok) return reviews;
   const finished: (Handoff & { reviewed_sha: string })[] = [];
   for (const review of reviews.data) {
     if (review.base_ref === null || !chainBranches.has(review.base_ref) || review.reviewed_sha === undefined) continue;
-    let content: string;
-    try {
-      content = await readFile(join(dir, 'wiki', 'handoffs', `${review.id}.response.md`), 'utf8');
-    } catch (err) {
-      if ((err as { code?: unknown }).code === 'ENOENT') continue;
-      return fail('ADMISSION_FAILED', `Could not read review response doc ${review.id}.response.md`, err);
-    }
-    const chars = parseResponseDocFrontmatter(content).workerReportChars;
+    const doc = await readResponseDoc(dir, review.id);
+    if (!doc.ok) return doc;
+    if (doc.data === null) continue;
+    const chars = parseResponseDocFrontmatter(doc.data).workerReportChars;
     if (chars !== undefined && chars > 0) finished.push({ ...review, reviewed_sha: review.reviewed_sha });
   }
   return ok(finished);
