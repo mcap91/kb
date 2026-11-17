@@ -840,6 +840,29 @@ describe('deriveReview — WK-0132 Slice 2', () => {
       expect(parsed.data.reviewed_sha).toBe(sha);
     });
 
+    // Why: delivery already ran the suite; derive-review must reuse that evidence, not run it again.
+    it('reuses current evidence for the delivery and re-runs when the registry changed', async () => {
+      const implement = await deliverImplementHo(tempDir);
+      await writeResponseDoc(tempDir, implement.handoffId);
+      await markDelivered(tempDir, implement.handoffId);
+      const first = await deriveReview({ dir: tempDir, handoff_id: implement.handoffId });
+      expect(first.ok).toBe(true);
+      if (!first.ok) return;
+
+      const second = await deriveReview({ dir: tempDir, handoff_id: implement.handoffId });
+      expect(second.ok).toBe(true);
+      if (!second.ok) return;
+      expect(second.data.validation).toEqual(first.data.validation);
+
+      await mkdir(join(tempDir, 'wiki', '.dispatch'), { recursive: true });
+      await writeFile(join(tempDir, 'wiki', '.dispatch', 'validation.json'), JSON.stringify({ schema_version: 1, commands: [] }), 'utf-8');
+      const third = await deriveReview({ dir: tempDir, handoff_id: implement.handoffId });
+      expect(third.ok).toBe(true);
+      if (!third.ok) return;
+      expect(third.data.validation.registry_fingerprint).not.toBe(first.data.validation.registry_fingerprint);
+      expect(third.data.validation.started_at).not.toBe(first.data.validation.started_at);
+    });
+
     // Why: HO validation strings are untrusted input — the host never runs them (A1 ruling 1, A2 R6).
     it('never executes the HO validation text', async () => {
       const marker = join(tempDir, 'ho-validation-ran');

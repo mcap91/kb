@@ -72,7 +72,7 @@ import {
 } from './delivery.js';
 import { writeResponseDoc, buildProvenanceWriteBack, type WorkerUsageDetail, type ProviderCostCoverage } from './capture.js';
 import { commitArtifacts } from './commit-artifacts.js';
-import { stageReviewEvidence } from './host-validation.js';
+import { stageReviewEvidence, validateDelivery, type HostValidationSummary } from './host-validation.js';
 import { runPreflight } from './preflight.js';
 import { getRunDir, isRunId } from './paths.js';
 import { loadProfilesConfig, loadBackendsTable, type BackendFamily, type EffortMapping } from './repo-config.js';
@@ -194,6 +194,8 @@ export interface DispatchResult2 {
    * `deriveVerdict`.
    */
   recoveryEvidence?: RecoveryBlockEvidence;
+  /** Host validation of an implement delivery (absent for every other mode and outcome); `not_run` carries the cause. */
+  hostValidation?: HostValidationSummary;
 }
 
 /** Single-quote a value for safe embedding in generated bash (mirrors delivery.ts's private helper). */
@@ -1915,6 +1917,22 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
     logVerbose(verbose, 'walking export_mounts for mount-write manifest');
     const mountWrites = await collectMountWrites(handoff.export_mounts, runStartTime, verbose);
 
+    // 19c. Host validation of the delivery. A red suite or a validation that
+    // cannot run never changes the delivered outcome; it is evidence, shown in
+    // the response doc and the run result.
+    let hostValidation: HostValidationSummary | undefined;
+    if (handoff.mode === 'implement' && delivery.status === 'delivered') {
+      logVerbose(verbose, 'running host validation on the delivery');
+      hostValidation = await validateDelivery({
+        dir,
+        handoffId: handoff.id,
+        runId,
+        deliveryBranch: delivery.branch,
+        deliverySha: delivery.commitSha,
+      });
+      logVerbose(verbose, `host validation: ${hostValidation.status}`);
+    }
+
     // 20. Capture. `piResult`/`compaction`/`lastAssistantText` are
     // capture.ts's pre-existing field names (CaptureOpts); their shapes
     // ({outcome: string; usage: {totalTokens, costUsd}} and PiCompaction)
@@ -1955,6 +1973,7 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       wikiCommit,
       inferenceProvider,
       mountWrites,
+      hostValidation,
     });
     if (!captureResult.ok) return captureResult;
 
@@ -2027,6 +2046,7 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       responsePath: captureResult.data.responsePath,
       runDir,
       recoveryEvidence,
+      hostValidation,
     });
   } finally {
     // 21. Remove clone — best-effort; clone.ts's 24h orphan sweep is the

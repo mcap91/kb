@@ -25,6 +25,7 @@ import { mergeDelivery } from '../packages/dispatch-core/src/merge-delivery.js';
 import {
   JAIL_HERMETICITY_TEACHING_SENTENCE,
   VALIDATION_EVIDENCE_FILE,
+  evidenceForDelivery,
   readValidationEvidence,
   renderValidationEvidence,
   runHostValidation,
@@ -259,6 +260,65 @@ describe.skipIf(!BWRAP_FUNCTIONAL)('runHostValidation (WK-0294) — real bwrap',
     const evidencePath = join(repo, '.agent-runs', 'runs', HANDOFF_ID, RUN_ID, VALIDATION_EVIDENCE_FILE);
     const read = await readValidationEvidence(evidencePath);
     expect(read).toEqual({ ok: true, data: null });
+  });
+
+  // Why: one suite run per (delivery sha, registry) pair — the delivery step and derive-review share this function.
+  describe('evidenceForDelivery', () => {
+    const reg = () => registry({ commands: [{ name: 'ok', argv: ['bash', 'ok.sh'], timeout_ms: 30_000 }] });
+    const opts = (sha: string, r: ValidationRegistry | null) => ({
+      dir: repo,
+      handoffId: HANDOFF_ID,
+      runId: RUN_ID,
+      deliveryBranch: `dispatch/${HANDOFF_ID}`,
+      deliverySha: sha,
+      registry: r,
+    });
+
+    it('reuses evidence for the same sha and registry fingerprint without running the suite again', async () => {
+      deliverySha = await deliver({ 'ok.sh': 'echo hi\n' });
+      const first = await evidenceForDelivery(opts(deliverySha, reg()));
+      const second = await evidenceForDelivery(opts(deliverySha, reg()));
+      expect(first.ok && second.ok).toBe(true);
+      if (!first.ok || !second.ok) return;
+      expect(second.data.started_at).toBe(first.data.started_at);
+      expect(second.data).toEqual(first.data);
+    });
+
+    it('runs again when the registry fingerprint changed', async () => {
+      deliverySha = await deliver({ 'ok.sh': 'echo hi\n' });
+      const first = await evidenceForDelivery(opts(deliverySha, reg()));
+      const changed = registry({ commands: [{ name: 'ok', argv: ['bash', 'ok.sh', 'again'], timeout_ms: 30_000 }] });
+      const second = await evidenceForDelivery(opts(deliverySha, changed));
+      expect(first.ok && second.ok).toBe(true);
+      if (!first.ok || !second.ok) return;
+      expect(second.data.started_at).not.toBe(first.data.started_at);
+      expect(second.data.registry_fingerprint).toBe(validationRegistryFingerprint(changed));
+    });
+
+    it('runs again when the delivery sha differs', async () => {
+      deliverySha = await deliver({ 'ok.sh': 'echo hi\n' });
+      const first = await evidenceForDelivery(opts(deliverySha, reg()));
+      git(repo, 'checkout', '-q', `dispatch/${HANDOFF_ID}`);
+      await writeFile(join(repo, 'more.txt'), 'more\n');
+      git(repo, 'add', '-A');
+      git(repo, 'commit', '-q', '-m', 'second delivery commit');
+      const newSha = git(repo, 'rev-parse', 'HEAD');
+      git(repo, 'checkout', '-q', '-');
+      const second = await evidenceForDelivery(opts(newSha, reg()));
+      expect(first.ok && second.ok).toBe(true);
+      if (!first.ok || !second.ok) return;
+      expect(second.data.delivery_sha).toBe(newSha);
+      expect(second.data.started_at).not.toBe(first.data.started_at);
+    });
+
+    it('fails on a malformed evidence file instead of treating it as absent', async () => {
+      deliverySha = await deliver({ 'ok.sh': 'echo hi\n' });
+      const path = join(repo, '.agent-runs', 'runs', HANDOFF_ID, RUN_ID, VALIDATION_EVIDENCE_FILE);
+      await mkdir(join(repo, '.agent-runs', 'runs', HANDOFF_ID, RUN_ID), { recursive: true });
+      await writeFile(path, '{ not json');
+      const result = await evidenceForDelivery(opts(deliverySha, reg()));
+      expect(result.ok).toBe(false);
+    });
   });
 
   // Why: HO validation text is never executed — with no registry the host runs nothing and clones nothing.

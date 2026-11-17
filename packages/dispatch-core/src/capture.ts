@@ -25,6 +25,7 @@ import type { BackendFingerprint } from './model-registry.js';
 import type { RecoveryBlockEvidence, RecoveryBlockPayload } from './recovery-block.js';
 import type { PiCompaction } from './adapters/pi.js';
 import type { BackendFamily } from './repo-config.js';
+import type { HostValidationSummary } from './host-validation.js';
 
 /**
  * kb-owned location of the vendored LiteLLM rate snapshot (WK-0123) — mirrors
@@ -386,6 +387,8 @@ export interface CaptureOpts {
    * `delivery_method: prose_fallback`) instead of hard-failing the run.
    */
   recoveryEvidence?: RecoveryBlockEvidence;
+  /** Host validation result for an implement delivery; renders one line under `## Outcome`. Absent for every other mode. */
+  hostValidation?: HostValidationSummary;
   /**
    * The wiki source's commit at run time (WK-0135): the mother repo's own
    * HEAD when wiki/ is tracked (the clone commit IS the wiki commit), or the
@@ -600,6 +603,17 @@ function deriveVerdict(
     return { outcome: 'delivered' };
   }
   return { outcome: 'failed', reason: 'unknown_mode' };
+}
+
+function describeHostValidation(v: HostValidationSummary): string {
+  switch (v.status) {
+    case 'pass':
+      return v.commandCount === 0 ? 'Host validation: pass (no commands registered).' : 'Host validation: pass.';
+    case 'fail':
+      return `Host validation: fail (${v.failedCommands.join(', ')}).`;
+    case 'not_run':
+      return `Host validation: not run (${v.reason.replace(/\s+/g, ' ').trim()}).`;
+  }
 }
 
 function describeOutcome(delivery: DeliveryOutcome): string {
@@ -841,6 +855,7 @@ export async function writeResponseDoc(opts: CaptureOpts): Promise<DispatchResul
     '',
     '## Outcome',
     describeOutcome(delivery),
+    ...(opts.hostValidation ? ['', describeHostValidation(opts.hostValidation)] : []),
     '',
     '## Changed Files',
     formatChangedFilesSection(delivery),

@@ -25,6 +25,23 @@ Handoffs are markdown files with YAML frontmatter at `wiki/handoffs/HO-XXXX.md`.
 canonical result document lives alongside it at `wiki/handoffs/HO-XXXX.response.md`, written by the
 pipeline after the run (see "Capture and Provenance").
 
+### Generating an HO from a slice row
+
+A work item with a `## Slices` table can generate its handoff instead of retyping it:
+`create-handoff --wk WK-NNNN --slice s1` (MCP: `wk`, `slice`) reads the row and the work item and
+writes the HO. `write_scope` and `validation` come from the row; `read_first` is the row's files that
+exist at generation time (a new slice's files do not exist yet, and admission refuses a missing
+`read_first` path) plus the work item path; `objective` comes from the work item's `## Objective`
+and `acceptance` from its `## Acceptance criteria` items; `title` defaults to the row title and
+`mode` to `implement`; `work_item` and `slice` are recorded. `--subject` and `--allowed-agents` are
+still required.
+
+`create-handoff` refuses, writing nothing, when `wk` or `slice` is given without the other, the work
+item or the slice id does not exist, the work item has no `## Slices` table, or any derived field
+(`write_scope`, `read_first`, `objective`, `acceptance`, `validation`) is also passed. A work item
+with no Slices table keeps the explicit-options path. Editing the work item or the row after
+generation trips the Base Drift Gate at `dispatch`; regenerate the HO.
+
 ### Required fields
 
 | Field | Type | Notes |
@@ -43,6 +60,7 @@ pipeline after the run (see "Capture and Provenance").
 |-------|------|-------|
 | `base_ref` | string \| null | `null` = fresh HEAD; otherwise must start with `dispatch/` and name an existing ref (chained review/fix-up HOs) |
 | `base_sha` / `base_wiki_sha` | string | Authoring-time commit stamps — see "Base Drift Gate" |
+| `slice` | string | Slice row id (e.g. `s1`) of the work item's `## Slices` table this HO was generated from; set by `create-handoff --wk --slice`, never read by admission |
 | `reviewed_run` | string | Run id a `code_review` HO targets. Must be a dispatch run id (`RUN-<uuid>`); anything else is `BAD_RECORD` at parse |
 | `reviewed_sha` | string | Delivery-branch commit a derived `code_review` HO was derived for (full sha; anything else is `BAD_RECORD` at parse). Dispatch refuses unless `base_ref` resolves to it; `merge-delivery` requires the branch head to equal it |
 | `web` | boolean | Default `false`. Never allowed for `code_review`/`redteam` |
@@ -418,8 +436,8 @@ state `cancelled`; an already-terminal run or an already-dead process is a no-op
 
 ### `derive-review`
 
-Creates a `code_review` HO from a delivered `implement` HO, after running host validation against the
-delivery (see "Host Validation Evidence" below). `title` = `Code review: <implement_title>`,
+Creates a `code_review` HO from a delivered `implement` HO, using the host validation evidence for the
+delivery (see "Host Validation Evidence" below; it reuses the evidence the delivery already produced). `title` = `Code review: <implement_title>`,
 `reviewed_run` stamped to the implement's latest run whose outcome is `delivered` and that left a
 delivery branch, `reviewed_sha` stamped to the delivery branch head that was validated, and a
 `### Host Validation Evidence` section rendered from the evidence JSON into the HO's Context.
@@ -543,7 +561,16 @@ they are a test accidentally depending on real host state (an installed CLI, a r
 service) that the hermetic jail does not carry; the fix there is to make the test's dependency a fixture at
 its own public seam, not a skip.
 
-**Evidence.** `derive-review` writes `validation-evidence.json` into the delivered implement run's dir
+**When it runs.** The pipeline runs host validation right after every `implement` run that delivers, so a
+delivery has evidence before anyone reviews it. A red suite does not change the run's `delivered` outcome;
+it is recorded in the evidence. If validation cannot run at all (unreadable registry, jail failure), the
+delivery stands, no evidence file is written, and the response doc says `not run` with the cause. The
+response doc carries one line under `## Outcome`: `Host validation: pass.`, `Host validation: fail
+(<failed command names>).`, or `Host validation: not run (<reason>).` `derive-review` reuses the evidence on
+disk when it is for the same delivery sha and the current registry fingerprint, and runs the suite again
+only when either changed. Other modes never run host validation.
+
+**Evidence.** The pipeline (or, when it must be refreshed, `derive-review`) writes `validation-evidence.json` into the delivered implement run's dir
 (`.agent-runs/runs/<implement_id>/<run_id>/`). It holds `handoff_id`, `run_id`, `delivery_branch`,
 `delivery_sha`, `registry_fingerprint` (sha256 of the effective registry), per-step `argv`, `exit_code`,
 `signal`, `timed_out`, `duration_ms`, `stdout_tail`, `stderr_tail`, `result`, and an overall `outcome`
@@ -620,7 +647,8 @@ orchestrator dispatches         → dispatch + watch
 pipeline executes + delivers    → automatic
 pipeline auto-commits artifacts → DEC-0038 (automatic)
 orchestrator reads result       → HO-XXXX.response.md
-orchestrator derives review     → derive-review (host runs validation.json, records evidence)
+pipeline validates the delivery → host runs validation.json, records evidence (automatic)
+orchestrator derives review     → derive-review (reuses current evidence)
 orchestrator dispatches review  → dispatch + watch (same cycle)
 pipeline auto-commits review    → DEC-0038 (automatic)
 orchestrator reads review       → review response.md

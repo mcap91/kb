@@ -42,7 +42,7 @@ import { fail, ok } from './errors.js';
 import { buildBwrapPlan } from './jail.js';
 import { isMountableRoot } from './mountability.js';
 import { getRunDir, isRunId } from './paths.js';
-import { validationRegistryFingerprint, type ValidationRegistry } from './repo-config.js';
+import { loadValidationRegistry, validationRegistryFingerprint, type ValidationRegistry } from './repo-config.js';
 import { writeJsonAtomic } from './run-state.js';
 import { spawnIsolated } from './spawn-isolated.js';
 
@@ -305,6 +305,51 @@ export async function readValidationEvidence(path: string): Promise<DispatchResu
     return fail('BAD_RECORD', `Validation evidence at ${path} does not match schema_version 1.`);
   }
   return ok(e as ValidationEvidence);
+}
+
+/**
+ * The one way to get host validation evidence for a delivery. Reuses the
+ * evidence already in the run dir when it is for the same delivery sha AND
+ * the current registry fingerprint; otherwise runs `runHostValidation`
+ * (which rewrites the file). The delivery pipeline step and `deriveReview`
+ * both call this, so the suite runs once per (sha, registry) pair. A
+ * malformed evidence file is a failure, never treated as absent.
+ */
+export async function evidenceForDelivery(opts: RunHostValidationOpts): Promise<DispatchResult<ValidationEvidence>> {
+  const pathCheck = validationEvidencePath(opts.dir, opts.handoffId, opts.runId);
+  if (!pathCheck.ok) return pathCheck;
+  const existing = await readValidationEvidence(pathCheck.data);
+  if (!existing.ok) return existing;
+  const e = existing.data;
+  if (e !== null && e.delivery_sha === opts.deliverySha && e.registry_fingerprint === validationRegistryFingerprint(opts.registry)) {
+    return ok(e);
+  }
+  return runHostValidation(opts);
+}
+
+/** One-line host validation result carried in the run result and the response doc. */
+export type HostValidationSummary =
+  | { status: 'pass'; commandCount: number }
+  | { status: 'fail'; failedCommands: string[] }
+  | { status: 'not_run'; reason: string };
+
+export function summarizeValidation(evidence: ValidationEvidence): HostValidationSummary {
+  if (evidence.outcome === 'pass') return { status: 'pass', commandCount: evidence.commands.length };
+  const steps = [...(evidence.setup === null ? [] : [evidence.setup]), ...evidence.commands];
+  return { status: 'fail', failedCommands: steps.filter((s) => s.result === 'fail').map((s) => s.name) };
+}
+
+/**
+ * Post-delivery step: load the registry and get evidence for the delivery.
+ * Never fails the run — a validation that cannot run comes back as
+ * `not_run` with its cause, for the response doc and the run result.
+ */
+export async function validateDelivery(opts: Omit<RunHostValidationOpts, 'registry'>): Promise<HostValidationSummary> {
+  const registry = await loadValidationRegistry(opts.dir);
+  if (!registry.ok) return { status: 'not_run', reason: registry.message };
+  const evidence = await evidenceForDelivery({ ...opts, registry: registry.data });
+  if (!evidence.ok) return { status: 'not_run', reason: evidence.message };
+  return summarizeValidation(evidence.data);
 }
 
 /** In-run-dir names of the copies a derived review reads (DEC-0047 A3.3, A4.1). */

@@ -48,7 +48,7 @@ import { renderHandoff } from './create-handoff.js';
 import type { CreateHandoffOpts } from './types.js';
 import type { DispatchResult } from './errors.js';
 import { ok, fail } from './errors.js';
-import { renderValidationEvidence, runHostValidation, type ValidationEvidence } from './host-validation.js';
+import { evidenceForDelivery, renderValidationEvidence, type ValidationEvidence } from './host-validation.js';
 import { isRunId } from './paths.js';
 import { loadValidationRegistry } from './repo-config.js';
 
@@ -349,7 +349,7 @@ export async function deriveReview(opts: DeriveReviewOpts): Promise<DispatchResu
 
   const registry = await loadValidationRegistry(targetDir);
   if (!registry.ok) return registry;
-  const validation = await runHostValidation({
+  const validation = await evidenceForDelivery({
     dir: targetDir,
     handoffId: implement.id,
     runId: reviewedRunId,
