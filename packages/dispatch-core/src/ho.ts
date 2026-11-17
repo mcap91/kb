@@ -54,6 +54,7 @@ export interface Handoff {
   area?: string; // WK-0270 Specification 3: copied verbatim from the head implement HO into a derived review
   initiative?: string; // WK-0270 Specification 3: copied verbatim from the head implement HO into a derived review
   work_item?: string; // WK-#### this HO's work traces to; required for mode=implement, whose initiative must resolve to a real IN-#### (WK-0116 / IN-0006)
+  slice?: string; // Slice row id (sN) of the work item's `## Slices` table this HO was generated from
   acceptance: string[];
   validation: string[];
   status: string;
@@ -308,6 +309,7 @@ export function parseHandoffContent(content: string, filename: string): Dispatch
   if (typeof raw.area === 'string' && raw.area !== '') handoff.area = raw.area;
   if (typeof raw.initiative === 'string' && raw.initiative !== '') handoff.initiative = raw.initiative;
   if (typeof raw.work_item === 'string') handoff.work_item = raw.work_item;
+  if (typeof raw.slice === 'string' && raw.slice !== '') handoff.slice = raw.slice;
   if (typeof raw.timeout_secs === 'number') handoff.timeout_secs = raw.timeout_secs;
   if (typeof raw.base_sha === 'string' && raw.base_sha !== '') handoff.base_sha = raw.base_sha;
   if (typeof raw.base_wiki_sha === 'string' && raw.base_wiki_sha !== '') handoff.base_wiki_sha = raw.base_wiki_sha;

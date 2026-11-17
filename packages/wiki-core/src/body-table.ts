@@ -84,6 +84,15 @@ function getSectionContent(body: string, heading: string): string {
 }
 
 /**
+ * The trimmed content of a record body's `## <heading>` section, or null when the
+ * section does not exist. Ignores HTML comments.
+ */
+export function readSection(body: string, heading: string): string | null {
+  if (!hasSection(body, heading)) return null;
+  return getSectionContent(body, heading).trim();
+}
+
+/**
  * Split one markdown table row into cells. Mirrors validate-plan.ts's splitTableRow
  * (strip the leading/trailing `|`, trim each cell), plus the GFM escape rule: `\|`
  * is a literal pipe inside a cell, not a cell boundary.

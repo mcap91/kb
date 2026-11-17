@@ -21,6 +21,7 @@ export type {
   TokenPayload,
   DispatchToken,
   CreateHandoffOpts,
+  CreateHandoffInput,
   CreateHandoffResult,
   ReviewOpts,
   ReviewResult,

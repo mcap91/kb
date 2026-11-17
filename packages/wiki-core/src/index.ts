@@ -197,6 +197,7 @@ export { lint } from './lint.js';
 // Shared body-table reader (WK-0211; `## Slices`, WK-0212's `## Resolutions` / `## Hardening`)
 export {
   readBodyTable,
+  readSection,
   readSlices,
   SLICE_COLUMNS,
   readHardening,

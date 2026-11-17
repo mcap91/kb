@@ -71,12 +71,15 @@ Command Options:
 
   create-handoff
     --dir <path>             Repository root directory (required)
-    --title <text>           Handoff title (required)
     --subject <text>         Handoff subject (required)
     --allowed-agents <csv>   Allowed agents, comma-separated (required)
-    --mode <mode>            implement | code_review | redteam | research | explore_code (required)
-    --acceptance <csv>       Acceptance criteria, comma-separated (required)
-    --validation <csv>       Validation commands, comma-separated (required)
+    --title <text>           Handoff title (required; defaults to the slice title with --slice)
+    --mode <mode>            implement | code_review | redteam | research | explore_code (required; defaults to implement with --slice)
+    --acceptance <csv>       Acceptance criteria, comma-separated (required without --slice)
+    --validation <csv>       Validation commands, comma-separated (required without --slice)
+    --wk <WK-id>             Generate from a slice of this work item's ## Slices table (needs --slice)
+    --slice <id>             Slice row id, e.g. s1 (needs --wk); derives write scope, validation,
+                             read-first, objective and acceptance, so those flags are refused with it
     --work-item <WK-id>      Optional linked work item
     --write-scope <csv>      Optional write scope paths
     --read-first <csv>       Optional Read First paths
@@ -207,12 +210,20 @@ async function cmdCreateHandoff(args: string[]): Promise<number> {
   const acceptance = parseCsv(getFlagValue(args, '--acceptance'));
   const validation = parseCsv(getFlagValue(args, '--validation'));
 
-  if (!dir || !title || !subject || !mode || allowedAgents.length === 0 || acceptance.length === 0 || validation.length === 0) {
-    console.error('Error: --dir, --title, --subject, --allowed-agents, --mode, --acceptance, and --validation are required');
+  const wk = getFlagValue(args, '--wk');
+  const slice = getFlagValue(args, '--slice');
+  const fromSlice = wk !== undefined || slice !== undefined;
+
+  if (!dir || !subject || allowedAgents.length === 0) {
+    console.error('Error: --dir, --subject, and --allowed-agents are required');
+    return 1;
+  }
+  if (!fromSlice && (!title || !mode || acceptance.length === 0 || validation.length === 0)) {
+    console.error('Error: --title, --mode, --acceptance, and --validation are required (or --wk and --slice)');
     return 1;
   }
 
-  if (mode === 'implement' && !getFlagValue(args, '--work-item')) {
+  if (!fromSlice && mode === 'implement' && !getFlagValue(args, '--work-item')) {
     console.error('Error: --work-item is required when --mode is implement (WORK_ITEM_NOT_FOUND gate)');
     return 1;
   }
@@ -222,7 +233,9 @@ async function cmdCreateHandoff(args: string[]): Promise<number> {
     title,
     subject,
     allowed_agents: allowedAgents,
-    mode: mode as HandoffMode,
+    mode: mode as HandoffMode | undefined,
+    wk,
+    slice,
     work_item: getFlagValue(args, '--work-item'),
     area: getFlagValue(args, '--area'),
     initiative: getFlagValue(args, '--initiative'),
@@ -232,8 +245,8 @@ async function cmdCreateHandoff(args: string[]): Promise<number> {
     constraints: parseCsv(getFlagValue(args, '--constraints')),
     expected_output: getFlagValue(args, '--expected-output'),
     context: getFlagValue(args, '--context'),
-    acceptance,
-    validation,
+    acceptance: acceptance.length > 0 ? acceptance : undefined,
+    validation: validation.length > 0 ? validation : undefined,
     web: getFlag(args, '--web'),
     credentials: parseCsv(getFlagValue(args, '--credentials')),
     data_mounts: parseCsv(getFlagValue(args, '--data-mounts')),

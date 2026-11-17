@@ -4,12 +4,12 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
-import { allocate } from '@kb/wiki-core';
+import { allocate, readSection, readSlices } from '@kb/wiki-core';
 
-import type { CreateHandoffOpts, CreateHandoffResult } from './types.js';
+import type { CreateHandoffInput, CreateHandoffOpts, CreateHandoffResult } from './types.js';
 import type { DispatchResult } from './errors.js';
 import { ok, fail } from './errors.js';
-import { checkWriteScopeEntryShape } from './admission.js';
+import { checkWriteScopeEntryShape, readFirstEntryExists } from './admission.js';
 import { probeWikiSource } from './wiki-source.js';
 
 const THIS_DIR = dirname(fileURLToPath(import.meta.url));
@@ -110,6 +110,7 @@ export function renderHandoff(id: string, opts: CreateHandoffOpts, stamps: Hando
     scalarField('area', opts.area),
     scalarField('initiative', opts.initiative),
     scalarField('work_item', opts.work_item),
+    ...(opts.slice ? [scalarField('slice', opts.slice)] : []),
     ...writeScopeBlock(opts.write_scope ?? []),
     ...listField('read_first', opts.read_first ?? []),
     ...listField('acceptance', opts.acceptance),
@@ -191,13 +192,107 @@ async function checkWriteScopeEntriesForAuthoring(targetDir: string, writeScope:
   return ok(null);
 }
 
+/** Checklist items (`- [ ] text`, `- [x] text`, `- text`) of a WK section, marker stripped. */
+function listItems(section: string): string[] {
+  const items: string[] = [];
+  for (const line of section.split('\n')) {
+    const match = /^\s*[-*]\s+(?:\[[ xX]\]\s+)?(.+?)\s*$/.exec(line);
+    if (match) items.push(match[1]);
+  }
+  return items;
+}
+
+const SLICE_DERIVED_FIELDS = ['write_scope', 'read_first', 'objective', 'acceptance', 'validation'] as const;
+
+/**
+ * Resolves `wk` + `slice` into full explicit options: `write_scope` and
+ * `validation` from the slice row, `read_first` = the row's files that exist
+ * now (a new slice's files do not exist yet and admission refuses a missing
+ * read_first path) plus the WK path, `objective` and `acceptance` from the WK
+ * body. Supplying any derived field alongside a slice is refused, never merged.
+ */
+async function resolveSliceOpts(input: CreateHandoffInput, targetDir: string): Promise<DispatchResult<CreateHandoffOpts>> {
+  const { wk, slice } = input;
+  if (!wk || !slice) {
+    return fail('MISSING_FIELD', 'wk and slice must be given together; use work_item and explicit fields for a work item with no Slices table.');
+  }
+  if (!/^WK-\d{4}$/.test(wk)) {
+    return fail('MISSING_FIELD', `wk must match /^WK-\\d{4}$/; got: ${wk}`);
+  }
+  const conflicts = SLICE_DERIVED_FIELDS.filter((field) => {
+    const value = input[field];
+    return Array.isArray(value) ? value.length > 0 : Boolean(value);
+  });
+  if (conflicts.length > 0) {
+    return fail('INVALID_HANDOFF', `${conflicts.join(', ')} derive from slice ${slice} of ${wk} and cannot be given alongside it.`);
+  }
+
+  const wkRelativePath = `wiki/issues/${wk}.md`;
+  let wkText: string;
+  try {
+    wkText = await readFile(join(targetDir, wkRelativePath), 'utf-8');
+  } catch (err) {
+    return fail('FILE_NOT_FOUND', `Work item ${wkRelativePath} not found in ${targetDir}.`, err);
+  }
+
+  const slices = readSlices(wkText);
+  if (!slices.ok) return fail('PARSE_ERROR', `${wkRelativePath}: ${slices.message}`, slices);
+  if (slices.data.length === 0) {
+    return fail('MISSING_FIELD', `${wk} has no "## Slices" table; use work_item and explicit fields instead of wk and slice.`);
+  }
+  const row = slices.data.find((candidate) => candidate.id === slice);
+  if (!row) {
+    return fail('MISSING_FIELD', `${wk} has no slice "${slice}"; its slices are: ${slices.data.map((candidate) => candidate.id).join(', ')}.`);
+  }
+
+  const acceptance = listItems(readSection(wkText, 'Acceptance criteria') ?? '');
+  if (acceptance.length === 0) {
+    return fail('MISSING_FIELD', `${wkRelativePath} has no "## Acceptance criteria" items to derive acceptance from.`);
+  }
+  if (row.validation === '') {
+    return fail('MISSING_FIELD', `Slice ${slice} of ${wk} has an empty validation cell.`);
+  }
+
+  const existing: string[] = [];
+  for (const file of row.write_scope) {
+    if (await readFirstEntryExists(file, input.base_ref ?? null, targetDir)) existing.push(file);
+  }
+
+  return ok({
+    ...input,
+    title: input.title ?? row.title,
+    mode: input.mode ?? 'implement',
+    work_item: wk,
+    slice,
+    write_scope: row.write_scope,
+    read_first: [...existing, wkRelativePath],
+    objective: readSection(wkText, 'Objective') ?? '',
+    acceptance,
+    validation: [row.validation],
+  });
+}
+
+/** Explicit path: the fields the slice path derives must all be present. */
+function requireExplicitFields(input: CreateHandoffInput): DispatchResult<CreateHandoffOpts> {
+  const { title, mode, acceptance, validation } = input;
+  if (title === undefined || mode === undefined || acceptance === undefined || validation === undefined) {
+    return fail('MISSING_FIELD', 'title, mode, acceptance and validation are required unless wk and slice are given.');
+  }
+  return ok({ ...input, title, mode, acceptance, validation });
+}
+
 export async function createHandoff(
-  opts: CreateHandoffOpts,
+  input: CreateHandoffInput,
 ): Promise<DispatchResult<CreateHandoffResult>> {
+  const targetDir = resolve(input.dir);
+  const resolved = input.wk !== undefined || input.slice !== undefined
+    ? await resolveSliceOpts(input, targetDir)
+    : requireExplicitFields(input);
+  if (!resolved.ok) return resolved;
+  const opts = resolved.data;
+
   const workItemCheck = checkWorkItemForImplement(opts);
   if (!workItemCheck.ok) return workItemCheck;
-
-  const targetDir = resolve(opts.dir);
 
   const writeScopeCheck = await checkWriteScopeEntriesForAuthoring(targetDir, opts.write_scope ?? []);
   if (!writeScopeCheck.ok) return writeScopeCheck;

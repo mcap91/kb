@@ -184,8 +184,21 @@ export interface CreateHandoffOpts {
   vars?: string[];
   reviewed_run?: string;  // Run id this review targets (WK-0153 discharge evidence)
   reviewed_sha?: string;  // Delivery-branch commit this review was derived for (WK-0294 F1)
+  slice?: string;         // Slice row id this HO was generated from; recorded in frontmatter
   verbose?: boolean;
 }
+
+/**
+ * What `createHandoff` accepts: explicit options, or `wk` + `slice` with the
+ * title, write_scope, read_first, objective, acceptance and validation derived
+ * from the WK's `## Slices` row and body. `mode` defaults to implement on the
+ * slice path.
+ */
+export type CreateHandoffInput = Omit<CreateHandoffOpts, 'title' | 'mode' | 'acceptance' | 'validation' | 'slice'> &
+  Partial<Pick<CreateHandoffOpts, 'title' | 'mode' | 'acceptance' | 'validation'>> & {
+    wk?: string;
+    slice?: string;
+  };
 
 export interface CreateHandoffResult {
   handoffId: string;
