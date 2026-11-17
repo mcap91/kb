@@ -57,8 +57,8 @@ describe('kb-dispatch MCP instructions', () => {
   });
 
   // Why: the full instructions must stay small enough to read; the later recipe must agree with the loop.
-  it('stays under 9,700 characters and no longer says a fix-up needs no review', () => {
-    expect(INSTRUCTIONS.length).toBeLessThan(9700);
+  it('stays under 10,300 characters and no longer says a fix-up needs no review', () => {
+    expect(INSTRUCTIONS.length).toBeLessThan(10300);
     expect(INSTRUCTIONS).not.toContain('unless you judge the change large enough');
     expect(INSTRUCTIONS).toContain('`derive-review` covers only the commits it did not see');
   });

@@ -334,6 +334,9 @@ async function checkMissingReadFirst(handoff: Handoff, repoRootResolved: string)
   return ok(null);
 }
 
+/** Most dirty paths the DIRTY_REPO message lists; `dirtyPaths` in the detail carries all of them. */
+const MAX_DIRTY_PATHS_IN_MESSAGE = 10;
+
 /**
  * `dirty_repo`, scoped to `write_scope` (WK-0272, DEC-0047 A1 ruling on F8):
  * the delivery must not mix with uncommitted edits to the files the worker
@@ -360,9 +363,13 @@ async function checkDirtyWriteScope(handoff: Handoff, repoRoot: string): Promise
     .filter((line) => line.length > 0);
 
   if (dirtyPaths.length > 0) {
+    const shown = dirtyPaths.slice(0, MAX_DIRTY_PATHS_IN_MESSAGE).join(', ');
+    const more = dirtyPaths.length > MAX_DIRTY_PATHS_IN_MESSAGE ? `, +${dirtyPaths.length - MAX_DIRTY_PATHS_IN_MESSAGE} more` : '';
     return fail(
       'DIRTY_REPO',
-      `Repository at ${repoRoot} is not clean; refusing admission for handoff ${handoff.id}.`,
+      `Handoff ${handoff.id} has uncommitted changes in its write_scope: ${shown}${more}. ` +
+        'Uncommitted files outside write_scope do not block a dispatch. ' +
+        'Commit or revert those paths, then dispatch again.',
       { dirtyPaths },
     );
   }

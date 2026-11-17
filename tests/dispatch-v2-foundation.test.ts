@@ -301,6 +301,23 @@ describe('admission.ts — S0 admission checks', () => {
     if (result.ok) return;
     expect(result.error).toBe('DIRTY_REPO');
     expect(result.detail).toMatchObject({ dirtyPaths: expect.arrayContaining([expect.stringContaining('src/dummy.txt')]) });
+    expect(result.message).toContain('src/dummy.txt');
+    expect(result.message).toContain('write_scope');
+    expect(result.message).toContain('Uncommitted files outside write_scope do not block a dispatch.');
+  });
+
+  // Why: the dirty scan covers the handoff's own write_scope only; a session's edits elsewhere must not block it.
+  it('admits an implement handoff when the only dirty file is OUTSIDE its write_scope', async () => {
+    await mkdir(join(repoRoot, 'docs'), { recursive: true });
+    const dirtyFile = join(repoRoot, 'docs', 'elsewhere.txt');
+    await writeFile(dirtyFile, 'committed\n', 'utf8');
+    execFileSync('git', ['add', 'docs/elsewhere.txt'], { cwd: repoRoot });
+    execFileSync('git', ['commit', '-m', 'add docs/elsewhere.txt'], { cwd: repoRoot });
+    const expectedSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repoRoot }).toString().trim();
+    await writeFile(dirtyFile, 'modified without committing\n', 'utf8');
+
+    const result = await checkAdmission(makeHandoff({ base_sha: expectedSha }), repoRoot);
+    expect(result.ok).toBe(true);
   });
 
   it('refuses an implement handoff with an empty write_scope', async () => {

@@ -16,3 +16,8 @@
   never the directory around it.
 - Merges go through `merge-delivery` only — never by hand. After a merge, run this repo's validation command
   on the host and record the result in the WK.
+- Parallel work in one checkout is supported: several sessions and several dispatches run at once. Only three
+  things block. Two runs of the same handoff (`ACTIVE_RUN_EXISTS`). Uncommitted changes in a handoff's own
+  `write_scope` at dispatch (`DIRTY_REPO`). At merge, a staged change, or an uncommitted file that the merge
+  changes (`DIRTY_REPO`). Never switch branch, stash or reset in a shared checkout.
+- Before you say that dispatch cannot do something, name the refusal code or the check you read.

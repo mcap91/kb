@@ -54,6 +54,11 @@ implementation search with the initial retrieval pass.
   never the directory around it.
 - Merges go through `merge-delivery` only — never by hand. After a merge, run this repo's validation command
   on the host and record the result in the WK.
+- Parallel work in one checkout is supported: several sessions and several dispatches run at once. Only three
+  things block. Two runs of the same handoff (`ACTIVE_RUN_EXISTS`). Uncommitted changes in a handoff's own
+  `write_scope` at dispatch (`DIRTY_REPO`). At merge, a staged change, or an uncommitted file that the merge
+  changes (`DIRTY_REPO`). Never switch branch, stash or reset in a shared checkout.
+- Before you say that dispatch cannot do something, name the refusal code or the check you read.
 
 ## Engineering guidelines
 
@@ -512,7 +517,7 @@ All three must pass. The gate must be green on Linux (WSL2 ext4).
 - **Do not import across subsystem boundaries.** wiki-cli uses wiki-core. dispatch-cli uses dispatch-core. graph-explore is standalone. Sole ratified exception (DEC-0007): dispatch-core may import wiki-core's record primitives, one-way, never the reverse.
 - **Do not describe features that do not exist.** No semantic search, no embeddings, no function-level graphs.
 - **Do not modify files under `scratch_space/`.** That directory is for planning and reference only.
-- **Do not use git worktrees.** Multiple agents share this checkout. Worktrees cause branch switches, stash collisions, and lost work. Work on one branch at a time; if branches diverge, rebase and merge — never create parallel worktrees.
+- **Do not use git worktrees.** Multiple agents share this checkout, and worktrees cause branch switches, stash collisions, and lost work. Never switch branch, stash or reset here; parallel sessions are normal.
 - **No wiki language outside the wiki (operator rule 2026-11-13).** Wiki record ids (WK, IN, DEC, SRC, PLN, VAL, AREA, HO) and ruling/slice references never appear in code, comments, docs, scripts, or scaffolded output. Provenance lives in git history and the wiki records — cite them in the commit message and the record, not the artifact. Exceptions: format specs (e.g. the `work_item` field documents the literal shape `WK-####`), and captured outputs quoted as evidence (never edit a capture).
 
 ## kb-autoshop Design Item Discipline (IN-0011)
