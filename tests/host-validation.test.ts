@@ -19,6 +19,7 @@ import { join } from 'node:path';
 
 import { bootstrap } from '@kb/wiki-core';
 
+import { CANONICAL_CLONE_ROOT } from '../packages/dispatch-core/src/clone.js';
 import { createHandoff } from '../packages/dispatch-core/src/create-handoff.js';
 import { SLICE_ID, writeSliceWorkItem } from './helpers/slice-fixture.js';
 import { deriveReview } from '../packages/dispatch-core/src/derive-review.js';
@@ -358,6 +359,22 @@ describe.skipIf(!BWRAP_FUNCTIONAL)('runHostValidation (WK-0294) — real bwrap',
       if (result.ok) return;
       expect(result.error).toBe('BAD_RECORD');
       expect(result.message).toContain(homedir());
+    });
+
+    // Why: clone.ts owns the one definition of the resolved default clone
+    // root (CANONICAL_CLONE_ROOT); this registry entry rule must refuse the
+    // exact value clone.ts exports, not a value pinned separately in
+    // host-validation.ts that could drift from it.
+    it('refuses an entry equal to the clone root value exported by clone.ts, naming the entry', async () => {
+      deliverySha = await deliver({ 'ok.sh': 'echo hi\n' });
+      await mkdir(CANONICAL_CLONE_ROOT, { recursive: true });
+      const result = await run(
+        registry({ data_mounts: [CANONICAL_CLONE_ROOT], commands: [{ name: 'ok', argv: ['bash', 'ok.sh'], timeout_ms: 5_000 }] }),
+      );
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error).toBe('BAD_RECORD');
+      expect(result.message).toContain(CANONICAL_CLONE_ROOT);
     });
 
     it('refuses a symlink entry whose realpath target is an ancestor of the dispatch clone root', async () => {

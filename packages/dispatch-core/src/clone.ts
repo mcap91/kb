@@ -59,8 +59,12 @@ const ORPHAN_THRESHOLD_SECONDS = 24 * 60 * 60;
 // generated `RUN-${randomUUID()}` (pipeline.ts:195-196, regex-locked at
 // createClone) — never LLM-influenced, never exposed on an MCP tool schema,
 // never reassigned. This is defense-in-depth against a bug in kb's own code,
-// not adversarial input.
-const CANONICAL_CLONE_ROOT = join(homedir(), '.kb-dispatch', 'clones');
+// not adversarial input. Exported: the one definition of the resolved
+// absolute default clone root (DEFAULT_CLONE_ROOT above, after `~`
+// expansion) — the directory createClone uses when no `cloneRoot` option is
+// given. Other modules needing that value import it from here rather than
+// pinning a second copy that could drift from this one.
+export const CANONICAL_CLONE_ROOT = join(homedir(), '.kb-dispatch', 'clones');
 const RUN_ID_BASENAME_PATTERN = /^RUN-/;
 
 // runId / baseSha are interpolated directly into a generated bash script (the

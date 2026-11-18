@@ -34,10 +34,9 @@
  */
 import { randomUUID } from 'node:crypto';
 import { readFile, realpath, stat, writeFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 
-import { createClone, removeClone } from './clone.js';
+import { CANONICAL_CLONE_ROOT, createClone, removeClone } from './clone.js';
 import type { DispatchResult } from './errors.js';
 import { fail, ok } from './errors.js';
 import { execBash } from './exec-direct.js';
@@ -47,15 +46,6 @@ import { getRunDir, isRunId } from './paths.js';
 import { loadValidationRegistry, validationRegistryFingerprint, type ValidationRegistry } from './repo-config.js';
 import { writeJsonAtomic } from './run-state.js';
 import { spawnIsolated } from './spawn-isolated.js';
-
-/**
- * The dispatch clone root (cover refusal below): mirrors clone.ts's
- * un-exported `DEFAULT_CLONE_ROOT` (`~/.kb-dispatch/clones`, after `~`
- * expansion). clone.ts is outside this change's write_scope, so the
- * resolved value is pinned here rather than imported; a fixed path, judged
- * before any clone is made.
- */
-const DISPATCH_CLONE_ROOT = join(homedir(), '.kb-dispatch', 'clones');
 
 /** File name of the authoritative evidence JSON inside a run dir. */
 export const VALIDATION_EVIDENCE_FILE = 'validation-evidence.json';
@@ -185,16 +175,16 @@ async function resolveDataMounts(dataMounts: readonly string[], repoRootResolved
     }
 
     const coverMessage = `validation.json data_mounts entry "${entry}" is the dispatch clone root or an ancestor of it; a read-only bind there would replace the writable clone the validation steps run in.`;
-    if (isWithinRoot(entryCheck.resolved, DISPATCH_CLONE_ROOT)) {
+    if (isWithinRoot(entryCheck.resolved, CANONICAL_CLONE_ROOT)) {
       return fail('BAD_RECORD', coverMessage, { entry });
     }
-    let real: string | null;
+    let real: string;
     try {
       real = await realpath(entry);
-    } catch {
-      real = null; // existence is already proven by checkDataMountEntry above; left to the bind to fail on.
+    } catch (err) {
+      return fail('BAD_RECORD', `validation.json data_mounts entry "${entry}" failed to resolve its real path.`, err);
     }
-    if (real !== null && isWithinRoot(real, DISPATCH_CLONE_ROOT)) {
+    if (isWithinRoot(real, CANONICAL_CLONE_ROOT)) {
       return fail('BAD_RECORD', coverMessage, { entry });
     }
   }
