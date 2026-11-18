@@ -16,7 +16,7 @@
  * resolution, sits outside the upstream §7 numbering.
  */
 import { execFile as execFileCb } from 'node:child_process';
-import { isAbsolute, join, relative, resolve } from 'node:path';
+import { isAbsolute, join, resolve } from 'node:path';
 import { readFile, realpath, stat } from 'node:fs/promises';
 import { promisify } from 'node:util';
 
@@ -28,7 +28,7 @@ import { FULL_SHA, type Handoff, type HandoffMode } from './ho.js';
 import type { WikiShape } from './jail.js';
 import { probeWikiSource } from './wiki-source.js';
 import { validateWriteScopeChain } from './write-scope-chain.js';
-import { isMountableRoot } from './mountability.js';
+import { checkDataMountEntry, isMountableRoot, isWithinRoot } from './mountability.js';
 import { loadLimitsConfig } from './repo-config.js';
 
 const execFile = promisify(execFileCb);
@@ -50,13 +50,6 @@ async function pathExists(path: string): Promise<boolean> {
   } catch {
     return false;
   }
-}
-
-/** True when `target` (pre-resolved absolute) is `root` itself or one of its descendants. */
-function isWithinRoot(root: string, target: string): boolean {
-  if (target === root) return true;
-  const rel = relative(root, target);
-  return rel !== '' && !rel.startsWith('..') && !isAbsolute(rel);
 }
 
 /**
@@ -486,7 +479,9 @@ async function checkBaseRef(handoff: Handoff, repoRoot: string): Promise<Dispatc
 /**
  * §7.14 `bad_data_mount` (2026-09-11 simplified ruling): a declared data mount
  * must be an absolute path, must exist on disk, and must resolve outside the
- * repo root. No rw policy surface.
+ * repo root. No rw policy surface. Delegates to `checkDataMountEntry`
+ * (mountability.ts) — the one entry rule this check and the
+ * validation registry's `data_mounts` check both apply.
  */
 async function checkDataMounts(handoff: Handoff, repoRootResolved: string): Promise<DispatchResult<null>> {
   const labeled: Array<[string, string]> = [
@@ -494,26 +489,16 @@ async function checkDataMounts(handoff: Handoff, repoRootResolved: string): Prom
     ...handoff.export_mounts.map((e): [string, string] => [e, 'export_mounts']),
   ];
   for (const [entry, field] of labeled) {
-    if (!isAbsolute(entry)) {
-      return fail('BAD_DATA_MOUNT', `Handoff ${handoff.id} ${field} entry "${entry}" is not an absolute path.`, {
-        entry,
-      });
-    }
+    const check = await checkDataMountEntry(entry, repoRootResolved);
+    if (check.ok) continue;
 
-    const resolved = resolve(entry);
-    if (!(await pathExists(resolved))) {
-      return fail('BAD_DATA_MOUNT', `Handoff ${handoff.id} ${field} entry "${entry}" does not exist on disk.`, {
-        entry,
-      });
-    }
-
-    if (isWithinRoot(repoRootResolved, resolved)) {
-      return fail(
-        'BAD_DATA_MOUNT',
-        `Handoff ${handoff.id} ${field} entry "${entry}" resolves inside the repo root; data mounts must be outside the repo.`,
-        { entry },
-      );
-    }
+    const message =
+      check.violation === 'not_absolute'
+        ? `Handoff ${handoff.id} ${field} entry "${entry}" is not an absolute path.`
+        : check.violation === 'not_found'
+          ? `Handoff ${handoff.id} ${field} entry "${entry}" does not exist on disk.`
+          : `Handoff ${handoff.id} ${field} entry "${entry}" resolves inside the repo root; data mounts must be outside the repo.`;
+    return fail('BAD_DATA_MOUNT', message, { entry });
   }
   return ok(null);
 }

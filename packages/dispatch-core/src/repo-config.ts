@@ -466,10 +466,18 @@ export interface ValidationRegistry {
   env: Record<string, string>;
   /** Absolute runtime roots ro-bound into the validation jail; each `<path>/bin` goes on PATH (A2 R5). */
   runtime_paths: string[];
+  /**
+   * Absolute host paths ro-bound into every validation step's jail at the
+   * path as declared: read-only test/fixture data, not a
+   * toolchain root — no `$HOME`/system-root requirement, no `bin/`. Shape
+   * (array of absolute path strings) is checked here at load; existence and
+   * location are checked in host-validation.ts, before any clone is made.
+   */
+  data_mounts: string[];
 }
 
 const VALIDATION_FILE = 'validation.json';
-const VALIDATION_TOP_KEYS = new Set(['schema_version', 'setup', 'commands', 'env', 'runtime_paths']);
+const VALIDATION_TOP_KEYS = new Set(['schema_version', 'setup', 'commands', 'env', 'runtime_paths', 'data_mounts']);
 const VALIDATION_COMMAND_NAME = /^[A-Za-z0-9._-]+$/;
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 /** Vars the runner itself constructs; a registry may not override them. */
@@ -555,7 +563,15 @@ export async function loadValidationRegistry(dir: string): Promise<DispatchResul
     runtimePaths.push(...(raw.runtime_paths as string[]));
   }
 
-  return ok({ setup, commands, env, runtime_paths: runtimePaths });
+  const dataMounts: string[] = [];
+  if (raw.data_mounts !== undefined) {
+    if (!Array.isArray(raw.data_mounts) || !raw.data_mounts.every((p) => typeof p === 'string' && p.startsWith('/'))) {
+      return fail('BAD_RECORD', `${VALIDATION_FILE}: "data_mounts" must be an array of absolute paths.`);
+    }
+    dataMounts.push(...(raw.data_mounts as string[]));
+  }
+
+  return ok({ setup, commands, env, runtime_paths: runtimePaths, data_mounts: dataMounts });
 }
 
 /**
@@ -572,6 +588,9 @@ export function validationRegistryFingerprint(registry: ValidationRegistry | nul
           commands: registry.commands.map((c) => ({ name: c.name, argv: c.argv, timeout_ms: c.timeout_ms })),
           env: Object.fromEntries(Object.entries(registry.env).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))),
           runtime_paths: registry.runtime_paths,
+          // Omitted entirely when empty, so a registry with no data_mounts
+          // keeps the exact fingerprint it had before this key existed.
+          ...(registry.data_mounts.length > 0 ? { data_mounts: registry.data_mounts } : {}),
         };
   return `sha256:${createHash('sha256').update(JSON.stringify(canonical)).digest('hex')}`;
 }

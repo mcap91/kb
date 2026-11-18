@@ -14,7 +14,7 @@ import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { connect, createServer, type Server } from 'node:net';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { bootstrap } from '@kb/wiki-core';
@@ -64,7 +64,7 @@ const HANDOFF_ID = 'HO-9294';
 const RUN_ID = 'RUN-00000000-0000-4000-8000-000000000001';
 
 function registry(overrides: Partial<ValidationRegistry> = {}): ValidationRegistry {
-  return { setup: null, commands: [], env: {}, runtime_paths: [], ...overrides };
+  return { setup: null, commands: [], env: {}, runtime_paths: [], data_mounts: [], ...overrides };
 }
 
 describe.skipIf(!BWRAP_FUNCTIONAL)('runHostValidation (WK-0294) — real bwrap', () => {
@@ -264,6 +264,119 @@ describe.skipIf(!BWRAP_FUNCTIONAL)('runHostValidation (WK-0294) — real bwrap',
     const evidencePath = join(repo, '.agent-runs', 'runs', HANDOFF_ID, RUN_ID, VALIDATION_EVIDENCE_FILE);
     const read = await readValidationEvidence(evidencePath);
     expect(read).toEqual({ ok: true, data: null });
+  });
+
+  // Why: a registered command reads operator-registered test/fixture
+  // data through a read-only bind, but any attempt to write into it fails;
+  // the data lives at the declared path, never canonicalized.
+  it('binds a data_mounts entry read-only: a registered command reads it but cannot write into it', async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), 'kb-host-validation-data-'));
+    await writeFile(join(dataDir, 'fixture.txt'), 'fixture content\n');
+    deliverySha = await deliver({
+      'read.sh': [
+        `cat "${join(dataDir, 'fixture.txt')}"`,
+        `if touch "${join(dataDir, 'nope')}" 2>/dev/null; then echo write=ok; else echo write=denied; fi`,
+        '',
+      ].join('\n'),
+    });
+    try {
+      const result = await run(
+        registry({ data_mounts: [dataDir], commands: [{ name: 'read', argv: ['bash', 'read.sh'], timeout_ms: 30_000 }] }),
+      );
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      const out = result.data.commands[0]?.stdout_tail ?? '';
+      expect(out).toContain('fixture content');
+      expect(out).toContain('write=denied');
+      expect(result.data.outcome).toBe('pass');
+    } finally {
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  // Why: data_mounts has no $HOME/system-root requirement (unlike
+  // runtime_paths): a symlinked data folder (the field report's actual shape,
+  // a link from $HOME to a separate mounted volume) is bound at its declared
+  // link path, not canonicalized to its realpath target.
+  it('accepts a data_mounts entry that is a symlink outside $HOME and every system root, bound at the declared link path', async () => {
+    const volDir = await mkdtemp(join(tmpdir(), 'kb-host-validation-vol-'));
+    await writeFile(join(volDir, 'f.txt'), 'linked content\n');
+    const linkParent = await mkdtemp(join(tmpdir(), 'kb-host-validation-link-'));
+    const linkDir = join(linkParent, 'datalink');
+    await symlink(volDir, linkDir);
+    deliverySha = await deliver({ 'read.sh': `cat "${join(linkDir, 'f.txt')}"\n` });
+    try {
+      const result = await run(
+        registry({ data_mounts: [linkDir], commands: [{ name: 'read', argv: ['bash', 'read.sh'], timeout_ms: 30_000 }] }),
+      );
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.data.commands[0]?.stdout_tail).toBe('linked content\n');
+      expect(result.data.outcome).toBe('pass');
+    } finally {
+      await rm(volDir, { recursive: true, force: true });
+      await rm(linkParent, { recursive: true, force: true });
+    }
+  });
+
+  // Why: the validation registry's data_mounts entry rule (shape at
+  // load, existence/location at step-run time, before any clone is made) and
+  // its clone-root cover refusal; none of these writes an evidence file.
+  describe('data_mounts entry refusals', () => {
+    it('refuses an entry that does not exist, naming the entry and writing no evidence', async () => {
+      deliverySha = await deliver({ 'ok.sh': 'echo hi\n' });
+      const missing = join(tmpdir(), `kb-missing-data-mount-${randomUUID()}`);
+      const result = await run(
+        registry({ data_mounts: [missing], commands: [{ name: 'ok', argv: ['bash', 'ok.sh'], timeout_ms: 5_000 }] }),
+      );
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error).toBe('BAD_RECORD');
+      expect(result.message).toContain(missing);
+
+      const evidencePath = join(repo, '.agent-runs', 'runs', HANDOFF_ID, RUN_ID, VALIDATION_EVIDENCE_FILE);
+      expect(await readValidationEvidence(evidencePath)).toEqual({ ok: true, data: null });
+    });
+
+    it('refuses an entry that resolves inside the repo root', async () => {
+      deliverySha = await deliver({ 'ok.sh': 'echo hi\n' });
+      const result = await run(
+        registry({ data_mounts: [repo], commands: [{ name: 'ok', argv: ['bash', 'ok.sh'], timeout_ms: 5_000 }] }),
+      );
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error).toBe('BAD_RECORD');
+      expect(result.message).toContain(repo);
+    });
+
+    it('refuses an entry equal to $HOME itself, an ancestor of the dispatch clone root', async () => {
+      deliverySha = await deliver({ 'ok.sh': 'echo hi\n' });
+      const result = await run(
+        registry({ data_mounts: [homedir()], commands: [{ name: 'ok', argv: ['bash', 'ok.sh'], timeout_ms: 5_000 }] }),
+      );
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error).toBe('BAD_RECORD');
+      expect(result.message).toContain(homedir());
+    });
+
+    it('refuses a symlink entry whose realpath target is an ancestor of the dispatch clone root', async () => {
+      deliverySha = await deliver({ 'ok.sh': 'echo hi\n' });
+      const linkParent = await mkdtemp(join(tmpdir(), 'kb-host-validation-coverlink-'));
+      const linkDir = join(linkParent, 'home-alias');
+      await symlink(homedir(), linkDir);
+      try {
+        const result = await run(
+          registry({ data_mounts: [linkDir], commands: [{ name: 'ok', argv: ['bash', 'ok.sh'], timeout_ms: 5_000 }] }),
+        );
+        expect(result.ok).toBe(false);
+        if (result.ok) return;
+        expect(result.error).toBe('BAD_RECORD');
+        expect(result.message).toContain(linkDir);
+      } finally {
+        await rm(linkParent, { recursive: true, force: true });
+      }
+    });
   });
 
   // Why: one suite run per (delivery sha, registry) pair — the delivery step and derive-review share this function.
@@ -657,6 +770,7 @@ describe('loadValidationRegistry (WK-0294)', () => {
       commands: [{ name: 'test', argv: ['npm', 'test'], timeout_ms: 600000 }],
       env: { CI_LIKE: '1' },
       runtime_paths: ['/opt/runtime'],
+      data_mounts: ['/srv/fixtures'],
     });
     const result = await loadValidationRegistry(dir);
     expect(result).toEqual({
@@ -666,8 +780,16 @@ describe('loadValidationRegistry (WK-0294)', () => {
         commands: [{ name: 'test', argv: ['npm', 'test'], timeout_ms: 600000 }],
         env: { CI_LIKE: '1' },
         runtime_paths: ['/opt/runtime'],
+        data_mounts: ['/srv/fixtures'],
       },
     });
+  });
+
+  // Why: absent key = no data mounts — kb's own validation.json, which never declares it, stays valid.
+  it('defaults data_mounts to an empty array when absent', async () => {
+    await writeRegistry({ schema_version: 1, commands: [] });
+    const result = await loadValidationRegistry(dir);
+    expect(result).toEqual({ ok: true, data: registry() });
   });
 
   // Why: this file decides what the host executes — anything unexpected refuses (strict, like profiles.json).
@@ -678,6 +800,7 @@ describe('loadValidationRegistry (WK-0294)', () => {
     ['a duplicate name', { schema_version: 1, commands: [{ name: 't', argv: ['a'], timeout_ms: 1 }, { name: 't', argv: ['b'], timeout_ms: 1 }] }],
     ['a reserved env var', { schema_version: 1, commands: [], env: { PATH: '/evil' } }],
     ['a relative runtime path', { schema_version: 1, commands: [], runtime_paths: ['node/bin'] }],
+    ['a relative data mount path', { schema_version: 1, commands: [], data_mounts: ['fixtures/data'] }],
     ['a wrong schema_version', { schema_version: 2, commands: [] }],
     ['malformed JSON', '{ "schema_version": 1,'],
   ])('refuses %s', async (_label, value) => {
@@ -696,6 +819,20 @@ describe('loadValidationRegistry (WK-0294)', () => {
     expect(validationRegistryFingerprint(a)).toBe(validationRegistryFingerprint(b));
     expect(validationRegistryFingerprint(a)).not.toBe(validationRegistryFingerprint(c));
     expect(validationRegistryFingerprint(null)).not.toBe(validationRegistryFingerprint(registry()));
+  });
+
+  // Why: a registry with no data_mounts must keep the exact fingerprint it had
+  // before this key existed (pinned literal, computed pre-change), so stored evidence in
+  // every repo stays valid; declaring an entry changes it.
+  describe('data_mounts fingerprint', () => {
+    it('is unchanged for a registry with no data_mounts (pinned literal)', () => {
+      expect(validationRegistryFingerprint(registry())).toBe('sha256:f60a207c5d6d513bc35f53a9fb9a57877c14ecfe00cd8ef0a1d35a66d394b0b3');
+    });
+
+    it('changes when a data_mounts entry is declared', () => {
+      const withMount = registry({ data_mounts: ['/srv/fixtures'] });
+      expect(validationRegistryFingerprint(withMount)).not.toBe(validationRegistryFingerprint(registry()));
+    });
   });
 });
 

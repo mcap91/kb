@@ -34,18 +34,28 @@
  */
 import { randomUUID } from 'node:crypto';
 import { readFile, realpath, stat, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { homedir } from 'node:os';
+import { join, resolve } from 'node:path';
 
 import { createClone, removeClone } from './clone.js';
 import type { DispatchResult } from './errors.js';
 import { fail, ok } from './errors.js';
 import { execBash } from './exec-direct.js';
 import { buildBwrapPlan } from './jail.js';
-import { isMountableRoot } from './mountability.js';
+import { checkDataMountEntry, isMountableRoot, isWithinRoot } from './mountability.js';
 import { getRunDir, isRunId } from './paths.js';
 import { loadValidationRegistry, validationRegistryFingerprint, type ValidationRegistry } from './repo-config.js';
 import { writeJsonAtomic } from './run-state.js';
 import { spawnIsolated } from './spawn-isolated.js';
+
+/**
+ * The dispatch clone root (cover refusal below): mirrors clone.ts's
+ * un-exported `DEFAULT_CLONE_ROOT` (`~/.kb-dispatch/clones`, after `~`
+ * expansion). clone.ts is outside this change's write_scope, so the
+ * resolved value is pinned here rather than imported; a fixed path, judged
+ * before any clone is made.
+ */
+const DISPATCH_CLONE_ROOT = join(homedir(), '.kb-dispatch', 'clones');
 
 /** File name of the authoritative evidence JSON inside a run dir. */
 export const VALIDATION_EVIDENCE_FILE = 'validation-evidence.json';
@@ -150,6 +160,47 @@ async function resolveRuntimePaths(paths: readonly string[]): Promise<DispatchRe
   return ok(resolved);
 }
 
+/**
+ * Validation registry's `data_mounts` entry rule: the shared
+ * absolute/exists/outside-repo-root rule (`checkDataMountEntry`,
+ * mountability.ts) plus a cover refusal unique to this registry key — an
+ * entry that is equal to, or an ancestor of, the dispatch clone root. Judges
+ * both the declared path and its realpath: a declared symlink is bound at
+ * its declared path (so the rule judges that path), but a symlink whose
+ * target is the clone root (or an ancestor of it) is refused all the same.
+ * Run at step-run time, before any clone is made — shape alone is checked
+ * at load (`loadValidationRegistry`).
+ */
+async function resolveDataMounts(dataMounts: readonly string[], repoRootResolved: string): Promise<DispatchResult<string[]>> {
+  for (const entry of dataMounts) {
+    const entryCheck = await checkDataMountEntry(entry, repoRootResolved);
+    if (!entryCheck.ok) {
+      const reason =
+        entryCheck.violation === 'not_absolute'
+          ? 'is not an absolute path'
+          : entryCheck.violation === 'not_found'
+            ? 'does not exist on disk'
+            : 'resolves inside the repo root; data mounts must be outside the repo';
+      return fail('BAD_RECORD', `validation.json data_mounts entry "${entry}" ${reason}.`, { entry });
+    }
+
+    const coverMessage = `validation.json data_mounts entry "${entry}" is the dispatch clone root or an ancestor of it; a read-only bind there would replace the writable clone the validation steps run in.`;
+    if (isWithinRoot(entryCheck.resolved, DISPATCH_CLONE_ROOT)) {
+      return fail('BAD_RECORD', coverMessage, { entry });
+    }
+    let real: string | null;
+    try {
+      real = await realpath(entry);
+    } catch {
+      real = null; // existence is already proven by checkDataMountEntry above; left to the bind to fail on.
+    }
+    if (real !== null && isWithinRoot(real, DISPATCH_CLONE_ROOT)) {
+      return fail('BAD_RECORD', coverMessage, { entry });
+    }
+  }
+  return ok([...dataMounts]);
+}
+
 async function runStep(opts: {
   name: string;
   argv: string[];
@@ -157,12 +208,14 @@ async function runStep(opts: {
   network: boolean;
   clonePath: string;
   runtimePaths: string[];
+  dataMounts: string[];
   env: Record<string, string>;
 }): Promise<DispatchResult<ValidationStepResult>> {
   const plan = buildBwrapPlan({
     clonePath: opts.clonePath,
     cwd: opts.clonePath,
     runtimeEnvPaths: opts.runtimePaths,
+    dataMounts: opts.dataMounts.map((path) => ({ path, access: 'ro' as const })),
     unshareNet: !opts.network,
     allowlistEnv: opts.env,
     command: opts.argv,
@@ -211,6 +264,9 @@ async function runRegistrySteps(opts: { dir: string; sha: string; registry: Vali
   const runtime = await resolveRuntimePaths(registry.runtime_paths);
   if (!runtime.ok) return runtime;
 
+  const dataMounts = await resolveDataMounts(registry.data_mounts, resolve(opts.dir));
+  if (!dataMounts.ok) return dataMounts;
+
   const clone = await createClone({ motherRepo: opts.dir, runId: `RUN-${randomUUID()}`, baseSha: opts.sha });
   if (!clone.ok) return clone;
   const { clonePath } = clone.data;
@@ -220,7 +276,7 @@ async function runRegistrySteps(opts: { dir: string; sha: string; registry: Vali
     }
     const path = [...runtime.data.map((p) => `${p}/bin`), BASE_PATH].join(':');
     const env = { ...registry.env, PATH: path, HOME: '/tmp', TMPDIR: '/tmp' };
-    const step = { clonePath, runtimePaths: runtime.data };
+    const step = { clonePath, runtimePaths: runtime.data, dataMounts: dataMounts.data };
 
     if (registry.setup !== null) {
       // DECISION: npm lifecycle scripts are forced off for setup (A4.2 "scripts ignored"),

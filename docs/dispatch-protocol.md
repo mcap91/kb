@@ -590,7 +590,8 @@ records zero commands.
     { "name": "test", "argv": ["npm", "test"], "timeout_ms": 900000 }
   ],
   "env": { "FORCE_COLOR": "0" },
-  "runtime_paths": ["/opt/node-22"]
+  "runtime_paths": ["/opt/node-22"],
+  "data_mounts": ["/srv/fixtures/golden"]
 }
 ```
 
@@ -600,6 +601,7 @@ records zero commands.
 | `commands[]` | `name` (`[A-Za-z0-9._-]+`, unique), `argv`, `timeout_ms`. They run in order, network-denied. |
 | `env` | Extra variables for every step. `PATH`, `HOME`, and `TMPDIR` are reserved. |
 | `runtime_paths` | Absolute runtime roots. Each must have `bin/`, live under `$HOME` or a system root, and not be `$HOME` itself. Each is bound read-only, and its `bin/` goes first on `PATH`. |
+| `data_mounts` | Absolute read-only data/fixture paths — the same entry rule as a handoff's `data_mounts`: absolute, exists on disk, outside the repo root; no `$HOME`/system-root requirement and no `bin/`. Each is bound read-only at the path as declared (a symlinked entry is bound at its link path, not canonicalized), into every step of both the delivery run and its baseline. An entry equal to, or an ancestor of, the dispatch clone root is refused. Absent = no data mounts, and the registry fingerprint is unchanged from before this key existed. |
 
 **Confinement.** Each step runs in a bwrap jail over a fresh temp clone of the delivery sha (bound
 writable), built by the same generic jail layer the workers use. Nothing derived from the delivery runs on
