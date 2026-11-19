@@ -18,7 +18,7 @@ import { join } from 'node:path';
 
 import {
   checkWriteScope,
-  scanSecrets,
+  scanStagedBlobs,
   buildStageScript,
   parseStageOutput,
   runStageScript,
@@ -34,8 +34,30 @@ import {
 } from '../packages/dispatch-core/src/delivery.js';
 import { execBash, MAX_BUFFER_BYTES } from '../packages/dispatch-core/src/exec-direct.js';
 import { ENV_NAME } from '../packages/dispatch-core/src/repo-config.js';
-import { buildInjectedValueScanFragment } from '../packages/dispatch-core/src/credentials.js';
+import { buildSecretValueList, type SecretValue } from '../packages/dispatch-core/src/secret-scrub.js';
 import { writeResponseDoc, buildProvenanceWriteBack } from '../packages/dispatch-core/src/capture.js';
+
+/** Build a launch value list directly, failing loudly on a build error. */
+function buildValues(...pairs: Array<[string, string]>): SecretValue[] {
+  const result = buildSecretValueList({ values: pairs.map(([name, value]) => ({ name, value })) });
+  if (!result.ok) throw new Error(result.message);
+  return result.data;
+}
+
+/** The five match forms of a value, derived independently of the module under test. */
+function formsOf(value: string): string[] {
+  const once = JSON.stringify(value).slice(1, -1);
+  const twice = JSON.stringify(once).slice(1, -1);
+  return [
+    ...new Set([
+      value,
+      once,
+      twice,
+      encodeURIComponent(value),
+      Buffer.from(value, 'utf8').toString('base64'),
+    ]),
+  ];
+}
 
 async function createTempDir(prefix: string): Promise<string> {
   return mkdtemp(join(tmpdir(), prefix));
@@ -68,47 +90,6 @@ describe('delivery.ts — checkWriteScope', () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.offendingPaths).toEqual(['lib/b.ts']);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// delivery.ts — scanSecrets
-// ---------------------------------------------------------------------------
-
-describe('delivery.ts — scanSecrets', () => {
-  it('passes a clean diff', () => {
-    const result = scanSecrets('diff --git a/src/foo.ts b/src/foo.ts\n+export const x = 1;\n');
-    expect(result.ok).toBe(true);
-  });
-
-  it('catches an AWS access key id', () => {
-    const result = scanSecrets('+const key = "AKIAIOSFODNN7EXAMPLE";');
-    expect(result.ok).toBe(false);
-    if (result.ok) return;
-    expect(result.patterns).toContain('aws_access_key_id');
-  });
-
-  it('catches a bearer token', () => {
-    const result = scanSecrets('+headers: { Authorization: "Bearer abc123DEF456.ghi789" }');
-    expect(result.ok).toBe(false);
-    if (result.ok) return;
-    expect(result.patterns).toContain('bearer_token');
-  });
-
-  it('catches a PEM private key block', () => {
-    const result = scanSecrets(
-      '+-----BEGIN PRIVATE KEY-----\n+MIIEvQIBADANBgkqhkiG\n+-----END PRIVATE KEY-----',
-    );
-    expect(result.ok).toBe(false);
-    if (result.ok) return;
-    expect(result.patterns).toContain('pem_private_key');
-  });
-
-  it('catches an sk-style API key', () => {
-    const result = scanSecrets('+const apiKey = "sk-abc123def456ghi789jkl012";');
-    expect(result.ok).toBe(false);
-    if (result.ok) return;
-    expect(result.patterns).toContain('sk_style_api_key');
   });
 });
 
@@ -194,7 +175,7 @@ describe('capture.ts — writeResponseDoc', () => {
     runDir = await createTempDir('kb-capture-secret-');
     const delivery: DeliveryOutcome = {
       status: 'secret_in_diff',
-      patterns: ['aws_access_key_id'],
+      names: ['API_TOKEN'],
       quarantinePath: join(runDir, 'quarantine.diff'),
     };
 
@@ -207,8 +188,30 @@ describe('capture.ts — writeResponseDoc', () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.data.responseContent).toContain('outcome: refused');
-    expect(result.data.responseContent).toContain('aws_access_key_id');
+    expect(result.data.responseContent).toContain('API_TOKEN');
     expect(result.data.responseContent).toContain('quarantine.diff');
+  });
+
+  it('renders the delivered-tree reason for a secret_in_diff delivery, naming the variables and the quarantine path', async () => {
+    runDir = await createTempDir('kb-capture-secret-reason-');
+    const quarantinePath = join(runDir, 'quarantine.diff');
+    const delivery: DeliveryOutcome = {
+      status: 'secret_in_diff',
+      names: ['API_TOKEN'],
+      quarantinePath,
+    };
+
+    const result = await writeResponseDoc({
+      runDir,
+      handoff: { id: 'handoff-under-test', title: 'Secret leak test', mode: 'implement' },
+      delivery,
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.responseContent).toContain(
+      `Refused: the delivered tree holds credential value(s) (API_TOKEN). Diff quarantined at \`${quarantinePath}\`.`,
+    );
   });
 
   it('renders a ## Mount Writes section with file entries when mountWrites is provided (WK-0164)', async () => {
@@ -410,7 +413,8 @@ async function runStage(
   opts: {
     writeScope?: string[];
     skeletonPaths?: string[];
-    valueScanLines?: string[];
+    secretValues?: SecretValue[];
+    scanCapBytes?: number;
     attrSha?: string;
   } = {},
 ): Promise<Awaited<ReturnType<typeof runStageScript>>> {
@@ -420,7 +424,8 @@ async function runStage(
     attrSha: opts.attrSha ?? fixture.baseSha,
     writeScope: opts.writeScope ?? [],
     skeletonPaths: opts.skeletonPaths,
-    valueScanLines: opts.valueScanLines,
+    secretValues: opts.secretValues,
+    scanCapBytes: opts.scanCapBytes,
   });
 }
 
@@ -430,7 +435,6 @@ async function runStageRaw(
   opts: {
     writeScope?: string[];
     skeletonPaths?: string[];
-    valueScanLines?: string[];
     attrSha?: string;
     env?: Record<string, string>;
   } = {},
@@ -443,7 +447,6 @@ async function runStageRaw(
     stageDir,
     writeScope: opts.writeScope ?? [],
     skeletonPaths: opts.skeletonPaths,
-    valueScanLines: opts.valueScanLines,
   });
   const res = await execBash({ scriptContent: script.scriptContent, timeoutMs: 120_000, env: opts.env });
   if (!res.ok) throw new Error(res.message);
@@ -478,7 +481,8 @@ function fakeStage(overrides: Partial<StageResult> = {}): StageResult {
     changedFiles: [],
     gitlinkPaths: [],
     ignoredFiles: [],
-    secretHits: [],
+    blobs: [],
+    secretNames: [],
     ...overrides,
   };
 }
@@ -519,8 +523,8 @@ describe('delivery.ts — classifyStage owns the one check order', () => {
   });
 
   it('returns secret_in_diff only after every path is in scope', () => {
-    const stage = fakeStage({ changedFiles: ['src/ok.ts'], secretHits: ['API_TOKEN'] });
-    expect(classifyStage(stage, ['src/'])).toEqual({ kind: 'secret_in_diff', patterns: ['API_TOKEN'] });
+    const stage = fakeStage({ changedFiles: ['src/ok.ts'], secretNames: ['API_TOKEN'] });
+    expect(classifyStage(stage, ['src/'])).toEqual({ kind: 'secret_in_diff', names: ['API_TOKEN'] });
   });
 
   it('returns clean for an in-scope, secret-free, non-gitlink delta', () => {
@@ -576,14 +580,12 @@ describe('delivery.ts — parseStageOutput strict grammar', () => {
     expect(result.stage.gitlinkPaths).toEqual(['sub', 'src/linked']);
   });
 
-  it('accepts SECRET_HIT names and rejects an invalid variable name', async () => {
-    const good = await parseWith(Buffer.alloc(0), Buffer.alloc(0), `TREE ${tree}\nSECRET_HIT=API_TOKEN\n`);
-    expect(good.ok).toBe(true);
-    if (!good.ok) return;
-    expect(good.stage.secretHits).toEqual(['API_TOKEN']);
-
-    const bad = await parseWith(Buffer.alloc(0), Buffer.alloc(0), `TREE ${tree}\nSECRET_HIT=1BAD\n`);
-    expect(bad.ok).toBe(false);
+  it('rejects a legacy secret-hit line as outside the grammar', async () => {
+    const legacyLine = `${['SECRET', 'HIT'].join('_')}=API_TOKEN`;
+    const result = await parseWith(Buffer.alloc(0), Buffer.alloc(0), `TREE ${tree}\n${legacyLine}\n`);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.message).toContain('outside its grammar');
   });
 
   it('rejects a missing or duplicated TREE line', async () => {
@@ -991,7 +993,7 @@ rm -f "$IDX"
     }
   });
 
-  it('emits TREE before it fails on an unwritable raw listing, and runStageScript maps the non-zero exit', async () => {
+  it('emits TREE before it fails on an unwritable raw listing', async () => {
     const fixture = await makeGitFixture();
     const stageDir = await createTempDir(STAGE_TEMP_PREFIX);
     try {
@@ -1008,15 +1010,6 @@ rm -f "$IDX"
       if (!res.ok) return;
       expect(res.data.exitCode).not.toBe(0);
       expect(res.data.stdout).toContain('TREE ');
-
-      const run = await runStage(fixture, { valueScanLines: ['false'] });
-      expect(run.ok).toBe(false);
-      if (run.ok) return;
-      // The exit code is checked BEFORE any parse: a parse-shaped message
-      // would mean the failed stage reached check. Nothing landed, so the
-      // mother has no dispatch branch.
-      expect(run.message).toContain('exited with code');
-      expect(() => gitOut(fixture.motherRepo, ['rev-parse', '--verify', 'refs/heads/dispatch/HO-X'])).toThrow();
     } finally {
       await rm(stageDir, { recursive: true, force: true });
       await cleanGitFixture(fixture);
@@ -1024,67 +1017,300 @@ rm -f "$IDX"
   }, 120_000);
 });
 
-describe('delivery.ts — the value scan reads a --text diff', () => {
-  it('flags an injected credential value hidden by a base `binary` attribute', async () => {
+describe('delivery.ts — scanStagedBlobs reads the staged tree', () => {
+  const value = 'EXAMPLE-NOT-A-REAL-SECRET-12345678901234';
+
+  it('flags a granted value in a staged blob hidden by a base `binary` attribute', async () => {
     const fixture = await makeGitFixture(async (motherRepo) => {
       await writeFile(join(motherRepo, '.gitattributes'), '*.bin binary\n', 'utf8');
     });
-    const credDir = await createTempDir('kb-delivery-fixture-cred-');
     try {
-      const value = 'EXAMPLE-NOT-A-REAL-SECRET-1234567890';
-      const credFile = join(credDir, 'env');
-      await writeFile(credFile, `API_TOKEN=${value}\n`, 'utf8');
       await mkdir(join(fixture.cloneRepo, 'src'), { recursive: true });
       await writeFile(join(fixture.cloneRepo, 'src', 'secret.bin'), `token=${value}\n`, 'utf8');
 
-      const valueScanLines = buildInjectedValueScanFragment({
-        granted: ['example-profile'],
-        injections: [{ profileName: 'example-profile', varName: 'API_TOKEN', filePath: credFile }],
-        backendApiKeyEnv: null,
-        backendSecretsFile: null,
-        credentialEndpoints: [],
+      const run = await runStage(fixture, {
+        writeScope: ['src/'],
+        secretValues: buildValues(['API_TOKEN', value]),
       });
-
-      const run = await runStage(fixture, { writeScope: ['src/'], valueScanLines });
       expect(run.ok).toBe(true);
       if (!run.ok) return;
-      expect(run.stage.secretHits).toEqual(['API_TOKEN']);
-      expect(classifyStage(run.stage, ['src/'])).toEqual({ kind: 'secret_in_diff', patterns: ['API_TOKEN'] });
+      expect(run.stage.secretNames).toEqual(['API_TOKEN']);
+      expect(classifyStage(run.stage, ['src/'])).toEqual({ kind: 'secret_in_diff', names: ['API_TOKEN'] });
     } finally {
       await cleanGitFixture(fixture);
-      await rm(credDir, { recursive: true, force: true });
     }
   }, 120_000);
 
   it('flags a value in a file whose worktree `.gitattributes` marks it `-diff`', async () => {
     const fixture = await makeGitFixture();
-    const credDir = await createTempDir('kb-delivery-fixture-cred-');
     try {
-      const value = 'EXAMPLE-NOT-A-REAL-SECRET-0987654321';
-      const credFile = join(credDir, 'env');
-      await writeFile(credFile, `API_TOKEN=${value}\n`, 'utf8');
       await mkdir(join(fixture.cloneRepo, 'src'), { recursive: true });
-      // A worktree attribute never reaches the pinned ATTR_SHA tree; `--text`
-      // makes the diff carry the bytes even so.
+      // A worktree attribute never reaches the pinned ATTR_SHA tree; the scan
+      // reads the staged blob object directly, so the attribute is irrelevant.
       await writeFile(join(fixture.cloneRepo, 'src', '.gitattributes'), '*.bin -diff\n', 'utf8');
       await writeFile(join(fixture.cloneRepo, 'src', 'secret.bin'), `token=${value}\n`, 'utf8');
 
-      const valueScanLines = buildInjectedValueScanFragment({
-        granted: ['example-profile'],
-        injections: [{ profileName: 'example-profile', varName: 'API_TOKEN', filePath: credFile }],
-        backendApiKeyEnv: null,
-        backendSecretsFile: null,
-        credentialEndpoints: [],
+      const run = await runStage(fixture, {
+        writeScope: ['src/'],
+        secretValues: buildValues(['API_TOKEN', value]),
       });
-
-      const run = await runStage(fixture, { writeScope: ['src/'], valueScanLines });
       expect(run.ok).toBe(true);
       if (!run.ok) return;
-      expect(run.stage.secretHits).toEqual(['API_TOKEN']);
-      expect(classifyStage(run.stage, ['src/'])).toEqual({ kind: 'secret_in_diff', patterns: ['API_TOKEN'] });
+      expect(run.stage.secretNames).toEqual(['API_TOKEN']);
+      expect(classifyStage(run.stage, ['src/'])).toEqual({ kind: 'secret_in_diff', names: ['API_TOKEN'] });
     } finally {
       await cleanGitFixture(fixture);
-      await rm(credDir, { recursive: true, force: true });
+    }
+  }, 120_000);
+
+  it('flags a granted value in a change-named path', async () => {
+    const fixture = await makeGitFixture();
+    try {
+      await mkdir(join(fixture.cloneRepo, 'src'), { recursive: true });
+      await writeFile(join(fixture.cloneRepo, 'src', `${value}.txt`), 'plain\n', 'utf8');
+
+      const run = await runStage(fixture, {
+        writeScope: ['src/'],
+        secretValues: buildValues(['API_TOKEN', value]),
+      });
+      expect(run.ok).toBe(true);
+      if (!run.ok) return;
+      expect(run.stage.secretNames).toEqual(['API_TOKEN']);
+    } finally {
+      await cleanGitFixture(fixture);
+    }
+  }, 120_000);
+
+  it('returns no names and reads nothing for an empty value list', async () => {
+    const fixture = await makeGitFixture();
+    try {
+      await mkdir(join(fixture.cloneRepo, 'src'), { recursive: true });
+      await writeFile(join(fixture.cloneRepo, 'src', 'a.txt'), `token=${value}\n`, 'utf8');
+
+      const run = await runStage(fixture, { writeScope: ['src/'], secretValues: [] });
+      expect(run.ok).toBe(true);
+      if (!run.ok) return;
+      expect(run.stage.secretNames).toEqual([]);
+      expect(classifyStage(run.stage, ['src/'])).toEqual({ kind: 'clean' });
+    } finally {
+      await cleanGitFixture(fixture);
+    }
+  }, 120_000);
+
+  it('flags a value in a modified file tracked in BASE_SHA', async () => {
+    const fixture = await makeGitFixture(async (motherRepo) => {
+      await mkdir(join(motherRepo, 'src'), { recursive: true });
+      await writeFile(join(motherRepo, 'src', 'tracked.txt'), 'clean\n', 'utf8');
+    });
+    try {
+      await writeFile(join(fixture.cloneRepo, 'src', 'tracked.txt'), `token=${value}\n`, 'utf8');
+
+      const run = await runStage(fixture, {
+        writeScope: ['src/'],
+        secretValues: buildValues(['API_TOKEN', value]),
+      });
+      expect(run.ok).toBe(true);
+      if (!run.ok) return;
+      expect(run.stage.secretNames).toEqual(['API_TOKEN']);
+      expect(classifyStage(run.stage, ['src/'])).toEqual({ kind: 'secret_in_diff', names: ['API_TOKEN'] });
+    } finally {
+      await cleanGitFixture(fixture);
+    }
+  }, 120_000);
+
+  it('flags a value in an untracked new file, and the raw stage script and stdout hold no form of it', async () => {
+    const fixture = await makeGitFixture();
+    const scriptDir = await createTempDir(STAGE_TEMP_PREFIX);
+    try {
+      await mkdir(join(fixture.cloneRepo, 'src'), { recursive: true });
+      await writeFile(join(fixture.cloneRepo, 'src', 'untracked.txt'), `token=${value}\n`, 'utf8');
+
+      const run = await runStage(fixture, {
+        writeScope: ['src/'],
+        secretValues: buildValues(['API_TOKEN', value]),
+      });
+      expect(run.ok).toBe(true);
+      if (!run.ok) return;
+      expect(run.stage.secretNames).toEqual(['API_TOKEN']);
+      expect(classifyStage(run.stage, ['src/'])).toEqual({ kind: 'secret_in_diff', names: ['API_TOKEN'] });
+
+      // The generated stage script never carries the value: it reads blobs
+      // host-side and pipes only object ids, so no form of the value reaches
+      // bash or its stdout.
+      const script = buildStageScript({
+        clonePath: fixture.cloneRepo,
+        baseSha: fixture.baseSha,
+        attrSha: fixture.baseSha,
+        stageDir: scriptDir,
+        writeScope: ['src/'],
+      });
+      const raw = await runStageRaw(fixture, { writeScope: ['src/'] });
+      try {
+        for (const form of formsOf(value)) {
+          expect(script.scriptContent).not.toContain(form);
+          expect(raw.stdout).not.toContain(form);
+        }
+      } finally {
+        await raw.cleanup();
+      }
+    } finally {
+      await rm(scriptDir, { recursive: true, force: true });
+      await cleanGitFixture(fixture);
+    }
+  }, 120_000);
+
+  it('flags a symlink whose target string is the value', async () => {
+    const fixture = await makeGitFixture();
+    try {
+      await mkdir(join(fixture.cloneRepo, 'src'), { recursive: true });
+      await symlink(value, join(fixture.cloneRepo, 'src', 'link.txt'));
+
+      const run = await runStage(fixture, {
+        writeScope: ['src/'],
+        secretValues: buildValues(['API_TOKEN', value]),
+      });
+      expect(run.ok).toBe(true);
+      if (!run.ok) return;
+      expect(run.stage.secretNames).toEqual(['API_TOKEN']);
+      expect(classifyStage(run.stage, ['src/'])).toEqual({ kind: 'secret_in_diff', names: ['API_TOKEN'] });
+    } finally {
+      await cleanGitFixture(fixture);
+    }
+  }, 120_000);
+
+  it('flags the base64 form of the value in a new file', async () => {
+    const fixture = await makeGitFixture();
+    try {
+      await mkdir(join(fixture.cloneRepo, 'src'), { recursive: true });
+      await writeFile(
+        join(fixture.cloneRepo, 'src', 'encoded.txt'),
+        `${Buffer.from(value, 'utf8').toString('base64')}\n`,
+        'utf8',
+      );
+
+      const run = await runStage(fixture, {
+        writeScope: ['src/'],
+        secretValues: buildValues(['API_TOKEN', value]),
+      });
+      expect(run.ok).toBe(true);
+      if (!run.ok) return;
+      expect(run.stage.secretNames).toEqual(['API_TOKEN']);
+      expect(classifyStage(run.stage, ['src/'])).toEqual({ kind: 'secret_in_diff', names: ['API_TOKEN'] });
+    } finally {
+      await cleanGitFixture(fixture);
+    }
+  }, 120_000);
+
+  it('flags a value in a file committed on a HEAD moved past BASE_SHA and still in the worktree', async () => {
+    const fixture = await makeGitFixture();
+    try {
+      await mkdir(join(fixture.cloneRepo, 'src'), { recursive: true });
+      await writeFile(join(fixture.cloneRepo, 'src', 'committed.txt'), `token=${value}\n`, 'utf8');
+      execFileSync('git', ['add', '-A'], { cwd: fixture.cloneRepo });
+      execFileSync('git', ['commit', '-qm', 'move head'], { cwd: fixture.cloneRepo });
+
+      // HEAD is past BASE_SHA, but the scanner reads the tree that would land
+      // (BASE_SHA + the worktree delta), so the committed blob is still read.
+      const run = await runStage(fixture, {
+        writeScope: ['src/'],
+        secretValues: buildValues(['API_TOKEN', value]),
+      });
+      expect(run.ok).toBe(true);
+      if (!run.ok) return;
+      expect(run.stage.secretNames).toEqual(['API_TOKEN']);
+      expect(classifyStage(run.stage, ['src/'])).toEqual({ kind: 'secret_in_diff', names: ['API_TOKEN'] });
+    } finally {
+      await cleanGitFixture(fixture);
+    }
+  }, 120_000);
+
+  it('does not flag a file that held the value in BASE_SHA and is deleted', async () => {
+    const fixture = await makeGitFixture(async (motherRepo) => {
+      await mkdir(join(motherRepo, 'src'), { recursive: true });
+      await writeFile(join(motherRepo, 'src', 'gone.txt'), `token=${value}\n`, 'utf8');
+    });
+    try {
+      await rm(join(fixture.cloneRepo, 'src', 'gone.txt'));
+
+      const run = await runStage(fixture, {
+        writeScope: ['src/'],
+        secretValues: buildValues(['API_TOKEN', value]),
+      });
+      expect(run.ok).toBe(true);
+      if (!run.ok) return;
+      expect(run.stage.secretNames).toEqual([]);
+      expect(classifyStage(run.stage, ['src/'])).toEqual({ kind: 'clean' });
+    } finally {
+      await cleanGitFixture(fixture);
+    }
+  }, 120_000);
+
+  it('returns no names and classifies clean when the value is in no file', async () => {
+    const fixture = await makeGitFixture();
+    try {
+      await mkdir(join(fixture.cloneRepo, 'src'), { recursive: true });
+      await writeFile(join(fixture.cloneRepo, 'src', 'clean.txt'), 'nothing here\n', 'utf8');
+
+      const run = await runStage(fixture, {
+        writeScope: ['src/'],
+        secretValues: buildValues(['API_TOKEN', value]),
+      });
+      expect(run.ok).toBe(true);
+      if (!run.ok) return;
+      expect(run.stage.secretNames).toEqual([]);
+      expect(classifyStage(run.stage, ['src/'])).toEqual({ kind: 'clean' });
+    } finally {
+      await cleanGitFixture(fixture);
+    }
+  }, 120_000);
+
+  it('returns ok with no names for an empty list against a clone that does not exist', async () => {
+    // The empty list returns before any spawn, so the missing clone path is
+    // never touched (a spawn would have failed).
+    const result = await scanStagedBlobs({
+      clonePath: join(tmpdir(), `kb-e2e-no-such-clone-${Date.now()}`),
+      attrSha: 'f'.repeat(40),
+      blobs: [{ path: 'src/x', mode: '100644', sha: 'f'.repeat(40) }],
+      paths: ['src/x'],
+      secretValues: [],
+    });
+    expect(result).toEqual({ ok: true, names: [] });
+  });
+
+  it('fails closed when the staged content exceeds the scan cap', async () => {
+    const fixture = await makeGitFixture();
+    try {
+      await mkdir(join(fixture.cloneRepo, 'src'), { recursive: true });
+      await writeFile(join(fixture.cloneRepo, 'src', 'big.txt'), 'x'.repeat(4096), 'utf8');
+
+      const run = await runStage(fixture, {
+        writeScope: ['src/'],
+        secretValues: buildValues(['API_TOKEN', value]),
+        scanCapBytes: 16,
+      });
+      expect(run.ok).toBe(false);
+      if (run.ok) return;
+      expect(run.message).toContain('exceeded the scan cap');
+    } finally {
+      await cleanGitFixture(fixture);
+    }
+  }, 120_000);
+
+  it('fails closed when a requested blob is missing from the object store', async () => {
+    const fixture = await makeGitFixture();
+    try {
+      const result = await scanStagedBlobs({
+        clonePath: fixture.cloneRepo,
+        attrSha: fixture.baseSha,
+        blobs: [{ path: 'src/x', mode: '100644', sha: 'f'.repeat(40) }],
+        paths: [],
+        secretValues: buildValues(['API_TOKEN', value]),
+      });
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.message).toContain('missing');
+    } finally {
+      await cleanGitFixture(fixture);
     }
   }, 120_000);
 });
@@ -1210,18 +1436,10 @@ describe('delivery.ts — stage/land/quarantine script text', () => {
     expect(scriptContent.indexOf('echo "TREE $TREE"')).toBeLessThan(
       scriptContent.indexOf('> "$RAW_LISTING_FILE"'),
     );
-    // The value-scan diff only exists when there is something to scan, and
-    // it is always --text.
+    // The stage script never re-diffs: the value scan reads the staged tree
+    // objects host-side instead (scanStagedBlobs).
     expect(scriptContent).not.toContain('diff --text');
-    const withScan = buildStageScript({
-      clonePath: '/tmp/run/clone',
-      baseSha: sha,
-      attrSha: attr,
-      stageDir: '/tmp/run/stage',
-      writeScope: ['src/'],
-      valueScanLines: ['echo hi'],
-    });
-    expect(withScan.scriptContent).toContain('diff --text --no-renames');
+    expect(scriptContent).not.toContain('DIFF_FILE');
   });
 
   it('lands with commit-tree, the pinned identity, and a one-line CAS push', () => {

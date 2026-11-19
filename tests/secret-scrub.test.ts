@@ -24,6 +24,7 @@ import { join } from 'node:path';
 
 import {
   buildSecretValueList,
+  createSecretMatcher,
   createSecretScrubber,
   loadKnownSecretValues,
   readCredentialLine,
@@ -256,6 +257,59 @@ describe('createSecretScrubber / scrubText', () => {
     expect(scrubText('a 15-char value is short', makeList(['SHORT', 'a'.repeat(15)]))).toBe(
       'a 15-char value is short',
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Unit: createSecretMatcher
+// ---------------------------------------------------------------------------
+
+describe('createSecretMatcher', () => {
+  // 40 characters, and every one of the five forms is distinct: the raw value
+  // carries `"`, `\`, a space and `&`, so JSON escaping, double JSON escaping,
+  // percent-encoding and base64 each change it.
+  const value = 'a"b\\c d&e' + 'X'.repeat(31);
+
+  it('finds the value in each of the five encodings of the same 40-char value', () => {
+    expect(value.length).toBe(40);
+    expect(formsOf(value).length).toBe(5);
+    const list = makeList(['TOKEN', value]);
+    for (const form of formsOf(value)) {
+      const matcher = createSecretMatcher(list);
+      matcher.push(Buffer.from(`prefix ${form} suffix`, 'utf8'));
+      expect(matcher.names()).toEqual(['TOKEN']);
+    }
+  });
+
+  it('finds a value split across two pushes at every byte offset', () => {
+    const list = makeList(['SPLIT', value]);
+    const bytes = Buffer.from(`00 ${value} 11`, 'utf8');
+    for (let offset = 0; offset <= bytes.length; offset += 1) {
+      const matcher = createSecretMatcher(list);
+      matcher.push(bytes.subarray(0, offset));
+      matcher.push(bytes.subarray(offset));
+      expect(matcher.names(), `offset ${offset}`).toEqual(['SPLIT']);
+    }
+  });
+
+  it('returns both names once, in list order, when two values are found', () => {
+    const first = 'first-planted-value-0123456789';
+    const second = 'second-planted-value-9876543210';
+    const matcher = createSecretMatcher(makeList(['ONE', first], ['TWO', second]));
+    // `second` appears first in the buffer; `names()` still reports list order.
+    matcher.push(Buffer.from(`x ${second} y ${first} z`, 'utf8'));
+    expect(matcher.names()).toEqual(['ONE', 'TWO']);
+  });
+
+  it('no-ops and returns [] for an empty list or a list that gives no form', () => {
+    const empty = createSecretMatcher([]);
+    const chunk = Buffer.from('anything at all');
+    empty.push(chunk);
+    expect(empty.names()).toEqual([]);
+
+    const tooShort = createSecretMatcher(makeList(['SHORT', 'a'.repeat(15)]));
+    tooShort.push(Buffer.from('a'.repeat(15)));
+    expect(tooShort.names()).toEqual([]);
   });
 });
 

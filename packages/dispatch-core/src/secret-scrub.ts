@@ -262,6 +262,66 @@ export function createSecretScrubber(list: ReadonlyArray<SecretValue>): SecretSc
   };
 }
 
+/** The names present in `found`, in `list` order, each once (shared by the streaming detectors). */
+export function namesInListOrder(list: ReadonlyArray<SecretValue>, found: ReadonlySet<string>): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const entry of list) {
+    if (found.has(entry.name) && !seen.has(entry.name)) {
+      seen.add(entry.name);
+      out.push(entry.name);
+    }
+  }
+  return out;
+}
+
+/** Streaming secret DETECTOR: feed chunks, then ask which values were seen. Emits nothing. */
+export interface SecretMatcher {
+  /** Feed `chunk`; a value may span calls. */
+  push(chunk: Buffer): void;
+  /** Names of every value found at least once, in list order, each once. */
+  names(): string[];
+}
+
+/**
+ * Create a detector over a value list. An empty list, or one that contributes
+ * no encoded form, matches nothing and returns `[]`. Unlike
+ * `createSecretScrubber` this never rewrites bytes; it exists so a caller can
+ * answer "did the stream carry a value?" without ever holding or emitting the
+ * value itself.
+ */
+export function createSecretMatcher(list: ReadonlyArray<SecretValue>): SecretMatcher {
+  const forms = collectForms(list);
+  if (forms.length === 0) {
+    return {
+      push: (): void => {},
+      names: (): string[] => [],
+    };
+  }
+  const longestFormLength = forms.reduce((max, form) => Math.max(max, form.byteLength), 0);
+  const found = new Set<string>();
+  let held = Buffer.alloc(0);
+
+  return {
+    push(chunk: Buffer): void {
+      const buf = held.length === 0 ? chunk : Buffer.concat([held, chunk]);
+      const occurrences = findOccurrences(buf, forms);
+      // Record EVERY complete form occurrence, including one that ends inside
+      // the held region: `names()` must answer for a value whose last byte
+      // arrives in the final chunk, when no further push will come.
+      for (const occ of occurrences) {
+        const name = list[forms[occ.formIndex]?.valueIndex ?? 0]?.name;
+        if (name !== undefined) found.add(name);
+      }
+      const cut = computeCut(buf.length, occurrences, longestFormLength);
+      held = Buffer.from(buf.subarray(cut));
+    },
+    names(): string[] {
+      return namesInListOrder(list, found);
+    },
+  };
+}
+
 /** Scrub a whole string with the same value list and matcher. */
 export function scrubText(text: string, list: ReadonlyArray<SecretValue>): string {
   const forms = collectForms(list);

@@ -21,21 +21,49 @@
  * existing tip is an idempotent no-op; a different tree from the same base
  * is a structured conflict, never a clobber (b4r script tests 3-5).
  *
- * None of the functions in this module throw. `checkWriteScope`/`scanSecrets`,
+ * None of the functions in this module throw. `checkWriteScope`,
  * `parseStageOutput`, `runStageScript` and `parseLandOutput` return a minimal
  * local `{ ok }` shape (not the shared `DispatchResult`). The few file reads
  * (`parseStageOutput`) and the temp-dir lifecycle (`runStageScript`) fail
  * closed into that same local shape rather than throwing.
+ *
+ * The delivery-side value check is `scanStagedBlobs`: after a successful
+ * parse it streams every staged blob and every change-named path through
+ * `createSecretMatcher` and reports the granted values it finds by NAME only
+ * (`StageResult.secretNames`), never a value and never a rendering of the
+ * content it read. `runStageScript` runs it before returning, so no caller
+ * can forget it.
  */
+import { spawn, type ChildProcess } from 'node:child_process';
 import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { execBash, MAX_BUFFER_BYTES } from './exec-direct.js';
-import { ENV_NAME } from './repo-config.js';
+import {
+  createSecretMatcher,
+  MIN_VALUE_LENGTH,
+  namesInListOrder,
+  type SecretMatcher,
+  type SecretValue,
+} from './secret-scrub.js';
 
-/** Frozen git config flags carried on every launcher-side git invocation (spec §8). */
-const FROZEN_GIT_CONFIG = '-c core.autocrlf=false -c core.eol=lf -c core.hooksPath= -c core.fsmonitor=';
+/**
+ * Frozen git config flags, as argv, carried on every launcher-side git
+ * invocation (spec §8). `frozenGitArgs` turns them into a `spawn` argv;
+ * `frozenGitArray` renders the same argv into a bash array so the two can
+ * never drift.
+ */
+const FROZEN_GIT_CONFIG = [
+  '-c',
+  'core.autocrlf=false',
+  '-c',
+  'core.eol=lf',
+  '-c',
+  'core.hooksPath=',
+  '-c',
+  'core.fsmonitor=',
+] as const;
 
 /**
  * Options for the eventual full delivery run. This is the wave-3
@@ -61,7 +89,7 @@ export type DeliveryOutcome =
   | { status: 'no_changes' }
   | { status: 'no_delta'; ignoredFiles?: string[] }
   | { status: 'refused_out_of_scope'; offendingPaths: string[]; quarantinePath: string }
-  | { status: 'secret_in_diff'; patterns: string[]; quarantinePath: string }
+  | { status: 'secret_in_diff'; names: string[]; quarantinePath: string }
   | { status: 'conflict'; existingTree: string; newTree: string }
   | { status: 'error'; message: string };
 
@@ -76,6 +104,14 @@ function shQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
+/** The `spawn` argv for a frozen git invocation: `git`'s flags, attribute pin first when given. */
+function frozenGitArgs(attrSha?: string): string[] {
+  return [
+    ...(attrSha === undefined ? [] : [`--attr-source=${attrSha}`]),
+    ...FROZEN_GIT_CONFIG,
+  ];
+}
+
 /**
  * A bash array assignment for the frozen git invocation: `git` plus the frozen
  * `-c` args, and, when given, `--attr-source=<sha>`. An array (not a plain
@@ -84,9 +120,7 @@ function shQuote(value: string): string {
  * clone use it; the mother-repo probes use it without the attribute pin.
  */
 function frozenGitArray(attrSha?: string): string {
-  const attr = attrSha === undefined ? '' : `${shQuote(`--attr-source=${attrSha}`)} `;
-  const config = FROZEN_GIT_CONFIG.split(' ').map(shQuote).join(' ');
-  return `(git ${attr}${config})`;
+  return `(git ${frozenGitArgs(attrSha).map(shQuote).join(' ')})`;
 }
 
 /**
@@ -119,27 +153,6 @@ export function checkWriteScope(
   return { ok: true };
 }
 
-interface SecretPattern {
-  name: string;
-  regex: RegExp;
-}
-
-// S0 subset: pattern-only. S3 adds injected-value scanning (the launcher's
-// own known secret_env values), per spec §8.
-const SECRET_PATTERNS: readonly SecretPattern[] = [
-  { name: 'aws_access_key_id', regex: /AKIA[0-9A-Z]{16}/ },
-  { name: 'bearer_token', regex: /[Bb]earer\s+[A-Za-z0-9\-._~+\/]+=*/ },
-  { name: 'pem_private_key', regex: /-----BEGIN\s+(RSA\s+)?PRIVATE KEY-----/ },
-  { name: 'sk_style_api_key', regex: /sk-[a-zA-Z0-9]{20,}/ },
-];
-
-/** Pattern-only secret scan over a diff (S0 subset of spec §8's `secret_in_diff` check). */
-export function scanSecrets(diff: string): { ok: true } | { ok: false; patterns: string[] } {
-  const patterns = SECRET_PATTERNS.filter((p) => p.regex.test(diff)).map((p) => p.name);
-  if (patterns.length > 0) return { ok: false, patterns };
-  return { ok: true };
-}
-
 // ---------------------------------------------------------------------------
 // Stage -> check -> land over ONE tree.
 //
@@ -149,6 +162,7 @@ export function scanSecrets(diff: string): { ok: true } | { ok: false; patterns:
 // in a host-created temp dir, and prints a strict stdout grammar. TypeScript
 // parses that one staged tree, checks it (gitlinks -> write_scope -> value
 // scan), and only then hands exactly the checked `TREE` to the land script.
+// The value scan runs host-side (`scanStagedBlobs`), after the parse.
 // The advisory branch reuses the same stage script with an empty scope and no
 // skeleton paths, for mutation detection only — it never reaches land.
 // ---------------------------------------------------------------------------
@@ -160,11 +174,20 @@ export const STAGE_RAW_LISTING_FILENAME = 'stage-raw-listing.z';
 /** `ls-files -z --others -i --exclude-standard` listing file written by the stage script. */
 export const STAGE_IGNORED_FILENAME = 'stage-ignored.z';
 
+/**
+ * Byte ceiling for one delivery-side content scan (`scanStagedBlobs` and the
+ * pipeline's export-mount walk). Generous — a normal diff is far smaller —
+ * but finite, so a runaway tree fails the run instead of exhausting the host.
+ */
+export const DELIVERY_SCAN_CAP_BYTES = 256 * 1024 * 1024;
+
+/** Wall-clock ceiling for one `scanStagedBlobs` invocation. */
+const SCAN_TIMEOUT_MS = 120_000;
+
 /** `TREE <40 or 64 hex>` — the one required line of the stage stdout grammar. */
 const STAGE_TREE_LINE = /^TREE ((?:[0-9a-f]{40}|[0-9a-f]{64}))$/;
 /** Strict `diff-tree --raw -z` header: `:<6 octal> <6 octal> <hex> <hex> <A|D|M|T>` then one NUL-terminated path. */
 const STAGE_RAW_RECORD = /^:([0-7]{6}) ([0-7]{6}) ([0-9a-f]+) ([0-9a-f]+) ([ADMT])$/;
-const STAGE_SECRET_HIT = /^SECRET_HIT=(.+)$/;
 /** Git object id in either the SHA-1 or SHA-256 object format. */
 const GIT_SHA = '(?:[0-9a-f]{40}|[0-9a-f]{64})';
 
@@ -179,8 +202,6 @@ export interface StageScriptOpts {
   writeScope: string[];
   /** skeleton paths this run created (untouched-skeleton drop). */
   skeletonPaths?: string[];
-  /** `buildInjectedValueScanFragment` lines, spliced after TREE; empty when no credentials. */
-  valueScanLines?: string[];
 }
 
 /**
@@ -200,15 +221,6 @@ export function buildStageScript(opts: StageScriptOpts): BashScript {
     ? 'SKELETON_PATHS=()'
     : `SKELETON_PATHS=(${skeletonPaths.map(shQuote).join(' ')})`;
   const ignoredPathspec = writeScope.length === 0 ? '' : ` -- ${writeScope.map(shQuote).join(' ')}`;
-  const valueScanLines = opts.valueScanLines ?? [];
-  const valueScanBlock = valueScanLines.length === 0
-    ? ''
-    : [
-        'DIFF_FILE="$STAGE_DIR/stage.diff"',
-        `"\${GIT[@]}" diff --text --no-renames "$BASE_SHA" "$TREE" > "$DIFF_FILE"`,
-        ...valueScanLines,
-        'rm -f "$DIFF_FILE"',
-      ].join('\n');
 
   const scriptContent = `#!/bin/bash
 set -euo pipefail
@@ -273,7 +285,6 @@ fi
 # Raw NUL listing of the checked tree — the stage parser reads it as a file,
 # never as stdout.
 "\${GIT[@]}" diff-tree -r -z --raw --no-renames "$BASE_SHA" "$TREE" > "$RAW_LISTING_FILE"
-${valueScanBlock}
 `;
 
   return { scriptContent, scriptName: 'dispatch-stage.sh' };
@@ -287,8 +298,17 @@ export interface StageResult {
   /** Every path whose old or new mode is a submodule gitlink (`160000`). */
   gitlinkPaths: string[];
   ignoredFiles: string[];
-  /** `SECRET_HIT=<NAME>` names, in emitted order. */
-  secretHits: string[];
+  /**
+   * Every raw record whose NEW mode is neither `000000` (deleted) nor
+   * `160000` (gitlink): the tree-side objects `scanStagedBlobs` reads, with
+   * the mode and object id exactly as the listing gave them.
+   */
+  blobs: Array<{ path: string; mode: string; sha: string }>;
+  /**
+   * Granted values found by `scanStagedBlobs`, in the launch list's order,
+   * each once. Filled by `runStageScript`; empty until then.
+   */
+  secretNames: string[];
 }
 
 export type StageParseResult = { ok: true; stage: StageResult } | { ok: false; message: string };
@@ -350,10 +370,9 @@ async function readListingFile(path: string): Promise<{ ok: true; data: Buffer }
 
 /**
  * Parse the stage script's strict stdout grammar — exactly one `TREE <hex>`
- * line, at most one `NO_DELTA`, zero or more `SECRET_HIT=<NAME>` lines whose
- * NAME matches `ENV_NAME`, nothing else — plus the two NUL listing files. Any
- * deviation, an undecodable path, a malformed/truncated record or an over-cap
- * file fails closed; the messages name no file content.
+ * line and at most one `NO_DELTA`, nothing else — plus the two NUL listing
+ * files. Any deviation, an undecodable path, a malformed/truncated record or
+ * an over-cap file fails closed; the messages name no file content.
  */
 export async function parseStageOutput(
   stdout: string,
@@ -366,7 +385,6 @@ export async function parseStageOutput(
 
   let tree: string | undefined;
   let noDelta = false;
-  const secretHits: string[] = [];
   for (const line of lines) {
     const treeMatch = line.match(STAGE_TREE_LINE);
     if (treeMatch) {
@@ -377,13 +395,6 @@ export async function parseStageOutput(
     if (line === 'NO_DELTA') {
       if (noDelta) return stageFailure('Stage output repeated the NO_DELTA line.');
       noDelta = true;
-      continue;
-    }
-    const secretMatch = line.match(STAGE_SECRET_HIT);
-    if (secretMatch) {
-      const name = secretMatch[1]!;
-      if (!ENV_NAME.test(name)) return stageFailure('Stage output named a secret with an invalid variable name.');
-      secretHits.push(name);
       continue;
     }
     return stageFailure('Stage output contained a line outside its grammar.');
@@ -400,6 +411,7 @@ export async function parseStageOutput(
 
   const changedFiles: string[] = [];
   const gitlinkPaths: string[] = [];
+  const blobs: Array<{ path: string; mode: string; sha: string }> = [];
   for (let i = 0; i < rawParts.length; i += 2) {
     const header = decodeUtf8Strict(rawParts[i]!);
     const path = decodeUtf8Strict(rawParts[i + 1]!);
@@ -408,6 +420,10 @@ export async function parseStageOutput(
     if (!record) return stageFailure('The raw listing contained a malformed record header.');
     changedFiles.push(path);
     if (record[1] === '160000' || record[2] === '160000') gitlinkPaths.push(path);
+    const newMode = record[2]!;
+    if (newMode !== '000000' && newMode !== '160000') {
+      blobs.push({ path, mode: newMode, sha: record[4]! });
+    }
   }
 
   const ignoredFiles: string[] = [];
@@ -417,7 +433,7 @@ export async function parseStageOutput(
     ignoredFiles.push(path);
   }
 
-  return { ok: true, stage: { tree, noDelta, changedFiles, gitlinkPaths, ignoredFiles, secretHits } };
+  return { ok: true, stage: { tree, noDelta, changedFiles, gitlinkPaths, ignoredFiles, blobs, secretNames: [] } };
 }
 
 /**
@@ -425,14 +441,15 @@ export async function parseStageOutput(
  * either side (a nested
  * repo's contents are not paths of this tree, so a gitlink would otherwise
  * slip past `checkWriteScope`), then `checkWriteScope` over every listed
- * path, then the injected-value verdict. Pure and exported so the pipeline
- * and its tests share one decision, never two.
+ * path, then the injected-value verdict (`secretNames`, already populated by
+ * the host-side blob scan). Pure and exported so the pipeline and its tests
+ * share one decision, never two.
  */
 export type StageVerdict =
   | { kind: 'no_delta' }
   | { kind: 'gitlink'; offendingPaths: string[] }
   | { kind: 'out_of_scope'; offendingPaths: string[] }
-  | { kind: 'secret_in_diff'; patterns: string[] }
+  | { kind: 'secret_in_diff'; names: string[] }
   | { kind: 'clean' };
 
 export function classifyStage(stage: StageResult, writeScope: string[]): StageVerdict {
@@ -440,7 +457,7 @@ export function classifyStage(stage: StageResult, writeScope: string[]): StageVe
   if (stage.gitlinkPaths.length > 0) return { kind: 'gitlink', offendingPaths: stage.gitlinkPaths };
   const scopeCheck = checkWriteScope(stage.changedFiles, writeScope);
   if (!scopeCheck.ok) return { kind: 'out_of_scope', offendingPaths: scopeCheck.offendingPaths };
-  if (stage.secretHits.length > 0) return { kind: 'secret_in_diff', patterns: stage.secretHits };
+  if (stage.secretNames.length > 0) return { kind: 'secret_in_diff', names: stage.secretNames };
   return { kind: 'clean' };
 }
 
@@ -450,17 +467,21 @@ export interface StageRunOpts {
   attrSha: string;
   writeScope: string[];
   skeletonPaths?: string[];
-  valueScanLines?: string[];
+  /** Launch values to look for in the staged tree; empty for the advisory branch. */
+  secretValues?: ReadonlyArray<SecretValue>;
+  /** Override for the staged-tree scan cap, primarily for tests. */
+  scanCapBytes?: number;
 }
 
 export type StageRunResult = { ok: true; stage: StageResult } | { ok: false; message: string };
 
 /**
  * The one stage helper: `mkdtemp` a `kb-stage-` dir under `os.tmpdir()`, run
- * the stage script, parse it, and remove the dir in a `finally` on every
- * path. The pipeline checks the exit code before it ever parses, so a stage
- * that fails after printing TREE never reaches check or land. The advisory
- * branch reuses this with an empty scope and no skeleton paths.
+ * the stage script, parse it, run the host-side value scan, and remove the dir
+ * in a `finally` on every path. The pipeline checks the exit code before it
+ * ever parses, so a stage that fails after printing TREE never reaches check
+ * or land. The advisory branch reuses this with an empty scope, no skeleton
+ * paths, and no value list.
  */
 export async function runStageScript(opts: StageRunOpts): Promise<StageRunResult> {
   let stageDir: string;
@@ -477,11 +498,25 @@ export async function runStageScript(opts: StageRunOpts): Promise<StageRunResult
     if (exec.data.exitCode !== 0) {
       return stageFailure(`Stage script exited with code ${exec.data.exitCode}.`);
     }
-    return await parseStageOutput(
+    const parsed = await parseStageOutput(
       exec.data.stdout,
       join(stageDir, STAGE_RAW_LISTING_FILENAME),
       join(stageDir, STAGE_IGNORED_FILENAME),
     );
+    if (!parsed.ok) return parsed;
+    if (!parsed.stage.noDelta) {
+      const scan = await scanStagedBlobs({
+        clonePath: opts.clonePath,
+        attrSha: opts.attrSha,
+        blobs: parsed.stage.blobs,
+        paths: parsed.stage.changedFiles,
+        secretValues: opts.secretValues ?? [],
+        ...(opts.scanCapBytes === undefined ? {} : { capBytes: opts.scanCapBytes }),
+      });
+      if (!scan.ok) return stageFailure(scan.message);
+      parsed.stage.secretNames = scan.names;
+    }
+    return parsed;
   } finally {
     // Temp-dir cleanup is best-effort: the staging verdict was already
     // decided above, and a failure to remove scratch space must not turn a
@@ -493,6 +528,186 @@ export async function runStageScript(opts: StageRunOpts): Promise<StageRunResult
       console.warn(`kb-dispatch: failed to remove stage temp dir ${stageDir}:`, err);
     }
   }
+}
+
+export interface StagedBlob {
+  path: string;
+  mode: string;
+  sha: string;
+}
+
+export interface ScanStagedBlobsOpts {
+  clonePath: string;
+  /** Mother `HEAD` at admission — the `--attr-source` object every `cat-file` call reads. */
+  attrSha: string;
+  /** The staged tree-side objects, from `parseStageOutput`'s listing. */
+  blobs: ReadonlyArray<StagedBlob>;
+  /** Change-named paths, scanned as UTF-8 text before the blobs. */
+  paths: ReadonlyArray<string>;
+  secretValues: ReadonlyArray<SecretValue>;
+  /** Override the byte cap (defaults to `DELIVERY_SCAN_CAP_BYTES`). */
+  capBytes?: number;
+}
+
+export type ScanStagedBlobsResult = { ok: true; names: string[] } | { ok: false; message: string };
+
+interface BlobStreamInput {
+  clonePath: string;
+  attrSha: string;
+  blobs: ReadonlyArray<StagedBlob>;
+  secretValues: ReadonlyArray<SecretValue>;
+  capBytes: number;
+  record: (matcher: SecretMatcher) => void;
+}
+
+/** Stream the staged blobs through `git cat-file --batch`; every deviation fails closed. */
+async function scanBlobStream(input: BlobStreamInput): Promise<{ ok: true } | { ok: false; message: string }> {
+  const requested = input.blobs.map((blob) => blob.sha);
+  return new Promise((resolve) => {
+    let settled = false;
+    let child: ChildProcess | undefined;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    const finish = (result: { ok: true } | { ok: false; message: string }): void => {
+      if (settled) return;
+      settled = true;
+      if (timer !== undefined) clearTimeout(timer);
+      resolve(result);
+    };
+
+    timer = setTimeout(() => {
+      child?.kill('SIGKILL');
+      finish({ ok: false, message: 'Scanning the staged tree timed out.' });
+    }, SCAN_TIMEOUT_MS);
+
+    try {
+      child = spawn('git', [...frozenGitArgs(input.attrSha), 'cat-file', '--batch'], {
+        cwd: input.clonePath,
+        env: process.env,
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+    } catch {
+      finish({ ok: false, message: 'Failed to start the staged-tree scan.' });
+      return;
+    }
+
+    let stopped = false;
+    const failScan = (message: string): void => {
+      if (stopped) return;
+      stopped = true;
+      child?.kill('SIGKILL');
+      finish({ ok: false, message });
+    };
+
+    let pending: Buffer = Buffer.alloc(0);
+    let blobIndex = 0;
+    let state: 'header' | 'body' = 'header';
+    let bodySize = 0;
+    let totalBytes = 0;
+    let matcher = createSecretMatcher(input.secretValues);
+
+    const processPending = (): void => {
+      while (!stopped) {
+        if (state === 'header') {
+          const newline = pending.indexOf(0x0a);
+          if (newline === -1) return;
+          const header = pending.subarray(0, newline).toString('utf8');
+          pending = pending.subarray(newline + 1);
+          const expected = requested[blobIndex];
+          if (expected === undefined) {
+            failScan('The staged-tree scan returned more blobs than requested.');
+            return;
+          }
+          if (header === `${expected} missing`) {
+            failScan('A staged blob was missing from the object store.');
+            return;
+          }
+          const parsed = /^([0-9a-f]+) blob (\d+)$/.exec(header);
+          if (!parsed || parsed[1] !== expected) {
+            failScan('The staged-tree scan returned an unrecognized header.');
+            return;
+          }
+          bodySize = Number(parsed[2]);
+          totalBytes += bodySize;
+          if (totalBytes > input.capBytes) {
+            failScan(`Delivery content exceeded the scan cap of ${input.capBytes} bytes.`);
+            return;
+          }
+          matcher = createSecretMatcher(input.secretValues);
+          state = 'body';
+          continue;
+        }
+        if (pending.length < bodySize + 1) return;
+        if (pending[bodySize] !== 0x0a) {
+          failScan('A staged blob body was not newline-terminated.');
+          return;
+        }
+        matcher.push(pending.subarray(0, bodySize));
+        input.record(matcher);
+        pending = pending.subarray(bodySize + 1);
+        blobIndex += 1;
+        state = 'header';
+      }
+    };
+
+    child.on('error', () => finish({ ok: false, message: 'The staged-tree scan process failed to run.' }));
+    child.stderr?.on('error', () => finish({ ok: false, message: 'The staged-tree scan error stream failed.' }));
+    child.stderr?.resume();
+    child.stdout?.on('data', (chunk: Buffer) => {
+      if (settled || stopped) return;
+      pending = pending.length === 0 ? chunk : Buffer.concat([pending, chunk]);
+      processPending();
+    });
+    child.stdout?.on('error', () => failScan('The staged-tree scan output stream failed.'));
+    child.stdin?.on('error', () => failScan('The staged-tree scan input stream failed.'));
+    child.on('close', (code) => {
+      if (stopped) return;
+      processPending();
+      if (pending.length !== 0 || state !== 'header' || blobIndex < requested.length) {
+        failScan('The staged-tree scan ended before it read every blob.');
+        return;
+      }
+      finish(code === 0 ? { ok: true } : { ok: false, message: 'The staged-tree scan process exited non-zero.' });
+    });
+
+    child.stdin?.end(requested.map((sha) => `${sha}\n`).join(''));
+  });
+}
+
+/**
+ * The delivery-side value check: stream each staged blob's bytes and each
+ * change-named path through a fresh `createSecretMatcher`, returning the
+ * granted values found by NAME only. An empty value list (or one that
+ * contributes no encoded form) matches nothing and spawns nothing. A missing
+ * object, a header that does not match the requested blob, a body that is not
+ * newline-terminated, a short read, a stream error, a non-zero exit, the byte
+ * cap and the wall-clock cap all fail closed.
+ */
+export async function scanStagedBlobs(opts: ScanStagedBlobsOpts): Promise<ScanStagedBlobsResult> {
+  const { clonePath, attrSha, blobs, paths, secretValues } = opts;
+  const capBytes = opts.capBytes ?? DELIVERY_SCAN_CAP_BYTES;
+
+  if (!secretValues.some((entry) => entry.value.length >= MIN_VALUE_LENGTH)) {
+    return { ok: true, names: [] };
+  }
+
+  const found = new Set<string>();
+  const record = (matcher: SecretMatcher): void => {
+    for (const name of matcher.names()) found.add(name);
+  };
+
+  for (const path of paths) {
+    const matcher = createSecretMatcher(secretValues);
+    matcher.push(Buffer.from(path, 'utf8'));
+    record(matcher);
+  }
+
+  if (blobs.length > 0) {
+    const result = await scanBlobStream({ clonePath, attrSha, blobs, secretValues, capBytes, record });
+    if (!result.ok) return result;
+  }
+
+  return { ok: true, names: namesInListOrder(secretValues, found) };
 }
 
 export interface LandScriptOpts {

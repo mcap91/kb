@@ -328,7 +328,7 @@ Credential profiles live in `wiki/.dispatch/profiles.json` (scaffolded by `init-
   executes a credential command and never embeds a resolved value in generated text). Every `inject`
   key must be a valid shell variable name (`[A-Za-z_][A-Za-z0-9_]*`); a key that is not — for example
   `BAD-NAME` or `X;rm` — is refused at profile load with `BAD_RECORD`, naming the profile and the key,
-  because the key is interpolated into generated credential and value-scan scripts.
+  because the key is interpolated unquoted into the generated credential export script.
 - `endpoints` (optional) is the array of hostnames — exact or `*.suffix` wildcard — this profile grants
   network access to. Appended to the forwarder's granted endpoint set only when the profile is named in
   the HO's `credentials:` field.
@@ -338,8 +338,12 @@ Credential profiles live in `wiki/.dispatch/profiles.json` (scaffolded by `init-
 - A `vars` key that collides with an injected credential's var name (or the backend's own
   `api_key_env`) is refused — a non-secret channel must never be able to shadow or masquerade as a
   credential.
-- The stage re-scans the staged tree's diff for each granted credential's literal value before any
-  commit; a hit refuses the delivery (`secret_in_diff`, see "Delivery") rather than landing it.
+- Delivery scans every staged blob and every change-named path in TypeScript for every launch value in
+  every match form (raw, JSON-escaped once and twice, percent-encoded, base64) before any commit, reports
+  names only, and refuses the delivery (`secret_in_diff`, see "Delivery") rather than landing it; the
+  staged-tree scan is capped at 256 MiB. Each `export_mount` this run wrote to is scanned the same way
+  once the worker and its forwarder exit, under the same byte cap plus a 10,000-file cap, and a hit fails
+  the whole run (`DELIVERY_FAILED`).
 
 ### Resolved-value scrubbing
 
@@ -386,8 +390,9 @@ the list is the exact set of resolved pairs, never a name:
 - A credential-file snapshot that is not valid JSON fails the build with `CREDENTIAL_NOT_CONFIGURED`,
   naming the label only and never the bytes.
 
-The stage diff's own value scan (above) remains the delivery-side check until the stage-diff scrubber
-increment replaces it.
+The stage's own blob scan and the export-mount scan (above) are the delivery-side checks. The response
+doc is scrubbed, not scanned: it is written through this scrubber rather than run through the value
+matcher.
 
 ## Host Requirements
 
@@ -457,9 +462,21 @@ past `MAX_BUFFER_BYTES`. The stage result is judged in this fixed order, and the
 2. a gitlink (mode `160000`) anywhere — an embedded repo is not a change to commit.
 3. every changed path against the *unwidened* `write_scope` (directory-prefix or exact match; both ends
    of a rename).
-4. each granted credential's literal value against `git diff --text --no-renames BASE_SHA TREE`.
+4. every launch value, in every match form, against the content of every staged blob (each blob read in
+   TypeScript host-side via `git cat-file --batch`, never `git diff --text`) and every change-named path.
 
-A hit on 2 or 3 is `refused_out_of_scope` for those paths; a hit on 4 is `secret_in_diff`.
+A hit on 2 or 3 is `refused_out_of_scope` for those paths; a hit on 4 is `secret_in_diff` — the verdict
+names the variables, never the value. The blob scan is capped at 256 MiB (`DELIVERY_SCAN_CAP_BYTES`) and
+fails closed (the run is `DELIVERY_FAILED`) if the cap, a missing object, or the wall-clock limit is hit
+— it never silently skips a blob.
+
+Independently of the stage, once the worker and its forwarder exit the pipeline walks every
+`export_mount`, selects the entries this run wrote (by change time), streams each regular file and reads
+each symlink target through the same matcher, and refuses the whole run with `DELIVERY_FAILED` — naming
+the variables, never the bytes — if any holds a granted value. The scan shares the same byte cap and adds
+a 10,000-file cap; over either cap it fails the run. That refusal is decided before the stage verdict and
+before a non-zero worker exit, so a worker that leaks a value and then fails is reported as the leak, not
+the failure.
 
 **Land.** A clean tree is committed with `commit-tree TREE -p base_sha` and a pinned identity
 (`kb-dispatch <dispatch@kb.local>`), then pushed with compare-and-swap semantics onto
@@ -467,9 +484,9 @@ A hit on 2 or 3 is `refused_out_of_scope` for those paths; a hit on 4 is `secret
 `IDEMPOTENT`, or `CONFLICT:<tree>`. The same tree from the same base is an idempotent no-op; a different
 tree from the same base is a structured `conflict`, never a clobber.
 
-On any refusal the pipeline writes the stage diff to `quarantine.diff` in the run dir, through the value
-scrubber, so it holds no plaintext credential; a diff that exceeds `MAX_BUFFER_BYTES` fails the run with
-`DELIVERY_FAILED` rather than truncating or committing.
+On any refusal the pipeline writes the enumerated diff to `quarantine.diff` in the run dir, through the
+value scrubber, so it holds no plaintext credential; a diff that exceeds `MAX_BUFFER_BYTES` fails the
+run with `DELIVERY_FAILED` rather than truncating or committing.
 
 | Outcome | Meaning |
 |---------|---------|
@@ -477,7 +494,7 @@ scrubber, so it holds no plaintext credential; a diff that exceeds `MAX_BUFFER_B
 | `no_delta` | Worker ran but produced no tree change |
 | `no_changes` | Advisory mode (nothing to deliver), or an idempotent re-delivery |
 | `refused_out_of_scope` | A changed path fell outside `write_scope`, or any path is a gitlink (embedded repo); diff quarantined to the run dir |
-| `secret_in_diff` | A granted credential's value appeared in the diff; diff quarantined |
+| `secret_in_diff` | A granted credential's value appeared in a staged blob or change-named path; diff quarantined |
 | `conflict` | `dispatch/HO-XXXX` already carries a different tree from the same base |
 
 Advisory modes (`code_review`/`redteam`/`research`) never reach this gate at all — their §-envelope

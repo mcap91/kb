@@ -175,24 +175,3 @@ export function buildInjectionScript(resolution: CredentialResolution, handoffVa
 
   return { exportLines, varsExportLines, existenceCheckLines };
 }
-
-/**
- * Build the stage script's injected-value scan fragment: boolean
- * `SECRET_HIT=<VAR_NAME>` hits only, names never values. Spliced into the
- * WSL2-side stage script by the pipeline, which defines `$DIFF_FILE`;
- * `delivery.ts`'s `parseStageOutput` parses the resulting `SECRET_HIT=<NAME>`
- * lines into the stage verdict. Scoped to profile `inject` values only, the
- * same scope as `existenceCheckLines` — the backend API key is backend-owned
- * infrastructure rather than a `credentials:`-gated value, and pattern
- * scanning (delivery.ts `scanSecrets`) already covers common API key shapes.
- */
-export function buildInjectedValueScanFragment(resolution: CredentialResolution): string[] {
-  const lines: string[] = [];
-  for (const injection of resolution.injections) {
-    lines.push(
-      `_VAL="$(grep -m1 '^${injection.varName}=' ${shQuote(injection.filePath)} | cut -d= -f2-)"`,
-      `if [ -n "$_VAL" ] && grep -qF "$_VAL" "$DIFF_FILE"; then echo "SECRET_HIT=${injection.varName}"; fi`,
-    );
-  }
-  return lines;
-}

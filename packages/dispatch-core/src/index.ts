@@ -188,17 +188,21 @@ export type {
   LandOutcome,
   LandParseResult,
   QuarantineScriptOpts,
+  StagedBlob,
+  ScanStagedBlobsOpts,
+  ScanStagedBlobsResult,
 } from './delivery.js';
 export {
   checkWriteScope,
-  scanSecrets,
   STAGE_TEMP_PREFIX,
   STAGE_RAW_LISTING_FILENAME,
   STAGE_IGNORED_FILENAME,
+  DELIVERY_SCAN_CAP_BYTES,
   buildStageScript,
   parseStageOutput,
   runStageScript,
   classifyStage,
+  scanStagedBlobs,
   buildLandScript,
   parseLandOutput,
   buildQuarantineScript,
@@ -244,7 +248,6 @@ export {
   resolveCredentials,
   checkCredentialPolicy,
   buildInjectionScript,
-  buildInjectedValueScanFragment,
 } from './credentials.js';
 
 // ---------------------------------------------------------------------------
@@ -302,8 +305,8 @@ export { buildWorkerEnv } from './env-policy.js';
 
 // Value-list secret scrubber (secret-scrub.ts) — builds the resolved-value
 // list and rewrites it out of a worker's stdout/stderr before capture.
-export type { SecretValue, SecretValuePair, CredentialFileSnapshot, BuildSecretValueListInput, SecretScrubber } from './secret-scrub.js';
-export { MIN_VALUE_LENGTH, buildSecretValueList, createSecretScrubber, scrubText } from './secret-scrub.js';
+export type { SecretValue, SecretValuePair, CredentialFileSnapshot, BuildSecretValueListInput, SecretScrubber, SecretMatcher } from './secret-scrub.js';
+export { MIN_VALUE_LENGTH, buildSecretValueList, createSecretScrubber, createSecretMatcher, scrubText } from './secret-scrub.js';
 
 // Boolean bwrap probe (tier.ts) — no tier enum; provenance records facts.
 export type { BwrapProbeResult } from './tier.js';
