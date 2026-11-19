@@ -852,7 +852,7 @@ async function scanMountFile(
 }
 
 /**
- * Step 19b: host-side export-mount scan (WK-0164; value scan WK-0326 s3).
+ * Step 19b: host-side export-mount scan.
  * Walks each `export_mount` path on the HOST — never inside the jail, never a
  * worker self-report — selects entries whose ctime is newer than `since`
  * (the run's start time), then streams every selected path, regular file and
@@ -1833,7 +1833,7 @@ async function runDispatchCore(opts: DispatchOpts, ctx: DispatchRunCtx): Promise
     // run before the worker spawns. Record the FIRST 'error' event (a spawn
     // failure, e.g. ENOENT) and, after the existing 300ms readiness wait,
     // fail closed when either that error or an early child exit is observed.
-    // The outer `finally` still runs its s2 cleanup closure, so no forwarder
+    // The outer `finally` still runs its cleanup closure, so no forwarder
     // or run-dir secret file is left behind.
     const forwarderStartErrors: Error[] = [];
     forwarder.on('error', (err) => {
@@ -1872,7 +1872,7 @@ async function runDispatchCore(opts: DispatchOpts, ctx: DispatchRunCtx): Promise
     // lands after the read, silently undercounting n.
     const forwarderExited = await waitForChildExit(forwarder, FORWARDER_EXIT_TIMEOUT_MS);
 
-    // 19b. Export-mount scan (WK-0164; value scan WK-0326 s3): host-side,
+    // 19b. Export-mount scan: host-side,
     // deterministic walk of every export_mount path — never a worker
     // self-report. Runs here, as soon as the worker and its forwarder have
     // exited and BEFORE the exit-code check below, so a worker that writes a

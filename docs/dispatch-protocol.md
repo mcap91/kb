@@ -338,9 +338,12 @@ Credential profiles live in `wiki/.dispatch/profiles.json` (scaffolded by `init-
 - A `vars` key that collides with an injected credential's var name (or the backend's own
   `api_key_env`) is refused — a non-secret channel must never be able to shadow or masquerade as a
   credential.
-- The stage scans every staged blob and every change-named path for each granted credential's literal
-  value before any commit; a hit refuses the delivery (`secret_in_diff`, see "Delivery") rather than
-  landing it. The same scan runs over each `export_mount` once the worker and its forwarder exit.
+- Delivery scans every staged blob and every change-named path in TypeScript for every launch value in
+  every match form (raw, JSON-escaped once and twice, percent-encoded, base64) before any commit, reports
+  names only, and refuses the delivery (`secret_in_diff`, see "Delivery") rather than landing it; the
+  staged-tree scan is capped at 256 MiB. Each `export_mount` this run wrote to is scanned the same way
+  once the worker and its forwarder exit, under the same byte cap plus a 10,000-file cap, and a hit fails
+  the whole run (`DELIVERY_FAILED`).
 
 ### Resolved-value scrubbing
 
@@ -387,8 +390,9 @@ the list is the exact set of resolved pairs, never a name:
 - A credential-file snapshot that is not valid JSON fails the build with `CREDENTIAL_NOT_CONFIGURED`,
   naming the label only and never the bytes.
 
-The stage's own blob scan and the export-mount scan (above) are the delivery-side checks; the
-quarantined diff is written through this scrubber.
+The stage's own blob scan and the export-mount scan (above) are the delivery-side checks. The response
+doc is scrubbed, not scanned: it is written through this scrubber rather than run through the value
+matcher.
 
 ## Host Requirements
 
@@ -458,18 +462,21 @@ past `MAX_BUFFER_BYTES`. The stage result is judged in this fixed order, and the
 2. a gitlink (mode `160000`) anywhere — an embedded repo is not a change to commit.
 3. every changed path against the *unwidened* `write_scope` (directory-prefix or exact match; both ends
    of a rename).
-4. each granted credential's literal value against the content of every staged blob (streamed host-side
-   via `git cat-file --batch`, never `git diff --text`) and every change-named path.
+4. every launch value, in every match form, against the content of every staged blob (each blob read in
+   TypeScript host-side via `git cat-file --batch`, never `git diff --text`) and every change-named path.
 
-A hit on 2 or 3 is `refused_out_of_scope` for those paths; a hit on 4 is `secret_in_diff`. The blob scan
-is capped at `DELIVERY_SCAN_CAP_BYTES` and fails closed (the run is `DELIVERY_FAILED`) if the cap, a
-missing object, or the wall-clock limit is hit — it never silently skips a blob.
+A hit on 2 or 3 is `refused_out_of_scope` for those paths; a hit on 4 is `secret_in_diff` — the verdict
+names the variables, never the value. The blob scan is capped at 256 MiB (`DELIVERY_SCAN_CAP_BYTES`) and
+fails closed (the run is `DELIVERY_FAILED`) if the cap, a missing object, or the wall-clock limit is hit
+— it never silently skips a blob.
 
 Independently of the stage, once the worker and its forwarder exit the pipeline walks every
-`export_mount`, streams each regular file and reads each symlink target through the same matcher, and
-refuses the whole run with `DELIVERY_FAILED` — naming the variables, never the bytes — if any holds a
-granted value. That refusal is decided before the stage verdict and before a non-zero worker exit, so a
-worker that leaks a value and then fails is reported as the leak, not the failure.
+`export_mount`, selects the entries this run wrote (by change time), streams each regular file and reads
+each symlink target through the same matcher, and refuses the whole run with `DELIVERY_FAILED` — naming
+the variables, never the bytes — if any holds a granted value. The scan shares the same byte cap and adds
+a 10,000-file cap; over either cap it fails the run. That refusal is decided before the stage verdict and
+before a non-zero worker exit, so a worker that leaks a value and then fails is reported as the leak, not
+the failure.
 
 **Land.** A clean tree is committed with `commit-tree TREE -p base_sha` and a pinned identity
 (`kb-dispatch <dispatch@kb.local>`), then pushed with compare-and-swap semantics onto

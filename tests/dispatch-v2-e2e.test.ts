@@ -10,13 +10,12 @@
  * bwrap/Pi host, not the git work. That live gate is a separate, manually-run
  * proof.
  *
- * A later freeze correction removed the S0-era pattern-only `scanSecrets()`
- * leg from pipeline.ts's delivery gate. The gate now streams every staged
- * blob and change-named path through `createSecretMatcher` (secret-scrub.ts)
- * on the host, and reports granted values by NAME only
- * (`StageResult.secretNames`) — never a value and never a rendering of the
- * content it read. A granted value in a staged blob, or in an in-scope file a
- * worker writes into an `export_mount`, refuses the delivery.
+ * The delivery gate streams every staged blob and change-named path through
+ * `createSecretMatcher` (secret-scrub.ts) on the host and reports granted
+ * values by NAME only (`StageResult.secretNames`) — never a value and never a
+ * rendering of the content it read. A granted value in a staged blob, or in
+ * an in-scope file a worker writes into an `export_mount`, refuses the
+ * delivery.
  *
  * No personal/absolute paths appear in fixtures (WK-0043 rule); all
  * filesystem tests use temp dirs. The seeded credential-value fixture below
@@ -25,7 +24,7 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, symlink, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
@@ -50,6 +49,7 @@ import {
   buildLandScript,
   parseLandOutput,
   buildQuarantineScript,
+  DELIVERY_SCAN_CAP_BYTES,
   type DeliveryOutcome,
 } from '../packages/dispatch-core/src/delivery.js';
 import { buildSecretValueList, readCredentialLine } from '../packages/dispatch-core/src/secret-scrub.js';
@@ -59,7 +59,12 @@ import * as preflightModule from '../packages/dispatch-core/src/preflight.js';
 import * as tierModule from '../packages/dispatch-core/src/tier.js';
 import * as spawnIsolatedModule from '../packages/dispatch-core/src/spawn-isolated.js';
 import * as execDirectModule from '../packages/dispatch-core/src/exec-direct.js';
-import { resolveToolchainPaths, runDispatch } from '../packages/dispatch-core/src/pipeline.js';
+import {
+  collectMountWrites,
+  EXPORT_SCAN_MAX_FILES,
+  resolveToolchainPaths,
+  runDispatch,
+} from '../packages/dispatch-core/src/pipeline.js';
 import { slicesSection } from './helpers/slice-fixture.js';
 import { stubToolchainProbes } from './helpers/toolchain-stub.js';
 
@@ -1409,7 +1414,7 @@ describe('dispatch v2 e2e (fake-tier) — advisory mutation check (mocked spawnI
 });
 
 // ---------------------------------------------------------------------------
-// WK-0326 s3 — the export-mount scan. A worker that writes a granted value
+// The export-mount scan. A worker that writes a granted value
 // into an `export_mount` refuses the delivery, and that refusal is decided as
 // soon as the worker and its forwarder exit — before the stage verdict and
 // before the worker's own exit code are consulted.
@@ -1508,6 +1513,136 @@ describe('dispatch v2 e2e (fake-tier) — export_mount value scan (mocked spawnI
       await rm(secretsDir, { recursive: true, force: true });
     }
   }, 120_000);
+});
+
+// ---------------------------------------------------------------------------
+// collectMountWrites — direct tests over a temporary mount dir. `since` is
+// captured before the writes; selection is by change time, which a worker
+// cannot set back. Every value lives in the mount dir for the duration of its
+// test.
+// ---------------------------------------------------------------------------
+
+describe('dispatch v2 e2e (fake-tier) — collectMountWrites (direct)', () => {
+  const VALUE = 'mount-planted-secret-value-0123456789abc';
+  const NAME = 'HF_TOKEN';
+  let mountDir: string;
+  let outsideDir: string;
+
+  function valueList() {
+    const built = buildSecretValueList({ values: [{ name: NAME, value: VALUE }] });
+    if (!built.ok) throw new Error(built.message);
+    return built.data;
+  }
+
+  beforeEach(async () => {
+    mountDir = await createTempDir('kb-e2e-mount-scan-');
+    outsideDir = await createTempDir('kb-e2e-mount-outside-');
+  });
+
+  afterEach(async () => {
+    await rm(mountDir, { recursive: true, force: true });
+    await rm(outsideDir, { recursive: true, force: true });
+  });
+
+  it('lists a new clean file and fails nothing with an empty value list', async () => {
+    const since = new Date(Date.now() - 1000);
+    await writeFile(join(mountDir, 'clean.txt'), 'nothing here\n', 'utf8');
+
+    const result = await collectMountWrites([mountDir], since, []);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data).toEqual([{ mountPath: mountDir, files: ['clean.txt'] }]);
+  });
+
+  it('fails DELIVERY_FAILED naming the variable, never the value or the path, for a file that holds it', async () => {
+    const since = new Date(Date.now() - 1000);
+    await writeFile(join(mountDir, 'leaked.env'), `HF_TOKEN=${VALUE}\n`, 'utf8');
+
+    const result = await collectMountWrites([mountDir], since, valueList());
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toBe('DELIVERY_FAILED');
+    expect(result.message).toContain(NAME);
+    expect(result.message).not.toContain(VALUE);
+    expect(result.message).not.toContain('leaked.env');
+  });
+
+  it('does not follow a symlink to a file outside the mount that holds the value', async () => {
+    const since = new Date(Date.now() - 1000);
+    await writeFile(join(outsideDir, 'outside.env'), `HF_TOKEN=${VALUE}\n`, 'utf8');
+    await symlink(join(outsideDir, 'outside.env'), join(mountDir, 'link'));
+
+    const result = await collectMountWrites([mountDir], since, valueList());
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data).toEqual([{ mountPath: mountDir, files: ['link'] }]);
+  });
+
+  it('fails naming the variable when a symlink target string is the value', async () => {
+    const since = new Date(Date.now() - 1000);
+    await symlink(VALUE, join(mountDir, 'vlink'));
+
+    const result = await collectMountWrites([mountDir], since, valueList());
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toBe('DELIVERY_FAILED');
+    expect(result.message).toContain(NAME);
+  });
+
+  it('fails naming the variable when a new file is named after the value', async () => {
+    const since = new Date(Date.now() - 1000);
+    await writeFile(join(mountDir, VALUE), 'plain\n', 'utf8');
+
+    const result = await collectMountWrites([mountDir], since, valueList());
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toBe('DELIVERY_FAILED');
+    expect(result.message).toContain(NAME);
+  });
+
+  it('fails naming the file cap when more files than maxFiles are selected', async () => {
+    const since = new Date(Date.now() - 1000);
+    for (const name of ['a.txt', 'b.txt', 'c.txt']) {
+      await writeFile(join(mountDir, name), 'x\n', 'utf8');
+    }
+
+    const result = await collectMountWrites([mountDir], since, valueList(), {
+      maxFiles: 2,
+      maxBytes: DELIVERY_SCAN_CAP_BYTES,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toBe('DELIVERY_FAILED');
+    expect(result.message).toContain('2');
+    expect(result.message).toContain('files');
+  });
+
+  it('fails naming the byte cap before any read when the selected bytes exceed maxBytes', async () => {
+    const since = new Date(Date.now() - 1000);
+    await writeFile(join(mountDir, 'big.txt'), 'x'.repeat(2048), 'utf8');
+
+    const result = await collectMountWrites([mountDir], since, valueList(), {
+      maxFiles: EXPORT_SCAN_MAX_FILES,
+      maxBytes: 1024,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toBe('DELIVERY_FAILED');
+    expect(result.message).toContain('1024');
+  });
+
+  it('selects on change time, so a file whose mtime is set back before `since` is still scanned', async () => {
+    const since = new Date(Date.now() - 1000);
+    const file = join(mountDir, 'backdated.env');
+    await writeFile(file, `HF_TOKEN=${VALUE}\n`, 'utf8');
+    const old = new Date(Date.now() - 60_000);
+    await utimes(file, old, old);
+
+    const result = await collectMountWrites([mountDir], since, valueList());
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.message).toContain(NAME);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -2294,6 +2429,8 @@ interface SecretWorkerOpts {
   fixture: string;
   /** Write an in-scope `src/greet.mjs` into the clone. */
   inScopeFile?: boolean;
+  /** Body for the in-scope file; defaults to a clean greet. */
+  inScopeContent?: string;
   /** Write a clone-root file with this exact name (and the planted value as content). */
   outOfScopeFileName?: string;
   exitCode?: number;
@@ -2311,12 +2448,19 @@ function mockSecretWorker(opts: SecretWorkerOpts): void {
         await writeFile(join(runDir, name), `${E2E_SECRET_VALUE}\n`, 'utf8');
       }
     }
+    // The clone is the one bwrap was pointed at (the same path pipeline.ts
+    // holds as `clonePath`), not a guessed temp dir.
+    const clonePath = plan.bwrapArgs.find((arg) => /\.kb-dispatch\/clones\/[^/]+$/.test(arg)) ?? plan.cwd;
     if (opts.inScopeFile) {
-      await mkdir(join(plan.cwd, 'src'), { recursive: true });
-      await writeFile(join(plan.cwd, 'src', 'greet.mjs'), 'export const greet = (name) => `Hello, ${name}!`;\n', 'utf8');
+      await mkdir(join(clonePath, 'src'), { recursive: true });
+      await writeFile(
+        join(clonePath, 'src', 'greet.mjs'),
+        opts.inScopeContent ?? 'export const greet = (name) => `Hello, ${name}!`;\n',
+        'utf8',
+      );
     }
     if (opts.outOfScopeFileName !== undefined) {
-      await writeFile(join(plan.cwd, opts.outOfScopeFileName), `${E2E_SECRET_VALUE}\n`, 'utf8');
+      await writeFile(join(clonePath, opts.outOfScopeFileName), `${E2E_SECRET_VALUE}\n`, 'utf8');
     }
     return {
       ok: true,
@@ -2463,6 +2607,104 @@ describe('dispatch v2 e2e (fake-tier) — kb-written surfaces (real forwarder, m
       await rm(repoRoot, { recursive: true, force: true });
     }
   });
+});
+
+// ---------------------------------------------------------------------------
+// The delivery value scan refuses an in-scope clone write. A granted profile
+// value (or the pi backend key) written into the clone is found in the staged
+// tree and refuses the delivery, leaving no branch and no plaintext on any
+// surface.
+// ---------------------------------------------------------------------------
+
+describe('dispatch v2 e2e (fake-tier) — delivery value scan refuses an in-scope clone write', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  /** The five match forms of a value, derived independently of the module. */
+  function formsOfValue(value: string): string[] {
+    const once = JSON.stringify(value).slice(1, -1);
+    const twice = JSON.stringify(once).slice(1, -1);
+    return [
+      ...new Set([
+        value,
+        once,
+        twice,
+        encodeURIComponent(value),
+        Buffer.from(value, 'utf8').toString('base64'),
+      ]),
+    ];
+  }
+
+  it('refuses secret_in_diff naming the granted profile var, with no branch and no plaintext surface', async () => {
+    const { repoRoot, secretsDir } = await setupSecretRepo(true);
+    mockSecretWorker({
+      fixture: piReportFixture('done'),
+      inScopeFile: true,
+      inScopeContent: `export const token = ${JSON.stringify(E2E_SECRET_VALUE)};\n`,
+    });
+    try {
+      const result = await runSecret(repoRoot);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.data.delivery.status).toBe('secret_in_diff');
+      if (result.data.delivery.status !== 'secret_in_diff') return;
+      expect(result.data.delivery.names).toEqual([E2E_SECRET_NAME]);
+
+      // Nothing landed: no delivery branch in the mother repo.
+      const branchCheck = execFileSync('git', ['branch', '--list', 'dispatch/HO-S3TEST'], { cwd: repoRoot })
+        .toString()
+        .trim();
+      expect(branchCheck).toBe('');
+
+      const surfaces = [
+        await readFile(join(result.data.runDir, 'quarantine.diff'), 'utf8'),
+        await readFile(join(result.data.runDir, 'HO-S3TEST.response.md'), 'utf8'),
+        await readFile(join(repoRoot, 'wiki', 'handoffs', 'HO-S3TEST.response.md'), 'utf8'),
+      ];
+      for (const surface of surfaces) {
+        for (const form of formsOfValue(E2E_SECRET_VALUE)) {
+          expect(surface).not.toContain(form);
+        }
+      }
+    } finally {
+      await rm(repoRoot, { recursive: true, force: true });
+      if (secretsDir) await rm(secretsDir, { recursive: true, force: true });
+    }
+  }, 120_000);
+
+  it('refuses secret_in_diff naming the pi backend key from secrets_file when the worker writes it in scope', async () => {
+    const secretsDir = await createTempDir('kb-e2e-pi-key-scan-');
+    const backendFile = join(secretsDir, 'openrouter.env');
+    const backendKey = 'pi-backend-key-0123456789-abcdefgh';
+    await writeFile(backendFile, `OPENROUTER_API_KEY=${backendKey}\n`, 'utf8');
+    const repoRoot = await setupS3Repo({
+      backends: {
+        openrouter: {
+          family: 'pi',
+          base_url: 'https://openrouter.ai/api/v1',
+          api_key_env: 'OPENROUTER_API_KEY',
+          secrets_file: backendFile,
+        },
+      },
+    });
+    mockSecretWorker({
+      fixture: readFixtureFile('pi-output-vllm-qwen25.jsonl'),
+      inScopeFile: true,
+      inScopeContent: `export const token = ${JSON.stringify(backendKey)};\n`,
+    });
+    try {
+      const result = await runSecret(repoRoot);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.data.delivery.status).toBe('secret_in_diff');
+      if (result.data.delivery.status !== 'secret_in_diff') return;
+      expect(result.data.delivery.names).toEqual(['OPENROUTER_API_KEY']);
+    } finally {
+      await rm(repoRoot, { recursive: true, force: true });
+      await rm(secretsDir, { recursive: true, force: true });
+    }
+  }, 120_000);
 });
 
 // ---------------------------------------------------------------------------
