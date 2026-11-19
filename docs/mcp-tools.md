@@ -26,7 +26,7 @@ using the SDK's high-level `McpServer` + `registerTool` API.
 | `allocate-id` | Peek/reserve the next id for a prefix (idempotent) | `dir`, `prefix` | `verbose` | read-only |
 | `create` | Create a new record from a template | `dir`, `prefix`, `title` | `verbose` | |
 | `lint` | Lint records for frontmatter errors | `dir` | `verbose` | read-only |
-| `generate` | Generate standard views (catalog, now, inbox, backlog, archive) | `dir` | `verbose` | |
+| `generate` | Generate standard views (catalog, now, inbox, backlog, archive); when the planning layer is active, also the dashboard pages under `wiki/dashboard/generated/` | `dir` | `verbose` | |
 | `build-search-index` | Build the wiki search index | `dir` | `verbose` | |
 | `search` | Search wiki records and docs | `dir`, `query` | `prefix`, `status`, `verbose` | read-only |
 | `import-plan` | Import design/execution artifacts into a PLN bundle | `dir`, `plan`, `design` | `execution`, `sourceTool`, `overwrite` | |

@@ -99,7 +99,8 @@ export const tools: ToolDef[] = [
   },
   {
     name: 'generate',
-    description: 'Generate standard wiki views (catalog, now, inbox, backlog, archive)',
+    description:
+      'Generate standard wiki views (catalog, now, inbox, backlog, archive); when the planning layer is active, also the dashboard pages under wiki/dashboard/generated/',
     inputSchema: dirSchema,
     handler: async (input) => generate(input as unknown as Parameters<typeof generate>[0]),
   },

@@ -11,6 +11,10 @@
  * Each generated file includes `_generated: true` in its frontmatter so that
  * lint and other tools can identify and skip generated views.
  *
+ * When the planning layer is active it also writes the dashboard pages under
+ * wiki/dashboard/generated/ (see `dashboard/`). The planning layer is checked
+ * before anything is written; a wiki-only repo is untouched.
+ *
  * Scope:
  *   - Reads only manifest-driven record directories (WK, IN, DEC, SRC, AREA, PLN, VAL)
  *   - Excludes wiki/handoffs/
@@ -27,6 +31,9 @@ import type {
 } from './types.js';
 import { loadManifest } from './contract.js';
 import { debug, setVerbose } from './debug.js';
+import { planningInstalled } from './agent-instructions.js';
+import { generateDashboard } from './dashboard/generate.js';
+import type { DashboardRecord } from './dashboard/types.js';
 
 // ---------------------------------------------------------------------------
 // Frontmatter parsing (lightweight, same approach as lint)
@@ -113,6 +120,25 @@ interface RecordEntry {
   typeLabel: string;
   prefix: string;
   priority?: string;
+  updated?: string;
+  initiative?: string;
+  depends_on: string[];
+  blocks: string[];
+  related: string[];
+  tags: string[];
+  itemType?: string;
+  body: string;
+  absPath: string;
+  data: Record<string, unknown>;
+}
+
+/** Read a frontmatter value as a list of non-empty strings. */
+function stringArray(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value.filter((v): v is string => typeof v === 'string' && v.length > 0);
+  }
+  if (typeof value === 'string' && value.length > 0) return [value];
+  return [];
 }
 
 function listMarkdownFiles(dirPath: string): string[] {
@@ -121,6 +147,7 @@ function listMarkdownFiles(dirPath: string): string[] {
     return fs
       .readdirSync(dirPath)
       .filter(f => f.endsWith('.md'))
+      .sort()
       .map(f => path.join(dirPath, f));
   } catch {
     return [];
@@ -173,11 +200,97 @@ function collectRecords(
         typeLabel: typeKey,
         prefix,
         priority,
+        updated: typeof fm['updated'] === 'string' ? fm['updated'] : undefined,
+        initiative: typeof fm['initiative'] === 'string' ? fm['initiative'] : undefined,
+        depends_on: stringArray(fm['depends_on']),
+        blocks: stringArray(fm['blocks']),
+        related: stringArray(fm['related']),
+        tags: stringArray(fm['tags']),
+        itemType: typeof fm['type'] === 'string' ? fm['type'] : undefined,
+        body: parsed.body,
+        absPath,
+        data: fm,
       });
     }
   }
 
-  return entries;
+  // One id wins: the record file whose path sorts first. Insertion order is kept
+  // for the five views; a later duplicate with a smaller path replaces it.
+  const chosen = new Map<string, RecordEntry>();
+  const result: RecordEntry[] = [];
+  for (const entry of entries) {
+    const previous = chosen.get(entry.id);
+    if (!previous) {
+      chosen.set(entry.id, entry);
+      result.push(entry);
+      continue;
+    }
+    if (entry.absPath < previous.absPath) {
+      const index = result.indexOf(previous);
+      if (index !== -1) result[index] = entry;
+      chosen.set(entry.id, entry);
+    }
+  }
+  return result;
+}
+
+/** The work item and initiative prefixes from the manifest. */
+function resolvePrefixes(
+  manifest: { types: Record<string, ManifestRecordType> },
+): { workItemPrefix: string; initiativePrefix: string } | null {
+  const types = Object.values(manifest.types);
+  const matches = (stateKey: string): ManifestRecordType | undefined =>
+    types.find(t => t.stateKey === stateKey || t.aliases.includes(stateKey));
+  const work = matches('work_item');
+  const initiative = matches('initiative');
+  if (!work?.prefix || !initiative?.prefix) return null;
+  return { workItemPrefix: work.prefix, initiativePrefix: initiative.prefix };
+}
+
+/** The repo display name: the part after the slash of `repo`, else the base name of `dir`. */
+function repoDisplayName(targetDir: string): string {
+  const contractPath = path.join(targetDir, 'wiki', '.wiki-contract.json');
+  try {
+    const parsed: unknown = JSON.parse(fs.readFileSync(contractPath, 'utf-8'));
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      const repo = (parsed as Record<string, unknown>)['repo'];
+      if (typeof repo === 'string' && repo.length > 0) {
+        const slash = repo.lastIndexOf('/');
+        return slash === -1 ? repo : repo.slice(slash + 1);
+      }
+    }
+  } catch {
+    // fall through to the directory base name
+  }
+  return path.basename(targetDir);
+}
+
+/**
+ * Convert every collected record into the model the dashboard pages read: the
+ * work item and initiative records the pages are built from, plus the id and
+ * file path of every other record type, so a page can link one.
+ */
+function toDashboardRecords(records: RecordEntry[]): DashboardRecord[] {
+  return records
+    .map(r => ({
+      id: r.id,
+      prefix: r.prefix,
+      typeLabel: r.typeLabel,
+      title: r.title,
+      status: r.status,
+      priority: r.priority,
+      updated: r.updated,
+      initiative: r.initiative,
+      depends_on: r.depends_on,
+      blocks: r.blocks,
+      related: r.related,
+      tags: r.tags,
+      itemType: r.itemType,
+      absPath: r.absPath,
+      relPath: r.relPath,
+      body: r.body,
+      data: r.data,
+    }));
 }
 
 // ---------------------------------------------------------------------------
@@ -355,7 +468,8 @@ function buildArchive(records: RecordEntry[]): string {
  * Generate all standard non-canonical wiki views.
  *
  * Writes 5 files under wiki/ in the target directory, each with a
- * `_generated: true` frontmatter marker.
+ * `_generated: true` frontmatter marker. When the planning layer is active it
+ * then writes the dashboard pages under wiki/dashboard/generated/.
  */
 export async function generate(
   opts: GenerateOpts,
@@ -366,19 +480,28 @@ export async function generate(
   const wikiDir = path.join(targetDir, 'wiki');
   debug(`generate: target=${targetDir}`);
 
-  // 1. Load manifest
+  // 1. Layer gate. Ask before writing anything; a corrupt stamp returns its failure.
+  const planning = planningInstalled(targetDir);
+  if (!planning.ok) return fail(planning.error, planning.message, planning.detail);
+
+  // 2. Load manifest
   const manifestResult = loadManifest();
   if (!manifestResult.ok) {
     return fail('CONTRACT_NOT_FOUND', manifestResult.message);
   }
   const manifest = manifestResult.data;
 
-  // 2. Collect all manifest-driven records
+  // 3. Collect all manifest-driven records
   const records = collectRecords(targetDir, wikiDir, manifest);
   const workTrackingRecords = records.filter(r => r.prefix !== 'PLN');
   debug(`generate: collected ${records.length} records`);
 
-  // 3. Build and write each view
+  const prefixes = planning.data ? resolvePrefixes(manifest) : null;
+  if (planning.data && prefixes === null) {
+    return fail('MANIFEST_ERROR', 'Manifest does not name a work item and an initiative type');
+  }
+
+  // 4. Build and write each view
   const views: Array<{
     filename: string;
     title: string;
@@ -428,6 +551,28 @@ export async function generate(
         err,
       );
     }
+  }
+
+  // 5. Dashboard pages, only while the planning layer is active.
+  if (planning.data && prefixes) {
+    const chainPath = path.join(targetDir, 'wiki', 'dashboard', 'chain.md');
+    let chainText: string | undefined;
+    try {
+      if (fs.existsSync(chainPath)) chainText = fs.readFileSync(chainPath, 'utf-8');
+    } catch {
+      chainText = undefined;
+    }
+
+    const dashboard = generateDashboard({
+      targetDir,
+      records: toDashboardRecords(records),
+      workItemPrefix: prefixes.workItemPrefix,
+      initiativePrefix: prefixes.initiativePrefix,
+      repoName: repoDisplayName(targetDir),
+      chainText,
+    });
+    if (!dashboard.ok) return fail(dashboard.error, dashboard.message, dashboard.detail);
+    return ok({ generated, dashboard: dashboard.data });
   }
 
   return ok({ generated });

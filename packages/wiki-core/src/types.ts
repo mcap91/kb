@@ -954,6 +954,8 @@ export interface GenerateOpts {
 /** Result of a generate operation. */
 export interface GenerateResult {
   generated: string[];
+  /** Present when the planning layer is active: the owned folder and its page count. */
+  dashboard?: import('./dashboard/types.js').DashboardSummary;
 }
 
 /** Options for building the search index. */

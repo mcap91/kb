@@ -68,7 +68,7 @@ const DEFAULT_SATISFIED_STATUSES = new Set(['done']);
  * satisfied through it (unless the caller's `satisfiedStatuses` already covers it — see
  * the satisfied-status check that runs before this one).
  */
-const TERMINAL_PREDECESSOR_STATUSES = new Set([
+export const TERMINAL_PREDECESSOR_STATUSES = new Set([
   'cancelled',
   'superseded',
   'wont_do',

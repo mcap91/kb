@@ -1,11 +1,38 @@
 # Dashboard
 
-Deterministic HTML dashboard generator for PLN, IN, and WK-set records.
-Pipeline is a pure function: source files → parsers → JSON → one frozen static
-template. No agent, no network, no wall-clock at render time. Identical input →
-byte-identical output.
+Deterministic HTML dashboard generator for the wiki records.
 
-## Usage
+## Built-in pages (`wiki generate`)
+
+When the planning layer is active, `wiki generate` writes the dashboard pages in
+the same run as the five standard views:
+
+| Page | What it shows |
+|------|---------------|
+| `wiki/dashboard/generated/index.html` | Every initiative in three status boxes; the critical-path groups from `chain.md` |
+| `wiki/dashboard/generated/wk.html` | Type a work item id to see its neighbors (depends on, blocks, related, nearest open ids in the same initiative) |
+| `wiki/dashboard/generated/IN-XXXX/chain.html` | One initiative: the Next box, done and parked strips, and bands |
+
+The folder `wiki/dashboard/generated/` is owned and rebuildable. Each run
+overwrites every page and deletes files it did not write, then removes empty
+directories. Never hand-edit a page there. Pages are byte-identical across runs:
+no timestamps, no absolute repo paths. `wiki/dashboard/chain.md` supplies each
+initiative's Next queue and the cross-initiative critical path on the index; a
+missing file renders the pages without those sections. Repos with no planning
+layer write only the five standard views. If `wiki/dashboard` or
+`wiki/dashboard/generated` exists and is not a real directory, generation fails
+with `GENERATE_ERROR` and writes no dashboard page. Generated output is a
+**derived view** — the records win if the two disagree.
+
+Pages ship with a light/dark toggle and no external dependencies.
+
+## Legacy prototype
+
+The section below documents the standalone Python prototype under
+`wiki/dashboard/render/`. It is not shipped by `wiki generate` and is kept for
+reference.
+
+### Prototype usage
 
 ```bash
 npm run dashboard -- <ID> [--dir <path>]
