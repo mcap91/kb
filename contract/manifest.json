@@ -27,6 +27,7 @@
     "source.md": "wiki",
     "area.md": "wiki",
     "escalation.md": "planning",
+    "chain-doc.md": "planning",
     "handoff.md": "dispatch"
   },
   "skillLayers": {

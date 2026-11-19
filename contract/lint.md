@@ -170,6 +170,26 @@ per row, naming what is missing: the section, its task text, the `#### Acceptanc
 a list item under that heading. A one-row table needs no section. A row with any other status
 is exempt.
 
+## Chain Doc Rule (planning layer only)
+
+This rule runs only in a repo with the planning layer active, and only when
+`wiki/dashboard/chain.md` exists. It reads the file with the same reader that builds the
+dashboard pages, so lint and the pages never disagree about what the file says.
+
+### CHAIN_DOC_SHAPE (warning)
+
+One finding per problem in the parts of `chain.md` that code reads. The message starts with
+`line N:` and names the problem:
+
+- `updated` is missing or not a `YYYY-MM-DD` date (reported at line 1);
+- an initiative heading names an id that has no record;
+- an initiative has a second section (the first is used);
+- a stage has a second `Gate:` line (the first is used);
+- a work item line names an id that has no record.
+
+A list line that does not start with a work item id is free text and is never a finding. A
+`chain.md` that cannot be read (anything but a missing file) is one `CHAIN_DOC_SHAPE` error.
+
 ## Output Format
 
 Lint results are reported as a list of diagnostics:

@@ -8,7 +8,6 @@
     { "path": "packages/dispatch-cli" },
     { "path": "packages/dispatch-mcp" },
     { "path": "packages/graph-explore" },
-    { "path": "packages/dashboard" },
     { "path": "tsconfig.tests.json" }
   ]
 }

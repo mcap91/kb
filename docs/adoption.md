@@ -6,7 +6,7 @@ command sequence. The commands write every file; this page only names them.
 | Layer | What it adds | Install page |
 |---|---|---|
 | wiki | The repo-local wiki, the `kb-wiki` MCP server, and the wiki operating block in `AGENTS.md`/`CLAUDE.md` | this page |
-| planning | The engineering rules, the planner role, the `/resolve` skill, and the escalation template | [install-planning.md](./install-planning.md) |
+| planning | The engineering rules, the planner role, the `/resolve` skill, the escalation and chain templates, and the dashboard pages | [install-planning.md](./install-planning.md) |
 | dispatch | The multi-agent handoff protocol (`kb-dispatch`) | [install-dispatch.md](./install-dispatch.md) |
 
 The wiki layer stands alone. It names no roles, no skills, and no dispatch machinery.

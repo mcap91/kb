@@ -54,6 +54,7 @@ const PLANNING_FILES = [
   '.agents/skills/resolve/SKILL.md',
   '.claude/commands/planner.md',
   '.claude/skills/resolve/SKILL.md',
+  'wiki/templates/chain-doc.md',
   'wiki/templates/escalation.md',
 ];
 /** Dispatch-layer files, beyond the planning files that dispatch implies. */
@@ -332,11 +333,13 @@ describe('install layers over the whole repo tree (WK-0261)', () => {
     expect(fs.readFileSync(planner).equals(fs.readFileSync(path.join(KB_ROOT, 'contract/roles/planner.md')))).toBe(true);
   });
 
-  it('AC 4: on an already-synced repo, sync removes only unedited kb-owned copies of no-layer templates', async () => {
+  it('AC 4: on an already-synced repo, sync removes only unedited kb-owned copies of templates outside its layers', async () => {
     tmp = createTmpDir();
     expect((await bootstrap({ dir: tmp.dir, repo: 'test/legacy' })).ok).toBe(true);
 
-    // The pre-WK-0261 shape: no-layer templates synced in, record dirs holding records.
+    // The pre-WK-0261 shape: templates outside the wiki layer synced in (chain-doc.md now ships
+    // with the planning layer, so a wiki-only repo still loses an unedited copy), record dirs
+    // holding records.
     const templates = path.join(tmp.dir, 'wiki', 'templates');
     fs.writeFileSync(path.join(templates, 'chain-doc.md'), contractTemplate('chain-doc.md'));
     fs.writeFileSync(path.join(templates, 'plan-execution-tracker.md'), contractTemplate('plan-execution-tracker.md'));

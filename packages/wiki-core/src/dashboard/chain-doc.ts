@@ -4,6 +4,20 @@
  * Text in; parsed data and a list of problems out. It never writes, never
  * prints and does not depend on the generator, so lint can reuse it.
  */
+import type { ManifestRecordType } from '../types.js';
+
+/** The work item and initiative prefixes from the manifest, which the reader needs. */
+export function chainDocPrefixes(
+  manifest: { types: Record<string, ManifestRecordType> },
+): { workItemPrefix: string; initiativePrefix: string } | null {
+  const types = Object.values(manifest.types);
+  const matches = (stateKey: string): ManifestRecordType | undefined =>
+    types.find(t => t.stateKey === stateKey || t.aliases.includes(stateKey));
+  const work = matches('work_item');
+  const initiative = matches('initiative');
+  if (!work?.prefix || !initiative?.prefix) return null;
+  return { workItemPrefix: work.prefix, initiativePrefix: initiative.prefix };
+}
 
 export interface ChainDocProblem {
   /** 1-based line number in the source text. */

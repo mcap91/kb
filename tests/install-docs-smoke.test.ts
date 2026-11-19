@@ -66,11 +66,12 @@ describe('install pages run verbatim (WK-0261 AC 7)', () => {
     expect(mcpServers(tmp.dir)).toEqual(['kb-wiki']);
 
     runBlock('install-planning.md', 'planning', tmp.dir);
-    expect(templates(tmp.dir)).toEqual([...WIKI_TEMPLATES, 'escalation.md'].sort());
+    expect(templates(tmp.dir)).toEqual([...WIKI_TEMPLATES, 'chain-doc.md', 'escalation.md'].sort());
     expect(fs.existsSync(path.join(tmp.dir, '.agents/skills/resolve/SKILL.md'))).toBe(true);
 
     const out = runBlock('install-planning.md', 'planning-remove', tmp.dir);
     expect(out).toContain('- removed: wiki/templates/escalation.md');
+    expect(out).toContain('- removed: wiki/templates/chain-doc.md');
     expect(templates(tmp.dir)).toEqual(WIKI_TEMPLATES);
   }, SMOKE_TIMEOUT * 2);
 
@@ -78,7 +79,7 @@ describe('install pages run verbatim (WK-0261 AC 7)', () => {
     tmp = createTmpDir();
     runBlock('adoption.md', 'wiki', tmp.dir);
     runBlock('install-dispatch.md', 'dispatch', tmp.dir);
-    expect(templates(tmp.dir)).toEqual([...WIKI_TEMPLATES, 'escalation.md', 'handoff.md'].sort());
+    expect(templates(tmp.dir)).toEqual([...WIKI_TEMPLATES, 'chain-doc.md', 'escalation.md', 'handoff.md'].sort());
     expect(fs.existsSync(path.join(tmp.dir, 'wiki/handoffs'))).toBe(true);
     expect(mcpServers(tmp.dir)).toEqual(['kb-dispatch', 'kb-wiki']);
   }, SMOKE_TIMEOUT * 2);

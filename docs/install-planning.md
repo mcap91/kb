@@ -9,6 +9,8 @@ The planning layer adds kb's planning machinery to a repo that already has the w
 - the resolve skill: `/resolve` in Claude Code (`.claude/skills/resolve/`), `$resolve` in Codex
   (`.agents/skills/resolve/`)
 - the escalation template, `wiki/templates/escalation.md`
+- the chain template, `wiki/templates/chain-doc.md`, for the build-order doc `wiki/dashboard/chain.md`
+- the dashboard pages: `wiki generate` also writes `wiki/dashboard/generated/` ([dashboard.md](./dashboard.md))
 
 Run the commands from the `kb` checkout, with `MY_REPO` set to your repo's absolute path.
 

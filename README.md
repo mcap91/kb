@@ -329,7 +329,7 @@ npm run wiki -- bootstrap --dir ../my-project --repo org/my-project
 This installs the wiki layer: the `wiki/` structure, record templates, bootstrap docs, the managed block,
 and the `kb-wiki` MCP entry. kb ships two more opt-in layers on top of it, each one command sequence:
 
-- planning (engineering rules, planner role, `/resolve`, escalation template): [docs/install-planning.md](docs/install-planning.md)
+- planning (engineering rules, planner role, `/resolve`, escalation and chain templates, dashboard pages): [docs/install-planning.md](docs/install-planning.md)
 - dispatch (multi-agent handoffs; implies planning): [docs/install-dispatch.md](docs/install-dispatch.md)
 
 [docs/adoption.md](docs/adoption.md) is the full wiki-layer install page, including the Codex path.

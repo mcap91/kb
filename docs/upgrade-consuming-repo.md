@@ -30,10 +30,11 @@ writes the surfaces of the repo's active layers and removes kb-owned surfaces of
 changes in a repo until you run `sync-contract` there.
 
 - **A dispatch repo** (it has `wiki/.dispatch/`) keeps everything it has today: dispatch implies
-  planning. Sync removes only the templates no layer ships (`chain-doc.md`, `plan.md`,
-  `plan-execution-tracker.md`, `value.md`).
+  planning. Sync removes only the templates no layer ships (`plan.md`,
+  `plan-execution-tracker.md`, `value.md`). `chain-doc.md` ships with the planning layer, so
+  sync writes it when it is missing.
 - **A wiki-only repo that should keep the planning surfaces** (engineering rules, `/resolve`, the
-  escalation template): run `init-planning` once before the next sync, and commit
+  escalation and chain templates, the dashboard pages): run `init-planning` once before the next sync, and commit
   `wiki/.wiki-contract.json`:
 
   ```bash

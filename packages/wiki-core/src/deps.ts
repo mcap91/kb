@@ -5,7 +5,7 @@
  * never the filesystem. Design-mirror only (ELv2) of upstream's
  * `work-record-dispatch-slice-dag.mjs` (`buildSliceDagProjection`): ready/blocked/done
  * split, blocked-by taxonomy, and WHITE/GRAY/BLACK cycle detection, adapted to kb's
- * WK/IN status enum. Callers (lint, dispatch, the dashboard) pass already-parsed nodes.
+ * WK/IN status enum. Callers (lint, dispatch) pass already-parsed nodes.
  */
 
 /** Minimal per-record shape this module needs; extra frontmatter fields are the caller's concern. */
@@ -57,7 +57,7 @@ export interface DependencyProjection {
 export interface BuildDependencyProjectionOpts {
   /** Statuses that satisfy a dependency edge. Default: strict done-only (the canonical
    *  readiness gate for lint/dispatch consumers). Callers with a lenient display bucket
-   *  (e.g. the dashboard) may widen this — it never changes the shared algorithm. */
+   *  may widen this — it never changes the shared algorithm. */
   satisfiedStatuses?: Set<string>;
 }
 

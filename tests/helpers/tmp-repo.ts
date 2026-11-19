@@ -37,8 +37,9 @@ export function createTmpDir(): TmpRepo {
 const KB_ROOT = path.resolve(__dirname, '..', '..');
 
 /**
- * Record templates that ship in no install layer (WK-0261 Resolutions row 3) plus
- * `handoff.md`, which ships only once the dispatch layer is active. Neither
+ * Record templates that ship in no install layer (WK-0261 Resolutions row 3), plus
+ * `chain-doc.md` (planning layer) and `handoff.md` (dispatch layer), which ship only
+ * once their layer is active. Neither
  * `bootstrap` nor `sync-contract` ever writes these to a real consumer repo
  * outside their layer — but the functions that read them (`create`, `importPlan`,
  * `validatePlan`, `archivePlan`) are unaffected by the shipping-boundary question,
@@ -48,7 +49,7 @@ const KB_ROOT = path.resolve(__dirname, '..', '..');
  * call `bootstrap`/`sync` directly instead (see tests/planning-layer.test.ts and
  * the WK-0261 layer-partition tests), never this helper.
  */
-const NO_LAYER_OR_DISPATCH_TEMPLATES = [
+const OUTSIDE_WIKI_LAYER_TEMPLATES = [
   'chain-doc.md',
   'plan.md',
   'plan-execution-tracker.md',
@@ -68,7 +69,7 @@ export async function createBootstrappedRepo(repo = 'test/repo'): Promise<TmpRep
   }
 
   const templateDir = path.join(tmp.dir, 'wiki', 'templates');
-  for (const name of NO_LAYER_OR_DISPATCH_TEMPLATES) {
+  for (const name of OUTSIDE_WIKI_LAYER_TEMPLATES) {
     const dest = path.join(templateDir, name);
     if (!fs.existsSync(dest)) {
       fs.copyFileSync(path.join(KB_ROOT, 'contract', 'templates', name), dest);

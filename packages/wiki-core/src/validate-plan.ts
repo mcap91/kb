@@ -333,7 +333,7 @@ const VALID_WK_STATUSES = new Set([
   'parked', 'cancelled', 'deprecated', 'duplicate', 'superseded', 'wont_do',
 ]);
 
-/** Pre-contract values that still map correctly in the dashboard's laneOf() -- accepted without warning. */
+/** Pre-contract status values that still map to a lane -- accepted without warning. */
 const LEGACY_PHASE_STATUS_ALIASES = new Set(['complete', 'not_started']);
 
 /** Slice ID grammar (WK-0082): `[SP]\d+` -- no letters, no `pre-`, no `+` suffixes. */
@@ -348,7 +348,7 @@ function splitTableRow(line: string): string[] {
   return line.split('|').map(c => c.trim()).filter((_, i, a) => i > 0 && i < a.length - 1);
 }
 
-/** Parse a section's markdown table into a header row + data rows (mirrors dashboard's parseMarkdownTable). */
+/** Parse a section's markdown table into a header row + data rows. */
 function parseSectionTable(section: string): ParsedMdTable {
   const lines = section.split('\n').filter(l => l.trim().startsWith('|'));
   if (lines.length < 3) return { headers: [], rows: [] };

@@ -131,7 +131,8 @@ import {
 import { debug, setVerbose } from './debug.js';
 import { buildDependencyProjection } from './deps.js';
 import { readSlices, readHardening, readResolutions, readSliceSection } from './body-table.js';
-import { dispatchInstalled } from './agent-instructions.js';
+import { dispatchInstalled, planningInstalled } from './agent-instructions.js';
+import { chainDocPrefixes, readChainDoc } from './dashboard/chain-doc.js';
 
 // ---------------------------------------------------------------------------
 // Frontmatter parsing
@@ -562,6 +563,8 @@ export async function lint(opts: LintOpts): Promise<Result<LintResult>> {
   const targetDir = path.resolve(opts.dir);
   debug(`lint: target=${targetDir}`);
   const dispatchLayer = dispatchInstalled(targetDir);
+  const planning = planningInstalled(targetDir);
+  if (!planning.ok) return fail(planning.error, planning.message, planning.detail);
 
   // 1. Load manifest
   const manifestResult = loadManifest();
@@ -1408,6 +1411,52 @@ export async function lint(opts: LintOpts): Promise<Result<LintResult>> {
         message: `Could not determine whether ".mcp.json" is tracked in git: ${mcpStatus.cause}`,
         severity: 'error',
       });
+    }
+  }
+
+  // Rule: CHAIN_DOC_SHAPE — planning layer only, when wiki/dashboard/chain.md exists.
+  // One warning per problem the dashboard's own reader reports, so lint and the
+  // pages read the file the same way.
+  if (planning.data) {
+    const chainRel = 'wiki/dashboard/chain.md';
+    let chainText: string | undefined;
+    try {
+      chainText = fs.readFileSync(path.join(targetDir, 'wiki', 'dashboard', 'chain.md'), 'utf-8');
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+        diagnostics.push({
+          file: chainRel,
+          code: 'CHAIN_DOC_SHAPE',
+          message: `Could not read ${chainRel}: ${String(err)}`,
+          severity: 'error',
+        });
+      }
+    }
+    if (chainText !== undefined) {
+      const prefixes = chainDocPrefixes(manifest);
+      if (prefixes === null) {
+        return fail('MANIFEST_ERROR', 'Manifest does not name a work item and an initiative type');
+      }
+      const idsOf = (prefix: string): Set<string> =>
+        new Set(
+          records
+            .filter(r => r.typeDef.prefix === prefix && r.frontmatter && typeof r.frontmatter['id'] === 'string')
+            .map(r => String(r.frontmatter?.['id'])),
+        );
+      const { problems } = readChainDoc(chainText, {
+        workPrefix: prefixes.workItemPrefix,
+        initiativePrefix: prefixes.initiativePrefix,
+        workItemIds: idsOf(prefixes.workItemPrefix),
+        initiativeIds: idsOf(prefixes.initiativePrefix),
+      });
+      for (const problem of problems) {
+        diagnostics.push({
+          file: chainRel,
+          code: 'CHAIN_DOC_SHAPE',
+          message: `line ${problem.line}: ${problem.message}`,
+          severity: 'warning',
+        });
+      }
     }
   }
 

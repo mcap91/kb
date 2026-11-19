@@ -32,6 +32,7 @@ import type {
 import { loadManifest } from './contract.js';
 import { debug, setVerbose } from './debug.js';
 import { planningInstalled } from './agent-instructions.js';
+import { chainDocPrefixes } from './dashboard/chain-doc.js';
 import { generateDashboard } from './dashboard/generate.js';
 import type { DashboardRecord } from './dashboard/types.js';
 
@@ -232,19 +233,6 @@ function collectRecords(
     }
   }
   return result;
-}
-
-/** The work item and initiative prefixes from the manifest. */
-function resolvePrefixes(
-  manifest: { types: Record<string, ManifestRecordType> },
-): { workItemPrefix: string; initiativePrefix: string } | null {
-  const types = Object.values(manifest.types);
-  const matches = (stateKey: string): ManifestRecordType | undefined =>
-    types.find(t => t.stateKey === stateKey || t.aliases.includes(stateKey));
-  const work = matches('work_item');
-  const initiative = matches('initiative');
-  if (!work?.prefix || !initiative?.prefix) return null;
-  return { workItemPrefix: work.prefix, initiativePrefix: initiative.prefix };
 }
 
 /**
@@ -514,7 +502,7 @@ export async function generate(
   const workTrackingRecords = records.filter(r => r.prefix !== 'PLN');
   debug(`generate: collected ${records.length} records`);
 
-  const prefixes = planning.data ? resolvePrefixes(manifest) : null;
+  const prefixes = planning.data ? chainDocPrefixes(manifest) : null;
   if (planning.data && prefixes === null) {
     return fail('MANIFEST_ERROR', 'Manifest does not name a work item and an initiative type');
   }
