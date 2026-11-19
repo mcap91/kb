@@ -790,8 +790,9 @@ review still derives. This JSON is the record; the review HO's evidence section 
 `reviewed_run` stamp. Dispatching one copies the evidence JSON and
 `wiki/handoffs/<implement_id>.response.md` into the review's own run dir as `validation-evidence.json`
 and `implement-response.md`. The run dir is bound read-only into every jail, so the reviewer reads both in either
-wiki shape. The prompt names the two paths and says that executing tests or the toolchain is out of
-scope. If the evidence or the response is gone, the dispatch refuses; re-run `derive-review`. The copies
+wiki shape. A claude-family reviewer's settings allow `Read` on exactly those two files, besides the
+clone-wide `Read`; nothing else in the run dir is granted. The prompt names the two paths and says that
+executing tests or the toolchain is out of scope. If the evidence or the response is gone, the dispatch refuses; re-run `derive-review`. The copies
 belong to the reviewer only: the merge gate never reads them.
 
 ### `merge-delivery`

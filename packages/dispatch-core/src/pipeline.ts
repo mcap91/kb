@@ -567,11 +567,23 @@ export async function checkWriteScopeMountGuard(mounts: readonly string[], clone
  * binds `familyWriteScope`/`deriveExactFileMounts` lay down (jail.ts), never
  * through its own native editor tools' atomic-rename-into-sibling-temp-file
  * pattern (captured against an exact-file bind: EROFS, no in-place
- * fallback). The rest of the deny list closes off subagent/web tools
+ * fallback). `readFiles` adds one exact-file `Read` rule per entry, for files
+ * outside the clone the worker must still open — the staged review evidence
+ * lives in the run dir, which the jail binds read-only but the clone-wide
+ * `Read` rule does not cover, so a reviewer that opens it with `Read` instead
+ * of `Bash` would otherwise hit a permission denial and fail the run. Each
+ * entry is absolute and is emitted as `Read(//<path>)` (an exact file, no
+ * `/**`); an empty list renders exactly the clone-wide `Read` plus `Bash`.
+ * The rest of the deny list closes off subagent/web tools
  * entirely — `--permission-mode default` + `--settings <path>` (pipeline.ts's
  * Claude branch) make this allow-list the SOLE grant.
  */
-export function buildClaudeSettingsJson(writeScope: string[], clonePath: string, mode: string): string {
+export function buildClaudeSettingsJson(
+  writeScope: string[],
+  clonePath: string,
+  mode: string,
+  readFiles: ReadonlyArray<string>,
+): string {
   // WK-0131: mode=implement requires a non-empty write_scope (admission.ts's
   // MISSING_WRITE_SCOPE gate already guarantees this pre-spawn — this is
   // defense-in-depth for direct callers). Non-implement modes are the
@@ -589,6 +601,14 @@ export function buildClaudeSettingsJson(writeScope: string[], clonePath: string,
       throw new Error(`buildClaudeSettingsJson: write_scope entries must not contain "..": "${entry}".`);
     }
   }
+  for (const entry of readFiles) {
+    if (!entry.startsWith('/')) {
+      throw new Error(`buildClaudeSettingsJson: readFiles entries must be absolute, got "${entry}".`);
+    }
+    if (entry.includes('..')) {
+      throw new Error(`buildClaudeSettingsJson: readFiles entries must not contain "..": "${entry}".`);
+    }
+  }
 
   // The Read rule must be absolute (`//<clonePath>/...`) — Claude
   // Code resolves a RELATIVE allow pattern against the session's current
@@ -596,9 +616,10 @@ export function buildClaudeSettingsJson(writeScope: string[], clonePath: string,
   // rule stops matching the moment the worker leaves the clone root. An
   // absolute pattern is immune to `cd`.
   const clonePathTrimmed = clonePath.replace(/^\/+/, '');
+  const readFileRules = readFiles.map((entry) => `Read(//${entry.replace(/^\/+/, '')})`);
   const settings = {
     permissions: {
-      allow: [`Read(//${clonePathTrimmed}/**)`, 'Bash'],
+      allow: [`Read(//${clonePathTrimmed}/**)`, ...readFileRules, 'Bash'],
       deny: ['WebFetch', 'WebSearch', 'Task', 'Agent', 'Workflow', 'Skill', 'Monitor', 'Edit', 'Write', 'NotebookEdit'],
       disableBypassPermissionsMode: 'disable',
     },
@@ -1453,7 +1474,12 @@ async function runDispatchCore(opts: DispatchOpts, ctx: DispatchRunCtx): Promise
       // only; the actual exec line is hand-built to read the prompt from
       // promptPath at container runtime).
       const claudeSettingsPath = '/tmp/.claude-settings/settings.json';
-      const claudeSettingsContent = buildClaudeSettingsJson(handoff.write_scope, clonePath, handoff.mode);
+      // A derived review stages its evidence copies into the run dir (bound
+      // read-only into the jail, outside the clone); grant `Read` on exactly
+      // those two files so a reviewer can open them with its own tool. Every
+      // other run passes an empty list.
+      const readFiles = stagedEvidence.data === null ? [] : [stagedEvidence.data.evidencePath, stagedEvidence.data.responsePath];
+      const claudeSettingsContent = buildClaudeSettingsJson(handoff.write_scope, clonePath, handoff.mode, readFiles);
 
       buildClaudeInvocation(assembled.data.text, model, clonePath, claudeSettingsPath, opts.effort);
       // WK-0122: config-driven effort splice, inserted BEFORE the `--`

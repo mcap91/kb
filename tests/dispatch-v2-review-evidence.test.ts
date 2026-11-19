@@ -24,6 +24,7 @@ import * as execDirectModule from '../packages/dispatch-core/src/exec-direct.js'
 import { ok as dispatchOk } from '../packages/dispatch-core/src/errors.js';
 import * as spawnIsolatedModule from '../packages/dispatch-core/src/spawn-isolated.js';
 import * as tierModule from '../packages/dispatch-core/src/tier.js';
+import { stubToolchainProbes } from './helpers/toolchain-stub.js';
 
 /**
  * Pin the `pi` CLI to a SYSTEM_ROOTS path for the `command -v pi` probe in
@@ -101,8 +102,14 @@ status: draft
 Review the delivery.
 `;
 
+/** `wiki/.dispatch/` tables a test may override; the default is the pi-family content the existing tests use. */
+interface RegistryOverride {
+  backends: Record<string, unknown>;
+  models: Record<string, unknown>;
+}
+
 /** A repo with a delivered implement HO, its committed-on-main response, and host evidence; returns the repo root. */
-async function setupRepo(shape: 'tracked' | 'nested-private'): Promise<string> {
+async function setupRepo(shape: 'tracked' | 'nested-private', registry?: RegistryOverride): Promise<string> {
   const repo = await mkdtemp(join(tmpdir(), `kb-review-evidence-${shape}-`));
   initRepo(repo);
   await writeFile(join(repo, '.gitignore'), shape === 'tracked' ? '.agent-runs/\n' : '.agent-runs/\nwiki/\n');
@@ -119,11 +126,15 @@ async function setupRepo(shape: 'tracked' | 'nested-private'): Promise<string> {
   await mkdir(join(wiki, '.dispatch'), { recursive: true });
   await writeFile(
     join(wiki, '.dispatch', 'models.json'),
-    JSON.stringify({ deepseek: { available_on: ['openrouter'], model_id: 'deepseek/deepseek-v4-flash-0731' } }),
+    JSON.stringify(
+      registry?.models ?? { deepseek: { available_on: ['openrouter'], model_id: 'deepseek/deepseek-v4-flash-0731' } },
+    ),
   );
   await writeFile(
     join(wiki, '.dispatch', 'backends.json'),
-    JSON.stringify({ openrouter: { family: 'pi', base_url: 'https://openrouter.ai/api/v1', api_key_env: null, secrets_file: null } }),
+    JSON.stringify(
+      registry?.backends ?? { openrouter: { family: 'pi', base_url: 'https://openrouter.ai/api/v1', api_key_env: null, secrets_file: null } },
+    ),
   );
   await writeFile(join(wiki, '.dispatch', 'profiles.json'), JSON.stringify({ schema_version: 1 }));
   // The response lands on main after the delivery branch was cut — invisible to a base_ref clone.
@@ -253,3 +264,81 @@ describe.skipIf(!BWRAP_FUNCTIONAL).each(['tracked', 'nested-private'] as const)(
     });
   },
 );
+
+/**
+ * The claude settings allow-list must grant `Read` on exactly the two staged
+ * evidence files besides the clone. No real jail is needed: `spawnIsolated`
+ * is mocked, so the injected settings content is captured at plan-build time.
+ */
+describe('derived review run-dir evidence channel — claude-family settings grant', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  // Why: a claude reviewer that opens a staged evidence file with `Read` must
+  // not hit a permission denial and fail the review run.
+  it('allows Read on exactly the staged evidence and response files, besides the clone', async () => {
+    const repo = await setupRepo('tracked', {
+      backends: { 'claude-saas': { family: 'claude', base_url: null, api_key_env: null, secrets_file: null } },
+      models: { 'claude-sonnet-5': { available_on: ['claude-saas'], model_id: 'claude-sonnet-5' } },
+    });
+
+    const savedHome = process.env.HOME;
+    const home = await mkdtemp(join(tmpdir(), 'kb-review-evidence-home-'));
+    try {
+      await mkdir(join(home, '.claude'), { recursive: true });
+      await writeFile(
+        join(home, '.claude', '.credentials.json'),
+        JSON.stringify({ claudeAiOauth: { accessToken: 'planted-claude-access-0123456789' } }),
+        'utf8',
+      );
+      process.env.HOME = home;
+
+      stubToolchainProbes({ name: 'claude', path: '/usr/bin/claude' });
+      vi.spyOn(tierModule, 'probeBwrap').mockResolvedValue({
+        available: true,
+        bwrapVersion: 'bubblewrap (real, probe mocked)',
+        unshareUserWorks: true,
+        kernelVersion: 'test-kernel',
+        usernsSysctl: null,
+      });
+
+      const claudeFixture = readFileSync(resolve(__dirname, 'fixtures', 'claude-p-output.txt'), 'utf8');
+      let capturedInjectedFiles: ReadonlyArray<{ fd: number; dest: string; content: string }> | undefined;
+      vi.spyOn(spawnIsolatedModule, 'spawnIsolated').mockImplementation(async (plan, opts) => {
+        capturedInjectedFiles = plan.injectedFiles;
+        if (opts?.stdoutLogPath) await writeFile(opts.stdoutLogPath, claudeFixture, 'utf8');
+        return {
+          ok: true,
+          data: { stdout: '', stderr: '', exitCode: 0, signal: null, truncated: false, timedOut: false, streamDrainTimedOut: false },
+        };
+      });
+
+      await runDispatch({
+        dir: repo,
+        handoff: `wiki/handoffs/${REVIEW}.md`,
+        model: 'claude-sonnet-5',
+        backend: 'claude-saas',
+        preflight: false,
+      });
+
+      const runsDir = join(repo, '.agent-runs', 'runs', REVIEW);
+      const [runId] = await readdir(runsDir);
+      const runDir = join(runsDir, runId ?? '');
+
+      const settingsInjection = capturedInjectedFiles?.find((f) => f.dest === '/tmp/.claude-settings/settings.json');
+      expect(settingsInjection).toBeDefined();
+      const allow: string[] = JSON.parse(settingsInjection?.content ?? '{}').permissions.allow;
+      expect(allow).toContain(`Read(//${runDir.slice(1)}/validation-evidence.json)`);
+      expect(allow).toContain(`Read(//${runDir.slice(1)}/implement-response.md)`);
+      expect(allow).not.toContain(`Read(//${runDir.slice(1)})`);
+      // The only directory-glob grant is the clone rule (the first allow entry).
+      expect(allow.filter((entry) => entry.endsWith('/**)'))).toEqual([allow[0]]);
+    } finally {
+      if (savedHome === undefined) delete process.env.HOME;
+      else process.env.HOME = savedHome;
+      await rm(home, { recursive: true, force: true });
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+});
