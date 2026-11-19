@@ -1,8 +1,10 @@
 ## kb — dispatch
 
 - Dispatch is the multi-agent handoff protocol: author HOs (`create-handoff`), dispatch workers in the bwrap
-  jail, capture results, review, merge. The dispatch MCP server instructions carry the full orchestration
-  recipe. Prefer `kb-dispatch` MCP tools; CLI fallback `npm run dispatch -- …`.
+  jail, capture results, review, merge. The kb-dispatch server instructions carry the loop; everything else —
+  tools, modes, refusal codes, credentials, the full orchestration recipe — is the server's MCP resource
+  `kb-dispatch://reference`. A client that shows no kb-dispatch instructions (Codex) reads that resource
+  before the first `create-handoff`. Prefer `kb-dispatch` MCP tools; CLI fallback `npm run dispatch -- …`.
 - For pipeline work, delegate via kb-dispatch; do not spawn coding-agent subagents or workflows unless the
   operator explicitly approves.
 - `HO-*` handoffs are dispatch-owned (`wiki/handoffs/`, excluded from wiki scans); never create them via

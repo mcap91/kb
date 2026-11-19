@@ -14,6 +14,7 @@ import { V2_REFUSAL_CODES } from '@kb/dispatch-core';
 
 const repoRoot = path.resolve(__dirname, '..');
 const orchestratorPath = path.join(repoRoot, 'contract/roles/orchestrator.md');
+const dispatchBlockPath = path.join(repoRoot, 'contract/agent-instructions/dispatch.md');
 
 // The MCP client delivers only the first 2,048 characters of the server instructions.
 const DELIVERED_CHARS = 2048;
@@ -161,5 +162,14 @@ describe('kb-dispatch MCP instructions', () => {
     } finally {
       await Promise.all([client.close(), server.close()]);
     }
+  });
+
+  // Why: a client that drops server instructions (Codex) must be pointed at the reference resource from the
+  // managed block every repo receives, or it never finds the tools, modes or refusal codes.
+  it('points the managed dispatch block at the reference resource for a client that shows no instructions', () => {
+    const text = fs.readFileSync(dispatchBlockPath, 'utf-8').replace(/\s+/g, ' ');
+    expect(text).toContain(REFERENCE_URI);
+    expect(text).toContain('Codex');
+    expect(text).not.toContain('instructions carry the full orchestration recipe');
   });
 });
