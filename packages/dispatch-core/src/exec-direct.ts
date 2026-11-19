@@ -35,8 +35,9 @@ const execFileAsync = promisify(execFileCb);
 
 // Generous vs. Node's 1 MB execFile default — mirrors wsl2.ts's own
 // MAX_BUFFER_BYTES precedent; enumerate diffs and delivery changed-file lists
-// can still be sizable.
-const MAX_BUFFER_BYTES = 64 * 1024 * 1024;
+// can still be sizable. Exported so delivery.ts can enforce the same ceiling
+// on the execution listing files it reads itself: one value, never a copy.
+export const MAX_BUFFER_BYTES = 64 * 1024 * 1024;
 
 export interface ExecBashOpts {
   /** Bash script content, run via `bash -c <scriptContent>` — never written to disk. */

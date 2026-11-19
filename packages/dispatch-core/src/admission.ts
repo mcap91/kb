@@ -37,6 +37,14 @@ export interface AdmissionResult {
   handoff: Handoff;
   repoRoot: string;
   baseSha: string;
+  /**
+   * The commit mother `HEAD` pointed to when admission ran — the attribute
+   * source (`--attr-source`) every host git call in the clone uses. Equal to
+   * `baseSha` for a handoff with no `base_ref`; deliberately NOT `baseSha`
+   * for a chained handoff, whose `base_ref` can point at an unreviewed
+   * `dispatch/` commit.
+   */
+  attrSha: string;
   /** Canonicalized (realpath'd) `runtime_envs` entries (WK-0201) — empty when none declared. */
   runtimeEnvPaths: readonly string[];
 }
@@ -832,10 +840,11 @@ async function checkBaseDrift(handoff: Handoff, repoRoot: string, baseSha: strin
  * order, failing on the first violation. See the module doc above for the
  * check-to-code map, including what's deliberately handled elsewhere.
  *
- * On success, resolves `baseSha` = current HEAD (spec §8 step 1 — first
- * implement HO of a chain uses fresh HEAD, never a stale base), then refuses
- * `BASE_DRIFT` if a fresh-HEAD HO's declared paths changed since its
- * `base_sha` / `base_wiki_sha` (WK-0152).
+ * On success, resolves `baseSha` (the `base_ref` commit when declared, else
+ * current HEAD — spec §8 step 1: a first implement HO of a chain uses fresh
+ * HEAD, never a stale base) and `attrSha` (always current HEAD, the attribute
+ * source delivery pins), then refuses `BASE_DRIFT` if a fresh-HEAD HO's
+ * declared paths changed since its `base_sha` / `base_wiki_sha`.
  */
 export async function checkAdmission(handoff: Handoff, repoRoot: string): Promise<DispatchResult<AdmissionResult>> {
   // §7.1 bad_record — defensive re-check; ho.ts already validated this on parse,
@@ -884,20 +893,32 @@ export async function checkAdmission(handoff: Handoff, repoRoot: string): Promis
   const workItemExistsCheck = await checkWorkItemExists(handoff, repoRoot);
   if (!workItemExistsCheck.ok) return workItemExistsCheck;
 
-  let baseSha: string;
+  // attrSha is always the mother repo's current HEAD. For an unchained
+  // handoff baseSha is that same commit (the line below reuses it, one git
+  // call); for a chained handoff HEAD is resolved separately from base_ref so
+  // the attribute source is never an unreviewed dispatch/ commit.
+  let headSha: string;
   try {
-    const args = handoff.base_ref !== null ? ['rev-parse', '--verify', handoff.base_ref] : ['rev-parse', 'HEAD'];
-    const { stdout } = await execFile('git', args, { cwd: repoRoot });
-    baseSha = stdout.trim();
+    const { stdout } = await execFile('git', ['rev-parse', 'HEAD'], { cwd: repoRoot });
+    headSha = stdout.trim();
   } catch (err) {
-    return fail(
-      'ADMISSION_FAILED',
-      handoff.base_ref !== null
-        ? `Failed to resolve base_ref "${handoff.base_ref}" via "git rev-parse --verify" in ${repoRoot}.`
-        : `Failed to resolve HEAD via "git rev-parse HEAD" in ${repoRoot}.`,
-      err,
-    );
+    return fail('ADMISSION_FAILED', `Failed to resolve HEAD via "git rev-parse HEAD" in ${repoRoot}.`, err);
   }
+
+  let baseSha = headSha;
+  if (handoff.base_ref !== null) {
+    try {
+      const { stdout } = await execFile('git', ['rev-parse', '--verify', handoff.base_ref], { cwd: repoRoot });
+      baseSha = stdout.trim();
+    } catch (err) {
+      return fail(
+        'ADMISSION_FAILED',
+        `Failed to resolve base_ref "${handoff.base_ref}" via "git rev-parse --verify" in ${repoRoot}.`,
+        err,
+      );
+    }
+  }
+  const attrSha = headSha;
 
   // WK-0294 (HO-0220 F2): a derived review runs only against the head it was derived for.
   if (handoff.reviewed_sha !== undefined && handoff.reviewed_sha !== baseSha) {
@@ -912,5 +933,5 @@ export async function checkAdmission(handoff: Handoff, repoRoot: string): Promis
   const baseDriftCheck = await checkBaseDrift(handoff, repoRoot, baseSha);
   if (!baseDriftCheck.ok) return baseDriftCheck;
 
-  return ok({ handoff, repoRoot, baseSha, runtimeEnvPaths: runtimeEnvsCheck.data });
+  return ok({ handoff, repoRoot, baseSha, attrSha, runtimeEnvPaths: runtimeEnvsCheck.data });
 }

@@ -357,21 +357,43 @@ declaration, not a boolean flag: a backend with no mapping does not support `--e
 
 ## Delivery
 
-Only `implement` mode delivers. After the worker exits, the pipeline enumerates the clone's changes
-(`git status`/`diff`/untracked), checks every changed path against the *unwidened* `write_scope`
-(directory-prefix or exact match), and re-scans the diff for each granted credential's literal value.
-On a clean result it lands a scope-checked commit: a temp git index seeded from `base_sha`, the full
-working-tree delta staged, committed with a pinned identity (`kb-dispatch <dispatch@kb.local>`), and
-pushed with compare-and-swap semantics onto `refs/heads/dispatch/<handoff_id>` — the same tree from the
-same base is an idempotent no-op; a different tree from the same base is a structured `conflict`, never
-a clobber.
+Only `implement` mode delivers. After the worker exits, the pipeline runs one **stage → check → land**
+pass over a single tree: the tree the check approves is exactly the tree that lands.
+
+**Stage.** A `bash` script in the clone (`set -euo pipefail`) seeds a temporary index from `base_sha`,
+stages the full worktree delta (`add -A`), writes the tree, and prints `TREE <sha>` before it writes a
+raw, NUL-delimited `--raw` listing of the change to a file. Every host-side git call inside the clone
+runs as `git --attr-source=<ATTR_SHA> -c core.autocrlf=false -c core.eol=lf -c core.hooksPath=
+-c core.fsmonitor=`. `ATTR_SHA` is the mother repo's `HEAD` at admission — never a chained `base_ref` —
+so a worker's `.gitattributes` cannot select a host filter, and no nested-repo config runs. A non-zero
+stage exit is `DELIVERY_FAILED`: no content is named and nothing lands.
+
+**Check.** The parser fails closed on a bad stdout grammar, a missing or truncated listing, or a listing
+past `MAX_BUFFER_BYTES`. The stage result is judged in this fixed order, and the first hit decides:
+
+1. `no_delta` — `TREE` equals `base_sha^{tree}`.
+2. a gitlink (mode `160000`) anywhere — an embedded repo is not a change to commit.
+3. every changed path against the *unwidened* `write_scope` (directory-prefix or exact match; both ends
+   of a rename).
+4. each granted credential's literal value against `git diff --text --no-renames BASE_SHA TREE`.
+
+A hit on 2 or 3 is `refused_out_of_scope` for those paths; a hit on 4 is `secret_in_diff`.
+
+**Land.** A clean tree is committed with `commit-tree TREE -p base_sha` and a pinned identity
+(`kb-dispatch <dispatch@kb.local>`), then pushed with compare-and-swap semantics onto
+`refs/heads/dispatch/<handoff_id>`. The land script prints exactly one token — `DELIVERED:<sha>`,
+`IDEMPOTENT`, or `CONFLICT:<tree>`. The same tree from the same base is an idempotent no-op; a different
+tree from the same base is a structured `conflict`, never a clobber.
+
+On any refusal the pipeline writes the stage diff to `quarantine.diff` in the run dir; a diff that
+exceeds `MAX_BUFFER_BYTES` fails the run with `DELIVERY_FAILED` rather than truncating or committing.
 
 | Outcome | Meaning |
 |---------|---------|
 | `delivered` | Landed onto `dispatch/HO-XXXX`; branch + commit + changed files reported |
 | `no_delta` | Worker ran but produced no tree change |
 | `no_changes` | Advisory mode (nothing to deliver), or an idempotent re-delivery |
-| `refused_out_of_scope` | A changed path fell outside `write_scope`; diff quarantined to the run dir |
+| `refused_out_of_scope` | A changed path fell outside `write_scope`, or any path is a gitlink (embedded repo); diff quarantined to the run dir |
 | `secret_in_diff` | A granted credential's value appeared in the diff; diff quarantined |
 | `conflict` | `dispatch/HO-XXXX` already carries a different tree from the same base |
 

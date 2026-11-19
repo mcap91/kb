@@ -49,7 +49,7 @@ import { assemblePrompt } from './assemble.js';
 import { buildInvocation, buildModelsJson, parsePiOutput } from './adapters/pi.js';
 import { buildInvocation as buildCodexInvocation, parseCodexOutput } from './adapters/codex.js';
 import { buildInvocation as buildClaudeInvocation, parseClaudeOutput } from './adapters/claude.js';
-import { execBash } from './exec-direct.js';
+import { execBash, MAX_BUFFER_BYTES } from './exec-direct.js';
 import {
   buildBwrapPlan,
   classifyEntry,
@@ -65,9 +65,13 @@ import { probeWikiSource } from './wiki-source.js';
 import {
   buildEnumerateScript,
   parseEnumerateOutput,
-  checkWriteScope,
   buildDeliveryScript,
   parseDeliveryOutput,
+  runStageScript,
+  classifyStage,
+  buildLandScript,
+  parseLandOutput,
+  buildQuarantineScript,
   type DeliveryOutcome,
 } from './delivery.js';
 import { writeResponseDoc, buildProvenanceWriteBack, type WorkerUsageDetail, type ProviderCostCoverage } from './capture.js';
@@ -205,6 +209,43 @@ function shQuote(value: string): string {
 
 function logVerbose(verbose: boolean | undefined, message: string): void {
   if (verbose) process.stderr.write(`[dispatch] ${message}\n`);
+}
+
+/**
+ * Write a refusal's quarantine diff: exactly one extra exec running a
+ * tree-to-tree `git diff --no-renames BASE_SHA TREE` (never a worktree read),
+ * capped at `MAX_BUFFER_BYTES` by `execBash` (an over-cap diff therefore
+ * surfaces as a failed exec). Any failure fails the run `DELIVERY_FAILED`
+ * and names no content.
+ */
+async function writeQuarantineDiff(opts: {
+  runDir: string;
+  clonePath: string;
+  baseSha: string;
+  attrSha: string;
+  tree: string;
+}): Promise<DispatchResult<string>> {
+  const quarantinePath = join(opts.runDir, 'quarantine.diff');
+  const script = buildQuarantineScript({
+    clonePath: opts.clonePath,
+    baseSha: opts.baseSha,
+    attrSha: opts.attrSha,
+    tree: opts.tree,
+  });
+  const exec = await execBash({ scriptContent: script.scriptContent, timeoutMs: 120_000 });
+  if (!exec.ok) return fail('DELIVERY_FAILED', 'Failed to run the quarantine diff script.');
+  if (exec.data.exitCode !== 0) {
+    return fail('DELIVERY_FAILED', `Quarantine diff script exited with code ${exec.data.exitCode}.`);
+  }
+  if (Buffer.byteLength(exec.data.stdout, 'utf8') > MAX_BUFFER_BYTES) {
+    return fail('DELIVERY_FAILED', 'Quarantine diff exceeded the maximum size.');
+  }
+  try {
+    await writeFile(quarantinePath, exec.data.stdout, 'utf8');
+  } catch (err) {
+    return fail('CAPTURE_FAILED', `Failed to write quarantine diff: ${quarantinePath}`, err);
+  }
+  return ok(quarantinePath);
 }
 
 /**
@@ -1759,127 +1800,126 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       );
     }
 
-    // 16. Enumerate changes / advisory delivery branch (S6a T30,
-    // execution/s6-rulings.md gate item: "advisory-mode file mutations
-    // discarded with a warning"). Only `implement` mode lands a
+    // 16. Stage -> check -> land (implement) / advisory mutation check
+    // (S6a T30). Advisory-mode file mutations are still discarded with a
+    // warning, exactly as the execution gate item requires. Only `implement` mode lands a
     // scope-checked commit; code_review/redteam/research are advisory —
     // their §6 envelope grants no write authority at all (their
     // assemble.ts framings each instruct "do not modify any files"), and
     // the worker's own findings/review ARE the deliverable, captured below
     // as the response doc rather than a git delta. The worker's own
     // `.pi-agent/` config dir lives under the jail's /tmp tmpfs (never under
-    // clonePath any more), so it never appears in either branch's
-    // enumeration below — no infra-prefix filtering is needed here (formerly
-    // WK-0075's fix, now moot since the directory never touches the clone).
+    // clonePath any more), so it never appears in either branch's view below
+    // — no infra-prefix filtering is needed here (the old per-path filter is
+    // now moot since the directory never touches the clone).
     let delivery: DeliveryOutcome;
 
     if (handoff.mode === 'implement') {
-      // The injected-value scan fragment (S3 ruling 2 / s3-rulings.md freeze
-      // correction — replaces the removed pattern-based scanSecrets() leg)
-      // is spliced onto the END of this SAME script: it reuses the
-      // enumerate script's own `$GIT`/`$CLONE_PATH` shell scope to re-diff
-      // into a throwaway `$DIFF_FILE` and grep it for each granted
-      // credential's literal value, in one exec round trip (no diff content
-      // ever leaves this host process for this check). Only var NAMES
-      // (`SECRET_HIT=<VAR_NAME>`) cross back into this stdout — the resolved
-      // values themselves never reach this script's own text. Every
-      // injection scanned here was already resolved successfully in step
-      // 12b above (resolveCredentialEnv is fail-closed pre-spawn), so the
-      // grep is guaranteed to find a value under `set -e`.
-      logVerbose(verbose, 'enumerating changes in the clone');
-      const enumerateScript = buildEnumerateScript(clonePath);
+      // One staged tree, checked once, landed exactly. The stage script
+      // seeds a temp index from `base_sha`, stages the clone's
+      // full delta with `--attr-source=<mother HEAD>`, and writes the raw NUL
+      // listing plus the ignored-in-scope list into a temp dir that
+      // `runStageScript` removes in a `finally`. `attrSha` is the admission
+      // HEAD, never a chained `base_ref` (which can be an unreviewed
+      // `dispatch/` commit). The injected-value scan fragment reuses the
+      // stage script's own `$GIT`/`$CLONE_PATH` scope, re-diffing into a
+      // throwaway `$DIFF_FILE` and grepping it for each granted credential's
+      // literal value in the same exec round trip — only var NAMES
+      // (`SECRET_HIT=<VAR_NAME>`) cross back into stdout. A non-zero stage
+      // exit fails closed BEFORE any parse, so a stage that printed TREE and
+      // then failed never reaches check or land.
+      logVerbose(verbose, 'staging changes in the clone');
       const valueScanLines = buildInjectedValueScanFragment(credResult.data);
-      const enumerateScriptContent = valueScanLines.length === 0
-        ? enumerateScript.scriptContent
-        : [
-            enumerateScript.scriptContent,
-            'DIFF_FILE=$(mktemp)',
-            '$GIT diff HEAD > "$DIFF_FILE" 2>/dev/null || true',
-            ...valueScanLines,
-            'rm -f "$DIFF_FILE"',
-          ].join('\n');
-      const enumerateExec = await execBash({
-        scriptContent: enumerateScriptContent,
-        timeoutMs: 120_000,
+      const stageRun = await runStageScript({
+        clonePath,
+        baseSha: admission.data.baseSha,
+        attrSha: admission.data.attrSha,
+        writeScope: handoff.write_scope,
+        skeletonPaths: createdSkeletonPaths,
+        valueScanLines,
       });
-      if (!enumerateExec.ok) return enumerateExec;
-      if (enumerateExec.data.exitCode !== 0) {
-        return fail(
-          'PIPELINE_FAILED',
-          `Enumerate script exited with code ${enumerateExec.data.exitCode}.`,
-          enumerateExec.data,
-        );
+      if (!stageRun.ok) {
+        return fail('DELIVERY_FAILED', stageRun.message);
       }
-      const enumerated = parseEnumerateOutput(enumerateExec.data.stdout);
-      const secretHits = parseInjectedValueScanOutput(enumerateExec.data.stdout);
-      const allChangedFiles = [...enumerated.changedFiles, ...enumerated.untrackedFiles];
+      const stage = stageRun.stage;
+      const ignoredFiles = stage.ignoredFiles.length > 0 ? stage.ignoredFiles : undefined;
 
-      // 17. Check write scope, check the injected-value scan hits captured
-      // above — refusals are DATA (a DeliveryOutcome variant), not a
-      // DispatchResult failure; the pipeline ran correctly. (S3: the
-      // deterministic injected-value scan replaces the removed
-      // pattern-based scanSecrets() leg — it checks only the exact values
-      // the worker was granted, not heuristic patterns, so it is fully
-      // deterministic.)
-      //
-      // D2 ruling 2 item 3 (belt-and-suspenders): this IS the post-hoc half
-      // of scope enforcement — `enumerated`/`allChangedFiles` above already
-      // comes from `git diff`/`git status --porcelain` + `git ls-files
-      // --others` in the clone (delivery.ts's buildEnumerateScript /
-      // parseEnumerateOutput), `checkWriteScope` below checks every changed
-      // path against the UNWIDENED `handoff.write_scope` (exact or
-      // dir-prefix match), and a non-zero-exit or exec failure on the
-      // enumerate script already returns the failed DispatchResult above
-      // (fail-closed on git errors, never falls through to delivery). The
-      // per-family bwrap mounts built at step 9d/12d (`deriveExactFileMounts`
-      // for both Claude and Codex) are the PREVENTIVE half; this is the
-      // backstop that catches anything they missed. No additional code
-      // needed here — both halves already existed/now exist.
-      const scopeCheck = checkWriteScope(allChangedFiles, handoff.write_scope);
-
-      if (!scopeCheck.ok) {
-        const quarantinePath = join(runDir, 'quarantine.diff');
-        try {
-          await writeFile(quarantinePath, enumerated.diff, 'utf8');
-        } catch (err) {
-          return fail('CAPTURE_FAILED', `Failed to write quarantine diff: ${quarantinePath}`, err);
+      // 17. Check the ONE staged tree, in order: NO_DELTA -> gitlinks ->
+      // write_scope over every listed path -> value-scan verdict. Refusals
+      // are DATA (a DeliveryOutcome variant), not a DispatchResult failure;
+      // the pipeline ran correctly. A gitlink on either side is an escape
+      // hatch around the write_scope check (a nested repo's own contents are
+      // not paths of this tree), so it is refused before the scope check.
+      // `writeQuarantineDiff` below is the one extra exec a refusal runs:
+      // a tree-to-tree `git diff --no-renames BASE_SHA TREE`, capped at
+      // MAX_BUFFER_BYTES; an over-cap or failed diff is DELIVERY_FAILED and
+      // names no content.
+      const verdict = classifyStage(stage, handoff.write_scope);
+      if (verdict.kind === 'no_delta') {
+        delivery = ignoredFiles ? { status: 'no_delta', ignoredFiles } : { status: 'no_delta' };
+      } else if (verdict.kind !== 'clean') {
+        // Every refusal writes its quarantine diff before it names the
+        // offending paths or values (the diff is the evidence a reviewer
+        // reads; it names those paths itself).
+        const quarantine = await writeQuarantineDiff({
+          runDir,
+          clonePath,
+          baseSha: admission.data.baseSha,
+          attrSha: admission.data.attrSha,
+          tree: stage.tree,
+        });
+        if (!quarantine.ok) return quarantine;
+        if (verdict.kind === 'gitlink') {
+          logVerbose(verbose, `refused: gitlink path(s) ${verdict.offendingPaths.join(', ')}`);
+          delivery = { status: 'refused_out_of_scope', offendingPaths: verdict.offendingPaths, quarantinePath: quarantine.data };
+        } else if (verdict.kind === 'out_of_scope') {
+          logVerbose(verbose, `refused: out-of-scope paths ${verdict.offendingPaths.join(', ')}`);
+          delivery = { status: 'refused_out_of_scope', offendingPaths: verdict.offendingPaths, quarantinePath: quarantine.data };
+        } else {
+          logVerbose(verbose, `refused: granted credential value(s) found in diff: ${verdict.patterns.join(', ')}`);
+          delivery = { status: 'secret_in_diff', patterns: verdict.patterns, quarantinePath: quarantine.data };
         }
-        logVerbose(verbose, `refused: out-of-scope paths ${scopeCheck.offendingPaths.join(', ')}`);
-        delivery = { status: 'refused_out_of_scope', offendingPaths: scopeCheck.offendingPaths, quarantinePath };
-      } else if (secretHits.length > 0) {
-        const quarantinePath = join(runDir, 'quarantine.diff');
-        try {
-          await writeFile(quarantinePath, enumerated.diff, 'utf8');
-        } catch (err) {
-          return fail('CAPTURE_FAILED', `Failed to write quarantine diff: ${quarantinePath}`, err);
-        }
-        logVerbose(verbose, `refused: granted credential value(s) found in diff: ${secretHits.join(', ')}`);
-        delivery = { status: 'secret_in_diff', patterns: secretHits, quarantinePath };
       } else {
-        // 18. Deliver (clean: land the scope-checked commit).
-        logVerbose(verbose, 'delivering scope-checked commit');
-        const deliveryScript = buildDeliveryScript({
+        // 18. Land exactly the checked tree.
+        logVerbose(verbose, 'landing the checked tree');
+        const landScript = buildLandScript({
           clonePath,
           motherRepoWsl: dir,
           handoffId: handoff.id,
           baseSha: admission.data.baseSha,
-          writeScope: handoff.write_scope,
-          skeletonPaths: createdSkeletonPaths,
+          attrSha: admission.data.attrSha,
+          tree: stage.tree,
         });
-        const deliveryExec = await execBash({
-          scriptContent: deliveryScript.scriptContent,
+        const landExec = await execBash({
+          scriptContent: landScript.scriptContent,
           timeoutMs: 120_000,
         });
-        if (!deliveryExec.ok) return deliveryExec;
-        if (deliveryExec.data.exitCode !== 0) {
+        if (!landExec.ok) return landExec;
+        if (landExec.data.exitCode !== 0) {
           return fail(
             'DELIVERY_FAILED',
-            `Delivery script exited with code ${deliveryExec.data.exitCode}.`,
-            deliveryExec.data,
+            `Land script exited with code ${landExec.data.exitCode}.`,
+            landExec.data,
           );
         }
-        // 19. Parse delivery output
-        delivery = parseDeliveryOutput(deliveryExec.data.stdout);
+        // 19. Parse land output — the land script prints exactly one line.
+        const land = parseLandOutput(landExec.data.stdout);
+        if (!land.ok) {
+          return fail('DELIVERY_FAILED', land.message);
+        }
+        if (land.outcome.status === 'delivered') {
+          delivery = {
+            status: 'delivered',
+            branch: `dispatch/${handoff.id}`,
+            commitSha: land.outcome.commitSha,
+            changedFiles: stage.changedFiles,
+            ...(ignoredFiles ? { ignoredFiles } : {}),
+          };
+        } else if (land.outcome.status === 'idempotent') {
+          delivery = { status: 'no_changes' };
+        } else {
+          delivery = { status: 'conflict', existingTree: land.outcome.existingTree, newTree: stage.tree };
+        }
         logVerbose(verbose, `delivery outcome: ${delivery.status}`);
       }
     } else {
