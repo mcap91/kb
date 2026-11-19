@@ -157,7 +157,7 @@ export { buildInvocation as buildClaudeInvocation, parseClaudeOutput } from './a
 
 // Direct bash execution (D6 Phase 2 — replaces wsl2.ts's execViaWsl2)
 export type { ExecBashOpts, ExecBashResult } from './exec-direct.js';
-export { execBash } from './exec-direct.js';
+export { execBash, MAX_BUFFER_BYTES } from './exec-direct.js';
 
 // bwrap jail args (§11 S0 minimum). buildJailArgs is superseded by
 // buildBwrapPlan (D6) as pipeline.ts's own call path but stays defined/
@@ -171,8 +171,26 @@ export { buildJailArgs, SYSTEM_ROOTS } from './jail.js';
 export type { CloneOpts, CloneResult } from './clone.js';
 export { createClone, removeClone, sweepOrphanClones } from './clone.js';
 
-// Delivery gate (§8 — enumerate -> verdict -> land)
-export type { DeliveryOpts, DeliveryOutcome, EnumerateScript, DeliveryScript, EnumerateResult } from './delivery.js';
+// Delivery gate (§8 — enumerate -> verdict -> land). The stage -> check ->
+// land pair is used by the implement branch; the enumerate/delivery pair
+// stays exported for the advisory branch until a later slice retires it.
+export type {
+  DeliveryOpts,
+  DeliveryOutcome,
+  EnumerateScript,
+  DeliveryScript,
+  EnumerateResult,
+  StageScriptOpts,
+  StageResult,
+  StageParseResult,
+  StageRunOpts,
+  StageRunResult,
+  StageVerdict,
+  LandScriptOpts,
+  LandOutcome,
+  LandParseResult,
+  QuarantineScriptOpts,
+} from './delivery.js';
 export {
   buildEnumerateScript,
   parseEnumerateOutput,
@@ -180,6 +198,16 @@ export {
   scanSecrets,
   buildDeliveryScript,
   parseDeliveryOutput,
+  STAGE_TEMP_PREFIX,
+  STAGE_RAW_LISTING_FILENAME,
+  STAGE_IGNORED_FILENAME,
+  buildStageScript,
+  parseStageOutput,
+  runStageScript,
+  classifyStage,
+  buildLandScript,
+  parseLandOutput,
+  buildQuarantineScript,
 } from './delivery.js';
 
 // Capture (§5/§8 — response doc + provenance write-back fields)

@@ -479,7 +479,12 @@ export interface ValidationRegistry {
 const VALIDATION_FILE = 'validation.json';
 const VALIDATION_TOP_KEYS = new Set(['schema_version', 'setup', 'commands', 'env', 'runtime_paths', 'data_mounts']);
 const VALIDATION_COMMAND_NAME = /^[A-Za-z0-9._-]+$/;
-const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+/**
+ * A shell variable name. Exported so delivery.ts's stage-output parser can
+ * validate `SECRET_HIT=<NAME>` lines against the same pattern admission
+ * already enforces on declared profile inject keys, rather than a copy.
+ */
+export const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 /** Vars the runner itself constructs; a registry may not override them. */
 export const VALIDATION_RESERVED_ENV: readonly string[] = ['PATH', 'HOME', 'TMPDIR'];
 

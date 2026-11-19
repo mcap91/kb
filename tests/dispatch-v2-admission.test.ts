@@ -22,6 +22,7 @@ import { join, relative } from 'node:path';
 import { parseHandoffContent, type Handoff } from '../packages/dispatch-core/src/ho.js';
 import { checkAdmission } from '../packages/dispatch-core/src/admission.js';
 import { assemblePrompt } from '../packages/dispatch-core/src/assemble.js';
+import { SLICE_ID, slicesSection } from './helpers/slice-fixture.js';
 
 /**
  * A deterministic snapshot of every path under `root` (relative path, kind,
@@ -547,4 +548,91 @@ Minimal body — only frontmatter schema parsing is under test here.
       expect(result.data.mode).toBe(mode);
     },
   );
+});
+
+// ---------------------------------------------------------------------------
+// admission.ts — attrSha is the commit mother HEAD points to. The stage pins
+// `--attr-source` to this trusted snapshot, never to a chained `base_ref`.
+// ---------------------------------------------------------------------------
+
+function makeSliceHandoff(overrides: Partial<Handoff> = {}): Handoff {
+  return {
+    id: 'HO-ATTR',
+    title: 'Attribute source fixture',
+    mode: 'implement',
+    write_scope: ['src/'],
+    base_ref: null,
+    web: false,
+    credentials: [],
+    data_mounts: [],
+    export_mounts: [],
+    runtime_envs: [],
+    read_first: ['README.md'],
+    vars: [],
+    acceptance: ['AC-1: example'],
+    validation: ['true'],
+    status: 'draft',
+    work_item: 'WK-9003',
+    slice: SLICE_ID,
+    ...overrides,
+  };
+}
+
+describe('admission.ts — attrSha is admission-time mother HEAD', () => {
+  let repoRoot: string;
+
+  beforeEach(async () => {
+    repoRoot = await mkdtemp(join(tmpdir(), 'kb-admission-attr-'));
+    execFileSync('git', ['init', '-q'], { cwd: repoRoot });
+    execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: repoRoot });
+    execFileSync('git', ['config', 'user.name', 'Test User'], { cwd: repoRoot });
+    await writeFile(join(repoRoot, 'README.md'), 'test repo\n', 'utf8');
+    await mkdir(join(repoRoot, 'wiki', 'issues'), { recursive: true });
+    await writeFile(
+      join(repoRoot, 'wiki', 'issues', 'WK-9003.md'),
+      `---\nid: "WK-9003"\ntitle: "Fixture WK"\nstatus: todo\ninitiative: IN-9003\n---\n\n# WK-9003: Fixture\n\n${slicesSection()}`,
+      'utf8',
+    );
+    await mkdir(join(repoRoot, 'wiki', 'initiatives'), { recursive: true });
+    await writeFile(
+      join(repoRoot, 'wiki', 'initiatives', 'IN-9003.md'),
+      '---\nid: "IN-9003"\ntitle: "Fixture initiative"\nstatus: todo\n---\n\n# IN-9003: Fixture\n',
+      'utf8',
+    );
+    execFileSync('git', ['add', '-A'], { cwd: repoRoot });
+    execFileSync('git', ['commit', '-qm', 'initial commit'], { cwd: repoRoot });
+  });
+
+  afterEach(async () => {
+    await rm(repoRoot, { recursive: true, force: true });
+  });
+
+  it('equals baseSha when base_ref is null', async () => {
+    const headSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repoRoot }).toString().trim();
+    // base_ref: null requires the base_sha stamp (base-drift check).
+    const result = await checkAdmission(makeSliceHandoff({ base_ref: null, base_sha: headSha }), repoRoot);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.attrSha).toBe(headSha);
+    expect(result.data.attrSha).toBe(result.data.baseSha);
+  });
+
+  it('stays at mother HEAD when the base_ref branch is ahead of it', async () => {
+    const branchSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repoRoot }).toString().trim();
+    execFileSync('git', ['branch', 'dispatch/HO-ATTR'], { cwd: repoRoot });
+
+    // Advance mother HEAD past the branch so baseSha must diverge from attrSha.
+    await writeFile(join(repoRoot, 'second.md'), 'second commit content\n', 'utf8');
+    execFileSync('git', ['add', '-A'], { cwd: repoRoot });
+    execFileSync('git', ['commit', '-qm', 'second commit'], { cwd: repoRoot });
+    const headSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repoRoot }).toString().trim();
+    expect(headSha).not.toBe(branchSha);
+
+    const result = await checkAdmission(makeSliceHandoff({ base_ref: 'dispatch/HO-ATTR' }), repoRoot);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.baseSha).toBe(branchSha);
+    expect(result.data.attrSha).toBe(headSha);
+    expect(result.data.attrSha).not.toBe(result.data.baseSha);
+  });
 });
