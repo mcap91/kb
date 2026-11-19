@@ -303,7 +303,10 @@ Credential profiles live in `wiki/.dispatch/profiles.json` (scaffolded by `init-
 ```
 
 - `inject` maps an env var name to a file path holding its value (read Linux-side only; kb never
-  executes a credential command and never embeds a resolved value in generated text).
+  executes a credential command and never embeds a resolved value in generated text). Every `inject`
+  key must be a valid shell variable name (`[A-Za-z_][A-Za-z0-9_]*`); a key that is not — for example
+  `BAD-NAME` or `X;rm` — is refused at profile load with `BAD_RECORD`, naming the profile and the key,
+  because the key is interpolated into generated credential and value-scan scripts.
 - `endpoints` (optional) is the array of hostnames — exact or `*.suffix` wildcard — this profile grants
   network access to. Appended to the forwarder's granted endpoint set only when the profile is named in
   the HO's `credentials:` field.
@@ -325,6 +328,12 @@ and prints remediation text (install bubblewrap, or relax an AppArmor unprivileg
 on Ubuntu 24.04+). `check-environment` runs the identical probe on demand, plus informational container
 detection and `HOME`/config-dir writability facts, so an operator can see what a real `dispatch` call
 will do on a given host before running one.
+
+Preflight also probes the host `git` and refuses `PREFLIGHT_FAILED` before any worker runs when
+`git --version` is below **2.41**, or when git is missing or reports no parseable version. Host delivery
+pins path attributes to the trusted base tree with `--attr-source`, an option git added in 2.41; with
+preflight skipped (`preflight: false`), the delivery's first stage command exits non-zero on an older
+git and the run fails closed.
 
 ## Model and Backend Configuration
 

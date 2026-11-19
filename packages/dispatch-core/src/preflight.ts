@@ -24,6 +24,14 @@ export interface PreflightResult {
   remediationText?: string;
   /** Pi harness version (`pi --version`), for the S3 ruling-7 version gate. Absent when the probe reported MISSING. */
   piVersion?: string;
+  /**
+   * Host git version (`git --version`), the first `<major>.<minor>[.<patch>]`
+   * found — so distro suffixes (`2.43.0.windows.1`) parse. Absent when the
+   * probe reported MISSING or carried no parseable version. Carried as its
+   * own fact, never folded into `remediationNeeded` (whose text is the
+   * bwrap/AppArmor remediation); `gateGitVersion` is the separate gate.
+   */
+  gitVersion?: string;
 }
 
 /**
@@ -44,6 +52,9 @@ const PREFLIGHT_SCRIPT = [
   'echo "BWRAP_VERSION=$(bwrap --version 2>/dev/null || echo MISSING)"',
   // Rides the existing preflight script rather than a dedicated probe (S3 ruling 7) — same KEY=value convention, one fewer WSL2 round trip.
   'echo "PI_VERSION=$(pi --version 2>/dev/null || echo MISSING)"',
+  // Same convention for the host git floor; delivery's
+  // --attr-source option needs git >= 2.41, so preflight reports the version.
+  'echo "GIT_VERSION=$(git --version 2>/dev/null || echo MISSING)"',
   '',
   '# Live unshare-user probe — mirrors the curated SYSTEM_ROOTS jail dispatch',
   '# actually builds (jail.ts:131-133), not a whole-root bind (SRC-0013, WK-0174).',
@@ -89,6 +100,19 @@ function getFieldValue(lines: string[], key: string): string | undefined {
 }
 
 /**
+ * Extract the first `<major>.<minor>[.<patch>]` from a `git --version` value.
+ * `git --version` prints `git version 2.43.0`, but distro/vendor builds append
+ * a suffix (`2.43.0.windows.1`, `2.39.3 (Apple Git-145)`); the numeric core is
+ * the only part the version gate can compare. `undefined` when MISSING or no
+ * numeric version is present.
+ */
+function parseGitVersion(raw: string | undefined): string | undefined {
+  if (raw === undefined || raw === 'MISSING') return undefined;
+  const match = raw.match(/\d+\.\d+(?:\.\d+)?/);
+  return match?.[0];
+}
+
+/**
  * Parse the T27 probe script's stdout into a `PreflightResult`. Pure and
  * exported so the parsing logic is unit-testable without a live WSL2/bwrap
  * host (mirrors wsl2.ts's `classifySignalExit` split: live exec vs. pure
@@ -105,6 +129,7 @@ export function parsePreflightOutput(stdout: string): PreflightResult {
   const unshareUser = getFieldValue(lines, 'UNSHARE_USER');
   const apparmorUserns = getFieldValue(lines, 'APPARMOR_USERNS');
   const piVersion = getFieldValue(lines, 'PI_VERSION');
+  const gitVersion = parseGitVersion(getFieldValue(lines, 'GIT_VERSION'));
 
   const bwrapAvailable = bwrapPath !== undefined && bwrapPath !== '' && bwrapPath !== 'MISSING';
   const unshareUserWorks = unshareUser === 'OK';
@@ -118,7 +143,30 @@ export function parsePreflightOutput(stdout: string): PreflightResult {
     remediationNeeded,
     ...(remediationNeeded ? { remediationText: REMEDIATION_TEXT } : {}),
     ...(piVersion !== undefined && piVersion !== 'MISSING' ? { piVersion } : {}),
+    ...(gitVersion !== undefined ? { gitVersion } : {}),
   };
+}
+
+/** Host git floor for delivery's `--attr-source` pin, added in git 2.41. */
+export const MIN_GIT_VERSION = { major: 2, minor: 41 } as const;
+
+/**
+ * Refuse-below gate for the host git version. Returns the `PREFLIGHT_FAILED`
+ * message, or null when the version is at or above the floor. A missing or
+ * unparseable version (the probe's value was `MISSING` or carried no numeric
+ * core) fails closed naming "none": the delivery path's `--attr-source`
+ * option is only trustworthy on a git known to be new enough. Major and minor
+ * are compared as numbers.
+ */
+export function gateGitVersion(gitVersion: string | undefined): string | null {
+  if (gitVersion === undefined) {
+    return `Preflight found git version none; git ${MIN_GIT_VERSION.major}.${MIN_GIT_VERSION.minor} or later required.`;
+  }
+  const [major, minor] = gitVersion.split('.').map((part) => Number(part));
+  if (major < MIN_GIT_VERSION.major || (major === MIN_GIT_VERSION.major && minor < MIN_GIT_VERSION.minor)) {
+    return `Preflight found git version ${gitVersion}; git ${MIN_GIT_VERSION.major}.${MIN_GIT_VERSION.minor} or later required.`;
+  }
+  return null;
 }
 
 /**

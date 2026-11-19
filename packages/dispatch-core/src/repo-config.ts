@@ -307,6 +307,12 @@ function validateProfileEntry(name: string, raw: unknown): DispatchResult<Profil
 
   const inject: Record<string, string> = {};
   for (const [varName, value] of Object.entries(raw.inject)) {
+    // An inject key is an env var name that reaches generated bash (the
+    // credential export and the injected-value scan) interpolated unquoted;
+    // validate it against the same ENV_NAME pattern the stage parser uses.
+    if (!ENV_NAME.test(varName)) {
+      return fail('BAD_RECORD', `Profile "${name}" in profiles.json: inject key "${varName}" is not a valid variable name.`);
+    }
     if (typeof value !== 'string') {
       return fail('BAD_RECORD', `Profile "${name}" in profiles.json: inject["${varName}"] must be a string file path.`);
     }
@@ -481,8 +487,9 @@ const VALIDATION_TOP_KEYS = new Set(['schema_version', 'setup', 'commands', 'env
 const VALIDATION_COMMAND_NAME = /^[A-Za-z0-9._-]+$/;
 /**
  * A shell variable name. Exported so delivery.ts's stage-output parser can
- * validate `SECRET_HIT=<NAME>` lines against the same pattern admission
- * already enforces on declared profile inject keys, rather than a copy.
+ * validate `SECRET_HIT=<NAME>` lines against the same pattern the profile
+ * loader (`validateProfileEntry`) enforces on declared `inject` keys, rather
+ * than a copy.
  */
 export const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 /** Vars the runner itself constructs; a registry may not override them. */

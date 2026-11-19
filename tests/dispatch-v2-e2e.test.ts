@@ -59,7 +59,7 @@ import {
   type CredentialResolution,
 } from '../packages/dispatch-core/src/credentials.js';
 import { writeResponseDoc } from '../packages/dispatch-core/src/capture.js';
-import { parsePreflightOutput } from '../packages/dispatch-core/src/preflight.js';
+import { parsePreflightOutput, gateGitVersion } from '../packages/dispatch-core/src/preflight.js';
 import * as preflightModule from '../packages/dispatch-core/src/preflight.js';
 import * as tierModule from '../packages/dispatch-core/src/tier.js';
 import * as spawnIsolatedModule from '../packages/dispatch-core/src/spawn-isolated.js';
@@ -618,6 +618,100 @@ describe('preflight.ts — parsePreflightOutput (T27, pure parsing)', () => {
     expect(result.piVersion).toBeUndefined();
     expect('piVersion' in result).toBe(false);
   });
+
+  it('captures gitVersion from a distro-suffixed git --version line (first major.minor[.patch])', () => {
+    const stdout = [
+      'BWRAP_PATH=/usr/bin/bwrap',
+      'BWRAP_VERSION=bubblewrap 0.8.0',
+      'PI_VERSION=MISSING',
+      'GIT_VERSION=git version 2.43.0.windows.1',
+      'UNSHARE_USER=OK',
+      'APPARMOR_USERNS=0',
+    ].join('\n');
+
+    const result = parsePreflightOutput(stdout);
+    expect(result.gitVersion).toBe('2.43.0');
+    // The git fact is carried alongside remediation, never folded into it.
+    expect(result.remediationNeeded).toBe(false);
+  });
+
+  it('omits gitVersion when GIT_VERSION=MISSING (remediation unchanged)', () => {
+    const stdout = [
+      'BWRAP_PATH=/usr/bin/bwrap',
+      'BWRAP_VERSION=bubblewrap 0.8.0',
+      'GIT_VERSION=MISSING',
+      'UNSHARE_USER=OK',
+      'APPARMOR_USERNS=0',
+    ].join('\n');
+
+    const result = parsePreflightOutput(stdout);
+    expect(result.gitVersion).toBeUndefined();
+    expect('gitVersion' in result).toBe(false);
+    expect(result.remediationNeeded).toBe(false);
+  });
+
+  it('omits gitVersion when GIT_VERSION carries no parseable version (remediation unchanged)', () => {
+    const stdout = [
+      'BWRAP_PATH=/usr/bin/bwrap',
+      'BWRAP_VERSION=bubblewrap 0.8.0',
+      'GIT_VERSION=git version unknown',
+      'UNSHARE_USER=OK',
+      'APPARMOR_USERNS=0',
+    ].join('\n');
+
+    const result = parsePreflightOutput(stdout);
+    expect(result.gitVersion).toBeUndefined();
+    expect('gitVersion' in result).toBe(false);
+    expect(result.remediationNeeded).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// preflight.ts — gateGitVersion (host git floor)
+// ---------------------------------------------------------------------------
+
+describe('preflight.ts — gateGitVersion (git 2.41 floor)', () => {
+  /** Parse a synthetic preflight stdout carrying `line` as GIT_VERSION, then gate the parsed fact. */
+  function gateFor(gitVersionLine: string): string | null {
+    const result = parsePreflightOutput(
+      [
+        'BWRAP_PATH=/usr/bin/bwrap',
+        'UNSHARE_USER=OK',
+        'APPARMOR_USERNS=0',
+        `GIT_VERSION=${gitVersionLine}`,
+      ].join('\n'),
+    );
+    // The git floor never changes the bwrap remediation fact.
+    expect(result.remediationNeeded).toBe(false);
+    return gateGitVersion(result.gitVersion);
+  }
+
+  it('refuses 2.40.1, naming the found version and the floor', () => {
+    const message = gateFor('git version 2.40.1');
+    expect(message).not.toBeNull();
+    expect(message).toContain('2.40');
+    expect(message).toContain('git 2.41 or later required');
+  });
+
+  it('passes 2.41.0, 2.43.0 and a distro-suffixed 2.43.0.windows.1', () => {
+    expect(gateFor('git version 2.41.0')).toBeNull();
+    expect(gateFor('git version 2.43.0')).toBeNull();
+    expect(gateFor('git version 2.43.0.windows.1')).toBeNull();
+  });
+
+  it('refuses a missing version, naming "none"', () => {
+    const message = gateFor('MISSING');
+    expect(message).not.toBeNull();
+    expect(message).toContain('none');
+    expect(message).toContain('git 2.41 or later required');
+  });
+
+  it('refuses an unparseable version, naming "none"', () => {
+    const message = gateFor('git version unknown');
+    expect(message).not.toBeNull();
+    expect(message).toContain('none');
+    expect(message).toContain('git 2.41 or later required');
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -796,6 +890,7 @@ describe('dispatch v2 e2e (fake-tier) — S3 wave 3 harness version gate (mocked
         appArmorRestriction: false,
         remediationNeeded: false,
         piVersion: '0.80.0',
+        gitVersion: '2.43.0',
       },
     });
 
@@ -811,6 +906,67 @@ describe('dispatch v2 e2e (fake-tier) — S3 wave 3 harness version gate (mocked
       if (result.ok) return;
       expect(result.error).toBe('PREFLIGHT_FAILED');
       expect(result.message).toContain('0.80.0');
+    } finally {
+      await rm(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses PREFLIGHT_FAILED and spawns no worker when the probed git version is below 2.41', async () => {
+    vi.spyOn(preflightModule, 'runPreflight').mockResolvedValue({
+      ok: true,
+      data: {
+        bwrapAvailable: true,
+        unshareUserWorks: true,
+        appArmorRestriction: false,
+        remediationNeeded: false,
+        gitVersion: '2.40.1',
+      },
+    });
+    const spawnSpy = vi.spyOn(spawnIsolatedModule, 'spawnIsolated');
+
+    const repoRoot = await setupS3Repo();
+    try {
+      const result = await runDispatch({
+        dir: repoRoot,
+        handoff: 'wiki/handoffs/HO-S3TEST.md',
+        model: 'deepseek',
+        backend: 'openrouter',
+      });
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error).toBe('PREFLIGHT_FAILED');
+      expect(result.message).toContain('2.40');
+      expect(result.message).toContain('git 2.41 or later required');
+      expect(spawnSpy).not.toHaveBeenCalled();
+    } finally {
+      await rm(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses PREFLIGHT_FAILED naming "none" when preflight found no git version', async () => {
+    vi.spyOn(preflightModule, 'runPreflight').mockResolvedValue({
+      ok: true,
+      data: {
+        bwrapAvailable: true,
+        unshareUserWorks: true,
+        appArmorRestriction: false,
+        remediationNeeded: false,
+      },
+    });
+
+    const repoRoot = await setupS3Repo();
+    try {
+      const result = await runDispatch({
+        dir: repoRoot,
+        handoff: 'wiki/handoffs/HO-S3TEST.md',
+        model: 'deepseek',
+        backend: 'openrouter',
+      });
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error).toBe('PREFLIGHT_FAILED');
+      expect(result.message).toContain('none');
+      expect(result.message).toContain('git 2.41 or later required');
     } finally {
       await rm(repoRoot, { recursive: true, force: true });
     }

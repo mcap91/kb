@@ -73,7 +73,7 @@ import {
 import { writeResponseDoc, buildProvenanceWriteBack, type WorkerUsageDetail, type ProviderCostCoverage } from './capture.js';
 import { commitArtifacts } from './commit-artifacts.js';
 import { stageReviewEvidence, validateDelivery, type HostValidationSummary } from './host-validation.js';
-import { runPreflight } from './preflight.js';
+import { runPreflight, gateGitVersion } from './preflight.js';
 import { getRunDir, isRunId } from './paths.js';
 import { loadProfilesConfig, loadBackendsTable, type BackendFamily, type EffortMapping } from './repo-config.js';
 import {
@@ -1073,6 +1073,15 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
         preflight.data.remediationText ?? 'Preflight failed: bwrap user namespace support is unavailable.',
         preflight.data,
       );
+    }
+
+    // Host git version gate — refuse-below 2.41 before any
+    // clone/jail/worker work. Host delivery pins path attributes with
+    // `--attr-source`, an option git added in 2.41; an older git would reject
+    // it mid-delivery, so the run fails closed here with the found version.
+    const gitGate = gateGitVersion(preflight.data.gitVersion);
+    if (gitGate) {
+      return fail('PREFLIGHT_FAILED', gitGate, preflight.data);
     }
 
     // Harness version gate (S3 ruling 7) — refuse-below/warn-above/fail-closed,

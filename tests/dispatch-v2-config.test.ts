@@ -745,6 +745,28 @@ describe('repo-config.ts — wiki/.dispatch/ table loaders', () => {
       expect(result.error).toBe('BAD_RECORD');
       expect(result.message).toContain('HF_TOKEN');
     });
+
+    it('refuses an inject key that is not a variable name, naming the profile and the key', async () => {
+      await writeDispatchConfig(dir, 'profiles.json', JSON.stringify({ schema_version: 1, hf: { inject: { 'BAD-NAME': '/path' } } }));
+
+      const result = await loadProfilesConfig(dir);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error).toBe('BAD_RECORD');
+      expect(result.message).toContain('BAD-NAME');
+      expect(result.message).toContain('hf');
+    });
+
+    it('refuses an inject key carrying shell metacharacters, naming the profile and the key', async () => {
+      await writeDispatchConfig(dir, 'profiles.json', JSON.stringify({ schema_version: 1, hf: { inject: { 'X;rm': '/path' } } }));
+
+      const result = await loadProfilesConfig(dir);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error).toBe('BAD_RECORD');
+      expect(result.message).toContain('X;rm');
+      expect(result.message).toContain('hf');
+    });
   });
 
   describe('loadLimitsConfig (WK-0244)', () => {

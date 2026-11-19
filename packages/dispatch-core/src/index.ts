@@ -210,7 +210,7 @@ export { writeResponseDoc, buildProvenanceWriteBack } from './capture.js';
 
 // Host preflight + remediation (T27; DEC-0008 D20)
 export type { PreflightResult } from './preflight.js';
-export { runPreflight, parsePreflightOutput } from './preflight.js';
+export { runPreflight, parsePreflightOutput, gateGitVersion, MIN_GIT_VERSION } from './preflight.js';
 
 // The runDispatch() pipeline
 export type { DispatchOpts, DispatchResult2 } from './pipeline.js';
