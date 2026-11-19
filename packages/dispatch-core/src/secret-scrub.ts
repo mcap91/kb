@@ -1,0 +1,299 @@
+/**
+ * Value-list secret scrubber. The ONE home of the value-list
+ * model and of the matching logic that rewrites a resolved credential value
+ * out of the bytes a worker writes to stdout and stderr.
+ *
+ * The list is built from the exact `name -> value` pairs a run injects
+ * (`resolveCredentialEnv`'s output) plus, for a later slice, every string
+ * leaf of a parsed credential file. A value is only ever eligible once it is
+ * long enough to not be a coincidence (`MIN_VALUE_LENGTH`); short values are
+ * dropped rather than scrubbed.
+ *
+ * Each value is matched in five forms — raw, JSON-escaped once, JSON-escaped
+ * twice, `encodeURIComponent`, and standard base64 of its UTF-8 bytes — so a
+ * value that a worker echoes inside a JSON string, a JSON-in-JSON string, a
+ * URL, or a base64 blob is still caught. Equal forms collapse to one. A match
+ * is leftmost-longest; a tie is resolved by the value's position in list
+ * order, so the first value named wins. The replacement is
+ * `[REDACTED:<name>]`, with any `"` or `\` in the name written as `_` so the
+ * marker can never break out of an enclosing JSON string.
+ *
+ * `createSecretScrubber` is the streaming seam: each `push()` scans its whole
+ * buffer, emits everything before a computed cut, and holds the rest, so a
+ * value split across two `push()` calls (or containing a newline) is still
+ * caught; `flush()` emits the held tail. `scrubText` is the same matcher over
+ * a whole string.
+ */
+import type { DispatchResult } from './errors.js';
+import { fail, ok } from './errors.js';
+
+/** A value below this length (UTF-16 code units) is too short to be treated as a secret. */
+export const MIN_VALUE_LENGTH = 16;
+
+/** One `name -> value` pair eligible for scrubbing. */
+export interface SecretValuePair {
+  name: string;
+  value: string;
+}
+
+/** One resolved secret: the name that appears in the replacement marker. */
+export interface SecretValue {
+  name: string;
+  value: string;
+}
+
+/** A credential file captured for a later slice's leaf walk. */
+export interface CredentialFileSnapshot {
+  /** The file's label, used verbatim as the leaf-name prefix. */
+  label: string;
+  /** The file's raw bytes. */
+  bytes: string | Buffer;
+}
+
+export interface BuildSecretValueListInput {
+  /** Direct `name -> value` pairs (this slice: exactly `resolveCredentialEnv`'s output). */
+  values: ReadonlyArray<SecretValuePair>;
+  /** Credential-file snapshots whose parsed JSON string leaves are added (reserved for a later slice). */
+  snapshots?: ReadonlyArray<CredentialFileSnapshot>;
+}
+
+function isLongEnough(value: string): boolean {
+  return value.length >= MIN_VALUE_LENGTH;
+}
+
+/** JSON-escape a string once, without the surrounding quotes. */
+function jsonEscapeOnce(value: string): string {
+  return JSON.stringify(value).slice(1, -1);
+}
+
+/** The replacement marker for a value's name; `"`/`\` are made inert. */
+function replacementFor(name: string): string {
+  return `[REDACTED:${name.replace(/["\\]/g, '_')}]`;
+}
+
+/**
+ * Walk a parsed JSON value depth-first, calling `visit` for every string
+ * leaf with its dotted/bracketed path (`a.b`, `a[0].b`). Object keys keep
+ * their insertion order; arrays are visited by index.
+ */
+function walkStringLeaves(node: unknown, path: string, visit: (path: string, value: string) => void): void {
+  if (typeof node === 'string') {
+    visit(path, node);
+    return;
+  }
+  if (Array.isArray(node)) {
+    for (let i = 0; i < node.length; i += 1) {
+      const childPath = path.length === 0 ? `[${i}]` : `${path}[${i}]`;
+      walkStringLeaves(node[i], childPath, visit);
+    }
+    return;
+  }
+  if (node !== null && typeof node === 'object') {
+    for (const [key, child] of Object.entries(node as Record<string, unknown>)) {
+      const childPath = path.length === 0 ? key : `${path}.${key}`;
+      walkStringLeaves(child, childPath, visit);
+    }
+  }
+}
+
+interface Form {
+  text: string;
+  bytes: Buffer;
+  byteLength: number;
+  valueIndex: number;
+}
+
+/** Expand the list into matcher forms in list order, de-duplicating equal forms per value. */
+function collectForms(list: ReadonlyArray<SecretValue>): Form[] {
+  const forms: Form[] = [];
+  for (let valueIndex = 0; valueIndex < list.length; valueIndex += 1) {
+    const value = list[valueIndex]?.value ?? '';
+    if (!isLongEnough(value)) continue;
+    const candidates = [
+      value,
+      jsonEscapeOnce(value),
+      jsonEscapeOnce(jsonEscapeOnce(value)),
+      encodeURIComponent(value),
+      Buffer.from(value, 'utf8').toString('base64'),
+    ];
+    const seen = new Set<string>();
+    for (const text of candidates) {
+      if (text.length === 0 || seen.has(text)) continue;
+      seen.add(text);
+      const bytes = Buffer.from(text, 'utf8');
+      forms.push({ text, bytes, byteLength: bytes.length, valueIndex });
+    }
+  }
+  return forms;
+}
+
+interface Occurrence {
+  start: number;
+  end: number;
+  length: number;
+  formIndex: number;
+}
+
+/** Every occurrence of every form in `buf`, overlapping occurrences included. */
+function findOccurrences(buf: Buffer, forms: ReadonlyArray<Form>): Occurrence[] {
+  const out: Occurrence[] = [];
+  for (let formIndex = 0; formIndex < forms.length; formIndex += 1) {
+    const form = forms[formIndex];
+    if (form === undefined || form.byteLength === 0) continue;
+    let pos = buf.indexOf(form.bytes, 0);
+    while (pos !== -1) {
+      out.push({ start: pos, end: pos + form.byteLength, length: form.byteLength, formIndex });
+      pos = buf.indexOf(form.bytes, pos + 1);
+    }
+  }
+  return out;
+}
+
+/**
+ * Replace leftmost-longest matches in `buf` with their markers. `forms` must
+ * have been collected from the same `list`; the function never mutates input.
+ */
+function scrubBufferForms(buf: Buffer, list: ReadonlyArray<SecretValue>, forms: ReadonlyArray<Form>): Buffer {
+  if (buf.length === 0 || forms.length === 0) return buf;
+  const occurrences = findOccurrences(buf, forms);
+  if (occurrences.length === 0) return buf;
+
+  // best match per start byte: longest wins; equal length -> earliest form in list order.
+  const best = new Map<number, Occurrence>();
+  for (const occ of occurrences) {
+    const current = best.get(occ.start);
+    if (
+      current === undefined ||
+      occ.length > current.length ||
+      (occ.length === current.length && occ.formIndex < current.formIndex)
+    ) {
+      best.set(occ.start, occ);
+    }
+  }
+
+  const pieces: Buffer[] = [];
+  let cursor = 0;
+  let i = 0;
+  while (i < buf.length) {
+    const match = best.get(i);
+    if (match === undefined) {
+      i += 1;
+      continue;
+    }
+    if (i > cursor) pieces.push(buf.subarray(cursor, i));
+    const name = list[forms[match.formIndex]?.valueIndex ?? 0]?.name ?? '';
+    pieces.push(Buffer.from(replacementFor(name), 'utf8'));
+    i = match.end;
+    cursor = i;
+  }
+  if (cursor < buf.length) pieces.push(buf.subarray(cursor));
+  return pieces.length === 0 ? Buffer.alloc(0) : Buffer.concat(pieces);
+}
+
+/**
+ * The byte position up to which `buf` can be emitted without leaking any
+ * value: start one byte inside the last form length, then walk that cut back
+ * across every occurrence that straddles it until none does. Overlapping
+ * occurrences merge, so the emitted prefix never splits a match.
+ */
+function computeCut(bufLength: number, occurrences: ReadonlyArray<Occurrence>, longestFormLength: number): number {
+  let cut = Math.max(0, bufLength - (longestFormLength - 1));
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const occ of occurrences) {
+      if (occ.start < cut && occ.end > cut) {
+        cut = occ.start;
+        changed = true;
+      }
+    }
+  }
+  return cut;
+}
+
+/** Streaming secret scrubber: feed chunks, emit only bytes that cannot be part of a value, flush the held tail. */
+export interface SecretScrubber {
+  /** Scrub `chunk` and return the safe prefix; the remainder is held for the next call. */
+  push(chunk: Buffer): Buffer;
+  /** Return the held remainder, scrubbed. Emits nothing afterwards. */
+  flush(): Buffer;
+  /** Bytes currently held back. */
+  heldBytes(): number;
+}
+
+/**
+ * Create a scrubber over a value list. An empty list passes every byte
+ * through unchanged; otherwise each `push()` holds back every byte from the
+ * computed cut onward so a value split across calls is still caught.
+ */
+export function createSecretScrubber(list: ReadonlyArray<SecretValue>): SecretScrubber {
+  const forms = collectForms(list);
+  if (forms.length === 0) {
+    return {
+      push: (chunk: Buffer): Buffer => chunk,
+      flush: (): Buffer => Buffer.alloc(0),
+      heldBytes: (): number => 0,
+    };
+  }
+  const longestFormLength = forms.reduce((max, form) => Math.max(max, form.byteLength), 0);
+  let held = Buffer.alloc(0);
+
+  return {
+    push(chunk: Buffer): Buffer {
+      const buf = held.length === 0 ? chunk : Buffer.concat([held, chunk]);
+      const occurrences = findOccurrences(buf, forms);
+      const cut = computeCut(buf.length, occurrences, longestFormLength);
+      const emitted = scrubBufferForms(buf.subarray(0, cut), list, forms);
+      held = Buffer.from(buf.subarray(cut));
+      return emitted;
+    },
+    flush(): Buffer {
+      const rest = held;
+      held = Buffer.alloc(0);
+      return scrubBufferForms(rest, list, forms);
+    },
+    heldBytes(): number {
+      return held.length;
+    },
+  };
+}
+
+/** Scrub a whole string with the same value list and matcher. */
+export function scrubText(text: string, list: ReadonlyArray<SecretValue>): string {
+  const forms = collectForms(list);
+  if (forms.length === 0 || text.length === 0) return text;
+  return scrubBufferForms(Buffer.from(text, 'utf8'), list, forms).toString('utf8');
+}
+
+/**
+ * Build the ordered value list. Direct pairs come first, in input order,
+ * then every string leaf of each snapshot's parsed JSON, in walk order and
+ * named `<label>:<path>`. A snapshot whose bytes are not JSON fails the
+ * build with a message naming the label only — never the bytes.
+ */
+export function buildSecretValueList(input: BuildSecretValueListInput): DispatchResult<SecretValue[]> {
+  const list: SecretValue[] = [];
+  for (const pair of input.values) {
+    if (isLongEnough(pair.value)) list.push({ name: pair.name, value: pair.value });
+  }
+  for (const snapshot of input.snapshots ?? []) {
+    const text = typeof snapshot.bytes === 'string' ? snapshot.bytes : snapshot.bytes.toString('utf8');
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(text);
+    } catch (error) {
+      // The parse error's message can quote the input, so carry only its name.
+      const cause = error instanceof Error ? error.name : 'unknown error';
+      return fail(
+        'CREDENTIAL_NOT_CONFIGURED',
+        `Credential snapshot "${snapshot.label}" is not valid JSON (${cause}); cannot build the secret value list.`,
+      );
+    }
+    walkStringLeaves(parsed, '', (path, value) => {
+      if (!isLongEnough(value)) return;
+      const name = path.length === 0 ? snapshot.label : `${snapshot.label}:${path}`;
+      list.push({ name, value });
+    });
+  }
+  return ok(list);
+}

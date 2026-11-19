@@ -58,6 +58,7 @@ import {
 } from './jail.js';
 import { isMountableRoot } from './mountability.js';
 import { spawnIsolated, type SpawnResult } from './spawn-isolated.js';
+import { buildSecretValueList } from './secret-scrub.js';
 import { attachStreamErrorHandlers } from './stream-utils.js';
 import { buildWorkerEnv } from './env-policy.js';
 import { createClone, removeClone, sweepOrphanClones } from './clone.js';
@@ -1481,6 +1482,13 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
     // contract.
     const credentialEnvResult = await resolveCredentialEnv(credResult.data);
     if (!credentialEnvResult.ok) return credentialEnvResult;
+    // 12b-i. Value list for the stdout/stderr scrubber, built at launch from
+    // the exact resolved pairs the worker env injects — never from a
+    // re-read that could disagree with what was actually exported.
+    const secretValueListResult = buildSecretValueList({
+      values: Object.entries(credentialEnvResult.data).map(([name, value]) => ({ name, value })),
+    });
+    if (!secretValueListResult.ok) return secretValueListResult;
     const proxyUrl = `http://127.0.0.1:${TUNNEL_RELAY_PORT}`;
     const baseWorkerEnv: Record<string, string> = {
       ...buildWorkerEnv({}),
@@ -1598,7 +1606,7 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
     let spawnData: SpawnResult;
     try {
       logVerbose(verbose, `invoking ${canonicalModel} via bwrap+pi`);
-      const spawnResult = await spawnIsolated(plan, { timeoutMs: effectiveTimeoutMs, stdoutLogPath: join(runDir, 'worker-output.log') });
+      const spawnResult = await spawnIsolated(plan, { timeoutMs: effectiveTimeoutMs, stdoutLogPath: join(runDir, 'worker-output.log'), secretValues: secretValueListResult.data });
       if (!spawnResult.ok) return spawnResult;
       spawnData = spawnResult.data;
     } finally {

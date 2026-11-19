@@ -24,6 +24,7 @@ import { buildWorkerEnv } from './env-policy.js';
 import type { DispatchResult } from './errors.js';
 import { fail, ok } from './errors.js';
 import { attachStreamErrorHandlers } from './stream-utils.js';
+import { createSecretScrubber, type SecretValue } from './secret-scrub.js';
 
 // chassis: workspace-agent-launch-core.mjs:159 (DEFAULT_MAX_CAPTURE_BYTES, 1 MiB).
 const DEFAULT_MAX_CAPTURE_BYTES = 1_048_576;
@@ -47,6 +48,12 @@ export interface SpawnIsolatedOpts {
   stdoutLogPath?: string;
   /** Bound on retained stderr bytes (tail-capped: keeps the MOST RECENT bytes — the diagnostically useful end of a crash, not the start). Default 4_096 (4 KiB). */
   maxStderrBytes?: number;
+  /**
+   * Resolved credential values to scrub from every stdout/stderr byte before
+   * it reaches capture or the stdout log. One scrubber per stream; each is
+   * flushed on every finish path. Omitted means no rewriting at all.
+   */
+  secretValues?: ReadonlyArray<SecretValue>;
   signal?: AbortSignal;
   /**
    * Ad-hoc content check for bwrap `--file` injection. The AUTHORITATIVE
@@ -258,6 +265,13 @@ export async function spawnIsolated(
 
   const stdoutCapture = opts.stdoutCapture === 'tail' ? boundedTailCapture(maxCaptureBytes) : boundedHeadCapture(maxCaptureBytes);
   const stderrCapture = boundedTailCapture(maxStderrBytes);
+  // One scrubber per stream; null when no value list was supplied, so the
+  // default path never even allocates one.
+  const stdoutScrubber = opts.secretValues !== undefined ? createSecretScrubber(opts.secretValues) : null;
+  const stderrScrubber = opts.secretValues !== undefined ? createSecretScrubber(opts.secretValues) : null;
+  // Set the moment the result settles so post-finish chunks cannot reach the
+  // scrubbers or the log stream (the child may emit briefly after SIGTERM).
+  let finished = false;
   const stdoutLogStream = opts.stdoutLogPath !== undefined ? createWriteStream(opts.stdoutLogPath) : null;
   // WriteStream 'error' is otherwise uncaught-exception fatal — a full disk or
   // permissions problem writing the log must not take down an in-flight run.
@@ -266,11 +280,18 @@ export async function spawnIsolated(
   });
   attachStreamErrorHandlers(child.stdout, child.stderr);
   child.stdout?.on('data', (chunk: Buffer) => {
-    stdoutCapture.push(chunk);
-    stdoutLogStream?.write(chunk);
+    if (finished) return;
+    const out = stdoutScrubber === null ? chunk : stdoutScrubber.push(chunk);
+    if (out.length === 0) return;
+    stdoutCapture.push(out);
+    stdoutLogStream?.write(out);
   });
-  child.stderr?.on('data', (chunk: Buffer) => stderrCapture.push(chunk));
-  child.stdout?.once('close', () => stdoutLogStream?.end());
+  child.stderr?.on('data', (chunk: Buffer) => {
+    if (finished) return;
+    const out = stderrScrubber === null ? chunk : stderrScrubber.push(chunk);
+    if (out.length === 0) return;
+    stderrCapture.push(out);
+  });
 
   return new Promise((resolve) => {
     let settled = false;
@@ -298,24 +319,52 @@ export async function spawnIsolated(
     const finish = (): void => {
       if (settled) return;
       settled = true;
+      finished = true;
       clearKillTimer();
       clearDrainTimer();
       if (teardownTimer !== null) {
         clearTimeout(teardownTimer);
         teardownTimer = null;
       }
-      resolve(
-        ok({
-          stdout: stdoutCapture.text(),
-          stdoutLogPath: opts.stdoutLogPath,
-          stderr: stderrCapture.text(),
-          exitCode: exitInfo?.code ?? null,
-          signal: exitInfo?.signal ?? null,
-          truncated: stdoutCapture.truncated || stderrCapture.truncated,
-          timedOut,
-          streamDrainTimedOut,
-        }),
-      );
+      // Flush every still-held byte through its scrubber BEFORE the result is
+      // composed, so a value ending exactly on the last chunk is caught and
+      // the in-memory capture and the log both see the rewritten tail.
+      if (stdoutScrubber !== null) {
+        const tail = stdoutScrubber.flush();
+        if (tail.length > 0) {
+          stdoutCapture.push(tail);
+          stdoutLogStream?.write(tail);
+        }
+      }
+      if (stderrScrubber !== null) {
+        const tail = stderrScrubber.flush();
+        if (tail.length > 0) stderrCapture.push(tail);
+      }
+      const result = {
+        stdout: stdoutCapture.text(),
+        stdoutLogPath: opts.stdoutLogPath,
+        stderr: stderrCapture.text(),
+        exitCode: exitInfo?.code ?? null,
+        signal: exitInfo?.signal ?? null,
+        truncated: stdoutCapture.truncated || stderrCapture.truncated,
+        timedOut,
+        streamDrainTimedOut,
+      };
+      // The log stream ends HERE, after the tail flush, never on the child's
+      // stdout 'close'. Resolve once that end is on disk (finish or, on a
+      // write error, close) so no caller reads a half-written log.
+      if (stdoutLogStream === null) {
+        resolve(ok(result));
+        return;
+      }
+      let streamSettled = false;
+      const settleStream = (): void => {
+        if (streamSettled) return;
+        streamSettled = true;
+        resolve(ok(result));
+      };
+      stdoutLogStream.end(settleStream);
+      stdoutLogStream.once('close', settleStream);
     };
 
     // Second clock: armed once the child has exited, gives open stdout/
@@ -370,6 +419,8 @@ export async function spawnIsolated(
       clearDrainTimer();
       if (settled) return;
       settled = true;
+      finished = true;
+      stdoutLogStream?.end();
       resolve(fail('BWRAP_SPAWN_FAILED', `bwrap process error: ${err.message}`, { message: err.message }));
     });
 

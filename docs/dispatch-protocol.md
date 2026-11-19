@@ -319,6 +319,40 @@ Credential profiles live in `wiki/.dispatch/profiles.json` (scaffolded by `init-
 - The stage re-scans the staged tree's diff for each granted credential's literal value before any
   commit; a hit refuses the delivery (`secret_in_diff`, see "Delivery") rather than landing it.
 
+### Resolved-value scrubbing
+
+Every resolved credential value is masked in the worker's streams and captures, not only in the
+delivery diff. At launch `runDispatch` builds one ordered value list and hands it to `spawnIsolated`;
+the list is the exact set of resolved pairs, never a name:
+
+- **Value sources.** Each granted profile's `inject` entries (the value read from its file, keyed by the
+  env var name) and the backend's own key read from `api_key_env` + `secrets_file`. (The list builder
+  also accepts credential-file snapshots — every string leaf of a parsed JSON file at least 16
+  characters long, named `<label>:<key.path>` with array indices as `[n]`, e.g. `x:a[0].b` — for the
+  next increment; no live step feeds snapshots to it yet.)
+- **Match forms.** Five per value, deduplicated: the raw value, its JSON-escaped form once and twice,
+  its `encodeURIComponent` form, and standard base64 of its UTF-8 bytes. This catches a value logged
+  verbatim, embedded in a JSON string, double-escaped in a nested JSON string, URL-encoded, or
+  base64-encoded.
+- **Floor.** A value shorter than 16 characters (UTF-16 code units) is not scrubbed; a 16-character one
+  is. Short values are too collision-prone to blanket-redact.
+- **Replacement.** `[REDACTED:<name>]`, where the pair's env var name (or the snapshot leaf name) is
+  used verbatim except that `"` and `\` in it become `_`.
+- **Matching.** Leftmost-longest over the buffer; when two values match at the same start the longer
+  wins, and an exact tie goes to the value earlier in the list.
+- **Streaming.** Both stdout and stderr pass through a streaming scrubber: each push scans its whole
+  buffer, emits everything before a cut, and holds the rest. The cut starts one byte inside the longest
+  form length and moves back to the earliest start of any form occurrence that straddles it, so a value
+  split across two `write()` chunks, or one that contains a newline, is still caught and no partial value
+  is emitted. Every finish path — normal exit, timeout kill, spawn error — flushes both scrubbers before
+  the run resolves. The scrubbed bytes feed the in-memory capture, the on-disk `worker-output.log`, and
+  therefore `status`'s log tail; without a value list the bytes are unchanged.
+- A credential-file snapshot that is not valid JSON fails the build with `CREDENTIAL_NOT_CONFIGURED`,
+  naming the label only and never the bytes.
+
+The stage diff's own value scan (above) remains the delivery-side check until the stage-diff scrubber
+increment replaces it.
+
 ## Host Requirements
 
 `dispatch` gates on one fact, for every family and every mode: does bubblewrap work end-to-end (the

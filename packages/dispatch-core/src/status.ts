@@ -210,7 +210,7 @@ async function tryReadJsonRecord(path: string): Promise<Record<string, unknown> 
 }
 
 /** Last `lines` lines of `worker-output.log`, or null if it does not exist (v1 runs never write one). */
-async function readLogTail(runDir: string, lines: number): Promise<string[] | null> {
+export async function readLogTail(runDir: string, lines: number): Promise<string[] | null> {
   let raw: string;
   try {
     raw = await readFile(join(runDir, 'worker-output.log'), 'utf-8');

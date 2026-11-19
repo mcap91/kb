@@ -1091,6 +1091,36 @@ function mockSpawnIsolated(fixtureContent: string): { getInnerScript: () => stri
   return { getInnerScript: () => capturedInnerScript };
 }
 
+/**
+ * Mock spawnIsolated and capture the resolved `secretValues` list pipeline.ts
+ * hands it. Same shape as mockSpawnIsolated above; used only by the
+ * value-list wiring tests below.
+ */
+function mockSpawnIsolatedCaptureSecrets(fixtureContent: string): {
+  getSecretValues: () => ReadonlyArray<{ name: string; value: string }> | undefined;
+} {
+  let captured: ReadonlyArray<{ name: string; value: string }> | undefined;
+  vi.spyOn(spawnIsolatedModule, 'spawnIsolated').mockImplementation(async (plan, opts) => {
+    captured = opts?.secretValues;
+    if (opts?.stdoutLogPath) {
+      await writeFile(opts.stdoutLogPath, fixtureContent, 'utf8');
+    }
+    return {
+      ok: true,
+      data: {
+        stdout: '',
+        stderr: '',
+        exitCode: 0,
+        signal: null,
+        truncated: false,
+        timedOut: false,
+        streamDrainTimedOut: false,
+      },
+    };
+  });
+  return { getSecretValues: () => captured };
+}
+
 describe('dispatch v2 e2e (fake-tier) — WK-0122 effort passthrough (mocked spawnIsolated)', () => {
   afterEach(() => {
     vi.restoreAllMocks();
@@ -1820,6 +1850,137 @@ describe('dispatch v2 e2e (fake-tier) — WK-0125 implement-mode constrained dec
       expect(injectedFiles?.some((f) => f.dest.includes('kb-dispatch-recovery.v1.schema.json'))).toBe(false);
     } finally {
       await rm(repoRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Value-list secret scrubber wiring — runDispatch builds the list from the
+// exact resolved credential pairs (profile inject vars + the backend key)
+// and hands it to spawnIsolated, per family. These go through the real
+// runDispatch() with only spawnIsolated mocked, so the list is produced by
+// the same credential-resolution path a live run uses.
+// ---------------------------------------------------------------------------
+
+describe('dispatch v2 e2e (fake-tier) — value-list secret scrubber wiring (mocked spawnIsolated)', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('claude: passes spawnIsolated the granted profile value under its env var name', async () => {
+    const secretsDir = await createTempDir('kb-e2e-secret-scrub-');
+    const secretFile = join(secretsDir, 'hf.env');
+    const value = 'claude-profile-token-0123456789-abcdef';
+    await writeFile(secretFile, `HF_TOKEN=${value}\n`, 'utf8');
+
+    const repoRoot = await setupS3Repo({
+      credentials: ['hf'],
+      profiles: { schema_version: 1, hf: { inject: { HF_TOKEN: secretFile } } },
+      backends: {
+        'claude-saas': { family: 'claude', base_url: null, api_key_env: null, secrets_file: null },
+      },
+      models: {
+        'claude-sonnet-5': { available_on: ['claude-saas'], model_id: 'claude-sonnet-5' },
+      },
+    });
+    const { getSecretValues } = mockSpawnIsolatedCaptureSecrets(readFixtureFile('claude-p-output.txt'));
+    stubCliOnPath('claude', '/usr/bin/claude');
+    try {
+      const result = await runDispatch({
+        dir: repoRoot,
+        handoff: 'wiki/handoffs/HO-S3TEST.md',
+        model: 'claude-sonnet-5',
+        backend: 'claude-saas',
+        preflight: false,
+      });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      const secretValues = getSecretValues();
+      expect(secretValues).toBeDefined();
+      expect(secretValues).toContainEqual({ name: 'HF_TOKEN', value });
+    } finally {
+      await rm(repoRoot, { recursive: true, force: true });
+      await rm(secretsDir, { recursive: true, force: true });
+    }
+  });
+
+  it('codex: passes spawnIsolated the granted profile value under its env var name', async () => {
+    const secretsDir = await createTempDir('kb-e2e-secret-scrub-codex-');
+    const secretFile = join(secretsDir, 'hf.env');
+    const value = 'codex-profile-token-0123456789-abcdef';
+    await writeFile(secretFile, `HF_TOKEN=${value}\n`, 'utf8');
+
+    const repoRoot = await setupS3Repo({
+      credentials: ['hf'],
+      profiles: { schema_version: 1, hf: { inject: { HF_TOKEN: secretFile } } },
+      backends: {
+        'codex-saas': { family: 'codex', base_url: null, api_key_env: null, secrets_file: null },
+      },
+      models: {
+        'gpt-5.5': { available_on: ['codex-saas'], model_id: 'gpt-5.5' },
+      },
+    });
+    const { getSecretValues } = mockSpawnIsolatedCaptureSecrets(
+      readFixtureFile('codex-exec-output-stream-json.jsonl'),
+    );
+    stubCliOnPath('codex', '/usr/bin/codex');
+    try {
+      const result = await runDispatch({
+        dir: repoRoot,
+        handoff: 'wiki/handoffs/HO-S3TEST.md',
+        model: 'gpt-5.5',
+        backend: 'codex-saas',
+        preflight: false,
+      });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      const secretValues = getSecretValues();
+      expect(secretValues).toBeDefined();
+      expect(secretValues).toContainEqual({ name: 'HF_TOKEN', value });
+    } finally {
+      await rm(repoRoot, { recursive: true, force: true });
+      await rm(secretsDir, { recursive: true, force: true });
+    }
+  });
+
+  it('pi: also carries the backend key read from api_key_env + secrets_file', async () => {
+    const secretsDir = await createTempDir('kb-e2e-secret-scrub-pi-');
+    const profileFile = join(secretsDir, 'hf.env');
+    const profileValue = 'pi-profile-token-0123456789-abcdef';
+    const backendFile = join(secretsDir, 'openrouter.env');
+    const backendKey = 'pi-backend-key-0123456789-abcdefgh';
+    await writeFile(profileFile, `HF_TOKEN=${profileValue}\n`, 'utf8');
+    await writeFile(backendFile, `OPENROUTER_API_KEY=${backendKey}\n`, 'utf8');
+
+    const repoRoot = await setupS3Repo({
+      credentials: ['hf'],
+      profiles: { schema_version: 1, hf: { inject: { HF_TOKEN: profileFile } } },
+      backends: {
+        openrouter: {
+          family: 'pi',
+          base_url: 'https://openrouter.ai/api/v1',
+          api_key_env: 'OPENROUTER_API_KEY',
+          secrets_file: backendFile,
+        },
+      },
+    });
+    const { getSecretValues } = mockSpawnIsolatedCaptureSecrets(readFixtureFile('pi-output-vllm-qwen25.jsonl'));
+    try {
+      const result = await runDispatch({
+        dir: repoRoot,
+        handoff: 'wiki/handoffs/HO-S3TEST.md',
+        model: 'deepseek',
+        backend: 'openrouter',
+        preflight: false,
+      });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      const secretValues = getSecretValues() ?? [];
+      expect(secretValues).toContainEqual({ name: 'HF_TOKEN', value: profileValue });
+      expect(secretValues).toContainEqual({ name: 'OPENROUTER_API_KEY', value: backendKey });
+    } finally {
+      await rm(repoRoot, { recursive: true, force: true });
+      await rm(secretsDir, { recursive: true, force: true });
     }
   });
 });

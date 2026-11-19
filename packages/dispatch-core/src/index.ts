@@ -96,7 +96,7 @@ export { deriveReview } from './derive-review.js';
 export { commitArtifacts } from './commit-artifacts.js';
 
 // Status
-export { status } from './status.js';
+export { status, readLogTail } from './status.js';
 
 // Lookup
 export { resolveRun, readRunArtifacts } from './lookup.js';
@@ -299,6 +299,11 @@ export { spawnIsolated } from './spawn-isolated.js';
 
 // Worker env deny-list (env-policy.ts).
 export { buildWorkerEnv } from './env-policy.js';
+
+// Value-list secret scrubber (secret-scrub.ts) — builds the resolved-value
+// list and rewrites it out of a worker's stdout/stderr before capture.
+export type { SecretValue, SecretValuePair, CredentialFileSnapshot, BuildSecretValueListInput, SecretScrubber } from './secret-scrub.js';
+export { MIN_VALUE_LENGTH, buildSecretValueList, createSecretScrubber, scrubText } from './secret-scrub.js';
 
 // Boolean bwrap probe (tier.ts) — no tier enum; provenance records facts.
 export type { BwrapProbeResult } from './tier.js';
