@@ -82,6 +82,8 @@ export type DispatchErrorCode =
   | 'EXEC_FAILED'
   // --- v2 claude permission probe (WK-0131) ---
   | 'CLAUDE_PERMISSION_PROBE_FAILED'
+  // --- v2 stale kb-dispatch MCP server ---
+  | 'SERVER_STALE'
   // --- v2 config-driven model defaults (WK-0070) ---
   | 'NO_MODEL_DEFAULT'
   | 'AMBIGUOUS_MODEL_DEFAULT'
@@ -132,6 +134,7 @@ export const V2_REFUSAL_CODES = [
   'NO_MODEL_DEFAULT',
   'AMBIGUOUS_MODEL_DEFAULT',
   'AMBIGUOUS_BACKEND',
+  'SERVER_STALE',
 ] as const satisfies readonly DispatchErrorCode[];
 
 /**

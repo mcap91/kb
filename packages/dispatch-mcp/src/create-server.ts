@@ -1,5 +1,6 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { V2_REFUSAL_CODES } from '@kb/dispatch-core';
+import { fail, V2_REFUSAL_CODES } from '@kb/dispatch-core';
+import { DEFAULT_SRC_DIRS, fingerprintSources, type SourceFingerprint } from './code-freshness.js';
 import { tools } from './tools.js';
 
 /**
@@ -139,7 +140,49 @@ export const REFERENCE = [
   '**SaaS backends (codex/claude):** these function under `web:false` — each has a built-in vendor domain allowlist. Never set `web: true` just to make a SaaS family work.',
 ].join('\n');
 
-export function createServer(): McpServer {
+/** Name the failing path and the read error for a `SERVER_STALE` refusal. */
+function describeReadError(err: unknown): string {
+  const message = err instanceof Error ? err.message : String(err);
+  const path =
+    typeof err === 'object' && err !== null && 'path' in err
+      ? (err as { path?: unknown }).path
+      : undefined;
+  return typeof path === 'string' && path.length > 0 ? `cannot read ${path}: ${message}` : message;
+}
+
+/**
+ * The `SERVER_STALE` message: the loaded code is older than the checkout, the start time
+ * and both 12-hex-character fingerprint prefixes when they were computed, and the one
+ * next step — reconnect the server or restart the session, then retry.
+ */
+function staleMessage(
+  startedAt: string,
+  loaded: SourceFingerprint | null,
+  current: SourceFingerprint | null,
+  readError: string | null,
+): string {
+  const fix = 'Reconnect the kb-dispatch MCP server or restart the session, then retry.';
+  if (readError !== null) {
+    return `This kb-dispatch MCP server's code is older than the checkout: its source fingerprint cannot be computed (${readError}). ${fix}`;
+  }
+  const loadedPrefix = loaded?.fingerprint.slice(0, 12) ?? 'unknown';
+  const currentPrefix = current?.fingerprint.slice(0, 12) ?? 'unknown';
+  return `This kb-dispatch MCP server's code is older than the checkout (started ${startedAt}; loaded ${loadedPrefix}; current ${currentPrefix}). ${fix}`;
+}
+
+export function createServer(options: { srcDirs?: string[] } = {}): McpServer {
+  const srcDirs = options.srcDirs ?? DEFAULT_SRC_DIRS;
+  const startedAt = new Date().toISOString();
+
+  // Record what this server loaded once, at start, beside the start time.
+  let loaded: SourceFingerprint | null = null;
+  let startReadError: string | null = null;
+  try {
+    loaded = fingerprintSources(srcDirs);
+  } catch (err) {
+    startReadError = describeReadError(err);
+  }
+
   const server = new McpServer(
     {
       name: 'kb-dispatch',
@@ -174,12 +217,53 @@ export function createServer(): McpServer {
         ...(OPERATOR_ONLY.has(tool.name) ? { _meta: { 'io.kb/audience': 'operator' } } : {}),
       },
       async (args) => {
+        let current: SourceFingerprint | null = null;
+        let currentReadError: string | null = null;
+        try {
+          current = fingerprintSources(srcDirs);
+        } catch (err) {
+          currentReadError = describeReadError(err);
+        }
+
+        const readError = currentReadError ?? startReadError;
+        const stale =
+          readError !== null
+          || loaded === null
+          || current === null
+          || loaded.fingerprint !== current.fingerprint;
+
+        // A stale server refuses before its handler runs; status and stop-run stay live
+        // so a stale session can still see and stop its runs.
+        if (stale && tool.name !== 'status' && tool.name !== 'stop-run') {
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: JSON.stringify(fail('SERVER_STALE', staleMessage(startedAt, loaded, current, readError)), null, 2),
+              },
+            ],
+          };
+        }
+
         try {
           const result = await tool.handler(args as Record<string, unknown>);
           const resultObj = typeof result === 'object' && result !== null ? result : { data: result };
 
+          const payload: Record<string, unknown> =
+            tool.name === 'status'
+              ? {
+                  ...(resultObj as Record<string, unknown>),
+                  server: {
+                    started_at: startedAt,
+                    loaded_fingerprint: loaded?.fingerprint ?? null,
+                    current_fingerprint: current?.fingerprint ?? null,
+                    stale,
+                  },
+                }
+              : (resultObj as Record<string, unknown>);
+
           return {
-            content: [{ type: 'text' as const, text: JSON.stringify(resultObj, null, 2) }],
+            content: [{ type: 'text' as const, text: JSON.stringify(payload, null, 2) }],
           };
         } catch (err) {
           return toErrorEnvelope(err);

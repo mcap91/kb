@@ -849,6 +849,14 @@ is the source list; a test fails if this table and that list disagree:
 | Host / prompt budget | `PREFLIGHT_FAILED`, `NO_ISOLATION_ROUTE`, `CLI_PATH_NOT_MOUNTABLE`, `CONTEXT_BUDGET_EXCEEDED` |
 | Worker-specific | `CLAUDE_PERMISSION_PROBE_FAILED` |
 | Concurrency | `ACTIVE_RUN_EXISTS` |
+| MCP server | `SERVER_STALE` |
+
+A kb-dispatch MCP server refuses with `SERVER_STALE` after its sources change on disk: it loads its code
+once, when the client session connects, and keeps the loaded copy until that session restarts. The fix is
+to reconnect the kb-dispatch MCP server or restart the session, then retry. Any change counts — an
+uncommitted edit in the shared checkout as well as a merge. A `merge-delivery` that changes dispatch code
+makes the merging session's own server stale, so that session reconnects before its next acting call.
+`status` and `stop-run` still work while stale, so a stale session can see and stop its runs.
 
 `ACTIVE_RUN_EXISTS` is same-handoff single-flight only: one active run per HO. Different handoffs
 dispatch concurrently, each in its own clone of `base_sha`. Only merges to main serialize.

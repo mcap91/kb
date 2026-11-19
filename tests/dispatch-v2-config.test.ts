@@ -74,6 +74,7 @@ describe('errors.ts — V2_REFUSAL_CODES', () => {
       'AMBIGUOUS_MODEL_DEFAULT',
       'AMBIGUOUS_BACKEND',
       'WORKER_TIMEOUT_EXCEEDS_CAP',
+      'SERVER_STALE',
     ];
     expect([...V2_REFUSAL_CODES].sort()).toEqual([...expected].sort());
   });
