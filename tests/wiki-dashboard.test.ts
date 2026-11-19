@@ -147,7 +147,7 @@ describe('dashboard generate', () => {
     expect(result.data.dashboard).toEqual({ dir: 'wiki/dashboard/generated', pages: 3 });
     expect(fs.existsSync(path.join(repo.dir, 'wiki/dashboard/generated/index.html'))).toBe(true);
     expect(fs.existsSync(path.join(repo.dir, 'wiki/dashboard/generated/wk.html'))).toBe(true);
-    expect(fs.existsSync(path.join(repo.dir, 'wiki/dashboard/generated/IN-0001/chain.html'))).toBe(true);
+    expect(fs.existsSync(path.join(repo.dir, 'wiki/dashboard/generated/IN/IN-0001.html'))).toBe(true);
     // Records open as their markdown files; no page per record.
     expect(fs.existsSync(path.join(repo.dir, 'wiki/dashboard/generated/records'))).toBe(false);
     expect(fs.existsSync(path.join(repo.dir, 'wiki/dashboard/generated/critical-path.html'))).toBe(false);
@@ -323,7 +323,7 @@ describe('index.html', () => {
     expect(html.indexOf('data-box="todo"')).toBeLessThan(html.indexOf('data-box="done"'));
     expect(html).toContain('data-legend');
     expect(html).not.toContain('<details');
-    expect(inProgress).toContain('IN-0001/chain.html');
+    expect(inProgress).toContain('href="IN/IN-0001.html"');
     expect(inProgress).toMatch(/data-in="IN-0001" data-status="in_progress"/);
   });
 
@@ -549,13 +549,13 @@ Gate: second
 });
 
 // ---------------------------------------------------------------------------
-// IN-XXXX/chain.html
+// IN/IN-XXXX.html
 // ---------------------------------------------------------------------------
 
 describe('chain.html', () => {
   async function nextBox(dir: string, initiative = 'IN-0001'): Promise<string> {
     await generate({ dir });
-    return div(read(dir, `wiki/dashboard/generated/${initiative}/chain.html`), 'data-next');
+    return div(read(dir, `wiki/dashboard/generated/IN/${initiative}.html`), 'data-next');
   }
 
   it('takes the Next box from the chain stages in file order, each id once', async () => {
@@ -804,7 +804,7 @@ updated: 2026-11-18
       initiative: 'IN-0001',
     });
     await generate({ dir: repo.dir });
-    let html = read(repo.dir, 'wiki/dashboard/generated/IN-0001/chain.html');
+    let html = read(repo.dir, 'wiki/dashboard/generated/IN/IN-0001.html');
     expect(section(html, 'data-band="To do"')).toContain('WK-0001');
     expect(section(html, 'data-band="In progress"')).not.toContain('WK-0001');
 
@@ -817,7 +817,7 @@ updated: 2026-11-18
       initiative: 'IN-0001',
     });
     await generate({ dir: repo.dir });
-    html = read(repo.dir, 'wiki/dashboard/generated/IN-0001/chain.html');
+    html = read(repo.dir, 'wiki/dashboard/generated/IN/IN-0001.html');
     expect(section(html, 'data-band="In progress"')).toContain('WK-0001');
     expect(section(html, 'data-band="To do"')).toBe('');
   });
@@ -877,7 +877,7 @@ updated: 2026-11-18
       tags: ['m1'],
     });
     await generate({ dir: repo.dir });
-    const html = read(repo.dir, 'wiki/dashboard/generated/IN-0001/chain.html');
+    const html = read(repo.dir, 'wiki/dashboard/generated/IN/IN-0001.html');
     const bands = [...html.matchAll(/data-band="([^"]*)"/g)].map(m => m[1]);
     expect(bands).toEqual(['m1', 'm2']);
     expect(section(html, 'data-band="m1"')).toContain('data-wk="WK-0001"');
@@ -917,7 +917,7 @@ updated: 2026-11-18
     });
     const result = await generate({ dir: repo.dir });
     expect(result.ok).toBe(true);
-    const html = read(repo.dir, 'wiki/dashboard/generated/IN-0001/chain.html');
+    const html = read(repo.dir, 'wiki/dashboard/generated/IN/IN-0001.html');
     expect(html).toContain('data-wk="WK-0001"');
     expect(html).toContain('data-wk="WK-0002"');
   });
@@ -932,7 +932,7 @@ updated: 2026-11-18
       updated: '2026-11-01',
     });
     await generate({ dir: repo.dir });
-    expect(read(repo.dir, 'wiki/dashboard/generated/IN-0001/chain.html')).toContain(
+    expect(read(repo.dir, 'wiki/dashboard/generated/IN/IN-0001.html')).toContain(
       'No work items name this initiative',
     );
   });
@@ -1028,7 +1028,7 @@ describe('wk.html', () => {
       expect(entry.neighbors[group]).not.toContain('WK-0001');
       expect(entry.neighbors[group]).not.toContain('WK-0009');
     }
-    expect(data['IN-0001'].chain).toBe('IN-0001/chain.html');
+    expect(data['IN-0001'].chain).toBe('IN/IN-0001.html');
   });
 
   it('fills from the same initiative when fewer than 5 neighbors exist', async () => {
@@ -1090,11 +1090,11 @@ describe('wk.html', () => {
     expect(data['WK-0001'].href).toBe('../../issues/WK-0001.md');
     expect(fs.existsSync(path.resolve(path.dirname(wkPath), data['WK-0001'].href))).toBe(true);
 
-    const chainHtml = read(repo.dir, 'wiki/dashboard/generated/IN-0001/chain.html');
+    const chainHtml = read(repo.dir, 'wiki/dashboard/generated/IN/IN-0001.html');
     const link = /<a href="([^"]+)">IN-0001 record<\/a>/.exec(chainHtml);
     expect(link).not.toBeNull();
     expect(link![1]).toBe('../../../initiatives/IN-0001.md');
-    const chainPath = path.join(repo.dir, 'wiki/dashboard/generated/IN-0001/chain.html');
+    const chainPath = path.join(repo.dir, 'wiki/dashboard/generated/IN/IN-0001.html');
     expect(fs.existsSync(path.resolve(path.dirname(chainPath), link![1]))).toBe(true);
   });
 
@@ -1118,7 +1118,7 @@ describe('wk.html', () => {
     });
     await generate({ dir: repo.dir });
     const index = read(repo.dir, 'wiki/dashboard/generated/index.html');
-    const chainHtml = read(repo.dir, 'wiki/dashboard/generated/IN-0001/chain.html');
+    const chainHtml = read(repo.dir, 'wiki/dashboard/generated/IN/IN-0001.html');
     const wk = read(repo.dir, 'wiki/dashboard/generated/wk.html');
     expect(index).toContain('&lt;/script&gt;&lt;b&gt;x');
     expect(chainHtml).toContain('&lt;/script&gt;&lt;b&gt;x');
@@ -1183,7 +1183,7 @@ Gate: the second gate
 `,
     );
     await generate({ dir: repo.dir });
-    const html = read(repo.dir, 'wiki/dashboard/generated/IN-0001/chain.html');
+    const html = read(repo.dir, 'wiki/dashboard/generated/IN/IN-0001.html');
     const chainSection = section(html, 'data-chain');
     const names = [...chainSection.matchAll(/data-stage data-name="([^"]*)"/g)].map(m => m[1]);
     // File order decides the stage order, not the stage name.
@@ -1224,7 +1224,7 @@ Gate: the second gate
     });
     chain(repo.dir, '---\nupdated: 2026-11-18\n---\n\n## IN-0001 — One\n\nProse only.\n');
     await generate({ dir: repo.dir });
-    const html = read(repo.dir, 'wiki/dashboard/generated/IN-0001/chain.html');
+    const html = read(repo.dir, 'wiki/dashboard/generated/IN/IN-0001.html');
     expect(html).not.toContain('data-chain>');
     expect(html).not.toContain('data-off-chain');
     expect(section(html, 'data-band="To do"')).toContain('data-wk="WK-0001"');
@@ -1271,9 +1271,10 @@ describe('owned folder', () => {
     expect(result.ok).toBe(true);
 
     expect(fs.existsSync(path.join(generated, 'stale.html'))).toBe(false);
+    // A leftover folder of the old per-initiative layout is removed too.
     expect(fs.existsSync(path.join(generated, 'IN-0009'))).toBe(false);
-    expect(fs.existsSync(path.join(generated, 'IN-0002/chain.html'))).toBe(false);
-    expect(fs.existsSync(path.join(generated, 'IN-0002'))).toBe(false);
+    expect(fs.existsSync(path.join(generated, 'IN/IN-0002.html'))).toBe(false);
+    expect(fs.existsSync(path.join(generated, 'IN/IN-0001.html'))).toBe(true);
     expect(fs.readFileSync(path.join(repo.dir, 'wiki/dashboard/hand.html'), 'utf-8')).toBe('hand');
     expect(fs.readFileSync(path.join(repo.dir, 'wiki/dashboard/IN-0001/chain.html'), 'utf-8')).toBe(
       'hand chain',
@@ -1368,7 +1369,7 @@ describe('robustness and surfaces', () => {
     chain(repo.dir, 'just free text\nwith no structure at all\n');
     const result = await generate({ dir: repo.dir });
     expect(result.ok).toBe(true);
-    const html = read(repo.dir, 'wiki/dashboard/generated/IN-0001/chain.html');
+    const html = read(repo.dir, 'wiki/dashboard/generated/IN/IN-0001.html');
     expect(html).toContain('data-next-source="code"');
   });
 

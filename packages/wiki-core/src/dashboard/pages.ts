@@ -29,6 +29,14 @@ export interface PageBuildInput {
 /** The page that shows the critical paths of `chain.md`, written only when it has one. */
 export const CRITICAL_PATH_PAGE = 'critical-path.html';
 
+/**
+ * The chain page of an initiative, relative to the owned folder: one folder named
+ * by the initiative prefix, so the top of the folder holds only the main pages.
+ */
+function chainPage(input: PageBuildInput, id: string): string {
+  return `${input.initiativePrefix}/${id}.html`;
+}
+
 /** Card titles are clamped to three lines by CSS; this only bounds the page size. */
 const CARD_TITLE_MAX = 180;
 const ROW_TITLE_MAX = 120;
@@ -175,7 +183,7 @@ function buildIndex(input: PageBuildInput, ctx: BuildContext): string {
       body += `<nav class="toc" style="grid-template-rows:repeat(${Math.ceil(rows.length / 2)},auto)">`;
       for (const record of rows) {
         body +=
-          `<a class="toc-row" data-in="${escapeHtml(record.id)}" data-status="${escapeHtml(record.status)}" href="${escapeHtml(`${record.id}/chain.html`)}">` +
+          `<a class="toc-row" data-in="${escapeHtml(record.id)}" data-status="${escapeHtml(record.status)}" href="${escapeHtml(chainPage(input, record.id))}">` +
           `${dot(record.status)}<b>${escapeHtml(record.id)}</b><span>${escapeHtml(cutTitle(record.title, ROW_TITLE_MAX))}</span></a>`;
       }
       body += `</nav>\n`;
@@ -264,7 +272,7 @@ function buildCriticalPath(input: PageBuildInput, ctx: BuildContext): string {
 }
 
 // ---------------------------------------------------------------------------
-// IN-XXXX/chain.html
+// <initiative prefix>/<ID>.html: one chain page per initiative
 // ---------------------------------------------------------------------------
 
 function lowestMilestone(tags: string[]): number | undefined {
@@ -458,7 +466,7 @@ function codeBands(ctx: BuildContext, openish: DashboardRecord[]): string[] {
 }
 
 function buildChain(input: PageBuildInput, ctx: BuildContext, initiative: DashboardRecord): string {
-  const pageDir = path.join(ctx.generatedDir, initiative.id);
+  const pageDir = path.dirname(path.join(ctx.generatedDir, chainPage(input, initiative.id)));
   const pageWorkItems = ctx.workItems.filter(w => w.initiative === initiative.id && !isClosedStatus(w.status));
   const done = pageWorkItems.filter(w => w.status === 'done');
   const parked = pageWorkItems.filter(w => w.status === 'parked');
@@ -558,7 +566,7 @@ function buildWkData(input: PageBuildInput, ctx: BuildContext): Record<string, u
         title: record.title,
         status: record.status,
         href: recordHref(ctx.generatedDir, record),
-        chain: `${record.id}/chain.html`,
+        chain: chainPage(input, record.id),
       };
     }
   }
@@ -643,7 +651,7 @@ export function buildPages(input: PageBuildInput): Map<string, string> {
   pages.set('wk.html', buildWk(input, ctx));
   if (input.chain.paths.length > 0) pages.set(CRITICAL_PATH_PAGE, buildCriticalPath(input, ctx));
   for (const initiative of initiatives) {
-    pages.set(`${initiative.id}/chain.html`, buildChain(input, ctx, initiative));
+    pages.set(chainPage(input, initiative.id), buildChain(input, ctx, initiative));
   }
   return pages;
 }

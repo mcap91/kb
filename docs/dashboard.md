@@ -11,7 +11,7 @@ the five standard views. A repo with the wiki layer only gets the five views and
 |------|---------------|
 | `wiki/dashboard/generated/index.html` | Every initiative, one line each, in three boxes: in progress, to do, done. A color legend and links to the critical path, `chain.md` and the work item page |
 | `wiki/dashboard/generated/critical-path.html` | Each critical path in `chain.md`: its stages in build order, an open count and gate per stage, a card per work item. Written only when `chain.md` has a critical path |
-| `wiki/dashboard/generated/IN-XXXX/chain.html` | One initiative: the Next box, the Done strip, its chain of stages from `chain.md`, the open work items no stage names, and the Parked strip |
+| `wiki/dashboard/generated/IN/IN-XXXX.html` | One initiative: the Next box, the Done strip, its chain of stages from `chain.md`, the open work items no stage names, and the Parked strip |
 | `wiki/dashboard/generated/wk.html` | Type a work item id or number to see it with its initiative and its neighbors: depends on, blocks, related, and the nearest open ids of the same initiative. "open record" opens the record's markdown file |
 
 Open `index.html` in a browser or in an editor preview. Every page links to the others with relative
