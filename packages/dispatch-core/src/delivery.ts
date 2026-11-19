@@ -1,7 +1,7 @@
 /**
  * §8 delivery gate (dispatch v2, PLN-0004 S0, T6). Ports the WK-0074 B4R
  * correctness script (`scratch_space/WSL2_spikes/b4r_correctness.sh`, proven
- * 21/21) — the enumerate -> verdict -> land protocol is carried into
+ * 21/21) — the stage -> check -> land protocol is carried into
  * script-generating + result-parsing TypeScript functions here, not
  * re-derived.
  *
@@ -22,9 +22,8 @@
  * is a structured conflict, never a clobber (b4r script tests 3-5).
  *
  * None of the functions in this module throw. `checkWriteScope`/`scanSecrets`,
- * `parseStageOutput` and `runStageScript` return a minimal local `{ ok }`
- * shape (not the shared `DispatchResult`), and `parseDeliveryOutput` folds
- * failure into `DeliveryOutcome.status === 'error'`. The few file reads
+ * `parseStageOutput`, `runStageScript` and `parseLandOutput` return a minimal
+ * local `{ ok }` shape (not the shared `DispatchResult`). The few file reads
  * (`parseStageOutput`) and the temp-dir lifecycle (`runStageScript`) fail
  * closed into that same local shape rather than throwing.
  */
@@ -37,7 +36,6 @@ import { ENV_NAME } from './repo-config.js';
 
 /** Frozen git config flags carried on every launcher-side git invocation (spec §8). */
 const FROZEN_GIT_CONFIG = '-c core.autocrlf=false -c core.eol=lf -c core.hooksPath= -c core.fsmonitor=';
-const FROZEN_GIT = `git ${FROZEN_GIT_CONFIG}`;
 
 /**
  * Options for the eventual full delivery run. This is the wave-3
@@ -67,20 +65,10 @@ export type DeliveryOutcome =
   | { status: 'conflict'; existingTree: string; newTree: string }
   | { status: 'error'; message: string };
 
-export interface EnumerateScript {
+/** A generated bash script: its content plus a stable name for capture paths. */
+export interface BashScript {
   scriptContent: string;
   scriptName: string;
-}
-
-export interface DeliveryScript {
-  scriptContent: string;
-  scriptName: string;
-}
-
-export interface EnumerateResult {
-  changedFiles: string[];
-  diff: string;
-  untrackedFiles: string[];
 }
 
 /** Single-quote a value for safe embedding in generated bash (escapes embedded quotes). */
@@ -99,124 +87,6 @@ function frozenGitArray(attrSha?: string): string {
   const attr = attrSha === undefined ? '' : `${shQuote(`--attr-source=${attrSha}`)} `;
   const config = FROZEN_GIT_CONFIG.split(' ').map(shQuote).join(' ');
   return `(git ${attr}${config})`;
-}
-
-/** Extract the text between two literal marker lines (exclusive), or '' if either is absent. */
-function extractSection(text: string, startMarker: string, endMarker: string): string {
-  const startIdx = text.indexOf(startMarker);
-  const endIdx = text.indexOf(endMarker);
-  if (startIdx === -1 || endIdx === -1 || endIdx < startIdx) return '';
-  return text
-    .slice(startIdx + startMarker.length, endIdx)
-    .replace(/^\n/, '')
-    .replace(/\n$/, '');
-}
-
-function splitNonEmptyLines(text: string): string[] {
-  return text
-    .split('\n')
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0);
-}
-
-/**
- * Split porcelain `git status` output into lines WITHOUT trimming: the
- * leading character of the two-character XY status code is frequently a
- * significant space (e.g. ` M` = unmodified index, modified worktree) that
- * `splitNonEmptyLines`'s trim would destroy. Only a trailing `\r` (stray
- * CRLF residue) is stripped; fully blank lines are dropped.
- */
-function splitPorcelainLines(text: string): string[] {
-  return text
-    .split('\n')
-    .map((line) => line.replace(/\r$/, ''))
-    .filter((line) => line.length > 0);
-}
-
-/**
- * Phase 1 (enumerate): a script run IN the clone that reports the full
- * change set — porcelain status, both-ends rename detection (unstaged
- * renames are not always surfaced as `R` by porcelain status, hence the
- * dedicated `--diff-filter=R` pass), the working diff (for the secret scan),
- * and untracked files — via marker-delimited sections. Read-only; makes no
- * changes to the clone.
- */
-export function buildEnumerateScript(clonePath: string): EnumerateScript {
-  const scriptContent = `#!/bin/bash
-set -euo pipefail
-
-CLONE_PATH=${shQuote(clonePath)}
-cd "$CLONE_PATH"
-
-GIT="${FROZEN_GIT}"
-
-echo "---STATUS-START---"
-$GIT status --porcelain
-echo "---STATUS-END---"
-
-echo "---RENAME-START---"
-$GIT diff --name-status --diff-filter=R HEAD 2>/dev/null || true
-echo "---RENAME-END---"
-
-echo "---DIFF-START---"
-$GIT diff HEAD 2>/dev/null || true
-echo "---DIFF-END---"
-
-echo "---UNTRACKED-START---"
-$GIT ls-files --others --exclude-standard
-echo "---UNTRACKED-END---"
-`;
-
-  return { scriptContent, scriptName: 'dispatch-enumerate.sh' };
-}
-
-/**
- * Parse the phase-1 enumerate script's stdout. `changedFiles` covers tracked
- * modifications/additions/deletions (both ends of a rename included, merging
- * the porcelain-status view with the dedicated rename-detection block);
- * `untrackedFiles` is the separate `ls-files --others` list. Callers that
- * need the full write_scope change set combine both
- * (`[...changedFiles, ...untrackedFiles]`).
- */
-export function parseEnumerateOutput(stdout: string): EnumerateResult {
-  const normalized = stdout.replace(/\r\n/g, '\n');
-
-  const statusBlock = extractSection(normalized, '---STATUS-START---', '---STATUS-END---');
-  const renameBlock = extractSection(normalized, '---RENAME-START---', '---RENAME-END---');
-  const diffBlock = extractSection(normalized, '---DIFF-START---', '---DIFF-END---');
-  const untrackedBlock = extractSection(normalized, '---UNTRACKED-START---', '---UNTRACKED-END---');
-
-  const changed = new Set<string>();
-
-  for (const line of splitPorcelainLines(statusBlock)) {
-    const match = line.match(/^(.{2}) (.*)$/);
-    if (!match) continue;
-    const code = match[1]!;
-    const rest = match[2]!;
-    if (code === '??') continue; // reported separately via untrackedFiles
-    if (code.includes('R') || code.includes('C')) {
-      const [oldPath, newPath] = rest.split(' -> ');
-      if (oldPath) changed.add(oldPath.trim());
-      if (newPath) changed.add(newPath.trim());
-    } else if (rest.trim().length > 0) {
-      changed.add(rest.trim());
-    }
-  }
-
-  for (const line of splitNonEmptyLines(renameBlock)) {
-    const match = line.match(/^R\d*\t(.+)\t(.+)$/);
-    if (!match) continue;
-    changed.add(match[1]!.trim());
-    changed.add(match[2]!.trim());
-  }
-
-  const untrackedFiles = splitNonEmptyLines(untrackedBlock);
-
-  return {
-    changedFiles: Array.from(changed),
-    diff: diffBlock,
-    untrackedFiles,
-  };
 }
 
 /**
@@ -270,231 +140,8 @@ export function scanSecrets(diff: string): { ok: true } | { ok: false; patterns:
   return { ok: true };
 }
 
-/**
- * Phase 2 (land): the canonical b4r delivery sequence — seed a temp index
- * from `base_sha`, stage the clone's full delta, drop untouched 0-byte
- * write_scope skeleton files created by step 9b in this run and still empty
- * (WK-0169, narrowed by WK-0263 — see the inline script comment),
- * write-tree/commit-tree with the pinned committer, then CAS-push onto
- * `refs/heads/dispatch/<handoffId>` in the mother repo. Never touches the
- * real index; never force-pushes. On a fresh delivery the script also
- * echoes the branch name and the base..tree changed-file list so
- * `parseDeliveryOutput` can fill in a complete `DeliveryOutcome` from
- * stdout alone — already skeleton-filtered, since it diffs against `TREE`.
- */
-export function buildDeliveryScript(opts: {
-  clonePath: string;
-  motherRepoWsl: string;
-  handoffId: string;
-  baseSha: string;
-  excludePrefixes?: string[];
-  /** WK-0180 guard 2: write_scope entries to scope the post-add ignored-write scan to. */
-  writeScope?: string[];
-  /**
-   * WK-0263: write_scope-relative paths step 9b (`precreateWriteScopeSkeleton`,
-   * pipeline.ts) actually created as file skeletons in this run — the only
-   * paths eligible for the untouched-skeleton drop below.
-   */
-  skeletonPaths?: string[];
-}): DeliveryScript {
-  const { clonePath, motherRepoWsl, handoffId, baseSha } = opts;
-  const prefixes = opts.excludePrefixes ?? [];
-  const gitAddLine = prefixes.length === 0
-    ? '$GIT add -A'
-    : `$GIT add -A -- ${prefixes.map(p => shQuote(':!' + p)).join(' ')}`;
-  const writeScope = opts.writeScope ?? [];
-  // WK-0180 guard 2: `git add -A` silently skips gitignored paths — list any
-  // ignored-but-present file under the declared write_scope so a worker write
-  // there is named out loud rather than silently dropped. The clone is a
-  // fresh clone of BASE_SHA, so any ignored file found here is worker-written.
-  const ignoredScanLine = writeScope.length === 0
-    ? ''
-    : `IGNORED_IN_SCOPE=$($GIT ls-files --others -i --exclude-standard -- ${writeScope.map(shQuote).join(' ')})\n`;
-  const skeletonPaths = opts.skeletonPaths ?? [];
-  const skeletonPathsArrayLine = skeletonPaths.length === 0
-    ? 'SKELETON_PATHS=()'
-    : `SKELETON_PATHS=(${skeletonPaths.map(shQuote).join(' ')})`;
-
-  const scriptContent = `#!/bin/bash
-set -euo pipefail
-
-CLONE_PATH=${shQuote(clonePath)}
-MOTHER_REPO=${shQuote(motherRepoWsl)}
-HANDOFF_ID=${shQuote(handoffId)}
-BASE_SHA=${shQuote(baseSha)}
-
-DELIVERY_IDX=$(mktemp /tmp/dispatch-delivery-idx.XXXXXX)
-export GIT_INDEX_FILE="$DELIVERY_IDX"
-export GIT_COMMITTER_NAME="kb-dispatch"
-export GIT_COMMITTER_EMAIL="dispatch@kb.local"
-export GIT_AUTHOR_NAME="kb-dispatch"
-export GIT_AUTHOR_EMAIL="dispatch@kb.local"
-
-GIT="${FROZEN_GIT}"
-
-cd "$CLONE_PATH"
-
-# Seed a temp index from base_sha (never the real index) and stage the full
-# working-tree delta (modified + untracked + deleted) into it.
-$GIT read-tree "$BASE_SHA"
-${gitAddLine}
-
-IGNORED_IN_SCOPE=""
-${ignoredScanLine}
-# WK-0263 (was WK-0169's "empty and new" rule, too broad — it dropped every
-# zero-byte file the worker created, not only untouched skeletons): drop a
-# staged path only if BOTH hold — step 9b (precreateWriteScopeSkeleton,
-# pipeline.ts) created it as a file skeleton in THIS run (SKELETON_PATHS,
-# passed in from that step's return value) AND its blob is still the
-# canonical empty blob at delivery, i.e. the worker never wrote to it. A
-# zero-byte file the worker created itself — including one under a
-# directory write_scope entry, which 9b never skeletons — is never in
-# SKELETON_PATHS, so it is staged and committed like any other file. A
-# pre-existing tracked file the worker deliberately truncated to empty is
-# also never in SKELETON_PATHS (9b's O_CREAT|O_EXCL only adds a path there
-# when it created the file, not when the path already existed), so it stays
-# staged as a real change.
-${skeletonPathsArrayLine}
-EMPTY_BLOB="e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"
-is_skeleton_path() {
-  local target="$1"
-  local sp
-  for sp in "\${SKELETON_PATHS[@]}"; do
-    if [ "$sp" = "$target" ]; then
-      return 0
-    fi
-  done
-  return 1
-}
-$GIT ls-files -s | while IFS= read -r ENTRY; do
-  ENTRY_HASH=$(printf '%s' "$ENTRY" | cut -d' ' -f2)
-  ENTRY_PATH=$(printf '%s' "$ENTRY" | cut -f2)
-  if [ "$ENTRY_HASH" = "$EMPTY_BLOB" ] && is_skeleton_path "$ENTRY_PATH"; then
-    $GIT update-index --force-remove -- "$ENTRY_PATH"
-  fi
-done
-
-TREE=$($GIT write-tree)
-
-BASE_TREE=$($GIT rev-parse "$BASE_SHA^{tree}")
-if [ "$TREE" = "$BASE_TREE" ]; then
-  rm -f "$DELIVERY_IDX"
-  if [ -n "$IGNORED_IN_SCOPE" ]; then
-    echo "NO_DELTA_IGNORED"
-    echo "---IGNORED-START---"
-    echo "$IGNORED_IN_SCOPE"
-    echo "---IGNORED-END---"
-  else
-    echo "NO_DELTA"
-  fi
-  exit 0
-fi
-
-COMMIT=$($GIT commit-tree "$TREE" -p "$BASE_SHA" -m "dispatch: $HANDOFF_ID")
-
-rm -f "$DELIVERY_IDX"
-
-# CAS push-back to the mother repo: same tree + same base as the existing tip
-# is an idempotent no-op; a different tree from the same base is a structured
-# conflict, never a clobber.
-EXISTING_REF=$($GIT -C "$MOTHER_REPO" rev-parse --verify "refs/heads/dispatch/$HANDOFF_ID" 2>/dev/null || echo "NONE")
-
-if [ "$EXISTING_REF" = "NONE" ]; then
-  $GIT push "$MOTHER_REPO" "$COMMIT:refs/heads/dispatch/$HANDOFF_ID"
-  echo "DELIVERED:$COMMIT"
-  echo "---BRANCH-START---"
-  echo "dispatch/$HANDOFF_ID"
-  echo "---BRANCH-END---"
-  echo "---CHANGED-FILES-START---"
-  $GIT diff --name-only "$BASE_SHA" "$TREE"
-  echo "---CHANGED-FILES-END---"
-  if [ -n "$IGNORED_IN_SCOPE" ]; then
-    echo "IGNORED_SKIPPED"
-    echo "---IGNORED-START---"
-    echo "$IGNORED_IN_SCOPE"
-    echo "---IGNORED-END---"
-  fi
-else
-  EXISTING_TREE=$($GIT -C "$MOTHER_REPO" rev-parse --verify "refs/heads/dispatch/$HANDOFF_ID^{tree}" 2>/dev/null || echo "")
-  EXISTING_PARENT=$($GIT -C "$MOTHER_REPO" rev-parse --verify "refs/heads/dispatch/$HANDOFF_ID^" 2>/dev/null || echo "")
-
-  if [ "$EXISTING_TREE" = "$TREE" ] && [ "$EXISTING_PARENT" = "$BASE_SHA" ]; then
-    echo "IDEMPOTENT"
-  else
-    echo "CONFLICT:$EXISTING_TREE"
-    echo "---NEWTREE-START---"
-    echo "$TREE"
-    echo "---NEWTREE-END---"
-  fi
-fi
-`;
-
-  return { scriptContent, scriptName: 'dispatch-deliver.sh' };
-}
-
-/**
- * Parse the phase-2 delivery script's stdout into a `DeliveryOutcome`. Reads
- * the last recognized signal line so any stray earlier output doesn't
- * confuse the result. `refused_out_of_scope` / `secret_in_diff` are never
- * produced here — those are TypeScript-side verdicts (`checkWriteScope` /
- * `scanSecrets`) reached before this script would ever run.
- */
-export function parseDeliveryOutput(stdout: string): DeliveryOutcome {
-  const normalized = stdout.replace(/\r\n/g, '\n').trim();
-  if (normalized.length === 0) {
-    return { status: 'error', message: 'Delivery script produced no output.' };
-  }
-
-  const lines = normalized.split('\n').map((line) => line.trim());
-
-  const deliveredLine = lines.find((line) => line.startsWith('DELIVERED:'));
-  if (deliveredLine) {
-    const commitSha = deliveredLine.slice('DELIVERED:'.length).trim();
-    const branch = extractSection(normalized, '---BRANCH-START---', '---BRANCH-END---').trim();
-    const changedFiles = splitNonEmptyLines(
-      extractSection(normalized, '---CHANGED-FILES-START---', '---CHANGED-FILES-END---'),
-    );
-    const outcome: Extract<DeliveryOutcome, { status: 'delivered' }> = {
-      status: 'delivered',
-      branch,
-      commitSha,
-      changedFiles,
-    };
-    if (lines.some((line) => line === 'IGNORED_SKIPPED')) {
-      outcome.ignoredFiles = splitNonEmptyLines(
-        extractSection(normalized, '---IGNORED-START---', '---IGNORED-END---'),
-      );
-    }
-    return outcome;
-  }
-
-  if (lines.some((line) => line === 'NO_DELTA_IGNORED')) {
-    return {
-      status: 'no_delta',
-      ignoredFiles: splitNonEmptyLines(extractSection(normalized, '---IGNORED-START---', '---IGNORED-END---')),
-    };
-  }
-
-  if (lines.some((line) => line === 'NO_DELTA')) {
-    return { status: 'no_delta' };
-  }
-
-  if (lines.some((line) => line === 'IDEMPOTENT')) {
-    return { status: 'no_changes' };
-  }
-
-  const conflictLine = lines.find((line) => line.startsWith('CONFLICT:'));
-  if (conflictLine) {
-    const existingTree = conflictLine.slice('CONFLICT:'.length).trim();
-    const newTree = extractSection(normalized, '---NEWTREE-START---', '---NEWTREE-END---').trim();
-    return { status: 'conflict', existingTree, newTree };
-  }
-
-  return { status: 'error', message: `Unrecognized delivery script output: ${normalized}` };
-}
-
 // ---------------------------------------------------------------------------
-// Stage -> check -> land over ONE tree (implement branch).
+// Stage -> check -> land over ONE tree.
 //
 // The implement branch stages the worker's clone once into a temp index
 // seeded from `BASE_SHA`, with `--attr-source=<ATTR_SHA>` on every in-clone
@@ -502,8 +149,8 @@ export function parseDeliveryOutput(stdout: string): DeliveryOutcome {
 // in a host-created temp dir, and prints a strict stdout grammar. TypeScript
 // parses that one staged tree, checks it (gitlinks -> write_scope -> value
 // scan), and only then hands exactly the checked `TREE` to the land script.
-// The old enumerate/delivery pair above stays live for the advisory branch
-// until a later slice retires it.
+// The advisory branch reuses the same stage script with an empty scope and no
+// skeleton paths, for mutation detection only — it never reaches land.
 // ---------------------------------------------------------------------------
 
 /** Temp-dir prefix for the stage script's listing files (under `os.tmpdir()`). */
@@ -544,7 +191,7 @@ export interface StageScriptOpts {
  * worktree beyond `git add -A`/`git ls-files`, and never touches the real
  * index. Under `set -euo pipefail` with no `|| true` on a git call.
  */
-export function buildStageScript(opts: StageScriptOpts): DeliveryScript {
+export function buildStageScript(opts: StageScriptOpts): BashScript {
   const { clonePath, baseSha, attrSha, stageDir, writeScope } = opts;
   const rawListingPath = join(stageDir, STAGE_RAW_LISTING_FILENAME);
   const ignoredPath = join(stageDir, STAGE_IGNORED_FILENAME);
@@ -574,7 +221,7 @@ IGNORED_FILE=${shQuote(ignoredPath)}
 
 GIT=${frozenGitArray(attrSha)}
 
-DELIVERY_IDX=$(mktemp /tmp/dispatch-stage-idx.XXXXXX)
+DELIVERY_IDX=$(mktemp "$STAGE_DIR/dispatch-stage-idx.XXXXXX")
 export GIT_INDEX_FILE="$DELIVERY_IDX"
 export GIT_COMMITTER_NAME="kb-dispatch"
 export GIT_COMMITTER_EMAIL="dispatch@kb.local"
@@ -813,7 +460,7 @@ export type StageRunResult = { ok: true; stage: StageResult } | { ok: false; mes
  * the stage script, parse it, and remove the dir in a `finally` on every
  * path. The pipeline checks the exit code before it ever parses, so a stage
  * that fails after printing TREE never reaches check or land. The advisory
- * branch reuses this later with an empty scope and no skeleton paths.
+ * branch reuses this with an empty scope and no skeleton paths.
  */
 export async function runStageScript(opts: StageRunOpts): Promise<StageRunResult> {
   let stageDir: string;
@@ -874,7 +521,7 @@ export type LandParseResult = { ok: true; outcome: LandOutcome } | { ok: false; 
  * else can reach that stream. `commit-tree` and `push` carry
  * `--attr-source`; the mother-repo probes carry the same `-c` values only.
  */
-export function buildLandScript(opts: LandScriptOpts): DeliveryScript {
+export function buildLandScript(opts: LandScriptOpts): BashScript {
   const { clonePath, motherRepoWsl, handoffId, baseSha, attrSha, tree } = opts;
   const scriptContent = `#!/bin/bash
 set -euo pipefail
@@ -944,7 +591,7 @@ export interface QuarantineScriptOpts {
  * `execBash` and written to `quarantine.diff` by the pipeline. Emits only the
  * diff on stdout.
  */
-export function buildQuarantineScript(opts: QuarantineScriptOpts): DeliveryScript {
+export function buildQuarantineScript(opts: QuarantineScriptOpts): BashScript {
   const { clonePath, baseSha, attrSha, tree } = opts;
   const scriptContent = `#!/bin/bash
 set -euo pipefail

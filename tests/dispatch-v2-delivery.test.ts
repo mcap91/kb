@@ -12,17 +12,13 @@
  */
 import { describe, expect, it, afterEach } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { chmod, mkdtemp, readFile, rename, rm, stat, symlink, writeFile, mkdir, open } from 'node:fs/promises';
+import { chmod, mkdtemp, readdir, readFile, rename, rm, stat, symlink, writeFile, mkdir, open } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
-  buildEnumerateScript,
-  parseEnumerateOutput,
   checkWriteScope,
   scanSecrets,
-  buildDeliveryScript,
-  parseDeliveryOutput,
   buildStageScript,
   parseStageOutput,
   runStageScript,
@@ -116,532 +112,6 @@ describe('delivery.ts — scanSecrets', () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// delivery.ts — buildEnumerateScript / parseEnumerateOutput
-// ---------------------------------------------------------------------------
-
-describe('delivery.ts — buildEnumerateScript', () => {
-  it('produces a valid bash script carrying the frozen git config', () => {
-    const { scriptContent, scriptName } = buildEnumerateScript('/tmp/run/clone');
-    expect(scriptContent).toContain('#!/bin/bash');
-    expect(scriptContent).toContain('set -euo pipefail');
-    expect(scriptContent).toContain(
-      '-c core.autocrlf=false -c core.eol=lf -c core.hooksPath= -c core.fsmonitor=',
-    );
-    expect(scriptContent).toContain('cd "$CLONE_PATH"');
-    expect(scriptContent).toContain('status --porcelain');
-    expect(scriptContent).toContain('diff --name-status --diff-filter=R HEAD');
-    expect(scriptContent).toContain('ls-files --others --exclude-standard');
-    expect(scriptName).toBe('dispatch-enumerate.sh');
-  });
-});
-
-describe('delivery.ts — parseEnumerateOutput', () => {
-  it('parses status/rename/diff/untracked sections into a change set', () => {
-    const stdout = [
-      '---STATUS-START---',
-      ' M modified.txt',
-      'A  added.txt',
-      'D  deleted.txt',
-      'R  old.txt -> new.txt',
-      '?? untracked1.txt',
-      '---STATUS-END---',
-      '---RENAME-START---',
-      'R100\told.txt\tnew.txt',
-      '---RENAME-END---',
-      '---DIFF-START---',
-      'diff --git a/added.txt b/added.txt',
-      '+hello',
-      '---DIFF-END---',
-      '---UNTRACKED-START---',
-      'untracked1.txt',
-      '---UNTRACKED-END---',
-      '',
-    ].join('\n');
-
-    const result = parseEnumerateOutput(stdout);
-    expect([...result.changedFiles].sort()).toEqual(
-      ['added.txt', 'deleted.txt', 'modified.txt', 'new.txt', 'old.txt'].sort(),
-    );
-    expect(result.untrackedFiles).toEqual(['untracked1.txt']);
-    expect(result.diff).toContain('diff --git a/added.txt b/added.txt');
-    expect(result.diff).toContain('+hello');
-  });
-
-  it('returns empty arrays and an empty diff for a clean, no-op enumerate', () => {
-    const stdout = [
-      '---STATUS-START---',
-      '---STATUS-END---',
-      '---RENAME-START---',
-      '---RENAME-END---',
-      '---DIFF-START---',
-      '---DIFF-END---',
-      '---UNTRACKED-START---',
-      '---UNTRACKED-END---',
-    ].join('\n');
-
-    const result = parseEnumerateOutput(stdout);
-    expect(result.changedFiles).toEqual([]);
-    expect(result.untrackedFiles).toEqual([]);
-    expect(result.diff).toBe('');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// delivery.ts — buildDeliveryScript / parseDeliveryOutput
-// ---------------------------------------------------------------------------
-
-describe('delivery.ts — buildDeliveryScript', () => {
-  it('produces a script with pinned committer env vars and CAS logic', () => {
-    const { scriptContent, scriptName } = buildDeliveryScript({
-      clonePath: '/tmp/run/clone',
-      motherRepoWsl: '/mnt/c/example/projects/kb',
-      handoffId: 'HO-0002',
-      baseSha: 'deadbeef',
-    });
-
-    expect(scriptContent).toContain('GIT_COMMITTER_NAME="kb-dispatch"');
-    expect(scriptContent).toContain('GIT_COMMITTER_EMAIL="dispatch@kb.local"');
-    expect(scriptContent).toContain('GIT_AUTHOR_NAME="kb-dispatch"');
-    expect(scriptContent).toContain('GIT_AUTHOR_EMAIL="dispatch@kb.local"');
-    expect(scriptContent).toContain(
-      '-c core.autocrlf=false -c core.eol=lf -c core.hooksPath= -c core.fsmonitor=',
-    );
-    expect(scriptContent).toContain('GIT_INDEX_FILE="$DELIVERY_IDX"');
-    expect(scriptContent).toContain('read-tree "$BASE_SHA"');
-    expect(scriptContent).toContain('write-tree');
-    expect(scriptContent).toContain('commit-tree "$TREE" -p "$BASE_SHA"');
-    expect(scriptContent).toContain('refs/heads/dispatch/$HANDOFF_ID');
-    expect(scriptContent).toContain('IDEMPOTENT');
-    expect(scriptContent).toContain('CONFLICT:');
-    expect(scriptContent).toContain("HANDOFF_ID='HO-0002'");
-    expect(scriptContent).toContain('NO_DELTA');
-    expect(scriptContent).toContain('BASE_TREE');
-    expect(scriptName).toBe('dispatch-deliver.sh');
-  });
-});
-
-describe('delivery.ts — parseDeliveryOutput', () => {
-  it('parses a bare DELIVERED line into a delivered outcome', () => {
-    const result = parseDeliveryOutput('DELIVERED:abc123');
-    expect(result.status).toBe('delivered');
-    if (result.status !== 'delivered') return;
-    expect(result.commitSha).toBe('abc123');
-  });
-
-  it('parses a fully marker-annotated DELIVERED output', () => {
-    const stdout = [
-      'DELIVERED:abc123',
-      '---BRANCH-START---',
-      'dispatch/HO-0002',
-      '---BRANCH-END---',
-      '---CHANGED-FILES-START---',
-      'src/slugify.mjs',
-      'test/slugify.test.mjs',
-      '---CHANGED-FILES-END---',
-    ].join('\n');
-
-    const result = parseDeliveryOutput(stdout);
-    expect(result.status).toBe('delivered');
-    if (result.status !== 'delivered') return;
-    expect(result.commitSha).toBe('abc123');
-    expect(result.branch).toBe('dispatch/HO-0002');
-    expect(result.changedFiles).toEqual(['src/slugify.mjs', 'test/slugify.test.mjs']);
-  });
-
-  it('parses IDEMPOTENT as a no_changes outcome (idempotent redelivery)', () => {
-    const result = parseDeliveryOutput('IDEMPOTENT');
-    expect(result.status).toBe('no_changes');
-  });
-
-  it('parses NO_DELTA as a no_delta outcome (worker produced no diff from base)', () => {
-    const result = parseDeliveryOutput('NO_DELTA');
-    expect(result.status).toBe('no_delta');
-  });
-
-  it('parses a CONFLICT line into a conflict outcome', () => {
-    const result = parseDeliveryOutput('CONFLICT:def456');
-    expect(result.status).toBe('conflict');
-    if (result.status !== 'conflict') return;
-    expect(result.existingTree).toBe('def456');
-  });
-
-  it('reports an error outcome for unrecognized output', () => {
-    const result = parseDeliveryOutput('something unexpected');
-    expect(result.status).toBe('error');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// delivery.ts — WK-0180: named ignored writes under write_scope (guard 2)
-// ---------------------------------------------------------------------------
-
-describe('delivery.ts — buildDeliveryScript ignored-write detection (WK-0180)', () => {
-  it('generates the post-add ignored-write scan when writeScope is given', () => {
-    const { scriptContent } = buildDeliveryScript({
-      clonePath: '/tmp/run/clone',
-      motherRepoWsl: '/mnt/c/example/projects/kb',
-      handoffId: 'HO-0002',
-      baseSha: 'deadbeef',
-      writeScope: ['src/', 'test/exact.txt'],
-    });
-
-    expect(scriptContent).toContain("ls-files --others -i --exclude-standard -- 'src/' 'test/exact.txt'");
-    expect(scriptContent).toContain('NO_DELTA_IGNORED');
-    expect(scriptContent).toContain('IGNORED_SKIPPED');
-  });
-
-  it('omits the ignored-write scan when writeScope is not given (unaffected callers)', () => {
-    const { scriptContent } = buildDeliveryScript({
-      clonePath: '/tmp/run/clone',
-      motherRepoWsl: '/mnt/c/example/projects/kb',
-      handoffId: 'HO-0002',
-      baseSha: 'deadbeef',
-    });
-
-    expect(scriptContent).not.toContain('ls-files --others -i --exclude-standard --');
-  });
-});
-
-describe('delivery.ts — parseDeliveryOutput ignored-write markers (WK-0180)', () => {
-  it('returns ignoredFiles on a no_delta outcome when NO_DELTA_IGNORED is present', () => {
-    const stdout = [
-      'NO_DELTA_IGNORED',
-      '---IGNORED-START---',
-      'src/scratch/secret.txt',
-      '---IGNORED-END---',
-    ].join('\n');
-
-    const result = parseDeliveryOutput(stdout);
-    expect(result.status).toBe('no_delta');
-    if (result.status !== 'no_delta') return;
-    expect(result.ignoredFiles).toEqual(['src/scratch/secret.txt']);
-  });
-
-  it('returns ignoredFiles on a delivered outcome when IGNORED_SKIPPED is present', () => {
-    const stdout = [
-      'DELIVERED:abc123',
-      '---BRANCH-START---',
-      'dispatch/HO-0002',
-      '---BRANCH-END---',
-      '---CHANGED-FILES-START---',
-      'src/slugify.mjs',
-      '---CHANGED-FILES-END---',
-      'IGNORED_SKIPPED',
-      '---IGNORED-START---',
-      'src/dist/build.js',
-      '---IGNORED-END---',
-    ].join('\n');
-
-    const result = parseDeliveryOutput(stdout);
-    expect(result.status).toBe('delivered');
-    if (result.status !== 'delivered') return;
-    expect(result.changedFiles).toEqual(['src/slugify.mjs']);
-    expect(result.ignoredFiles).toEqual(['src/dist/build.js']);
-  });
-
-  it('leaves ignoredFiles undefined on a bare no_delta outcome with no ignored writes', () => {
-    const result = parseDeliveryOutput('NO_DELTA');
-    expect(result.status).toBe('no_delta');
-    if (result.status !== 'no_delta') return;
-    expect(result.ignoredFiles).toBeUndefined();
-  });
-
-  it('leaves ignoredFiles undefined on a delivered outcome with no ignored writes', () => {
-    const result = parseDeliveryOutput('DELIVERED:abc123');
-    expect(result.status).toBe('delivered');
-    if (result.status !== 'delivered') return;
-    expect(result.ignoredFiles).toBeUndefined();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// WK-0075 (historical): worker infra dir exclusion (.pi-agent/). Originally
-// pipeline.ts filtered `.pi-agent/` out of enumeration/delivery because the
-// S0 jail put the worker's config dir inside the writable clone. The S5 EROFS
-// fix moved workerDir to /tmp/.pi-agent (inside the jail's own tmpfs, never
-// under clonePath), so that filtering step no longer exists in pipeline.ts —
-// `.pi-agent/` paths simply never appear in enumeration output any more. The
-// tests below still hold as generic, adapter-agnostic coverage of
-// delivery.ts's own primitives (parseEnumerateOutput does not special-case
-// any path; buildDeliveryScript's excludePrefixes remains a supported,
-// generic option for any future caller), just no longer wired to this
-// specific scenario in pipeline.ts.
-// ---------------------------------------------------------------------------
-
-describe('parseEnumerateOutput does not filter any paths (adapter-agnostic; callers filter, not this module)', () => {
-  it('includes .pi-agent/ files in untrackedFiles (a stand-in for any worker-infra-shaped path)', () => {
-    const stdout = [
-      '---STATUS-START---',
-      ' M src/foo.ts',
-      '---STATUS-END---',
-      '---RENAME-START---',
-      '---RENAME-END---',
-      '---DIFF-START---',
-      '---DIFF-END---',
-      '---UNTRACKED-START---',
-      '.pi-agent/auth.json',
-      '.pi-agent/models.json',
-      '.pi-agent/models-store.json',
-      'src/new-file.ts',
-      '---UNTRACKED-END---',
-    ].join('\n');
-
-    const result = parseEnumerateOutput(stdout);
-    expect(result.untrackedFiles).toContain('.pi-agent/auth.json');
-    expect(result.untrackedFiles).toContain('.pi-agent/models.json');
-    expect(result.untrackedFiles).toContain('.pi-agent/models-store.json');
-    expect(result.untrackedFiles).toContain('src/new-file.ts');
-    expect(result.changedFiles).toContain('src/foo.ts');
-  });
-});
-
-describe('buildDeliveryScript excludePrefixes — generic git-add exclusion (no longer wired to .pi-agent by pipeline.ts)', () => {
-  it('generates pathspec excludes when excludePrefixes are given', () => {
-    const { scriptContent } = buildDeliveryScript({
-      clonePath: '/tmp/run/clone',
-      motherRepoWsl: '/mnt/c/example/projects/kb',
-      handoffId: 'HO-0002',
-      baseSha: 'deadbeef',
-      excludePrefixes: ['.pi-agent'],
-    });
-
-    expect(scriptContent).toContain("add -A -- ':!.pi-agent'");
-  });
-
-  it('uses bare git add -A when no excludePrefixes are given', () => {
-    const { scriptContent } = buildDeliveryScript({
-      clonePath: '/tmp/run/clone',
-      motherRepoWsl: '/mnt/c/example/projects/kb',
-      handoffId: 'HO-0002',
-      baseSha: 'deadbeef',
-    });
-
-    expect(scriptContent).toMatch(/\$GIT add -A\n/);
-  });
-
-  it('handles multiple exclude prefixes', () => {
-    const { scriptContent } = buildDeliveryScript({
-      clonePath: '/tmp/run/clone',
-      motherRepoWsl: '/mnt/c/example/projects/kb',
-      handoffId: 'HO-0002',
-      baseSha: 'deadbeef',
-      excludePrefixes: ['.pi-agent', '.codex'],
-    });
-
-    expect(scriptContent).toContain("':!.pi-agent'");
-    expect(scriptContent).toContain("':!.codex'");
-    expect(scriptContent).toContain('add -A --');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// delivery.ts — WK-0169: untouched 0-byte write_scope skeleton filtering
-//
-// A live-execution test (real git, real bash) rather than a stdout-shape
-// assertion: this is exactly the mechanism the bug report needed proven —
-// that the generated script itself, not just its text, excludes an
-// untouched skeleton blob from the landed tree/diff.
-// ---------------------------------------------------------------------------
-
-describe('delivery.ts — buildDeliveryScript filters untouched 0-byte write_scope skeletons (WK-0169, narrowed by WK-0263)', () => {
-  it('generates the empty-blob exclusion fragment, gated on the step-9b-created skeleton path list', () => {
-    const { scriptContent } = buildDeliveryScript({
-      clonePath: '/tmp/run/clone',
-      motherRepoWsl: '/mnt/c/example/projects/kb',
-      handoffId: 'HO-0002',
-      baseSha: 'deadbeef',
-      skeletonPaths: ['src/skeleton.txt'],
-    });
-
-    expect(scriptContent).toContain('e69de29bb2d1d6434b8b29ae775ad8c2e48c5391');
-    expect(scriptContent).toContain('update-index --force-remove');
-    expect(scriptContent).toContain("SKELETON_PATHS=('src/skeleton.txt')");
-    expect(scriptContent).toContain('is_skeleton_path');
-  });
-
-  it('excludes an untouched skeleton but includes a worker-written file in a real delivery', async () => {
-    const motherRepo = await createTempDir('kb-wk0169-mother-');
-    const cloneRepo = await createTempDir('kb-wk0169-clone-');
-    // Deliberately outside cloneRepo — the delivery script must not land itself.
-    const scriptDir = await createTempDir('kb-wk0169-script-');
-    try {
-      execFileSync('git', ['init'], { cwd: motherRepo });
-      execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: motherRepo });
-      execFileSync('git', ['config', 'user.name', 'Test User'], { cwd: motherRepo });
-      await writeFile(join(motherRepo, 'README.md'), 'fixture repo\n', 'utf8');
-      execFileSync('git', ['add', '-A'], { cwd: motherRepo });
-      execFileSync('git', ['commit', '-m', 'initial commit'], { cwd: motherRepo });
-      const baseSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: motherRepo }).toString().trim();
-
-      // Simulate the ephemeral clone: a plain checkout of the mother repo at baseSha.
-      await rm(cloneRepo, { recursive: true, force: true });
-      execFileSync('git', ['clone', motherRepo, cloneRepo]);
-      execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: cloneRepo });
-      execFileSync('git', ['config', 'user.name', 'Test User'], { cwd: cloneRepo });
-
-      // Step 9b skeleton pre-creation: two write_scope entries touched into
-      // existence as 0-byte files (O_CREAT|O_EXCL, chassis pattern).
-      await mkdir(join(cloneRepo, 'src'), { recursive: true });
-      await (await open(join(cloneRepo, 'src', 'skeleton-untouched.txt'), 'wx')).close();
-      await (await open(join(cloneRepo, 'src', 'skeleton-active.ts'), 'wx')).close();
-
-      // The worker writes to only one of the two skeleton files.
-      await writeFile(join(cloneRepo, 'src', 'skeleton-active.ts'), 'export const x = 1;\n', 'utf8');
-
-      const { scriptContent } = buildDeliveryScript({
-        clonePath: cloneRepo,
-        motherRepoWsl: motherRepo,
-        handoffId: 'HO-WK0169',
-        baseSha,
-        // Mirrors step 9b's return value: both file-level skeletons were
-        // created fresh in this (simulated) run.
-        skeletonPaths: ['src/skeleton-untouched.txt', 'src/skeleton-active.ts'],
-      });
-      const scriptPath = join(scriptDir, 'dispatch-deliver.sh');
-      await writeFile(scriptPath, scriptContent, 'utf8');
-      const stdout = execFileSync('bash', [scriptPath]).toString();
-
-      const delivery = parseDeliveryOutput(stdout);
-      expect(delivery.status).toBe('delivered');
-      if (delivery.status !== 'delivered') return;
-      expect(delivery.changedFiles).toEqual(['src/skeleton-active.ts']);
-      expect(delivery.changedFiles).not.toContain('src/skeleton-untouched.txt');
-
-      // Cross-check against the actual landed commit in the mother repo.
-      const showTree = execFileSync(
-        'git',
-        ['show', '--stat', '--format=', `refs/heads/dispatch/HO-WK0169`],
-        { cwd: motherRepo },
-      ).toString();
-      expect(showTree).toContain('src/skeleton-active.ts');
-      expect(showTree).not.toContain('src/skeleton-untouched.txt');
-    } finally {
-      await rm(motherRepo, { recursive: true, force: true });
-      await rm(cloneRepo, { recursive: true, force: true });
-      await rm(scriptDir, { recursive: true, force: true });
-    }
-  });
-});
-
-// ---------------------------------------------------------------------------
-// delivery.ts — WK-0263: the skeleton filter keys on "created by step 9b in
-// this run", not "empty and new" (WK-0169's original, too-broad rule).
-// ---------------------------------------------------------------------------
-
-/** Shared real-git fixture setup for the WK-0263 live-execution tests below. */
-async function setupMotherAndClone(): Promise<{
-  motherRepo: string;
-  cloneRepo: string;
-  scriptDir: string;
-  baseSha: string;
-}> {
-  const motherRepo = await createTempDir('kb-wk0263-mother-');
-  const cloneRepo = await createTempDir('kb-wk0263-clone-');
-  const scriptDir = await createTempDir('kb-wk0263-script-');
-
-  execFileSync('git', ['init'], { cwd: motherRepo });
-  execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: motherRepo });
-  execFileSync('git', ['config', 'user.name', 'Test User'], { cwd: motherRepo });
-  await writeFile(join(motherRepo, 'README.md'), 'fixture repo\n', 'utf8');
-  await writeFile(join(motherRepo, 'tracked-not-empty.txt'), 'pre-existing content\n', 'utf8');
-  execFileSync('git', ['add', '-A'], { cwd: motherRepo });
-  execFileSync('git', ['commit', '-m', 'initial commit'], { cwd: motherRepo });
-  const baseSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: motherRepo }).toString().trim();
-
-  await rm(cloneRepo, { recursive: true, force: true });
-  execFileSync('git', ['clone', motherRepo, cloneRepo]);
-  execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: cloneRepo });
-  execFileSync('git', ['config', 'user.name', 'Test User'], { cwd: cloneRepo });
-
-  return { motherRepo, cloneRepo, scriptDir, baseSha };
-}
-
-describe('delivery.ts — buildDeliveryScript keeps worker-created zero-byte files (WK-0263)', () => {
-  it('AC1: keeps a worker-created zero-byte file under a directory write_scope entry', async () => {
-    const { motherRepo, cloneRepo, scriptDir, baseSha } = await setupMotherAndClone();
-    try {
-      // `skills/ntfy-bridge/` is a directory write_scope entry: step 9b only
-      // mkdirs it (precreateWriteScopeSkeleton never creates a file skeleton
-      // for a directory entry), so this path never reaches skeletonPaths.
-      await mkdir(join(cloneRepo, 'skills', 'ntfy-bridge'), { recursive: true });
-      await writeFile(join(cloneRepo, 'skills', 'ntfy-bridge', 'poll-zero.jsonl'), '', 'utf8');
-
-      const { scriptContent } = buildDeliveryScript({
-        clonePath: cloneRepo,
-        motherRepoWsl: motherRepo,
-        handoffId: 'HO-WK0263-AC1',
-        baseSha,
-        skeletonPaths: [],
-      });
-      const scriptPath = join(scriptDir, 'dispatch-deliver.sh');
-      await writeFile(scriptPath, scriptContent, 'utf8');
-      const stdout = execFileSync('bash', [scriptPath]).toString();
-
-      const delivery = parseDeliveryOutput(stdout);
-      expect(delivery.status).toBe('delivered');
-      if (delivery.status !== 'delivered') return;
-      expect(delivery.changedFiles).toContain('skills/ntfy-bridge/poll-zero.jsonl');
-
-      const showTree = execFileSync(
-        'git',
-        ['show', '--stat', '--format=', 'refs/heads/dispatch/HO-WK0263-AC1'],
-        { cwd: motherRepo },
-      ).toString();
-      expect(showTree).toContain('skills/ntfy-bridge/poll-zero.jsonl');
-
-      const blob = execFileSync(
-        'git',
-        ['show', 'refs/heads/dispatch/HO-WK0263-AC1:skills/ntfy-bridge/poll-zero.jsonl'],
-        { cwd: motherRepo },
-      ).toString();
-      expect(blob).toBe('');
-    } finally {
-      await rm(motherRepo, { recursive: true, force: true });
-      await rm(cloneRepo, { recursive: true, force: true });
-      await rm(scriptDir, { recursive: true, force: true });
-    }
-  });
-
-  it('AC3: keeps a pre-existing tracked file the worker truncated to empty', async () => {
-    const { motherRepo, cloneRepo, scriptDir, baseSha } = await setupMotherAndClone();
-    try {
-      // tracked-not-empty.txt already exists at baseSha with non-empty
-      // content; step 9b never touches it (not a write_scope entry at all),
-      // so it is never a skeleton candidate. The worker truncates it directly.
-      await writeFile(join(cloneRepo, 'tracked-not-empty.txt'), '', 'utf8');
-
-      const { scriptContent } = buildDeliveryScript({
-        clonePath: cloneRepo,
-        motherRepoWsl: motherRepo,
-        handoffId: 'HO-WK0263-AC3',
-        baseSha,
-        skeletonPaths: [],
-      });
-      const scriptPath = join(scriptDir, 'dispatch-deliver.sh');
-      await writeFile(scriptPath, scriptContent, 'utf8');
-      const stdout = execFileSync('bash', [scriptPath]).toString();
-
-      const delivery = parseDeliveryOutput(stdout);
-      expect(delivery.status).toBe('delivered');
-      if (delivery.status !== 'delivered') return;
-      expect(delivery.changedFiles).toContain('tracked-not-empty.txt');
-
-      const showTree = execFileSync(
-        'git',
-        ['show', '--stat', '--format=', 'refs/heads/dispatch/HO-WK0263-AC3'],
-        { cwd: motherRepo },
-      ).toString();
-      expect(showTree).toContain('tracked-not-empty.txt');
-    } finally {
-      await rm(motherRepo, { recursive: true, force: true });
-      await rm(cloneRepo, { recursive: true, force: true });
-      await rm(scriptDir, { recursive: true, force: true });
-    }
-  });
-});
-
-// ---------------------------------------------------------------------------
 // capture.ts — writeResponseDoc
 // ---------------------------------------------------------------------------
 
@@ -1798,4 +1268,257 @@ describe('delivery.ts — stage/land/quarantine script text', () => {
     });
     expect(scriptContent).toContain("ls-files -z --others -i --exclude-standard -- 'src/' 'tests/one.ts'");
   });
+});
+
+// ---------------------------------------------------------------------------
+// delivery.ts — pinned delivery behaviors replayed against stage -> land.
+//
+// The retired enumerate/delivery scripts carried these behaviors; each one is
+// stated here against the one stage -> check -> land path the pipeline now
+// uses, so the retirement cannot quietly drop a guarantee.
+// ---------------------------------------------------------------------------
+
+describe('delivery.ts — stage keeps worker-created zero-byte files', () => {
+  it('keeps a worker-created zero-byte file under a directory write_scope entry', async () => {
+    const fixture = await makeGitFixture();
+    try {
+      // A directory write_scope entry only gets its directory pre-created, so
+      // this path is never a skeleton candidate and must survive staging.
+      await mkdir(join(fixture.cloneRepo, 'skills', 'ntfy-bridge'), { recursive: true });
+      await writeFile(join(fixture.cloneRepo, 'skills', 'ntfy-bridge', 'poll-zero.jsonl'), '', 'utf8');
+
+      const run = await runStage(fixture, { writeScope: ['skills/ntfy-bridge/'] });
+      expect(run.ok).toBe(true);
+      if (!run.ok) return;
+      expect(run.stage.changedFiles).toContain('skills/ntfy-bridge/poll-zero.jsonl');
+      expect(classifyStage(run.stage, ['skills/ntfy-bridge/'])).toEqual({ kind: 'clean' });
+
+      const script = buildLandScript({
+        clonePath: fixture.cloneRepo,
+        motherRepoWsl: fixture.motherRepo,
+        handoffId: 'HO-ZERO',
+        baseSha: fixture.baseSha,
+        attrSha: fixture.baseSha,
+        tree: run.stage.tree,
+      });
+      const res = await execBash({ scriptContent: script.scriptContent, timeoutMs: 120_000 });
+      expect(res.ok).toBe(true);
+      if (!res.ok) return;
+      const landed = parseLandOutput(res.data.stdout);
+      expect(landed.ok && landed.outcome.status).toBe('delivered');
+      const blob = execFileSync(
+        'git',
+        ['show', 'refs/heads/dispatch/HO-ZERO:skills/ntfy-bridge/poll-zero.jsonl'],
+        { cwd: fixture.motherRepo },
+      );
+      expect(blob.toString()).toBe('');
+    } finally {
+      await cleanGitFixture(fixture);
+    }
+  }, 120_000);
+
+  it('keeps a pre-existing tracked file the worker truncated to empty', async () => {
+    const fixture = await makeGitFixture(async (mother) => {
+      await writeFile(join(mother, 'tracked-not-empty.txt'), 'pre-existing content\n', 'utf8');
+    });
+    try {
+      await writeFile(join(fixture.cloneRepo, 'tracked-not-empty.txt'), '', 'utf8');
+
+      const run = await runStage(fixture, { writeScope: ['tracked-not-empty.txt'] });
+      expect(run.ok).toBe(true);
+      if (!run.ok) return;
+      expect(run.stage.changedFiles).toEqual(['tracked-not-empty.txt']);
+      expect(classifyStage(run.stage, ['tracked-not-empty.txt'])).toEqual({ kind: 'clean' });
+    } finally {
+      await cleanGitFixture(fixture);
+    }
+  }, 120_000);
+});
+
+describe('delivery.ts — a diff that deletes marker-looking lines still delivers the real path', () => {
+  it('delivers a file whose diff removes UNTRACKED-START/END lines, naming exactly the real path', async () => {
+    const fixture = await makeGitFixture(async (mother) => {
+      await mkdir(join(mother, 'src'), { recursive: true });
+      await writeFile(
+        join(mother, 'src', 'markers.txt'),
+        'keep\n---UNTRACKED-START---\nold\n---UNTRACKED-END---\nkeep2\n',
+        'utf8',
+      );
+    });
+    try {
+      // The worker deletes both marker-looking lines, so the emitted diff (and
+      // the raw listing) contains those strings. A marker-delimited parser
+      // would corrupt its sections here; the NUL listing must not.
+      await writeFile(join(fixture.cloneRepo, 'src', 'markers.txt'), 'keep\nkeep2\n', 'utf8');
+
+      const run = await runStage(fixture, { writeScope: ['src/'] });
+      expect(run.ok).toBe(true);
+      if (!run.ok) return;
+      expect(run.stage.changedFiles).toEqual(['src/markers.txt']);
+      expect(classifyStage(run.stage, ['src/'])).toEqual({ kind: 'clean' });
+
+      const script = buildLandScript({
+        clonePath: fixture.cloneRepo,
+        motherRepoWsl: fixture.motherRepo,
+        handoffId: 'HO-MARKER',
+        baseSha: fixture.baseSha,
+        attrSha: fixture.baseSha,
+        tree: run.stage.tree,
+      });
+      const res = await execBash({ scriptContent: script.scriptContent, timeoutMs: 120_000 });
+      expect(res.ok).toBe(true);
+      if (!res.ok) return;
+      const landed = parseLandOutput(res.data.stdout);
+      expect(landed.ok).toBe(true);
+      if (!landed.ok) return;
+      expect(landed.outcome.status).toBe('delivered');
+      const blob = execFileSync(
+        'git',
+        ['show', 'refs/heads/dispatch/HO-MARKER:src/markers.txt'],
+        { cwd: fixture.motherRepo },
+      ).toString();
+      expect(blob).toBe('keep\nkeep2\n');
+    } finally {
+      await cleanGitFixture(fixture);
+    }
+  }, 120_000);
+});
+
+// ---------------------------------------------------------------------------
+// delivery.ts — adversarial framing: a path (or listing) can carry bytes a
+// naive line/marker parser would misread. The NUL framing must either carry
+// the exact path through to a correct scope verdict or fail closed.
+// ---------------------------------------------------------------------------
+
+describe('delivery.ts — adversarial path framing on both sides of the scope boundary', () => {
+  const tree = 'f'.repeat(40);
+
+  async function parseOne(raw: Buffer, stdout: string) {
+    const stageDir = await createTempDir(STAGE_TEMP_PREFIX);
+    await writeFile(join(stageDir, STAGE_RAW_LISTING_FILENAME), raw);
+    await writeFile(join(stageDir, STAGE_IGNORED_FILENAME), Buffer.alloc(0));
+    try {
+      return await parseStageOutput(
+        stdout,
+        join(stageDir, STAGE_RAW_LISTING_FILENAME),
+        join(stageDir, STAGE_IGNORED_FILENAME),
+      );
+    } finally {
+      await rm(stageDir, { recursive: true, force: true });
+    }
+  }
+
+  const cases: Array<{ name: string; path: string; inScope: boolean }> = [
+    { name: 'newline inside scope', path: 'src/a\nb.ts', inScope: true },
+    { name: 'newline outside scope', path: 'lib/a\nb.ts', inScope: false },
+    { name: 'tab inside scope', path: 'src/a\tb.ts', inScope: true },
+    { name: 'tab outside scope', path: 'lib/a\tb.ts', inScope: false },
+    { name: 'backslash inside scope', path: 'src/a\\b.ts', inScope: true },
+    { name: 'backslash outside scope', path: 'lib/a\\b.ts', inScope: false },
+    { name: 'TREE-looking path inside scope', path: `src/TREE ${tree}`, inScope: true },
+    { name: 'TREE-looking path outside scope', path: `TREE ${tree}`, inScope: false },
+    { name: 'NO_DELTA-looking path inside scope', path: 'src/NO_DELTA', inScope: true },
+    { name: 'NO_DELTA-looking path outside scope', path: 'NO_DELTA', inScope: false },
+  ];
+
+  for (const c of cases) {
+    it(`carries a ${c.name} through to the exact verdict`, async () => {
+      const parsed = await parseOne(rawRecord('100644', '100644', 'A', c.path), `TREE ${tree}\n`);
+      expect(parsed.ok).toBe(true);
+      if (!parsed.ok) return;
+      expect(parsed.stage.changedFiles).toEqual([c.path]);
+      if (c.inScope) {
+        expect(classifyStage(parsed.stage, ['src/'])).toEqual({ kind: 'clean' });
+      } else {
+        const verdict = classifyStage(parsed.stage, ['src/']);
+        expect(verdict.kind).toBe('out_of_scope');
+        if (verdict.kind !== 'out_of_scope') return;
+        expect(verdict.offendingPaths).toEqual([c.path]);
+      }
+    });
+  }
+
+  it('fails closed on an invalid-UTF-8 path on either side of the scope boundary, naming no content', async () => {
+    for (const prefix of ['src/', 'lib/']) {
+      const raw = Buffer.concat([
+        Buffer.from(`:100644 100644 ${ZERO_SHA} ${ZERO_SHA} A`),
+        Buffer.from([0]),
+        Buffer.concat([Buffer.from(prefix, 'utf8'), Buffer.from([0xff, 0xfe])]),
+        Buffer.from([0]),
+      ]);
+      const parsed = await parseOne(raw, `TREE ${tree}\n`);
+      expect(parsed.ok).toBe(false);
+      if (parsed.ok) continue;
+      expect(parsed.message).not.toContain(prefix);
+      expect(parsed.message).not.toContain('\uFFFD');
+    }
+  });
+
+  it('splits real newline and tab filenames out of the NUL raw listing (real git)', async () => {
+    const fixture = await makeGitFixture();
+    try {
+      await mkdir(join(fixture.cloneRepo, 'src'), { recursive: true });
+      const newlinePath = 'src/with\nnewline.txt';
+      const tabPath = 'src/with\ttab.txt';
+      await writeFile(join(fixture.cloneRepo, 'src', 'with\nnewline.txt'), 'nl\n', 'utf8');
+      await writeFile(join(fixture.cloneRepo, 'src', 'with\ttab.txt'), 'tab\n', 'utf8');
+
+      const run = await runStage(fixture, { writeScope: ['src/'] });
+      expect(run.ok).toBe(true);
+      if (!run.ok) return;
+      expect([...run.stage.changedFiles].sort()).toEqual([newlinePath, tabPath].sort());
+      expect(classifyStage(run.stage, ['src/'])).toEqual({ kind: 'clean' });
+    } finally {
+      await cleanGitFixture(fixture);
+    }
+  }, 120_000);
+});
+
+// ---------------------------------------------------------------------------
+// delivery.ts — no stage scratch survives any outcome. The temp index lives
+// inside the stage dir `runStageScript` creates and removes, so neither the
+// dir nor the old /tmp-rooted index file may remain under os.tmpdir().
+// ---------------------------------------------------------------------------
+
+describe('delivery.ts — stage scratch is removed on every outcome', () => {
+  it('leaves no kb-stage- dir or dispatch-stage-idx. file under os.tmpdir()', async () => {
+    // Isolate the listing from concurrent test files: point os.tmpdir() at a
+    // fresh sandbox so a sibling worker's live stage dir cannot race this
+    // before/after comparison.
+    const sandbox = await mkdtemp(join(tmpdir(), 'kb-stage-scratch-sandbox-'));
+    const previousTmpdir = process.env.TMPDIR;
+    process.env.TMPDIR = sandbox;
+    try {
+      const before = await readdir(sandbox);
+      expect(before.filter((e) => e.startsWith(STAGE_TEMP_PREFIX) || e.startsWith('dispatch-stage-idx.'))).toEqual([]);
+
+      const fixture = await makeGitFixture();
+      try {
+        await writeFile(join(fixture.cloneRepo, 'README.md'), 'fixture repo changed\n', 'utf8');
+
+        // Success: a full stage -> parse -> cleanup round trip.
+        const ok = await runStage(fixture, { writeScope: ['README.md'] });
+        expect(ok.ok).toBe(true);
+
+        // Failure: a stage that exits non-zero still cleans up its dir.
+        const bad = await runStageScript({
+          clonePath: fixture.cloneRepo,
+          baseSha: ZERO_SHA,
+          attrSha: fixture.baseSha,
+          writeScope: ['README.md'],
+        });
+        expect(bad.ok).toBe(false);
+      } finally {
+        await cleanGitFixture(fixture);
+      }
+
+      const after = await readdir(sandbox);
+      expect(after.filter((e) => e.startsWith(STAGE_TEMP_PREFIX))).toEqual([]);
+      expect(after.filter((e) => e.startsWith('dispatch-stage-idx.'))).toEqual([]);
+    } finally {
+      if (previousTmpdir === undefined) delete process.env.TMPDIR;
+      else process.env.TMPDIR = previousTmpdir;
+      await rm(sandbox, { recursive: true, force: true });
+    }
+  }, 120_000);
 });

@@ -4,25 +4,21 @@
  * Chains the wave-1/wave-2 skeleton modules in the same order `pipeline.ts`'s
  * `runDispatch()` wires them, WITHOUT any real WSL2/bwrap/Pi (a "fake tier"):
  * parseHandoff -> checkAdmission -> resolveModel -> assemblePrompt ->
- * buildInvocation -> buildJailArgs -> buildEnumerateScript -> checkWriteScope
- * -> injected-value scan -> buildDeliveryScript -> parseDeliveryOutput ->
- * writeResponseDoc. The two points that would normally run inside WSL2
- * (enumerate + delivery) are simulated by hand-constructing the exact stdout
- * shape their scripts produce and feeding it through the real parsers — this
- * validates the ORCHESTRATION/wiring, not a live host. `runDispatch()` itself
- * is never called here for these two legs (it needs a live WSL2/bwrap/Pi
- * host); that live gate is a separate, manually-run proof
- * (execution/s0-rulings.md).
+ * buildInvocation -> buildJailArgs -> stage -> check -> land ->
+ * writeResponseDoc. The stage/land legs run the REAL generated bash scripts
+ * against a real temp git clone; the fake tier here is the missing
+ * bwrap/Pi host, not the git work. That live gate is a separate, manually-run
+ * proof.
  *
- * S3 (s3-rulings.md freeze correction) removed the S0-era pattern-only
+ * A later freeze correction removed the S0-era pattern-only
  * `scanSecrets()` leg from pipeline.ts's delivery gate and replaced it with a
  * deterministic scan for granted credentials' literal values
- * (`buildInjectedValueScanFragment` / `parseInjectedValueScanOutput`,
- * credentials.ts): the fragment is spliced onto the SAME enumerate script
- * pipeline.ts already runs, and reports `SECRET_HIT=<VAR_NAME>` — names only,
- * never values. `scanSecrets()` itself is unchanged and still directly
- * unit-tested in dispatch-v2-delivery.test.ts; it is simply no longer wired
- * into pipeline.ts's own delivery-gate decision.
+ * (`buildInjectedValueScanFragment`, credentials.ts): the fragment is spliced
+ * onto the SAME stage script pipeline.ts already runs, and reports
+ * `SECRET_HIT=<VAR_NAME>` — names only, never values; delivery.ts's stage
+ * parser reads those lines into the stage verdict. `scanSecrets()` itself is
+ * unchanged and still directly unit-tested in dispatch-v2-delivery.test.ts;
+ * it is simply no longer wired into pipeline.ts's own delivery-gate decision.
  *
  * No personal/absolute paths appear in fixtures (WK-0043 rule); all
  * filesystem tests use temp dirs. The seeded credential-value fixture below
@@ -50,16 +46,16 @@ import { assemblePrompt } from '../packages/dispatch-core/src/assemble.js';
 import { buildInvocation } from '../packages/dispatch-core/src/adapters/pi.js';
 import { buildJailArgs } from '../packages/dispatch-core/src/jail.js';
 import {
-  buildEnumerateScript,
-  parseEnumerateOutput,
   checkWriteScope,
-  buildDeliveryScript,
-  parseDeliveryOutput,
+  runStageScript,
+  classifyStage,
+  buildLandScript,
+  parseLandOutput,
+  buildQuarantineScript,
   type DeliveryOutcome,
 } from '../packages/dispatch-core/src/delivery.js';
 import {
   buildInjectedValueScanFragment,
-  parseInjectedValueScanOutput,
   type CredentialResolution,
 } from '../packages/dispatch-core/src/credentials.js';
 import { writeResponseDoc } from '../packages/dispatch-core/src/capture.js';
@@ -81,7 +77,7 @@ import { slicesSection } from './helpers/slice-fixture.js';
  * these mocked-spawnIsolated tests actually check (exec-line splicing,
  * schema injection, response-doc fields). Intercepts only the exact
  * `command -v <cliName>` probe and lets every other `execBash` call
- * (fingerprinting, enumerate, delivery, preflight) run for real, preserving
+ * (fingerprinting, stage, land, preflight) run for real, preserving
  * this file's "mostly real runDispatch()" contract.
  */
 function stubCliOnPath(cliName: string, cliPath: string): void {
@@ -195,7 +191,7 @@ describe('dispatch v2 e2e (fake-tier) — full pipeline chain', () => {
     await rm(repoRoot, { recursive: true, force: true });
   });
 
-  it('chains parse -> admission -> model -> assemble -> invocation -> jail -> enumerate -> checks -> delivery -> capture into a well-formed delivered response doc', async () => {
+  it('chains parse -> admission -> model -> assemble -> invocation -> jail -> stage -> check -> land -> capture into a well-formed delivered response doc', async () => {
     const runDir = await createTempDir('kb-e2e-rundir-');
     try {
       // 1. Parse HO
@@ -233,8 +229,9 @@ describe('dispatch v2 e2e (fake-tier) — full pipeline chain', () => {
       await writeFile(promptPath, assembled.data.text, 'utf8');
       expect(promptPath.startsWith('/')).toBe(true);
 
-      // 9/10. Fake clone path (no real clone) + Pi invocation shape
-      const clonePath = '/home/tester/.kb-dispatch/clones/RUN-e2e-fake';
+      // 9/10. Real ephemeral clone + Pi invocation shape
+      const clonePath = join(runDir, 'clone');
+      execFileSync('git', ['clone', '-q', repoRoot, clonePath]);
       const workerDir = `${clonePath}/.pi-agent`;
       const invocation = buildInvocation(promptPath, model, clonePath, workerDir);
       expect(invocation.cmd).toBe('pi');
@@ -250,63 +247,49 @@ describe('dispatch v2 e2e (fake-tier) — full pipeline chain', () => {
       expect(fullArgv).toContain('pi');
       expect(fullArgv[fullArgv.length - 1]).toBe(`@${promptPath}`);
 
-      // 16. Enumerate — simulate the enumerate script's stdout for a worker that
-      // created two new, in-scope files (new files show up as untracked, not
-      // in `git diff`, which stays empty here).
-      const enumerateScript = buildEnumerateScript(clonePath);
-      expect(enumerateScript.scriptName).toBe('dispatch-enumerate.sh');
-      const fakeEnumerateStdout = [
-        '---STATUS-START---',
-        '?? src/greet.mjs',
-        '?? test/greet.test.mjs',
-        '---STATUS-END---',
-        '---RENAME-START---',
-        '---RENAME-END---',
-        '---DIFF-START---',
-        '---DIFF-END---',
-        '---UNTRACKED-START---',
-        'src/greet.mjs',
-        'test/greet.test.mjs',
-        '---UNTRACKED-END---',
-      ].join('\n');
-      const enumerated = parseEnumerateOutput(fakeEnumerateStdout);
-      expect(enumerated.untrackedFiles).toEqual(['src/greet.mjs', 'test/greet.test.mjs']);
-      const allChangedFiles = [...enumerated.changedFiles, ...enumerated.untrackedFiles];
+      // 16-19. Simulate the worker writing its two in-scope files, then run
+      // the REAL stage -> check -> land scripts against the real clone.
+      await mkdir(join(clonePath, 'src'), { recursive: true });
+      await mkdir(join(clonePath, 'test'), { recursive: true });
+      await writeFile(join(clonePath, 'src', 'greet.mjs'), 'export const greet = (name) => `Hello, ${name}!`;\n', 'utf8');
+      await writeFile(join(clonePath, 'test', 'greet.test.mjs'), "import { greet } from '../src/greet.mjs';\n", 'utf8');
 
-      // 17. Write scope + injected-value scan — both clean. HO-TEST grants no
-      // credentials, so pipeline.ts would never splice scan lines onto the
-      // enumerate script for this run at all; parseInjectedValueScanOutput
-      // correctly reports no hits against this fake stdout either way.
-      const scopeCheck = checkWriteScope(allChangedFiles, handoff.write_scope);
+      const stageRun = await runStageScript({
+        clonePath,
+        baseSha: admission.data.baseSha,
+        attrSha: admission.data.attrSha,
+        writeScope: handoff.write_scope,
+      });
+      expect(stageRun.ok).toBe(true);
+      if (!stageRun.ok) return;
+      expect([...stageRun.stage.changedFiles].sort()).toEqual(['src/greet.mjs', 'test/greet.test.mjs']);
+      const scopeCheck = checkWriteScope(stageRun.stage.changedFiles, handoff.write_scope);
       expect(scopeCheck.ok).toBe(true);
-      const secretHits = parseInjectedValueScanOutput(fakeEnumerateStdout);
-      expect(secretHits).toEqual([]);
+      expect(classifyStage(stageRun.stage, handoff.write_scope)).toEqual({ kind: 'clean' });
 
-      // 18. Delivery script shape
-      const deliveryScript = buildDeliveryScript({
+      const landScript = buildLandScript({
         clonePath,
         motherRepoWsl: repoRoot,
         handoffId: handoff.id,
         baseSha: admission.data.baseSha,
+        attrSha: admission.data.attrSha,
+        tree: stageRun.stage.tree,
       });
-      expect(deliveryScript.scriptName).toBe('dispatch-deliver.sh');
-      expect(deliveryScript.scriptContent).toContain("HANDOFF_ID='HO-TEST'");
-      expect(deliveryScript.scriptContent).toContain(admission.data.baseSha);
+      const landExec = await execDirectModule.execBash({ scriptContent: landScript.scriptContent, timeoutMs: 120_000 });
+      expect(landExec.ok).toBe(true);
+      if (!landExec.ok) return;
+      const landed = parseLandOutput(landExec.data.stdout);
+      expect(landed.ok).toBe(true);
+      if (!landed.ok) return;
+      expect(landed.outcome.status).toBe('delivered');
+      if (landed.outcome.status !== 'delivered') return;
 
-      // 19. Parse delivery output — simulate a successfully landed commit
-      const fakeDeliveryStdout = [
-        'DELIVERED:deadbeef1234',
-        '---BRANCH-START---',
-        'dispatch/HO-TEST',
-        '---BRANCH-END---',
-        '---CHANGED-FILES-START---',
-        'src/greet.mjs',
-        'test/greet.test.mjs',
-        '---CHANGED-FILES-END---',
-      ].join('\n');
-      const delivery: DeliveryOutcome = parseDeliveryOutput(fakeDeliveryStdout);
-      expect(delivery.status).toBe('delivered');
-      if (delivery.status !== 'delivered') return;
+      const delivery: DeliveryOutcome = {
+        status: 'delivered',
+        branch: `dispatch/${handoff.id}`,
+        commitSha: landed.outcome.commitSha,
+        changedFiles: [...stageRun.stage.changedFiles].sort(),
+      };
       expect(delivery.branch).toBe('dispatch/HO-TEST');
       expect(delivery.changedFiles).toEqual(['src/greet.mjs', 'test/greet.test.mjs']);
 
@@ -360,41 +343,55 @@ describe('dispatch v2 e2e (fake-tier) — full pipeline chain', () => {
     expect(admission.detail).toMatchObject({ dirtyPaths: expect.arrayContaining([expect.stringContaining('src/dummy.txt')]) });
   });
 
-  it('write-scope check catches an out-of-scope file from a simulated enumerate, and the refusal produces a well-formed response doc', async () => {
+  it('write-scope check catches an out-of-scope file from a real stage, and the refusal produces a well-formed response doc', async () => {
     const runDir = await createTempDir('kb-e2e-scope-');
     try {
       const parsed = await parseHandoff(join(repoRoot, 'wiki', 'handoffs', 'HO-TEST.md'));
       expect(parsed.ok).toBe(true);
       if (!parsed.ok) return;
       const handoff = parsed.data;
+      const admission = await checkAdmission(handoff, repoRoot);
+      expect(admission.ok).toBe(true);
+      if (!admission.ok) return;
 
-      const fakeEnumerateStdout = [
-        '---STATUS-START---',
-        '?? src/greet.mjs',
-        '?? lib/evil.mjs',
-        '---STATUS-END---',
-        '---RENAME-START---',
-        '---RENAME-END---',
-        '---DIFF-START---',
-        '---DIFF-END---',
-        '---UNTRACKED-START---',
-        'src/greet.mjs',
-        'lib/evil.mjs',
-        '---UNTRACKED-END---',
-      ].join('\n');
-      const enumerated = parseEnumerateOutput(fakeEnumerateStdout);
-      const allChangedFiles = [...enumerated.changedFiles, ...enumerated.untrackedFiles];
+      const clonePath = join(runDir, 'clone');
+      execFileSync('git', ['clone', '-q', repoRoot, clonePath]);
+      await mkdir(join(clonePath, 'src'), { recursive: true });
+      await mkdir(join(clonePath, 'lib'), { recursive: true });
+      await writeFile(join(clonePath, 'src', 'greet.mjs'), 'export const x = 1;\n', 'utf8');
+      await writeFile(join(clonePath, 'lib', 'evil.mjs'), 'export const y = 2;\n', 'utf8');
 
-      const scopeCheck = checkWriteScope(allChangedFiles, handoff.write_scope);
-      expect(scopeCheck.ok).toBe(false);
-      if (scopeCheck.ok) return;
-      expect(scopeCheck.offendingPaths).toEqual(['lib/evil.mjs']);
+      const stageRun = await runStageScript({
+        clonePath,
+        baseSha: admission.data.baseSha,
+        attrSha: admission.data.attrSha,
+        writeScope: handoff.write_scope,
+      });
+      expect(stageRun.ok).toBe(true);
+      if (!stageRun.ok) return;
+      const verdict = classifyStage(stageRun.stage, handoff.write_scope);
+      expect(verdict.kind).toBe('out_of_scope');
+      if (verdict.kind !== 'out_of_scope') return;
+      expect(verdict.offendingPaths).toEqual(['lib/evil.mjs']);
 
       const quarantinePath = join(runDir, 'quarantine.diff');
-      await writeFile(quarantinePath, enumerated.diff, 'utf8');
+      const quarantineScript = buildQuarantineScript({
+        clonePath,
+        baseSha: admission.data.baseSha,
+        attrSha: admission.data.attrSha,
+        tree: stageRun.stage.tree,
+      });
+      const quarantineExec = await execDirectModule.execBash({
+        scriptContent: quarantineScript.scriptContent,
+        timeoutMs: 120_000,
+      });
+      expect(quarantineExec.ok).toBe(true);
+      if (!quarantineExec.ok) return;
+      await writeFile(quarantinePath, quarantineExec.data.stdout, 'utf8');
+
       const delivery: DeliveryOutcome = {
         status: 'refused_out_of_scope',
-        offendingPaths: scopeCheck.offendingPaths,
+        offendingPaths: verdict.offendingPaths,
         quarantinePath,
       };
 
@@ -413,21 +410,28 @@ describe('dispatch v2 e2e (fake-tier) — full pipeline chain', () => {
     }
   });
 
-  it('injected-value scan (S3) catches a granted credential value from a simulated enumerate, and the refusal produces a well-formed response doc', async () => {
+  it('injected-value scan (stage) catches a granted credential value from a real diff, and the refusal produces a well-formed response doc', async () => {
     const runDir = await createTempDir('kb-e2e-secret-');
+    const secretsDir = await createTempDir('kb-e2e-secrets-');
     try {
       const parsed = await parseHandoff(join(repoRoot, 'wiki', 'handoffs', 'HO-TEST.md'));
       expect(parsed.ok).toBe(true);
       if (!parsed.ok) return;
       const handoff = parsed.data;
+      const admission = await checkAdmission(handoff, repoRoot);
+      expect(admission.ok).toBe(true);
+      if (!admission.ok) return;
 
-      // Exercise the REAL builder pipeline.ts calls — proves the fragment
-      // this test simulates the output of is the one wiring actually
-      // produces, not a hand-rolled stand-in (dispatch-v2-credentials.test.ts
-      // pins its exact line shape at the unit level; this proves the WIRING).
+      // Exercise the REAL builder pipeline.ts calls — proves the scan the
+      // stage script runs is the one wiring actually produces
+      // (dispatch-v2-credentials.test.ts pins its exact line shape at the unit
+      // level; this proves the WIRING end to end). The injected value is an
+      // obvious placeholder string, never a real-looking live token.
+      const secretsFile = join(secretsDir, 'hf-token.env');
+      await writeFile(secretsFile, 'HF_TOKEN=hf_seeded_example_placeholder_only\n', 'utf8');
       const resolution: CredentialResolution = {
         granted: ['hf'],
-        injections: [{ profileName: 'hf', varName: 'HF_TOKEN', filePath: '/home/operator/.secrets/hf-token.env' }],
+        injections: [{ profileName: 'hf', varName: 'HF_TOKEN', filePath: secretsFile }],
         backendApiKeyEnv: null,
         backendSecretsFile: null,
         credentialEndpoints: [],
@@ -435,41 +439,47 @@ describe('dispatch v2 e2e (fake-tier) — full pipeline chain', () => {
       const valueScanLines = buildInjectedValueScanFragment(resolution);
       expect(valueScanLines.length).toBeGreaterThan(0);
 
-      // Simulate the WSL2-side enumerate script's stdout as if the spliced
-      // fragment above ran against a diff containing the granted credential's
-      // value: a `SECRET_HIT=<VAR_NAME>` line, name only, appended after the
-      // marker-delimited sections (exactly where pipeline.ts's splice puts
-      // it). The diff body uses an obvious placeholder string, never a
-      // real-looking live token.
-      const fakeEnumerateStdout = [
-        '---STATUS-START---',
-        ' M src/greet.mjs',
-        '---STATUS-END---',
-        '---RENAME-START---',
-        '---RENAME-END---',
-        '---DIFF-START---',
-        'diff --git a/src/greet.mjs b/src/greet.mjs',
-        '+const token = "hf_seeded_example_placeholder_only";',
-        '---DIFF-END---',
-        '---UNTRACKED-START---',
-        '---UNTRACKED-END---',
-        'SECRET_HIT=HF_TOKEN',
-      ].join('\n');
-      const enumerated = parseEnumerateOutput(fakeEnumerateStdout);
-      const allChangedFiles = [...enumerated.changedFiles, ...enumerated.untrackedFiles];
+      const clonePath = join(runDir, 'clone');
+      execFileSync('git', ['clone', '-q', repoRoot, clonePath]);
+      await mkdir(join(clonePath, 'src'), { recursive: true });
+      await writeFile(
+        join(clonePath, 'src', 'greet.mjs'),
+        'export const token = "hf_seeded_example_placeholder_only";\n',
+        'utf8',
+      );
 
-      const scopeCheck = checkWriteScope(allChangedFiles, handoff.write_scope);
-      expect(scopeCheck.ok).toBe(true);
-
-      // The trailing SECRET_HIT line coexists with the marker-delimited
-      // sections in the same stdout string without corrupting either parse —
-      // the exact invariant pipeline.ts relies on.
-      const secretHits = parseInjectedValueScanOutput(fakeEnumerateStdout);
-      expect(secretHits).toEqual(['HF_TOKEN']);
+      const stageRun = await runStageScript({
+        clonePath,
+        baseSha: admission.data.baseSha,
+        attrSha: admission.data.attrSha,
+        writeScope: handoff.write_scope,
+        valueScanLines,
+      });
+      expect(stageRun.ok).toBe(true);
+      if (!stageRun.ok) return;
+      // Names only cross back: the diff body never does.
+      expect(stageRun.stage.secretHits).toEqual(['HF_TOKEN']);
+      const verdict = classifyStage(stageRun.stage, handoff.write_scope);
+      expect(verdict.kind).toBe('secret_in_diff');
+      if (verdict.kind !== 'secret_in_diff') return;
+      expect(verdict.patterns).toEqual(['HF_TOKEN']);
 
       const quarantinePath = join(runDir, 'quarantine.diff');
-      await writeFile(quarantinePath, enumerated.diff, 'utf8');
-      const delivery: DeliveryOutcome = { status: 'secret_in_diff', patterns: secretHits, quarantinePath };
+      const quarantineScript = buildQuarantineScript({
+        clonePath,
+        baseSha: admission.data.baseSha,
+        attrSha: admission.data.attrSha,
+        tree: stageRun.stage.tree,
+      });
+      const quarantineExec = await execDirectModule.execBash({
+        scriptContent: quarantineScript.scriptContent,
+        timeoutMs: 120_000,
+      });
+      expect(quarantineExec.ok).toBe(true);
+      if (!quarantineExec.ok) return;
+      await writeFile(quarantinePath, quarantineExec.data.stdout, 'utf8');
+
+      const delivery: DeliveryOutcome = { status: 'secret_in_diff', patterns: verdict.patterns, quarantinePath };
 
       const captureResult = await writeResponseDoc({
         runDir,
@@ -482,32 +492,8 @@ describe('dispatch v2 e2e (fake-tier) — full pipeline chain', () => {
       expect(captureResult.data.responseContent).toContain('HF_TOKEN');
     } finally {
       await rm(runDir, { recursive: true, force: true });
+      await rm(secretsDir, { recursive: true, force: true });
     }
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Delivery script parse — DELIVERED / IDEMPOTENT / CONFLICT
-// ---------------------------------------------------------------------------
-
-describe('parseDeliveryOutput — DELIVERED / IDEMPOTENT / CONFLICT', () => {
-  it('parses a DELIVERED outcome', () => {
-    const result = parseDeliveryOutput('DELIVERED:abc123');
-    expect(result.status).toBe('delivered');
-    if (result.status !== 'delivered') return;
-    expect(result.commitSha).toBe('abc123');
-  });
-
-  it('parses an IDEMPOTENT outcome as a no_changes redelivery no-op', () => {
-    const result = parseDeliveryOutput('IDEMPOTENT');
-    expect(result.status).toBe('no_changes');
-  });
-
-  it('parses a CONFLICT outcome', () => {
-    const result = parseDeliveryOutput('CONFLICT:def456');
-    expect(result.status).toBe('conflict');
-    if (result.status !== 'conflict') return;
-    expect(result.existingTree).toBe('def456');
   });
 });
 
@@ -902,7 +888,7 @@ describe('dispatch v2 e2e (fake-tier) — isolation route (mocked bwrap probe)',
 // bwrap+worker-CLI host to run for real (D6's direct spawn, no script
 // indirection) — mocking just that seam mirrors this file's own established
 // technique for probeBwrap/runPreflight above. Everything else (clone
-// creation, jail-plan build, enumerate, delivery, capture) runs for REAL
+// creation, jail-plan build, stage, land, capture) runs for REAL
 // against a real temp git repo, so these tests exercise the actual step-10
 // config-driven effort splice into pipeline.ts's hand-built exec line and
 // the step-20 effort_requested threading into capture.ts — not a simulation
@@ -910,7 +896,7 @@ describe('dispatch v2 e2e (fake-tier) — isolation route (mocked bwrap probe)',
 // real DEC-0009 golden fixture content (tests/fixtures/claude-p-output.txt /
 // codex-exec-output-stream-json.jsonl) — no hand-invented shape (DEC-0009).
 // The clone tree is never actually mutated (the mock never touches the
-// filesystem the worker would have written to), so delivery always resolves
+// filesystem the worker would have written to), so the stage always resolves
 // 'no_delta' here; that's expected and irrelevant to what these tests check
 // (capture.ts writes effort_requested unconditionally, regardless of
 // delivery outcome).
@@ -1123,6 +1109,79 @@ describe('dispatch v2 e2e (fake-tier) — HO-0069: pipeline.ts threads stopReaso
       const responseContent = await readFile(result.data.responsePath, 'utf8');
       expect(responseContent).toContain('worker_stop_reason: error');
     } finally {
+      await rm(repoRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Advisory modes never land. The stage below is DETECTION only (empty write
+// scope): a stray worker mutation is reported as a warning and discarded, and
+// capture still records `no_changes`.
+// ---------------------------------------------------------------------------
+
+describe('dispatch v2 e2e (fake-tier) — advisory mutation check (mocked spawnIsolated)', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('reports a stray worker mutation as a warning and never lands a commit (no_changes)', async () => {
+    const repoRoot = await setupS3Repo({ mode: 'redteam' });
+    const stderrChunks: string[] = [];
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(((chunk: unknown) => {
+      stderrChunks.push(String(chunk));
+      return true;
+    }) as typeof process.stderr.write);
+    vi.spyOn(spawnIsolatedModule, 'spawnIsolated').mockImplementation(async (plan, opts) => {
+      if (opts?.stdoutLogPath) {
+        await writeFile(opts.stdoutLogPath, readFixtureFile('pi-output-errored-single-message.jsonl'), 'utf8');
+      }
+      // An advisory worker has an EMPTY write scope rw-bound nowhere, so any
+      // file it creates is stray. The mock writes one straight into the clone
+      // the plan chdirs to (the stage below is detection-only, not a gate).
+      await writeFile(join(plan.cwd, 'worker-mutation.txt'), 'stray\n', 'utf8');
+      return {
+        ok: true,
+        data: {
+          stdout: '',
+          stderr: '',
+          exitCode: 0,
+          signal: null,
+          truncated: false,
+          timedOut: false,
+          streamDrainTimedOut: false,
+        },
+      };
+    });
+    try {
+      const result = await runDispatch({
+        dir: repoRoot,
+        handoff: 'wiki/handoffs/HO-S3TEST.md',
+        model: 'deepseek',
+        backend: 'openrouter',
+        preflight: false,
+        verbose: true,
+      });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      const stderrText = stderrChunks.join('');
+      expect(stderrText).toContain('advisory-mode worker (redteam) modified 1 file(s)');
+      expect(stderrText).toContain('worker-mutation.txt');
+      expect(stderrText).toContain('mutations discarded');
+
+      // Never lands: the run result carries no_changes (an advisory run's
+      // real deliverable is the response doc, not a commit) and the mother
+      // repo has no delivery branch.
+      expect(result.data.delivery.status).toBe('no_changes');
+      const responseContent = await readFile(result.data.responsePath, 'utf8');
+      expect(responseContent).toContain('changed_files: []');
+      const branchCheck = execFileSync('git', ['branch', '--list', 'dispatch/HO-S3TEST'], { cwd: repoRoot })
+        .toString()
+        .trim();
+      expect(branchCheck).toBe('');
+    } finally {
+      stderrSpy.mockRestore();
       await rm(repoRoot, { recursive: true, force: true });
     }
   });

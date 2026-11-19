@@ -171,15 +171,13 @@ export { buildJailArgs, SYSTEM_ROOTS } from './jail.js';
 export type { CloneOpts, CloneResult } from './clone.js';
 export { createClone, removeClone, sweepOrphanClones } from './clone.js';
 
-// Delivery gate (§8 — enumerate -> verdict -> land). The stage -> check ->
-// land pair is used by the implement branch; the enumerate/delivery pair
-// stays exported for the advisory branch until a later slice retires it.
+// Delivery gate (§8 — stage -> check -> land). The implement branch stages,
+// checks and lands one tree; the advisory branch reuses the stage script for
+// mutation detection only.
 export type {
   DeliveryOpts,
   DeliveryOutcome,
-  EnumerateScript,
-  DeliveryScript,
-  EnumerateResult,
+  BashScript,
   StageScriptOpts,
   StageResult,
   StageParseResult,
@@ -192,12 +190,8 @@ export type {
   QuarantineScriptOpts,
 } from './delivery.js';
 export {
-  buildEnumerateScript,
-  parseEnumerateOutput,
   checkWriteScope,
   scanSecrets,
-  buildDeliveryScript,
-  parseDeliveryOutput,
   STAGE_TEMP_PREFIX,
   STAGE_RAW_LISTING_FILENAME,
   STAGE_IGNORED_FILENAME,
@@ -251,7 +245,6 @@ export {
   checkCredentialPolicy,
   buildInjectionScript,
   buildInjectedValueScanFragment,
-  parseInjectedValueScanOutput,
 } from './credentials.js';
 
 // ---------------------------------------------------------------------------

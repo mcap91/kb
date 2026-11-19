@@ -6,7 +6,7 @@
  * `DIRTY_REPO` admission check on the next dispatch (`admission.ts`'s
  * `git status --porcelain` gate). `commitArtifacts` commits exactly those
  * two paths — never `add -A`, never a pathless commit — using the same
- * isolated-index git plumbing `delivery.ts`'s `buildDeliveryScript` uses to
+ * isolated-index git plumbing `delivery.ts`'s stage/land scripts use to
  * commit worker code: seed a throwaway index from `HEAD`, stage only the two
  * artifact paths into it, write-tree, commit-tree with the pinned
  * `kb-dispatch` identity, then advance `HEAD`. The real index and working
@@ -58,7 +58,7 @@ export async function commitPaths(opts: {
     const { stdout: statusOut } = await execFile('git', ['status', '--porcelain', '--', ...opts.paths], { cwd: repoRoot });
     if (statusOut.trim() === '') return ok(null);
 
-    // Isolated-index plumbing (mirrors delivery.ts:buildDeliveryScript): a
+    // Isolated-index plumbing (mirrors delivery.ts:buildStageScript): a
     // throwaway index seeded from HEAD, never the real index, so only the
     // named paths enter the commit regardless of what else is staged or
     // dirty in the working tree.

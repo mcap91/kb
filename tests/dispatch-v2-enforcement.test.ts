@@ -48,11 +48,11 @@ import { parseHandoffContent } from '../packages/dispatch-core/src/ho.js';
 import { checkAdmission } from '../packages/dispatch-core/src/admission.js';
 import { createClone, removeClone } from '../packages/dispatch-core/src/clone.js';
 import {
-  buildEnumerateScript,
-  parseEnumerateOutput,
   checkWriteScope,
-  buildDeliveryScript,
-  parseDeliveryOutput,
+  runStageScript,
+  classifyStage,
+  buildLandScript,
+  parseLandOutput,
 } from '../packages/dispatch-core/src/delivery.js';
 import { execBash, type ExecBashResult } from '../packages/dispatch-core/src/exec-direct.js';
 import { buildJailArgs, buildBwrapPlan, SYSTEM_ROOTS } from '../packages/dispatch-core/src/jail.js';
@@ -430,35 +430,40 @@ directly against a real temp git repo and a real WSL2 clone.
         if (repoRoot) await rm(repoRoot, { recursive: true, force: true }).catch(() => undefined);
       }, 60_000);
 
-      it('2. transport purity: delivered files match write_scope exactly (real enumerate + real delivery)', async () => {
-        const enumerateScript = buildEnumerateScript(clonePath);
-        const enumerateExec = await runWsl(runDir, enumerateScript.scriptContent, enumerateScript.scriptName);
-        expect(enumerateExec.exitCode).toBe(0);
+      it('2. transport purity: staged files match write_scope exactly, and the real land delivers them', async () => {
+        const stageRun = await runStageScript({
+          clonePath,
+          baseSha,
+          attrSha: baseSha,
+          writeScope: ['src/', 'test/'],
+        });
+        expect(stageRun.ok).toBe(true);
+        if (!stageRun.ok) return;
+        // Transport purity: exactly the two write_scope files, nothing more
+        // (no .git internals, no worker-infra noise, no dropped file).
+        expect([...stageRun.stage.changedFiles].sort()).toEqual(['src/a.mjs', 'test/a.test.mjs']);
 
-        const enumerated = parseEnumerateOutput(enumerateExec.stdout);
-        const allChanged = [...enumerated.changedFiles, ...enumerated.untrackedFiles];
-        expect([...allChanged].sort()).toEqual(['src/a.mjs', 'test/a.test.mjs']);
-
-        const scopeCheck = checkWriteScope(allChanged, ['src/', 'test/']);
+        const scopeCheck = checkWriteScope(stageRun.stage.changedFiles, ['src/', 'test/']);
         expect(scopeCheck.ok).toBe(true);
+        expect(classifyStage(stageRun.stage, ['src/', 'test/'])).toEqual({ kind: 'clean' });
 
-        const deliveryScript = buildDeliveryScript({
+        const landScript = buildLandScript({
           clonePath,
           motherRepoWsl: repoRoot,
           handoffId,
           baseSha,
+          attrSha: baseSha,
+          tree: stageRun.stage.tree,
         });
-        const deliveryExec = await runWsl(runDir, deliveryScript.scriptContent, deliveryScript.scriptName);
-        expect(deliveryExec.exitCode).toBe(0);
+        const landExec = await runWsl(runDir, landScript.scriptContent, landScript.scriptName);
+        expect(landExec.exitCode).toBe(0);
 
-        const delivery = parseDeliveryOutput(deliveryExec.stdout);
-        expect(delivery.status).toBe('delivered');
-        if (delivery.status !== 'delivered') return;
-        expect(delivery.branch).toBe(`dispatch/${handoffId}`);
-        // Transport purity: exactly the two write_scope files, nothing more
-        // (no .git internals, no worker-infra noise, no dropped file).
-        expect([...delivery.changedFiles].sort()).toEqual(['src/a.mjs', 'test/a.test.mjs']);
-        firstCommitSha = delivery.commitSha;
+        const landed = parseLandOutput(landExec.stdout);
+        expect(landed.ok).toBe(true);
+        if (!landed.ok) return;
+        expect(landed.outcome.status).toBe('delivered');
+        if (landed.outcome.status !== 'delivered') return;
+        firstCommitSha = landed.outcome.commitSha;
       }, 60_000);
 
       it('3. CAS delivery: the parent of the delivered commit equals base_sha', async () => {
@@ -471,18 +476,31 @@ directly against a real temp git repo and a real WSL2 clone.
         expect(parentExec.stdout.trim()).toBe(baseSha);
       }, 60_000);
 
-      it('4. idempotent redelivery: re-delivering the SAME (unchanged) clone produces no_changes, not a conflict', async () => {
-        const deliveryScript = buildDeliveryScript({
+      it('4. idempotent redelivery: re-landing the SAME (unchanged) tree produces idempotent, not a conflict', async () => {
+        const stageRun = await runStageScript({
+          clonePath,
+          baseSha,
+          attrSha: baseSha,
+          writeScope: ['src/', 'test/'],
+        });
+        expect(stageRun.ok).toBe(true);
+        if (!stageRun.ok) return;
+
+        const landScript = buildLandScript({
           clonePath,
           motherRepoWsl: repoRoot,
           handoffId,
           baseSha,
+          attrSha: baseSha,
+          tree: stageRun.stage.tree,
         });
-        const deliveryExec = await runWsl(runDir, deliveryScript.scriptContent, `${deliveryScript.scriptName}-redeliver`);
-        expect(deliveryExec.exitCode).toBe(0);
+        const landExec = await runWsl(runDir, landScript.scriptContent, `${landScript.scriptName}-redeliver`);
+        expect(landExec.exitCode).toBe(0);
 
-        const delivery = parseDeliveryOutput(deliveryExec.stdout);
-        expect(delivery.status).toBe('no_changes');
+        const landed = parseLandOutput(landExec.stdout);
+        expect(landed.ok).toBe(true);
+        if (!landed.ok) return;
+        expect(landed.outcome.status).toBe('idempotent');
       }, 60_000);
 
       it('5. conflict detection: a different tree from the same base refuses as a structured conflict, never a clobber', async () => {
@@ -494,21 +512,33 @@ directly against a real temp git repo and a real WSL2 clone.
           'seed-conflicting-change.sh',
         );
 
-        const deliveryScript = buildDeliveryScript({
+        const stageRun = await runStageScript({
+          clonePath,
+          baseSha,
+          attrSha: baseSha,
+          writeScope: ['src/', 'test/'],
+        });
+        expect(stageRun.ok).toBe(true);
+        if (!stageRun.ok) return;
+
+        const landScript = buildLandScript({
           clonePath,
           motherRepoWsl: repoRoot,
           handoffId,
           baseSha,
+          attrSha: baseSha,
+          tree: stageRun.stage.tree,
         });
-        const deliveryExec = await runWsl(runDir, deliveryScript.scriptContent, `${deliveryScript.scriptName}-conflict`);
-        expect(deliveryExec.exitCode).toBe(0);
+        const landExec = await runWsl(runDir, landScript.scriptContent, `${landScript.scriptName}-conflict`);
+        expect(landExec.exitCode).toBe(0);
 
-        const delivery = parseDeliveryOutput(deliveryExec.stdout);
-        expect(delivery.status).toBe('conflict');
-        if (delivery.status !== 'conflict') return;
-        expect(delivery.existingTree.length).toBeGreaterThan(0);
-        expect(delivery.newTree.length).toBeGreaterThan(0);
-        expect(delivery.existingTree).not.toBe(delivery.newTree);
+        const landed = parseLandOutput(landExec.stdout);
+        expect(landed.ok).toBe(true);
+        if (!landed.ok) return;
+        expect(landed.outcome.status).toBe('conflict');
+        if (landed.outcome.status !== 'conflict') return;
+        expect(landed.outcome.existingTree.length).toBeGreaterThan(0);
+        expect(landed.outcome.existingTree).not.toBe(stageRun.stage.tree);
 
         // Never a clobber: the mother's dispatch/<id> ref must still point at
         // the FIRST delivery from test 2, untouched by the rejected attempt.

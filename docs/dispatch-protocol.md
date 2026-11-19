@@ -313,8 +313,8 @@ Credential profiles live in `wiki/.dispatch/profiles.json` (scaffolded by `init-
 - A `vars` key that collides with an injected credential's var name (or the backend's own
   `api_key_env`) is refused — a non-secret channel must never be able to shadow or masquerade as a
   credential.
-- Delivery re-scans the diff for each granted credential's literal value before landing a commit; a hit
-  refuses the delivery (`secret_in_diff`, see "Delivery") rather than committing it.
+- The stage re-scans the staged tree's diff for each granted credential's literal value before any
+  commit; a hit refuses the delivery (`secret_in_diff`, see "Delivery") rather than landing it.
 
 ## Host Requirements
 
@@ -398,8 +398,12 @@ exceeds `MAX_BUFFER_BYTES` fails the run with `DELIVERY_FAILED` rather than trun
 | `conflict` | `dispatch/HO-XXXX` already carries a different tree from the same base |
 
 Advisory modes (`code_review`/`redteam`/`research`) never reach this gate at all — their §-envelope
-grants no write authority, so any file mutation a worker made anyway is detected and discarded with a
-warning; the worker's own response *is* the deliverable.
+grants no write authority. The pipeline still runs the same stage script for them, but with an **empty
+`write_scope` and no skeleton paths**, purely as a mutation check: every staged or ignored path is a
+stray mutation, reported as a warning (`advisory-mode worker (<mode>) modified <n> file(s) — mutations
+discarded: ...`) and discarded when the ephemeral clone is torn down. The check is detection only — a
+failed stage is never fatal and never blocks capture — and the run's delivery stays `no_changes`,
+because the worker's own response *is* the deliverable.
 
 ## Capture and Provenance
 

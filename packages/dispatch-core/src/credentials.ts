@@ -177,14 +177,14 @@ export function buildInjectionScript(resolution: CredentialResolution, handoffVa
 }
 
 /**
- * Build the enumerate script's injected-value scan fragment (s3-rulings.md
- * freeze correction): boolean `SECRET_HIT=<VAR_NAME>` hits only, names never
- * values. Spliced into the WSL2-side enumerate script by Wave 3, which
- * defines `$DIFF_FILE`. Scoped to profile `inject` values only, the same
- * scope as `existenceCheckLines` — the backend API key is backend-owned
- * infrastructure (ruling 2) rather than a `credentials:`-gated value, and
- * pattern scanning (delivery.ts `scanSecrets`) already covers common API key
- * shapes.
+ * Build the stage script's injected-value scan fragment: boolean
+ * `SECRET_HIT=<VAR_NAME>` hits only, names never values. Spliced into the
+ * WSL2-side stage script by the pipeline, which defines `$DIFF_FILE`;
+ * `delivery.ts`'s `parseStageOutput` parses the resulting `SECRET_HIT=<NAME>`
+ * lines into the stage verdict. Scoped to profile `inject` values only, the
+ * same scope as `existenceCheckLines` — the backend API key is backend-owned
+ * infrastructure rather than a `credentials:`-gated value, and pattern
+ * scanning (delivery.ts `scanSecrets`) already covers common API key shapes.
  */
 export function buildInjectedValueScanFragment(resolution: CredentialResolution): string[] {
   const lines: string[] = [];
@@ -195,21 +195,4 @@ export function buildInjectedValueScanFragment(resolution: CredentialResolution)
     );
   }
   return lines;
-}
-
-/**
- * Parse `SECRET_HIT=<VAR_NAME>` lines out of the combined stdout of whatever
- * script `buildInjectedValueScanFragment`'s lines were spliced into (mirrors
- * `model-registry.ts`'s `buildFingerprintFragment`/`parseFingerprintOutput`
- * build+parse pairing). Names only, in the order emitted — never values
- * (s3-rulings.md freeze correction: the resolved secret values are grepped
- * entirely Linux-side and never cross back into this TS-side result).
- */
-export function parseInjectedValueScanOutput(stdout: string): string[] {
-  return stdout
-    .replace(/\r\n/g, '\n')
-    .split('\n')
-    .map((line) => line.trim())
-    .filter((line) => line.startsWith('SECRET_HIT='))
-    .map((line) => line.slice('SECRET_HIT='.length).trim());
 }

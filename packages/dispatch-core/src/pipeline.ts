@@ -2,7 +2,7 @@
  * `runDispatch()` — the v2 dispatch pipeline (dispatch v2, PLN-0004 S0 Wave 3;
  * D6 Phase 2 native-spawn rewrite — mid_project_review_rulings.md ruling 7).
  * Wires the skeleton modules into one atomic, gated call (DEC-0007 D1):
- * parse -> admission -> preflight -> clone -> jail+Pi -> enumerate -> delivery
+ * parse -> admission -> preflight -> clone -> jail+Pi -> stage -> check/land
  * gate -> capture -> clone teardown. Facts-only adapters/scripts stay
  * facts-only (D10); this module is the one place that OWNS policy (which
  * checks gate the run, what happens on refusal, when the clone gets torn
@@ -16,8 +16,8 @@
  * license to skip this).
  *
  * D6: the orchestrator runs natively on Linux — there is no Windows host and
- * no `wsl.exe` boundary to cross. Non-worker operations (git enumerate/
- * delivery, mkdir, credential/config probes) run via direct `bash -c`
+ * no `wsl.exe` boundary to cross. Non-worker operations (git stage/land,
+ * mkdir, credential/config probes) run via direct `bash -c`
  * (`exec-direct.ts`'s `execBash`) or plain `node:fs`/`node:child_process`
  * calls. The worker itself is jailed via a frozen `BwrapPlan`
  * (`jail.ts`'s `buildBwrapPlan`) spawned directly (`spawn-isolated.ts`'s
@@ -63,10 +63,6 @@ import { buildWorkerEnv } from './env-policy.js';
 import { createClone, removeClone, sweepOrphanClones } from './clone.js';
 import { probeWikiSource } from './wiki-source.js';
 import {
-  buildEnumerateScript,
-  parseEnumerateOutput,
-  buildDeliveryScript,
-  parseDeliveryOutput,
   runStageScript,
   classifyStage,
   buildLandScript,
@@ -84,7 +80,6 @@ import {
   resolveCredentials,
   checkCredentialPolicy,
   buildInjectedValueScanFragment,
-  parseInjectedValueScanOutput,
   type CredentialResolution,
 } from './credentials.js';
 import {
@@ -1429,7 +1424,7 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
     const allowedHosts = buildAllowedHosts(model, credResult.data);
 
     // 11. Tunnel config (T26/D21) — the socket/relay/log all live under the
-    // clone / run dir (never inside enumerate/delivery's view: they are
+    // clone / run dir (never inside stage/land's view: they are
     // dispatch infrastructure, not worker output). web:true widens the
     // forwarder's own destination policy (s5-rulings.md ruling 4) — the flag
     // itself is the grant. Socket lives under the clone path (same
@@ -1926,21 +1921,24 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       // Advisory path (code_review/redteam/research; spec §8: "response
       // only, mutations discarded with a warning"). These three modes never
       // land a commit, so there is no write-scope/secret-scan gate to run —
-      // the enumerate below is best-effort DETECTION only, never a gate:
-      // the ephemeral clone is torn down in `finally` regardless, so a
-      // mutation an advisory worker made anyway never reaches the mother
-      // repo either way. A failed probe (exec error or non-zero exit) never
-      // blocks capture — the response doc is this mode's real deliverable
-      // and does not depend on this check.
+      // the stage below is best-effort DETECTION only, never a gate: it runs
+      // the same stage script as the implement branch with an EMPTY scope and
+      // no skeleton paths, so every changed file is reported and the strict
+      // stdout/listing parse is the only thing it checks. The ephemeral clone
+      // is torn down in `finally` regardless, so a mutation an advisory worker
+      // made anyway never reaches the mother repo either way, and a failed
+      // stage (exec error, non-zero exit, or a parse failure) never blocks
+      // capture — the response doc is this mode's real deliverable and does
+      // not depend on this check.
       logVerbose(verbose, `mode ${handoff.mode} is advisory — skipping delivery, checking for stray mutations`);
-      const advisoryEnumerateScript = buildEnumerateScript(clonePath);
-      const advisoryEnumerateExec = await execBash({
-        scriptContent: advisoryEnumerateScript.scriptContent,
-        timeoutMs: 120_000,
+      const advisoryStage = await runStageScript({
+        clonePath,
+        baseSha: admission.data.baseSha,
+        attrSha: admission.data.attrSha,
+        writeScope: [],
       });
-      if (advisoryEnumerateExec.ok && advisoryEnumerateExec.data.exitCode === 0) {
-        const enumResult = parseEnumerateOutput(advisoryEnumerateExec.data.stdout);
-        const mutatedFiles = [...enumResult.changedFiles, ...enumResult.untrackedFiles];
+      if (advisoryStage.ok) {
+        const mutatedFiles = [...advisoryStage.stage.changedFiles, ...advisoryStage.stage.ignoredFiles];
         if (mutatedFiles.length > 0) {
           logVerbose(
             verbose,
