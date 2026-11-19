@@ -5,6 +5,7 @@ import * as path from 'node:path';
 import { generate } from '../packages/wiki-core/src/index.js';
 import { readChainDoc, type ChainDocProblem } from '../packages/wiki-core/src/dashboard/chain-doc.js';
 import { generateDashboard } from '../packages/wiki-core/src/dashboard/generate.js';
+import { markdownToHtml, type MarkdownLinks } from '../packages/wiki-core/src/dashboard/markdown.js';
 import {
   createBootstrappedRepo,
   createPlanningRepo,
@@ -143,10 +144,13 @@ describe('dashboard generate', () => {
       'wiki/backlog.md',
       'wiki/archive.md',
     ]);
-    expect(result.data.dashboard).toEqual({ dir: 'wiki/dashboard/generated', pages: 3 });
+    // index, wk, the initiative's chain page and its record page; no critical path page without chain.md
+    expect(result.data.dashboard).toEqual({ dir: 'wiki/dashboard/generated', pages: 4 });
     expect(fs.existsSync(path.join(repo.dir, 'wiki/dashboard/generated/index.html'))).toBe(true);
     expect(fs.existsSync(path.join(repo.dir, 'wiki/dashboard/generated/wk.html'))).toBe(true);
     expect(fs.existsSync(path.join(repo.dir, 'wiki/dashboard/generated/IN-0001/chain.html'))).toBe(true);
+    expect(fs.existsSync(path.join(repo.dir, 'wiki/dashboard/generated/records/IN-0001.html'))).toBe(true);
+    expect(fs.existsSync(path.join(repo.dir, 'wiki/dashboard/generated/critical-path.html'))).toBe(false);
   });
 
   it('writes nothing under wiki/dashboard in a wiki-only repo', async () => {
@@ -363,7 +367,7 @@ describe('index.html', () => {
     expect(read(withoutChain.dir, 'wiki/dashboard/generated/index.html')).not.toContain('../chain.md');
   });
 
-  it('renders critical path boxes, groups, counts, gates and rows in file order', async () => {
+  it('renders each critical path on its own page: stages, counts, gates and rows in file order', async () => {
     const repo = await planningRepo();
     for (const [id, status] of [
       ['WK-0001', 'todo'],
@@ -412,13 +416,16 @@ Gate: only gate
 `,
     );
     await generate({ dir: repo.dir });
-    const html = read(repo.dir, 'wiki/dashboard/generated/index.html');
+    const index = read(repo.dir, 'wiki/dashboard/generated/index.html');
+    expect(index).not.toContain('data-critical-path');
+    expect(index).toContain('href="critical-path.html"');
+    const html = read(repo.dir, 'wiki/dashboard/generated/critical-path.html');
     const paths = [...html.matchAll(/data-critical-path data-heading="([^"]*)"/g)].map(m => m[1]);
     expect(paths).toEqual(['Critical path one', 'Critical path two']);
 
     const first = section(html, 'data-heading="Critical path one"');
-    const groupA = div(first, 'data-path-group data-name="Group A"');
-    const groupB = div(first, 'data-path-group data-name="Group B"');
+    const groupA = div(first, 'data-stage data-name="Group A"');
+    const groupB = div(first, 'data-stage data-name="Group B"');
     expect(groupA).toContain('data-open="2"');
     expect(groupA).toContain('data-total="3"');
     expect(groupA).toContain('data-gate');
@@ -431,7 +438,7 @@ Gate: only gate
     expect(groupB).not.toContain('data-open');
     expect(groupB).not.toContain('data-total');
     expect(rows(groupB)).toEqual([]);
-    expect(div(first, 'data-path-group data-name="Group B"')).toContain('only gate');
+    expect(div(first, 'data-stage data-name="Group B"')).toContain('only gate');
 
     const second = section(html, 'data-heading="Critical path two"');
     expect(second).not.toContain('data-gate');
@@ -439,7 +446,7 @@ Gate: only gate
     expect(rows(second)[1].status).toBe('');
   });
 
-  it('has no path box when chain.md has no critical path section', async () => {
+  it('writes no critical path page and no link to it when chain.md has no critical path section', async () => {
     const repo = await planningRepo();
     writeRecord(repo.dir, 'wiki/initiatives/IN-0001.md', {
       id: 'IN-0001',
@@ -450,7 +457,8 @@ Gate: only gate
     });
     chain(repo.dir, '---\nupdated: 2026-11-18\n---\n\n# Chain\n\n## IN-0001 — One\n');
     await generate({ dir: repo.dir });
-    expect(read(repo.dir, 'wiki/dashboard/generated/index.html')).not.toContain('data-critical-path');
+    expect(read(repo.dir, 'wiki/dashboard/generated/index.html')).not.toContain('critical-path.html');
+    expect(fs.existsSync(path.join(repo.dir, 'wiki/dashboard/generated/critical-path.html'))).toBe(false);
   });
 });
 
@@ -485,7 +493,8 @@ updated: 2026-11-18
       opts,
     );
     expect(problems).toEqual([] as ChainDocProblem[]);
-    expect(data.initiatives.get('IN-0001')?.hasQueue).toBe(false);
+    // The free section's group does not attach to the initiative before it.
+    expect(data.initiatives.get('IN-0001')?.groups).toEqual([]);
   });
 
   it('gives empty data and no problem for a missing file', () => {
@@ -513,7 +522,10 @@ Gate: two
 
 ## IN-0001 — One
 
-### In Progress
+### Stage one
+
+Gate: first
+Gate: second
 
 - plain text
 
@@ -527,8 +539,10 @@ Gate: two
     );
     const messages = problems.map((p: ChainDocProblem) => p.message);
     expect(messages).toContain('chain.md updated is missing or not a date');
-    expect(messages).toContain('critical path group has a second Gate: line; the first is used');
-    expect(messages).toContain('list item in a queue group does not start with a work item id');
+    // One message per stage with two gates: the critical path group and the initiative stage.
+    expect(messages.filter(m => m === 'stage has a second Gate: line; the first is used')).toHaveLength(2);
+    // A list item with no work item id is free text in every chain, never a problem.
+    expect(messages.some(m => m.includes('plain text') || m.includes('does not start'))).toBe(false);
     expect(messages).toContain('WK-9999 has no record');
     expect(messages).toContain('initiative IN-0001 has more than one section; the first is used');
   });
@@ -544,7 +558,7 @@ describe('chain.html', () => {
     return div(read(dir, `wiki/dashboard/generated/${initiative}/chain.html`), 'data-next');
   }
 
-  it('uses the chain.md queue in file order', async () => {
+  it('takes the Next box from the chain stages in file order, each id once', async () => {
     const repo = await planningRepo();
     writeRecord(repo.dir, 'wiki/initiatives/IN-0001.md', {
       id: 'IN-0001',
@@ -603,8 +617,9 @@ updated: 2026-11-18
     const box = await nextBox(repo.dir);
     expect(box).toContain('data-next-source="chain"');
     expect(box).toMatch(/data-next-source="chain"/);
+    // Every stage counts, in file order; a numbered item counts like a dash item; done is skipped.
     expect(rows(box).map(r => r.id)).toEqual(['WK-0002', 'WK-0001', 'WK-0010']);
-    expect(box).toContain('from chain.md, updated 2026-11-18');
+    expect(box).toContain('the first open work items of the chain in chain.md, updated 2026-11-18');
   });
 
   it('cuts a long title to 70 characters with an ellipsis', async () => {
@@ -683,11 +698,11 @@ updated: 2026-11-18
       'WK-0007',
     ]);
     expect(box).toContain('data-next-more');
-    expect(box).toContain('2 more in chain.md');
+    expect(box).toContain('2 more on the chain');
     expect(box).not.toContain('WK-0009');
   });
 
-  it('code-picks when there is no queue, and when every queue line is done', async () => {
+  it('code-picks when the section has no stage line, and when every chain line is done', async () => {
     const repo = await planningRepo();
     writeRecord(repo.dir, 'wiki/initiatives/IN-0001.md', {
       id: 'IN-0001',
@@ -711,16 +726,16 @@ updated: 2026-11-18
         initiative: 'IN-0001',
       });
     }
-    chain(repo.dir, '---\nupdated: 2026-11-18\n---\n\n## IN-0001\n\n### Later\n\n- WK-0002\n');
+    chain(repo.dir, '---\nupdated: 2026-11-18\n---\n\n## IN-0001\n\nProse only, no stage.\n');
     let box = await nextBox(repo.dir);
     expect(box).toContain('data-next-source="code"');
-    expect(box).toContain('code-picked: chain.md has no In Progress or To Do list for this initiative');
+    expect(box).toContain('code-picked: chain.md has no chain for this initiative');
     expect(rows(box).map(r => r.id)).toEqual(['WK-0002', 'WK-0001']);
 
     chain(repo.dir, '---\nupdated: 2026-11-18\n---\n\n## IN-0001\n\n### To Do\n\n- WK-0003\n');
     box = await nextBox(repo.dir);
     expect(box).toContain('data-next-source="code"');
-    expect(box).toContain('code-picked: every chain.md line for this initiative is done or closed');
+    expect(box).toContain('code-picked: every work item on the chain in chain.md is done or closed');
   });
 
   it('marks the Next box stale and says why', async () => {
@@ -760,12 +775,8 @@ updated: 2026-11-18
       updated: '2026-11-01',
       initiative: 'IN-0001',
     });
-    chain(repo.dir, '---\nupdated: 2026-11-10\n---\n\n## IN-0001\n\n### To Do\n\n- WK-0001\n- WK-0002\n');
-    box = await nextBox(repo.dir);
-    expect(box).toContain('data-chain-stale');
-    expect(box).toContain('chain.md names 1 done or closed work items');
-
-    chain(repo.dir, '---\nupdated: 2026-11-18\n---\n\n## IN-0001\n\n### To Do\n\n- WK-0001\n');
+    // A done work item stays on a stage chain as progress: no mark when the dates agree.
+    chain(repo.dir, '---\nupdated: 2026-11-18\n---\n\n## IN-0001\n\n### To Do\n\n- WK-0002\n- WK-0001\n');
     box = await nextBox(repo.dir);
     expect(box).not.toContain('data-chain-stale');
 
@@ -1075,11 +1086,14 @@ describe('wk.html', () => {
     await generate({ dir: repo.dir });
     const data = wkData(read(repo.dir, 'wiki/dashboard/generated/wk.html'));
     const wkPath = path.join(repo.dir, 'wiki/dashboard/generated/wk.html');
+    // Both links open the generated record page, not the markdown file.
+    expect(data['WK-0001'].href).toBe('records/WK-0001.html');
     expect(fs.existsSync(path.resolve(path.dirname(wkPath), data['WK-0001'].href))).toBe(true);
 
     const chainHtml = read(repo.dir, 'wiki/dashboard/generated/IN-0001/chain.html');
     const link = /<a href="([^"]+)">IN-0001 record<\/a>/.exec(chainHtml);
     expect(link).not.toBeNull();
+    expect(link![1]).toBe('../records/IN-0001.html');
     const chainPath = path.join(repo.dir, 'wiki/dashboard/generated/IN-0001/chain.html');
     expect(fs.existsSync(path.resolve(path.dirname(chainPath), link![1]))).toBe(true);
   });
@@ -1112,6 +1126,294 @@ describe('wk.html', () => {
     expect(chainHtml).not.toContain('<b>x');
     expect(wk).not.toContain('<b>x');
     expect(wkData(wk)['WK-0001'].title).toBe(title);
+    const recordPage = read(repo.dir, 'wiki/dashboard/generated/records/WK-0001.html');
+    expect(recordPage).toContain('&lt;/script&gt;&lt;b&gt;x');
+    expect(recordPage).not.toContain('<b>x');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// chain page drawn from the initiative's stages in chain.md
+// ---------------------------------------------------------------------------
+
+describe('chain.html stages', () => {
+  it('draws the stages in file order with gates, lists open work items off the chain, and keeps no status band', async () => {
+    const repo = await planningRepo();
+    writeRecord(repo.dir, 'wiki/initiatives/IN-0001.md', {
+      id: 'IN-0001',
+      title: 'One',
+      status: 'in_progress',
+      type: 'initiative',
+      updated: '2026-11-01',
+    });
+    for (const [id, status] of [
+      ['WK-0001', 'done'],
+      ['WK-0002', 'in_progress'],
+      ['WK-0003', 'todo'],
+      ['WK-0004', 'inbox'],
+      ['WK-0005', 'cancelled'],
+    ] as Array<[string, string]>) {
+      writeRecord(repo.dir, `wiki/issues/${id}.md`, {
+        id,
+        title: `Title ${id}`,
+        status,
+        type: 'feature',
+        updated: '2026-11-01',
+        initiative: 'IN-0001',
+      });
+    }
+    chain(
+      repo.dir,
+      `---
+updated: 2026-11-18
+---
+
+## IN-0001 — One
+
+Free prose about the initiative.
+
+### M2 second milestone
+
+Gate: the second gate
+
+- WK-0003 later in the file, first stage
+
+### M1 first milestone
+
+- WK-0001 done stays on the chain
+- WK-0002 building
+- not a work item line
+`,
+    );
+    await generate({ dir: repo.dir });
+    const html = read(repo.dir, 'wiki/dashboard/generated/IN-0001/chain.html');
+    const chainSection = section(html, 'data-chain');
+    const names = [...chainSection.matchAll(/data-stage data-name="([^"]*)"/g)].map(m => m[1]);
+    // File order decides the stage order, not the stage name.
+    expect(names).toEqual(['M2 second milestone', 'M1 first milestone']);
+    const m2 = div(chainSection, 'data-name="M2 second milestone"');
+    expect(m2).toContain('the second gate');
+    expect(rows(m2)).toEqual([{ id: 'WK-0003', status: 'todo' }]);
+    const m1 = div(chainSection, 'data-name="M1 first milestone"');
+    expect(m1).not.toContain('data-gate');
+    expect(rows(m1)).toEqual([
+      { id: 'WK-0001', status: 'done' },
+      { id: 'WK-0002', status: 'in_progress' },
+    ]);
+    expect(m1).toContain('data-open="1" data-total="2"');
+    // An open work item no stage names is listed, so it can be placed.
+    expect(rows(section(html, 'data-off-chain')).map(r => r.id)).toEqual(['WK-0004']);
+    expect(html).not.toContain('data-band');
+    expect(html).not.toContain('WK-0005');
+    expect(rows(div(html, 'data-next')).map(r => r.id)).toEqual(['WK-0003', 'WK-0002']);
+  });
+
+  it('falls back to status bands for an initiative with no stage line', async () => {
+    const repo = await planningRepo();
+    writeRecord(repo.dir, 'wiki/initiatives/IN-0001.md', {
+      id: 'IN-0001',
+      title: 'One',
+      status: 'in_progress',
+      type: 'initiative',
+      updated: '2026-11-01',
+    });
+    writeRecord(repo.dir, 'wiki/issues/WK-0001.md', {
+      id: 'WK-0001',
+      title: 'One',
+      status: 'todo',
+      type: 'feature',
+      updated: '2026-11-01',
+      initiative: 'IN-0001',
+    });
+    chain(repo.dir, '---\nupdated: 2026-11-18\n---\n\n## IN-0001 — One\n\nProse only.\n');
+    await generate({ dir: repo.dir });
+    const html = read(repo.dir, 'wiki/dashboard/generated/IN-0001/chain.html');
+    expect(html).not.toContain('data-chain>');
+    expect(html).not.toContain('data-off-chain');
+    expect(section(html, 'data-band="To do"')).toContain('data-wk="WK-0001"');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// records/<ID>.html and the markdown converter
+// ---------------------------------------------------------------------------
+
+describe('record pages', () => {
+  const BODY = [
+    '# Heading one',
+    '',
+    '## Heading two',
+    '',
+    'A paragraph with `inline code`, **bold words**, a [site](https://example.com),',
+    'a [relative doc](../../docs/guide.md#part) and [[WK-0002]] and [[DEC-0001]] and [[WK-9999]].',
+    'A [bad link](javascript:alert(1)) stays text.',
+    '',
+    '- outer item',
+    '  - nested item',
+    '- [ ] open task',
+    '- [x] checked task',
+    '',
+    '1. first numbered',
+    '2. second numbered',
+    '',
+    '```',
+    'const kept = "<as is>";',
+    '```',
+    '',
+    '| col a | col b |',
+    '|---|---|',
+    '| cell | value |',
+    '',
+    '> quoted line',
+    '',
+    '<!-- hidden comment -->',
+    '',
+    '<script>alert("x")</script>',
+  ].join('\n');
+
+  async function recordRepo(): Promise<TmpRepo> {
+    const repo = await planningRepo();
+    writeRecord(repo.dir, 'wiki/initiatives/IN-0001.md', {
+      id: 'IN-0001',
+      title: 'One',
+      status: 'in_progress',
+      type: 'initiative',
+      updated: '2026-11-01',
+    });
+    writeRecord(
+      repo.dir,
+      'wiki/issues/WK-0001.md',
+      {
+        id: 'WK-0001',
+        title: 'Rich body',
+        status: 'todo',
+        priority: 'high',
+        type: 'feature',
+        updated: '2026-11-02',
+        initiative: 'IN-0001',
+        depends_on: ['WK-0002'],
+        related: ['DEC-0001'],
+      },
+      BODY,
+    );
+    writeRecord(repo.dir, 'wiki/issues/WK-0002.md', {
+      id: 'WK-0002',
+      title: 'Two',
+      status: 'todo',
+      type: 'feature',
+      updated: '2026-11-01',
+      initiative: 'IN-0001',
+    });
+    writeRecord(repo.dir, 'wiki/decisions/DEC-0001.md', {
+      id: 'DEC-0001',
+      title: 'A decision',
+      status: 'accepted',
+      type: 'decision',
+      updated: '2026-11-01',
+    });
+    return repo;
+  }
+
+  it('writes one page per work item and initiative, and removes the page of a deleted record', async () => {
+    const repo = await recordRepo();
+    await generate({ dir: repo.dir });
+    const pages = listPages(repo.dir).filter(p => p.startsWith('records/'));
+    expect(pages).toEqual(['records/IN-0001.html', 'records/WK-0001.html', 'records/WK-0002.html']);
+    fs.rmSync(path.join(repo.dir, 'wiki/issues/WK-0002.md'));
+    await generate({ dir: repo.dir });
+    expect(listPages(repo.dir)).not.toContain('records/WK-0002.html');
+  });
+
+  it('renders the header, the relations and the body, and links the initiative chain', async () => {
+    const repo = await recordRepo();
+    await generate({ dir: repo.dir });
+    const html = read(repo.dir, 'wiki/dashboard/generated/records/WK-0001.html');
+    expect(html).toContain('data-record="WK-0001"');
+    expect(html).toMatch(/data-record-initiative="IN-0001"><a href="\.\.\/IN-0001\/chain\.html">IN-0001<\/a>/);
+    const relations = div(html, 'data-relations');
+    expect(relations).toContain('<a href="WK-0002.html">WK-0002</a>');
+    expect(relations).toContain('<a href="../../../decisions/DEC-0001.md">DEC-0001</a>');
+    const body = element(html, 'data-body', 'article');
+    expect(body).toContain('<h1>Heading one</h1>');
+    expect(body).toContain('<h2>Heading two</h2>');
+    expect(body).toContain('<code>inline code</code>');
+    expect(body).toContain('<strong>bold words</strong>');
+  });
+
+  it('turns only safe link targets into links and resolves relative and record links', async () => {
+    const repo = await recordRepo();
+    await generate({ dir: repo.dir });
+    const pageDir = path.join(repo.dir, 'wiki/dashboard/generated/records');
+    const body = element(read(repo.dir, 'wiki/dashboard/generated/records/WK-0001.html'), 'data-body', 'article');
+    expect(body).toContain('<a href="https://example.com">site</a>');
+    // The relative link opens the same file from the page as from the record file.
+    const rel = /<a href="([^"]+)">relative doc<\/a>/.exec(body);
+    expect(rel).not.toBeNull();
+    const fromRecord = path.resolve(path.join(repo.dir, 'wiki/issues'), '../../docs/guide.md');
+    expect(path.resolve(pageDir, rel![1].split('#')[0])).toBe(fromRecord);
+    expect(rel![1].endsWith('#part')).toBe(true);
+    expect(body).toContain('<a href="WK-0002.html">WK-0002</a>');
+    expect(body).toContain('<a href="../../../decisions/DEC-0001.md">DEC-0001</a>');
+    expect(body).not.toMatch(/<a [^>]*>WK-9999<\/a>/);
+    expect(body).toContain('WK-9999');
+    expect(body).not.toContain('href="javascript:');
+    expect(body).toContain('[bad link](javascript:alert(1))');
+  });
+
+  it('shows tables, quotes, comments and raw HTML as text and keeps every word', async () => {
+    const repo = await recordRepo();
+    await generate({ dir: repo.dir });
+    const html = read(repo.dir, 'wiki/dashboard/generated/records/WK-0001.html');
+    const body = element(html, 'data-body', 'article');
+    expect(body).toContain('<pre class="table">| col a | col b |\n|---|---|\n| cell | value |</pre>');
+    expect(body).toContain('&gt; quoted line');
+    expect(body).toContain('&lt;!-- hidden comment --&gt;');
+    expect(body).toContain('&lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt;');
+    expect(body).toContain('<pre><code>const kept = &quot;&lt;as is&gt;&quot;;</code></pre>');
+    // The only script elements are the page's own light/dark scripts, and none holds record text.
+    const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]);
+    expect(scripts).toHaveLength(2);
+    for (const script of scripts) expect(script).not.toContain('alert');
+    const text = body.replace(/<[^>]+>/g, ' ');
+    // A link's target is its href, not page text; the words of the record are all visible.
+    const visible = BODY.replace(/\]\((?:https?:|\.\.)[^)]*\)/g, ']');
+    for (const word of visible.match(/[A-Za-z]{4,}/g) ?? []) expect(text).toContain(word);
+  });
+});
+
+describe('markdown converter', () => {
+  const links: MarkdownLinks = {
+    recordHref: id => (id === 'WK-0001' ? 'WK-0001.html' : undefined),
+    relativeHref: target => `rel/${target}`,
+  };
+
+  it('nests lists by indentation and renders task items as disabled checkboxes', () => {
+    const html = markdownToHtml('- a\n  - b\n    - c\n- d\n- [ ] open\n- [x] done\n\n1. one\n2. two', links);
+    expect(html).toContain('<ul><li>a<ul><li>b<ul><li>c</li></ul></li></ul></li><li>d</li>');
+    expect(html).toContain('<li><input type="checkbox" disabled> open</li>');
+    expect(html).toContain('<li><input type="checkbox" disabled checked> done</li>');
+    expect(html).toContain('<ol><li>one</li><li>two</li></ol>');
+  });
+
+  it('joins wrapped list and paragraph lines and keeps fenced text unchanged', () => {
+    const html = markdownToHtml('- item\n  continues here\n\nline one\nline two\n\n```\n  **not bold**\n```', links);
+    expect(html).toContain('<li>item continues here</li>');
+    expect(html).toContain('<p>line one line two</p>');
+    expect(html).toContain('<pre><code>  **not bold**</code></pre>');
+  });
+
+  it('links record ids, safe targets and relative paths, and leaves the rest as text', () => {
+    const html = markdownToHtml(
+      '[[WK-0001]] [[WK-0002]] [a](#x) [b](http://h) [c](docs/x.md) [d](/abs) [e](data:text/html,x)',
+      links,
+    );
+    expect(html).toContain('<a href="WK-0001.html">WK-0001</a>');
+    expect(html).not.toContain('>WK-0002</a>');
+    expect(html).toContain('<a href="#x">a</a>');
+    expect(html).toContain('<a href="http://h">b</a>');
+    expect(html).toContain('<a href="rel/docs/x.md">c</a>');
+    expect(html).toContain('[d](/abs)');
+    expect(html).toContain('[e](data:text/html,x)');
   });
 });
 
@@ -1277,6 +1579,6 @@ describe('robustness and surfaces', () => {
       cwd: ROOT,
       encoding: 'utf-8',
     });
-    expect(out).toContain('wiki/dashboard/generated/ (3 pages)');
+    expect(out).toContain('wiki/dashboard/generated/ (4 pages)');
   });
 });

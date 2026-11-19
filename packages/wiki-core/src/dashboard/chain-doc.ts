@@ -11,30 +11,39 @@ export interface ChainDocProblem {
   message: string;
 }
 
-export interface ChainPathGroup {
+/** One stage of a chain: a free name, an optional gate, work item ids in build order. */
+export interface ChainGroup {
   name: string;
   gate?: string;
   ids: string[];
 }
 
-export interface ChainPath {
+/**
+ * A chain: stages in build order. A critical path is a chain across
+ * initiatives; an initiative section is the chain of one initiative.
+ */
+export interface Chain {
   heading: string;
-  groups: ChainPathGroup[];
+  groups: ChainGroup[];
 }
 
-export interface ChainInitiativeSection {
+export interface ChainInitiativeSection extends Chain {
   id: string;
-  heading: string;
-  /** Queue ids in file order, deduped at their first place. */
-  queue: string[];
-  /** Whether at least one group heading starts with "In Progress" or "To Do". */
-  hasQueue: boolean;
 }
 
 export interface ChainDocData {
   updated?: string;
-  paths: ChainPath[];
+  paths: Chain[];
   initiatives: Map<string, ChainInitiativeSection>;
+}
+
+/** Every work item id of a chain, in build order, each once. */
+export function chainIds(chain: Chain): string[] {
+  const out: string[] = [];
+  for (const group of chain.groups) {
+    for (const id of group.ids) if (!out.includes(id)) out.push(id);
+  }
+  return out;
 }
 
 export interface ChainDocParseOpts {
@@ -124,10 +133,6 @@ function headingText(line: string): string {
   return line.replace(/^#{2,6}\s+/, '').trim();
 }
 
-function startsQueueGroup(name: string): boolean {
-  return name.startsWith('In Progress') || name.startsWith('To Do');
-}
-
 /**
  * Parse a `chain.md` text.
  *
@@ -151,14 +156,10 @@ export function readChainDoc(
     problems.push({ line: 1, message: 'chain.md updated is missing or not a date' });
   }
 
-  type Section =
-    | { kind: 'path'; path: ChainPath; group?: ChainPathGroup }
-    | { kind: 'initiative'; section: ChainInitiativeSection; group?: { queue: boolean } }
-    | { kind: 'free' }
-    | { kind: 'discard' };
+  type Section = { kind: 'chain'; chain: Chain; group?: ChainGroup } | { kind: 'free' } | { kind: 'discard' };
 
   let current: Section | undefined;
-  let pendingGate: { group: ChainPathGroup; parts: string[] } | undefined;
+  let pendingGate: { group: ChainGroup; parts: string[] } | undefined;
   const seenInitiatives = new Set<string>();
 
   const flushGate = (): void => {
@@ -167,10 +168,10 @@ export function readChainDoc(
     pendingGate = undefined;
   };
 
-  const ensurePathGroup = (section: { path: ChainPath; group?: ChainPathGroup }): ChainPathGroup => {
+  const ensureGroup = (section: { chain: Chain; group?: ChainGroup }): ChainGroup => {
     if (!section.group) {
       section.group = { name: '', ids: [] };
-      section.path.groups.push(section.group);
+      section.chain.groups.push(section.group);
     }
     return section.group;
   };
@@ -193,9 +194,9 @@ export function readChainDoc(
     if (isH2(line)) {
       const name = headingText(line);
       if (name.startsWith('Critical path')) {
-        const path: ChainPath = { heading: name, groups: [] };
-        data.paths.push(path);
-        current = { kind: 'path', path };
+        const chain: Chain = { heading: name, groups: [] };
+        data.paths.push(chain);
+        current = { kind: 'chain', chain };
       } else {
         const id = idAtStart(name, opts.initiativePrefix);
         if (id !== undefined) {
@@ -213,14 +214,9 @@ export function readChainDoc(
                 message: `initiative heading names ${id}, which has no record`,
               });
             }
-            const section: ChainInitiativeSection = {
-              id,
-              heading: name,
-              queue: [],
-              hasQueue: false,
-            };
+            const section: ChainInitiativeSection = { id, heading: name, groups: [] };
             data.initiatives.set(id, section);
-            current = { kind: 'initiative', section };
+            current = { kind: 'chain', chain: section };
           }
         } else {
           current = { kind: 'free' };
@@ -231,14 +227,10 @@ export function readChainDoc(
 
     if (isH3(line)) {
       const name = headingText(line);
-      if (current?.kind === 'path') {
-        const group: ChainPathGroup = { name, ids: [] };
+      if (current?.kind === 'chain') {
+        const group: ChainGroup = { name, ids: [] };
         current.group = group;
-        current.path.groups.push(group);
-      } else if (current?.kind === 'initiative') {
-        const queue = startsQueueGroup(name);
-        if (queue) current.section.hasQueue = true;
-        current.group = { queue };
+        current.chain.groups.push(group);
       } else {
         current = { kind: 'free' };
       }
@@ -246,12 +238,12 @@ export function readChainDoc(
     }
 
     if (isGateLine(line)) {
-      if (current?.kind !== 'path') continue; // a Gate: line outside a critical path is free text
-      const group = ensurePathGroup(current);
+      if (current?.kind !== 'chain') continue; // a Gate: line outside a chain is free text
+      const group = ensureGroup(current);
       if (group.gate !== undefined) {
         problems.push({
           line: lineNo,
-          message: 'critical path group has a second Gate: line; the first is used',
+          message: 'stage has a second Gate: line; the first is used',
         });
         continue;
       }
@@ -264,28 +256,11 @@ export function readChainDoc(
     const item = listItemText(line);
     if (item === null) continue;
 
-    if (current?.kind === 'path') {
-      const group = ensurePathGroup(current);
+    if (current?.kind === 'chain') {
+      const group = ensureGroup(current);
       const id = idAtStart(item, opts.workPrefix);
-      if (id === undefined) continue; // free text in a critical path
+      if (id === undefined) continue; // a list item with no work item id is free text
       if (!group.ids.includes(id)) group.ids.push(id);
-      if (!opts.workItemIds.has(id)) {
-        problems.push({ line: lineNo, message: `${id} has no record` });
-      }
-      continue;
-    }
-
-    if (current?.kind === 'initiative') {
-      if (!current.group?.queue) continue; // free text under any other heading
-      const id = idAtStart(item, opts.workPrefix);
-      if (id === undefined) {
-        problems.push({
-          line: lineNo,
-          message: 'list item in a queue group does not start with a work item id',
-        });
-        continue;
-      }
-      if (!current.section.queue.includes(id)) current.section.queue.push(id);
       if (!opts.workItemIds.has(id)) {
         problems.push({ line: lineNo, message: `${id} has no record` });
       }

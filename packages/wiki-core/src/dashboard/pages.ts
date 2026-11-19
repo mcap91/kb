@@ -1,5 +1,6 @@
 import * as path from 'node:path';
-import type { ChainDocData } from './chain-doc.js';
+import { chainIds, type Chain, type ChainDocData } from './chain-doc.js';
+import { markdownToHtml } from './markdown.js';
 import type { DashboardRecord } from './types.js';
 import {
   cutTitle,
@@ -12,7 +13,7 @@ import {
   pageShell,
   priorityRank,
   relativeHref,
-  statusColor,
+  statusClass,
   statusRank,
 } from './text.js';
 
@@ -25,6 +26,13 @@ export interface PageBuildInput {
   chain: ChainDocData;
   chainExists: boolean;
 }
+
+/** The page that shows the critical paths of `chain.md`, written only when it has one. */
+export const CRITICAL_PATH_PAGE = 'critical-path.html';
+
+/** Card titles are clamped to three lines by CSS; this only bounds the page size. */
+const CARD_TITLE_MAX = 180;
+const ROW_TITLE_MAX = 120;
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -54,19 +62,34 @@ function unique(ids: string[]): string[] {
   return out;
 }
 
-function stampLine(newest: string | undefined, chainExists: boolean, chainDate: string | undefined): string {
-  const parts = [`Newest record update ${newest ?? 'unknown'}`];
-  if (chainExists) parts.push(`chain.md updated ${chainDate ?? 'unknown'}`);
-  return `${parts.join('. ')}. Generated from the wiki records and chain.md. The records win if they disagree.`;
+function link(href: string, text: string): string {
+  return `<a href="${escapeHtml(href)}">${escapeHtml(text)}</a>`;
 }
 
-function statusChip(status: string): string {
-  const label = status ? status.replace(/_/g, ' ') : 'unknown';
-  return `<span class="chip">${escapeHtml(label)}</span>`;
+/** The stamp line: newest record date, chain.md date, then the page links. */
+function stampLine(
+  newest: string | undefined,
+  input: PageBuildInput,
+  links: string[],
+  lead = '',
+): string {
+  let text = `Records ${newest ?? 'unknown'}`;
+  if (input.chainExists) text += ` · chain.md ${input.chain.updated ?? 'unknown'}`;
+  text += ' · the records win if they disagree.';
+  return `<p class="stamp">${lead}${escapeHtml(text)} ${links.join(' · ')}</p>`;
 }
 
-function statusDot(status: string): string {
-  return `<span class="dot" data-color="${statusColor(status)}"></span>`;
+function statusLabel(status: string): string {
+  return status ? status.replace(/_/g, ' ') : 'unknown';
+}
+
+function chip(status: string): string {
+  const cls = status === 'parked' ? 'parked' : statusClass(status);
+  return `<span class="chip ${cls}">${escapeHtml(statusLabel(status))}</span>`;
+}
+
+function dot(status: string): string {
+  return `<span class="dot ${statusClass(status)}"></span>`;
 }
 
 interface BuildContext {
@@ -74,101 +97,183 @@ interface BuildContext {
   byId: Map<string, DashboardRecord>;
   workItems: DashboardRecord[];
   initiatives: DashboardRecord[];
+  /** Work item and initiative ids that get a record page. */
+  paged: Set<string>;
   recordsWhere(predicate: (record: DashboardRecord) => boolean): string[];
 }
 
-function recordHref(ctx: BuildContext, pageDir: string, record: DashboardRecord): string {
-  return relativeHref(pageDir, record.absPath);
+/** The record page of a work item or initiative, relative to the owned folder. */
+function recordPage(id: string): string {
+  return `records/${id}.html`;
+}
+
+/**
+ * The link to a record from a page directory: a work item or initiative goes to
+ * its record page, any other record to its file; an id with no record has none.
+ */
+function recordLink(ctx: BuildContext, pageDir: string, id: string): string | undefined {
+  if (ctx.paged.has(id)) return relativeHref(pageDir, path.join(ctx.generatedDir, recordPage(id)));
+  const record = ctx.byId.get(id);
+  return record ? relativeHref(pageDir, record.absPath) : undefined;
+}
+
+/** Open dependencies of a work item: each `depends_on` id that is not done and not closed. */
+function openDependencies(ctx: BuildContext, record: DashboardRecord): string[] {
+  return record.depends_on.filter(dep => {
+    const depRecord = ctx.byId.get(dep);
+    return depRecord === undefined || isOpenWorkItem(depRecord.status);
+  });
+}
+
+/**
+ * A work item card: id, title, a meta line and a status chip. A card with an
+ * open dependency and a status of `todo` or `inbox` shows in the blocked color.
+ */
+function workCard(ctx: BuildContext, record: DashboardRecord, href: string, metaTail: string[]): string {
+  const after = openDependencies(ctx, record);
+  const blocked = after.length > 0 && (record.status === 'todo' || record.status === 'inbox');
+  const cls = blocked ? 'blocked' : statusClass(record.status);
+  const priority = record.priority ?? '';
+  const meta = [`<span class="pri-${escapeHtml(priority)}">${escapeHtml(priority)}</span>`, ...metaTail];
+  if (after.length > 0) meta.push(`after ${escapeHtml(after.join(', '))}`);
+  return (
+    `<a class="card ${cls}" data-wk="${escapeHtml(record.id)}" data-status="${escapeHtml(record.status)}"${blocked ? ' data-blocked="true"' : ''} href="${escapeHtml(href)}">` +
+    `<div class="cid">${escapeHtml(record.id)}</div>` +
+    `<div class="ctitle">${escapeHtml(cutTitle(record.title, CARD_TITLE_MAX))}</div>` +
+    `<div class="cmeta">${meta.join(' · ')}</div>` +
+    `${chip(record.status)}</a>`
+  );
+}
+
+/** A card for an id that has no record: plain text, no link. */
+function missingCard(id: string): string {
+  return `<div class="card todo" data-wk="${escapeHtml(id)}" data-status=""><div class="cid">${escapeHtml(id)}</div><div class="cmeta">no record</div></div>`;
 }
 
 // ---------------------------------------------------------------------------
 // index.html
 // ---------------------------------------------------------------------------
 
-function pathGroupRows(ctx: BuildContext, group: { ids: string[] }): string {
-  return group.ids
-    .map(id => {
-      const record = ctx.byId.get(id);
-      const href = `wk.html#${id}`;
-      if (!record) {
-        return `<div class="path-row" data-wk="${escapeHtml(id)}" data-status="">${statusDot('')}<span>${escapeHtml(id)}</span></div>`;
-      }
-      return `<div class="path-row" data-wk="${escapeHtml(id)}" data-status="${escapeHtml(record.status)}">${statusDot(record.status)}<a href="${escapeHtml(href)}"><b>${escapeHtml(id)}</b> ${escapeHtml(cutTitle(record.title, 120))}</a></div>`;
-    })
-    .join('\n');
-}
+const LEGEND =
+  `<div class="subtitle legend" data-legend>` +
+  `<span>${dot('in_progress')}in progress</span>` +
+  `<span>${dot('done')}done</span>` +
+  `<span>${dot('todo')}to do</span>` +
+  `<span>${dot('blocked')}blocked</span></div>`;
 
 function buildIndex(input: PageBuildInput, ctx: BuildContext): string {
-  const pageDir = ctx.generatedDir;
   const newest = maxDate(input.records.map(r => r.updated));
-
-  let body = '';
-  body += `<p class="legend" data-legend>blue in progress, green done, grey to do, red blocked</p>\n`;
-  body += `<p class="links">`;
-  if (input.chainExists) {
-    body += `<a href="../chain.md">chain.md</a> · `;
-  }
-  body += `<a href="wk.html">find a work item</a></p>\n`;
-
-  for (const criticalPath of input.chain.paths) {
-    body += `<section class="section" data-critical-path data-heading="${escapeHtml(criticalPath.heading)}">\n`;
-    body += `<h2>${escapeHtml(criticalPath.heading)}</h2>\n`;
-    for (const group of criticalPath.groups) {
-      body += `<div class="band" data-path-group data-name="${escapeHtml(group.name)}">\n`;
-      if (group.name) body += `<div class="band-title">${escapeHtml(group.name)}</div>\n`;
-      if (group.ids.length > 0) {
-        const open = group.ids.filter(id => {
-          const record = ctx.byId.get(id);
-          return record ? isOpenWorkItem(record.status) : false;
-        }).length;
-        body += `<span data-open="${open}" data-total="${group.ids.length}">${open} open</span>\n`;
-      }
-      if (group.gate) body += `<div class="gate" data-gate>${escapeHtml(group.gate)}</div>\n`;
-      body += pathGroupRows(ctx, group);
-      body += `</div>\n`;
-    }
-    body += `</section>\n`;
-  }
-
+  const active = ['in_progress', 'review', 'blocked'];
   const boxes: Array<{ key: string; label: string; records: DashboardRecord[] }> = [
-    {
-      key: 'in-progress',
-      label: 'In progress',
-      records: ctx.initiatives.filter(r => ['in_progress', 'review', 'blocked'].includes(r.status)),
-    },
+    { key: 'in-progress', label: 'In progress', records: ctx.initiatives.filter(r => active.includes(r.status)) },
     {
       key: 'todo',
       label: 'To do',
       records: ctx.initiatives.filter(
-        r => !['in_progress', 'review', 'blocked'].includes(r.status) && r.status !== 'done' && !isClosedStatus(r.status),
+        r => !active.includes(r.status) && r.status !== 'done' && !isClosedStatus(r.status),
       ),
     },
-    {
-      key: 'done',
-      label: 'Done',
-      records: ctx.initiatives.filter(r => r.status === 'done' || isClosedStatus(r.status)),
-    },
+    { key: 'done', label: 'Done', records: ctx.initiatives.filter(r => r.status === 'done' || isClosedStatus(r.status)) },
   ];
 
+  let body = '';
   for (const box of boxes) {
     const rows = [...box.records].sort((a, b) => compareIds(a.id, b.id));
     body += `<section class="section" data-box="${box.key}" data-count="${rows.length}">\n`;
-    body += `<div class="section-title">${box.label} · ${rows.length}</div>\n`;
+    body += `<div class="section-title${box.key === 'in-progress' ? ' now' : ''}">${box.label} · ${rows.length}</div>\n`;
     if (rows.length === 0) {
-      body += `<p class="empty">none</p>\n`;
+      body += `<div class="toc"><span class="empty">none</span></div>\n`;
     } else {
+      // Two columns, filled down the left column first so the rows read in id order.
+      body += `<nav class="toc" style="grid-template-rows:repeat(${Math.ceil(rows.length / 2)},auto)">`;
       for (const record of rows) {
-        body += `<div class="in-row" data-in="${escapeHtml(record.id)}" data-status="${escapeHtml(record.status)}">`;
-        body += statusDot(record.status);
-        body += `<a href="${escapeHtml(`${record.id}/chain.html`)}"><b>${escapeHtml(record.id)}</b> ${escapeHtml(cutTitle(record.title, 120))}</a>`;
-        body += `</div>\n`;
+        body +=
+          `<a class="toc-row" data-in="${escapeHtml(record.id)}" data-status="${escapeHtml(record.status)}" href="${escapeHtml(`${record.id}/chain.html`)}">` +
+          `${dot(record.status)}<b>${escapeHtml(record.id)}</b><span>${escapeHtml(cutTitle(record.title, ROW_TITLE_MAX))}</span></a>`;
       }
+      body += `</nav>\n`;
     }
     body += `</section>\n`;
   }
 
-  const head = `<h1>${escapeHtml(input.repoName)} · initiatives</h1>\n<p class="stamp">${escapeHtml(stampLine(newest, input.chainExists, input.chain.updated))}</p>`;
+  const links: string[] = [];
+  if (input.chain.paths.length > 0) links.push(link(CRITICAL_PATH_PAGE, 'critical path'));
+  if (input.chainExists) links.push(link('../chain.md', 'chain.md'));
+  links.push(link('wk.html', 'find a work item'));
+  const head = `<h1>${escapeHtml(input.repoName)} · initiatives</h1>\n${LEGEND}\n${stampLine(newest, input, links)}`;
   return pageShell({ title: `${input.repoName} · initiatives`, headHtml: head, bodyHtml: body });
+}
+
+// ---------------------------------------------------------------------------
+// Chains: the critical path page and the chain page draw stages the same way
+// ---------------------------------------------------------------------------
+
+/**
+ * The stages of a chain in build order: each stage's name and open count, its
+ * cards in file order, and its gate; arrows between stages.
+ */
+function chainStages(
+  ctx: BuildContext,
+  chain: Chain,
+  cardHref: (id: string) => string,
+  cardMeta: (record: DashboardRecord) => string[],
+): string {
+  const stages = chain.groups.map(group => {
+    let html = `<div class="section" data-stage data-name="${escapeHtml(group.name)}">\n`;
+    let title = escapeHtml(group.name);
+    if (group.ids.length > 0) {
+      const open = group.ids.filter(id => {
+        const record = ctx.byId.get(id);
+        return record ? isOpenWorkItem(record.status) : false;
+      }).length;
+      title += `${group.name ? ' · ' : ''}<span data-open="${open}" data-total="${group.ids.length}">${open} open</span>`;
+    }
+    if (title) html += `<div class="section-title">${title}</div>\n`;
+    if (group.ids.length > 0) {
+      const cards = group.ids.map(id => {
+        const record = ctx.byId.get(id);
+        return record ? workCard(ctx, record, cardHref(id), cardMeta(record)) : missingCard(id);
+      });
+      html += `<div class="row">${cards.join('')}</div>\n`;
+    } else {
+      html += `<p class="empty">no work items listed</p>\n`;
+    }
+    if (group.gate) html += `<div class="gate" data-gate><b>Gate</b> · ${escapeHtml(group.gate)}</div>\n`;
+    html += `</div>\n`;
+    return html;
+  });
+  return stages.join('<div class="arrow-down"></div>\n');
+}
+
+// ---------------------------------------------------------------------------
+// critical-path.html
+// ---------------------------------------------------------------------------
+
+function buildCriticalPath(input: PageBuildInput, ctx: BuildContext): string {
+  const paths = input.chain.paths;
+  const ids = paths.flatMap(p => p.groups.flatMap(g => g.ids));
+  const newest = maxDate(ids.map(id => ctx.byId.get(id)?.updated));
+  const single = paths.length === 1;
+
+  let body = '';
+  for (const criticalPath of paths) {
+    body += `<section class="section path" data-critical-path data-heading="${escapeHtml(criticalPath.heading)}">\n`;
+    if (!single) body += `<div class="section-title now">${escapeHtml(criticalPath.heading)}</div>\n`;
+    body += chainStages(
+      ctx,
+      criticalPath,
+      id => `wk.html#${id}`,
+      record => (record.initiative ? [escapeHtml(record.initiative)] : []),
+    );
+    body += `</section>\n`;
+  }
+
+  const links = [link('index.html', 'all initiatives')];
+  if (input.chainExists) links.push(link('../chain.md', 'chain.md'));
+  links.push(link('wk.html', 'find a work item'));
+  const subtitle = single ? `<p class="subtitle">${escapeHtml(paths[0].heading)}</p>\n` : '';
+  const head = `<h1>${escapeHtml(input.repoName)} · critical path</h1>\n${subtitle}${stampLine(newest, input, links)}`;
+  return pageShell({ title: `${input.repoName} · critical path`, headHtml: head, bodyHtml: body });
 }
 
 // ---------------------------------------------------------------------------
@@ -211,174 +316,199 @@ function bandDepths(items: DashboardRecord[], byId: Map<string, DashboardRecord>
   return memo;
 }
 
-function chainBand(
-  name: string,
-  items: DashboardRecord[],
-  ctx: BuildContext,
-): string {
-  if (items.length === 0) return '';
-  const depths = bandDepths(items, ctx.byId);
-  const ordered = [...items].sort((a, b) => {
-    const depth = (depths.get(a.id) ?? 0) - (depths.get(b.id) ?? 0);
-    if (depth !== 0) return depth;
-    const status = statusRank(a.status) - statusRank(b.status);
-    if (status !== 0) return status;
-    const priority = priorityRank(a.priority) - priorityRank(b.priority);
-    if (priority !== 0) return priority;
-    return compareIds(a.id, b.id);
-  });
-
-  let body = `<section class="section band" data-band="${escapeHtml(name)}">\n`;
-  body += `<div class="band-title">${escapeHtml(name)}</div>\n`;
-  for (const record of ordered) {
-    const after = record.depends_on.filter(dep => {
-      const depRecord = ctx.byId.get(dep);
-      return depRecord === undefined || isOpenWorkItem(depRecord.status);
-    });
-    const blocked = after.length > 0 && (record.status === 'todo' || record.status === 'inbox');
-    body += `<a class="card" data-wk="${escapeHtml(record.id)}" data-status="${escapeHtml(record.status)}"${blocked ? ' data-blocked="true"' : ''} href="${escapeHtml(`../wk.html#${record.id}`)}">`;
-    body += `<b>${escapeHtml(record.id)}</b> ${escapeHtml(record.title)}`;
-    body += ` <span class="meta">${escapeHtml(record.priority ?? '')} · ${escapeHtml(record.itemType ?? '')}</span>`;
-    if (after.length > 0) body += ` <span class="after">after ${escapeHtml(after.join(', '))}</span>`;
-    body += ` ${statusChip(record.status)}</a>\n`;
-  }
-  body += `</section>\n`;
-  return body;
+function compareWork(a: DashboardRecord, b: DashboardRecord): number {
+  const status = statusRank(a.status) - statusRank(b.status);
+  if (status !== 0) return status;
+  const priority = priorityRank(a.priority) - priorityRank(b.priority);
+  if (priority !== 0) return priority;
+  return compareIds(a.id, b.id);
 }
 
-function strip(name: string, items: DashboardRecord[]): string {
+/** One band: rows by `depends_on` depth among the band's own work items, joined by arrows. */
+function chainBand(key: string, title: string, items: DashboardRecord[], ctx: BuildContext, now: boolean): string {
+  const depths = bandDepths(items, ctx.byId);
+  const rows = new Map<number, DashboardRecord[]>();
+  for (const record of [...items].sort(compareWork)) {
+    const depth = depths.get(record.id) ?? 0;
+    rows.set(depth, [...(rows.get(depth) ?? []), record]);
+  }
+  const rowHtml = [...rows.keys()]
+    .sort((a, b) => a - b)
+    .map(depth => {
+      const cards = (rows.get(depth) ?? []).map(record =>
+        workCard(ctx, record, `../wk.html#${record.id}`, [escapeHtml(record.itemType ?? '')]),
+      );
+      return `<div class="row">${cards.join('')}</div>`;
+    });
+  return (
+    `<section class="section" data-band="${escapeHtml(key)}">` +
+    `<div class="section-title${now ? ' now' : ''}">${escapeHtml(title)}</div>` +
+    `${rowHtml.join('<div class="arrow-down"></div>')}</section>`
+  );
+}
+
+function strip(key: string, title: string, items: DashboardRecord[]): string {
   if (items.length === 0) return '';
   const sorted = [...items].sort((a, b) => compareIds(a.id, b.id));
-  let body = `<section class="section strip" data-strip="${escapeHtml(name)}">\n`;
-  body += `<div class="section-title">${escapeHtml(name)} · ${sorted.length}</div>\n<div>`;
-  for (const record of sorted) {
-    body += `<a href="${escapeHtml(`../wk.html#${record.id}`)}" title="${escapeHtml(record.title)}">${escapeHtml(record.id)}</a>`;
+  const links = sorted.map(
+    record =>
+      `<a href="${escapeHtml(`../wk.html#${record.id}`)}" title="${escapeHtml(record.title)}">${escapeHtml(record.id)}</a>`,
+  );
+  return (
+    `<section class="section${key === 'parked' ? ' parked' : ''}" data-strip="${escapeHtml(key)}">` +
+    `<div class="section-title">${escapeHtml(title)} · ${sorted.length}</div>` +
+    `<div class="parked-strip strip">${links.join(' ')}</div></section>\n`
+  );
+}
+
+/** A work item the Next box can show: open and not parked; an id with no record counts. */
+function isNextCandidate(record: DashboardRecord | undefined): boolean {
+  return record === undefined || (isOpenWorkItem(record.status) && record.status !== 'parked');
+}
+
+function buildNext(
+  input: PageBuildInput,
+  ctx: BuildContext,
+  initiative: DashboardRecord,
+  pageWorkItems: DashboardRecord[],
+): string {
+  const section = input.chain.initiatives.get(initiative.id);
+  const listed = section ? chainIds(section) : [];
+  const openListed = listed.filter(id => isNextCandidate(ctx.byId.get(id)));
+
+  let source: 'chain' | 'code';
+  let rows: Array<{ id: string; record?: DashboardRecord }>;
+  let label: string;
+  let more = 0;
+
+  if (openListed.length > 0) {
+    source = 'chain';
+    rows = openListed.slice(0, 7).map(id => ({ id, record: ctx.byId.get(id) }));
+    more = Math.max(0, openListed.length - 7);
+    label = `the first open work items of the chain in chain.md, updated ${input.chain.updated ?? 'unknown'}`;
+  } else {
+    const pick = pageWorkItems
+      .filter(w => isNextCandidate(w))
+      .filter(w => ['in_progress', 'review', 'blocked'].includes(w.status) || priorityRank(w.priority) <= 1)
+      .sort(compareWork)
+      .slice(0, 5);
+    if (pick.length === 0) return '';
+    source = 'code';
+    rows = pick.map(record => ({ id: record.id, record }));
+    label =
+      listed.length > 0
+        ? 'code-picked: every work item on the chain in chain.md is done or closed'
+        : 'code-picked: chain.md has no chain for this initiative';
   }
-  body += `</div>\n</section>\n`;
-  return body;
+
+  const stale: string[] = [];
+  if (section) {
+    if (!isValidDate(input.chain.updated)) {
+      stale.push('chain.md has no valid updated date');
+    } else {
+      const chainDate = input.chain.updated;
+      const newer = [initiative, ...pageWorkItems].filter(
+        r => isValidDate(r.updated) && r.updated > chainDate,
+      ).length;
+      if (newer > 0) stale.push(`newer records than chain.md: ${newer}`);
+    }
+  }
+
+  const items = rows.map(({ id, record }) => {
+    if (!record) return `<li data-wk="${escapeHtml(id)}" data-status=""><b>${escapeHtml(id)}</b></li>`;
+    return (
+      `<li data-wk="${escapeHtml(record.id)}" data-status="${escapeHtml(record.status)}">` +
+      `<b>${escapeHtml(record.id)}</b> ${escapeHtml(cutTitle(record.title, 70))} · ${escapeHtml(statusLabel(record.status))}</li>`
+    );
+  });
+  let html = `<div class="next" data-next data-next-source="${source}"><div class="next-title">Next</div><ol>${items.join('')}</ol>`;
+  if (more > 0) html += `<div class="small" data-next-more>${more} more on the chain</div>`;
+  html += `<div class="small">${escapeHtml(label)}</div>`;
+  if (stale.length > 0) html += `<div class="small stale" data-chain-stale>${escapeHtml(stale.join('. '))}</div>`;
+  return html + `</div>\n`;
+}
+
+/** Open work items the chain does not list, so a new one is seen and placed. */
+function offChain(items: DashboardRecord[]): string {
+  if (items.length === 0) return '';
+  const rows = [...items].sort(compareWork).map(
+    record =>
+      `<a class="toc-row" data-wk="${escapeHtml(record.id)}" data-status="${escapeHtml(record.status)}" href="${escapeHtml(`../wk.html#${record.id}`)}">` +
+      `${dot(record.status)}<b>${escapeHtml(record.id)}</b><span>${escapeHtml(cutTitle(record.title, ROW_TITLE_MAX))}</span></a>`,
+  );
+  return (
+    `<section class="section" data-off-chain>` +
+    `<div class="section-title">Not on the chain · ${rows.length}</div>` +
+    `<nav class="toc" style="grid-template-rows:repeat(${Math.ceil(rows.length / 2)},auto)">${rows.join('')}</nav></section>\n`
+  );
+}
+
+/** With no chain in chain.md: bands by milestone tag, else by status. */
+function codeBands(ctx: BuildContext, openish: DashboardRecord[]): string[] {
+  const bands: string[] = [];
+  if (openish.some(w => lowestMilestone(w.tags) !== undefined)) {
+    const numbers = [...new Set(openish.map(w => lowestMilestone(w.tags)).filter((n): n is number => n !== undefined))].sort(
+      (a, b) => a - b,
+    );
+    for (const number of numbers) {
+      const items = openish.filter(w => lowestMilestone(w.tags) === number);
+      bands.push(chainBand(`m${number}`, `M${number}`, items, ctx, bands.length === 0));
+    }
+    const unbanded = openish.filter(w => lowestMilestone(w.tags) === undefined);
+    if (unbanded.length > 0) bands.push(chainBand('Unbanded', 'Unbanded', unbanded, ctx, false));
+  } else {
+    const groups: Array<[string, string[]]> = [
+      ['In progress', ['in_progress', 'review', 'blocked']],
+      ['To do', ['todo']],
+      ['Inbox', ['inbox']],
+    ];
+    for (const [name, statuses] of groups) {
+      const items = openish.filter(w => statuses.includes(w.status));
+      if (items.length > 0) bands.push(chainBand(name, name, items, ctx, bands.length === 0));
+    }
+  }
+  return bands;
 }
 
 function buildChain(input: PageBuildInput, ctx: BuildContext, initiative: DashboardRecord): string {
   const pageDir = path.join(ctx.generatedDir, initiative.id);
   const pageWorkItems = ctx.workItems.filter(w => w.initiative === initiative.id && !isClosedStatus(w.status));
-
-  const section = input.chain.initiatives.get(initiative.id);
-  const hasQueue = section?.hasQueue ?? false;
-  const queueIds = section?.queue ?? [];
-  const queueOpen = queueIds.filter(id => {
-    const record = ctx.byId.get(id);
-    return record === undefined || isOpenWorkItem(record.status);
-  });
-  const queueDoneOrClosed = queueIds.filter(id => {
-    const record = ctx.byId.get(id);
-    return record !== undefined && !isOpenWorkItem(record.status);
-  }).length;
-
-  let nextHtml = '';
-  let nextSource: 'chain' | 'code' | undefined;
-  let nextRows: Array<{ id: string; record?: DashboardRecord }> = [];
-  let nextLabel = '';
-  let nextMore = 0;
-
-  if (hasQueue && queueOpen.length > 0) {
-    nextSource = 'chain';
-    nextRows = queueOpen.slice(0, 7).map(id => ({ id, record: ctx.byId.get(id) }));
-    nextMore = Math.max(0, queueOpen.length - 7);
-    nextLabel = `from chain.md, updated ${input.chain.updated ?? 'unknown'}`;
-  } else {
-    const pick = pageWorkItems
-      .filter(w => isOpenWorkItem(w.status))
-      .filter(w => ['in_progress', 'review', 'blocked'].includes(w.status) || priorityRank(w.priority) <= 1)
-      .sort((a, b) => {
-        const status = statusRank(a.status) - statusRank(b.status);
-        if (status !== 0) return status;
-        const priority = priorityRank(a.priority) - priorityRank(b.priority);
-        if (priority !== 0) return priority;
-        return compareIds(a.id, b.id);
-      })
-      .slice(0, 5);
-    if (pick.length > 0) {
-      nextSource = 'code';
-      nextRows = pick.map(record => ({ id: record.id, record }));
-      nextLabel =
-        hasQueue && queueIds.length > 0 && queueDoneOrClosed === queueIds.length
-          ? 'code-picked: every chain.md line for this initiative is done or closed'
-          : 'code-picked: chain.md has no In Progress or To Do list for this initiative';
-    }
-  }
-
-  if (nextSource !== undefined) {
-    const staleMarks: string[] = [];
-    if (hasQueue) {
-      if (!isValidDate(input.chain.updated)) {
-        staleMarks.push('chain.md has no valid updated date');
-      } else {
-        const chainDate = input.chain.updated as string;
-        const newerCount = [initiative, ...pageWorkItems].filter(
-          r => isValidDate(r.updated) && (r.updated as string) > chainDate,
-        ).length;
-        if (newerCount > 0) staleMarks.push(`newer records than chain.md: ${newerCount}`);
-        if (queueDoneOrClosed > 0) staleMarks.push(`chain.md names ${queueDoneOrClosed} done or closed work items`);
-      }
-    }
-
-    nextHtml += `<div class="next" data-next data-next-source="${nextSource}">\n`;
-    nextHtml += `<div class="next-title">Next</div>\n`;
-    for (const row of nextRows) {
-      if (!row.record) {
-        nextHtml += `<div class="next-row" data-wk="${escapeHtml(row.id)}" data-status=""><b>${escapeHtml(row.id)}</b></div>\n`;
-        continue;
-      }
-      nextHtml += `<div class="next-row" data-wk="${escapeHtml(row.record.id)}" data-status="${escapeHtml(row.record.status)}">`;
-      nextHtml += `<b>${escapeHtml(row.record.id)}</b> ${escapeHtml(cutTitle(row.record.title, 70))} ${statusChip(row.record.status)}</div>\n`;
-    }
-    if (nextMore > 0) nextHtml += `<div data-next-more>${nextMore} more in chain.md</div>\n`;
-    nextHtml += `<div class="next-label">${escapeHtml(nextLabel)}</div>\n`;
-    if (staleMarks.length > 0) {
-      nextHtml += `<div class="stale" data-chain-stale>${escapeHtml(staleMarks.join('. '))}</div>\n`;
-    }
-    nextHtml += `</div>\n`;
-  }
-
-  let body = '';
-  body += `<p class="links"><a href="../index.html">all initiatives</a> · <a href="${escapeHtml(recordHref(ctx, pageDir, initiative))}">${escapeHtml(initiative.id)} record</a></p>\n`;
-  body += nextHtml;
-
   const done = pageWorkItems.filter(w => w.status === 'done');
   const parked = pageWorkItems.filter(w => w.status === 'parked');
   const openish = pageWorkItems.filter(w => w.status !== 'done' && w.status !== 'parked');
 
-  body += strip('done', done);
+  let body = buildNext(input, ctx, initiative, pageWorkItems);
+  body += strip('done', 'Done', done);
 
-  const withMilestone = openish.some(w => lowestMilestone(w.tags) !== undefined);
-  if (withMilestone) {
-    const numbers = unique(
-      openish
-        .map(w => lowestMilestone(w.tags))
-        .filter((n): n is number => n !== undefined)
-        .map(String),
-    )
-      .map(Number)
-      .sort((a, b) => a - b);
-    for (const number of numbers) {
-      body += chainBand(`m${number}`, openish.filter(w => lowestMilestone(w.tags) === number), ctx);
-    }
-    body += chainBand('Unbanded', openish.filter(w => lowestMilestone(w.tags) === undefined), ctx);
+  const section = input.chain.initiatives.get(initiative.id);
+  const listed = new Set(section ? chainIds(section) : []);
+  if (section && listed.size > 0) {
+    body += `<section class="section" data-chain>\n`;
+    body += chainStages(
+      ctx,
+      section,
+      id => `../wk.html#${id}`,
+      record => [escapeHtml(record.itemType ?? '')],
+    );
+    body += `</section>\n`;
+    body += offChain(openish.filter(w => !listed.has(w.id)));
   } else {
-    body += chainBand('In progress', openish.filter(w => ['in_progress', 'review', 'blocked'].includes(w.status)), ctx);
-    body += chainBand('To do', openish.filter(w => w.status === 'todo'), ctx);
-    body += chainBand('Inbox', openish.filter(w => w.status === 'inbox'), ctx);
+    const bands = codeBands(ctx, openish);
+    if (bands.length > 0) body += bands.join('<div class="arrow-down dim"></div>') + '\n';
+    else if (done.length === 0) body += `<p class="stamp">No work items name this initiative.</p>\n`;
   }
-
-  body += strip('parked', parked);
-
-  if (pageWorkItems.length === 0) {
-    body += `<p class="empty">No work items name this initiative.</p>\n`;
-  }
+  body += strip('parked', 'Parked', parked);
 
   const newest = maxDate([initiative.updated, ...pageWorkItems.map(w => w.updated)]);
-  const head = `<h1>${escapeHtml(initiative.id)} · the chain</h1>\n<p class="subtitle">${escapeHtml(initiative.title)}</p>\n<p class="stamp">${escapeHtml(stampLine(newest, input.chainExists, input.chain.updated))}</p>`;
-  return pageShell({ title: `${input.repoName} · ${initiative.id} chain`, headHtml: head, bodyHtml: body });
+  const links = [
+    link('../index.html', 'all initiatives'),
+    link(relativeHref(pageDir, path.join(ctx.generatedDir, recordPage(initiative.id))), `${initiative.id} record`),
+  ];
+  const head =
+    `<h1>${escapeHtml(initiative.id)} · the chain</h1>\n` +
+    `<p class="subtitle">${escapeHtml(cutTitle(initiative.title, ROW_TITLE_MAX))}</p>\n` +
+    stampLine(newest, input, links);
+  return pageShell({ title: `${initiative.id} · the chain`, headHtml: head, bodyHtml: body });
 }
 
 // ---------------------------------------------------------------------------
@@ -428,7 +558,7 @@ function buildWkData(input: PageBuildInput, ctx: BuildContext): Record<string, u
         kind: 'work',
         title: record.title,
         status: record.status,
-        href: recordHref(ctx, ctx.generatedDir, record),
+        href: recordPage(record.id),
         priority: record.priority ?? null,
         type: record.itemType ?? null,
         updated: record.updated ?? null,
@@ -440,7 +570,7 @@ function buildWkData(input: PageBuildInput, ctx: BuildContext): Record<string, u
         kind: 'initiative',
         title: record.title,
         status: record.status,
-        href: recordHref(ctx, ctx.generatedDir, record),
+        href: recordPage(record.id),
         chain: `${record.id}/chain.html`,
       };
     }
@@ -449,31 +579,37 @@ function buildWkData(input: PageBuildInput, ctx: BuildContext): Record<string, u
   return data;
 }
 
+// The page script only draws: every neighbor group is computed above and embedded.
 const WK_SCRIPT = `<script>
 (function(){
-var DATA=JSON.parse(document.querySelector('[data-wk-data]').textContent);
+var R=JSON.parse(document.querySelector('[data-wk-data]').textContent);
 var JUMP=document.getElementById('jump');
 var PREFIX=JUMP.getAttribute('data-work-prefix')||'';
+var STRIPE={done:'done',in_progress:'prog',review:'prog',blocked:'blocked'};
 function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
-function chip(s){return '<span class="chip">'+esc((s||'unknown').replace(/_/g,' '))+'</span>'}
-function card(id){var r=DATA[id];if(!r)return '<span class="meta">'+esc(id)+'</span>';
- if(r.kind==='initiative')return '<a class="card" href="'+esc(r.chain)+'"><b>'+esc(id)+'</b> '+esc(r.title)+'</a>';
- return '<a class="card" href="#'+esc(id)+'"><b>'+esc(id)+'</b> '+esc(r.title)+'</a>'}
-function group(label,ids){if(!ids.length)return '';return '<div class="band-title">'+label+'</div><div class="grid">'+ids.map(card).join('')+'</div>'}
-function render(){var id=decodeURIComponent(location.hash.slice(1)).toUpperCase();
- var out=document.getElementById('out');
- var r=DATA[id];
- if(!r||r.kind!=='work'){var act=Object.keys(DATA).filter(function(k){return DATA[k].kind==='work'&&DATA[k].status==='in_progress'});
-  out.innerHTML='<section class="section"><div class="section-title">In progress</div><div class="grid">'+(act.map(card).join('')||'<span class="empty">none</span>')+'</div></section>';
+function stripe(s){return STRIPE[s]||'todo'}
+function chip(s){return '<span class="chip '+(s==='parked'?'parked':stripe(s))+'">'+esc((s||'unknown').replace(/_/g,' '))+'</span>'}
+function card(id){var r=R[id];if(!r)return '<span class="tag">'+esc(id)+'</span>';
+ if(r.kind==='initiative')return '<a class="card accent" href="'+esc(r.chain)+'"><div class="cid">'+esc(id)+'</div><div class="ctitle">'+esc(r.title)+'</div>'+chip(r.status)+'</a>';
+ return '<a class="card '+stripe(r.status)+'" href="#'+esc(id)+'"><div class="cid">'+esc(id)+'</div><div class="ctitle">'+esc(r.title)+'</div><div class="cmeta"><span class="pri-'+esc(r.priority)+'">'+esc(r.priority)+'</span> · '+esc(r.initiative||'no initiative')+'</div>'+chip(r.status)+'</a>'}
+function group(label,ids){if(!ids||!ids.length)return '';return '<div class="group-label">'+label+'</div><div class="side">'+ids.map(card).join('')+'</div>'}
+function render(){var id=decodeURIComponent(location.hash.slice(1)).toUpperCase(),out=document.getElementById('out'),r=R[id];
+ if(!r||r.kind!=='work'){var act=Object.keys(R).filter(function(k){return R[k].kind==='work'&&R[k].status==='in_progress'});
+  out.innerHTML='<section class="section"><div class="section-title now">In progress</div><div class="side">'+(act.map(card).join('')||'<span class="empty">none</span>')+'</div></section>';
   document.getElementById('crumb').innerHTML='Type a work item id above, or pick one below.';return}
- var ini=r.initiative?DATA[r.initiative]:null;
- var iniHtml=!r.initiative?'<span data-wk-initiative="none">no initiative</span>':ini?'<a data-wk-initiative="'+esc(r.initiative)+'" href="'+esc(ini.chain)+'">'+esc(r.initiative)+' · '+esc(ini.title)+'</a>':'<span data-wk-initiative="'+esc(r.initiative)+'">'+esc(r.initiative)+'</span>';
- var focus='<div class="card"><b>'+esc(id)+'</b> <a href="'+esc(r.href)+'">'+esc(r.title)+'</a><div class="meta">'+esc(r.priority||'')+' · '+esc(r.type||'')+' · updated '+esc(r.updated||'unknown')+'</div>'+chip(r.status)+'<div class="meta">Initiative: '+iniHtml+'</div></div>';
- var n=r.neighbors||{};
- out.innerHTML=focus+group('Depends on · blocked by',n.dependsOn||[])+group('Blocks · needed by',n.blocks||[])+group('Related',n.related||[])+group('Same initiative, nearest ids',n.fill||[]);
+ var ini=r.initiative?R[r.initiative]:null;
+ var iniHtml=!r.initiative?'<span data-wk-initiative="none">no initiative</span>':ini?'<span data-wk-initiative="'+esc(r.initiative)+'"><a href="'+esc(ini.chain)+'">'+esc(r.initiative)+'</a> · '+esc(ini.title)+'</span>':'<span data-wk-initiative="'+esc(r.initiative)+'">'+esc(r.initiative)+'</span>';
+ var focus='<div class="focus"><div class="card '+stripe(r.status)+'"><div class="cid">'+esc(id)+'</div><div class="ctitle">'+esc(r.title)+'</div><div class="cmeta"><span class="pri-'+esc(r.priority)+'">'+esc(r.priority)+'</span> · '+esc(r.type)+' · updated '+esc(r.updated||'unknown')+' · <a href="'+esc(r.href)+'">open record</a></div><div class="cmeta">'+iniHtml+'</div>'+chip(r.status)+'</div></div>';
+ var n=r.neighbors,h='',g;
+ g=group('Depends on · blocked by',n.dependsOn);if(g)h+=g+'<div class="arrow-down"></div>';
+ h+=focus;
+ g=group('Blocks · needed by',n.blocks);if(g)h+='<div class="arrow-down"></div>'+g;
+ g=group('Related',n.related);if(g)h+='<div class="arrow-down dim"></div>'+g;
+ g=group('Same initiative, nearest ids',n.fill);if(g)h+='<div class="arrow-down dim"></div>'+g;
+ out.innerHTML=h;
  document.getElementById('crumb').innerHTML='<a href="index.html">all initiatives</a>'+(ini?' · <a href="'+esc(ini.chain)+'">'+esc(r.initiative)+' chain</a>':'');
- document.title=id+' · neighbors'}
-document.getElementById('jump').addEventListener('keydown',function(ev){if(ev.key==='Enter'){var v=this.value.trim().toUpperCase();if(/^\\d+$/.test(v))v=PREFIX+'-'+('000'+v).slice(-4);location.hash=v}});
+ document.title=id+' · neighbors';window.scrollTo(0,0)}
+JUMP.addEventListener('keydown',function(ev){if(ev.key==='Enter'){var v=this.value.trim().toUpperCase();if(/^\\d+$/.test(v))v=PREFIX+'-'+('000'+v).slice(-4);location.hash=v}});
 window.addEventListener('hashchange',render);render();
 })();
 </script>`;
@@ -481,12 +617,89 @@ window.addEventListener('hashchange',render);render();
 function buildWk(input: PageBuildInput, ctx: BuildContext): string {
   const data = buildWkData(input, ctx);
   const newest = maxDate(input.records.map(r => r.updated));
-  let body = `<input id="jump" data-wk-input data-work-prefix="${escapeHtml(input.workItemPrefix)}" placeholder="id or number">\n`;
-  body += `<div id="out"></div>\n`;
+  let body = `<div id="out"></div>\n`;
   body += `<script type="application/json" data-wk-data>${jsonForScript(data)}</script>\n`;
   body += WK_SCRIPT;
-  const head = `<h1>${escapeHtml(input.repoName)} · work item</h1>\n<p class="stamp"><span id="crumb"></span> · ${escapeHtml(stampLine(newest, input.chainExists, input.chain.updated))}</p>`;
+  const placeholder = `${input.workItemPrefix}-0001 or 1`;
+  const head =
+    `<h1>Work item · neighbors</h1>\n` +
+    `<p class="subtitle"><input id="jump" data-wk-input data-work-prefix="${escapeHtml(input.workItemPrefix)}" placeholder="${escapeHtml(placeholder)}"></p>\n` +
+    stampLine(newest, input, [], '<span id="crumb"></span> · ');
   return pageShell({ title: `${input.repoName} · work item`, headHtml: head, bodyHtml: body });
+}
+
+// ---------------------------------------------------------------------------
+// records/<ID>.html
+// ---------------------------------------------------------------------------
+
+function idLinks(ctx: BuildContext, pageDir: string, ids: string[]): string {
+  return ids
+    .map(id => {
+      const href = recordLink(ctx, pageDir, id);
+      return href ? link(href, id) : escapeHtml(id);
+    })
+    .join(', ');
+}
+
+function buildRecord(input: PageBuildInput, ctx: BuildContext, record: DashboardRecord): string {
+  const pageDir = path.join(ctx.generatedDir, 'records');
+  const recordDir = path.dirname(record.absPath);
+  const isWork = record.prefix === input.workItemPrefix;
+
+  const facts = [chip(record.status)];
+  if (record.itemType) facts.push(escapeHtml(record.itemType));
+  if (record.priority) facts.push(`<span class="pri-${escapeHtml(record.priority)}">${escapeHtml(record.priority)}</span>`);
+  if (record.updated) facts.push(`updated ${escapeHtml(record.updated)}`);
+  let initiativeLine = '';
+  if (isWork) {
+    const initiative = record.initiative ? ctx.byId.get(record.initiative) : undefined;
+    initiativeLine = `<div class="facts">${
+      initiative && ctx.paged.has(initiative.id)
+        ? `<span data-record-initiative="${escapeHtml(initiative.id)}">${link(`../${initiative.id}/chain.html`, initiative.id)} · ${escapeHtml(cutTitle(initiative.title, ROW_TITLE_MAX))}</span>`
+        : `<span data-record-initiative="${escapeHtml(record.initiative ?? 'none')}">${escapeHtml(record.initiative ?? 'no initiative')}</span>`
+    }</div>\n`;
+  }
+
+  const relations = (
+    [
+      ['depends on', record.depends_on],
+      ['blocks', record.blocks],
+      ['related', record.related],
+    ] as Array<[string, string[]]>
+  )
+    .filter(([, ids]) => ids.length > 0)
+    .map(([label, ids]) => `${label} ${idLinks(ctx, pageDir, ids)}`);
+
+  const body = markdownToHtml(record.body, {
+    recordHref: id => recordLink(ctx, pageDir, id),
+    relativeHref: target => {
+      const hash = target.indexOf('#');
+      const file = hash < 0 ? target : target.slice(0, hash);
+      const fragment = hash < 0 ? '' : target.slice(hash);
+      if (file === '') return fragment;
+      return relativeHref(pageDir, path.resolve(recordDir, file)) + fragment;
+    },
+  });
+
+  const links = [link('../index.html', 'all initiatives')];
+  if (isWork) links.push(link(`../wk.html#${record.id}`, 'neighbors'));
+  else links.push(link(`../${record.id}/chain.html`, 'chain'));
+  links.push(link(relativeHref(pageDir, record.absPath), 'source'));
+
+  const head =
+    `<div class="rec">` +
+    `<h1 data-record="${escapeHtml(record.id)}">${escapeHtml(record.id)}</h1>\n` +
+    `<p class="subtitle">${escapeHtml(record.title)}</p>\n` +
+    `<div class="facts">${facts.join(' · ')}</div>\n` +
+    initiativeLine +
+    (relations.length > 0 ? `<div class="facts" data-relations>${relations.join(' · ')}</div>\n` : '') +
+    stampLine(record.updated, input, links) +
+    `</div>`;
+  return pageShell({
+    title: `${record.id} · ${cutTitle(record.title, 60)}`,
+    headHtml: head,
+    bodyHtml: `<article class="md" data-body>\n${body}\n</article>`,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -509,14 +722,19 @@ export function buildPages(input: PageBuildInput): Map<string, string> {
     byId,
     workItems,
     initiatives,
+    paged: new Set([...workItems, ...initiatives].map(r => r.id)),
     recordsWhere: predicate => input.records.filter(predicate).map(r => r.id),
   };
 
   const pages = new Map<string, string>();
   pages.set('index.html', buildIndex(input, ctx));
   pages.set('wk.html', buildWk(input, ctx));
+  if (input.chain.paths.length > 0) pages.set(CRITICAL_PATH_PAGE, buildCriticalPath(input, ctx));
   for (const initiative of initiatives) {
     pages.set(`${initiative.id}/chain.html`, buildChain(input, ctx, initiative));
+  }
+  for (const record of [...workItems, ...initiatives]) {
+    pages.set(recordPage(record.id), buildRecord(input, ctx, record));
   }
   return pages;
 }
