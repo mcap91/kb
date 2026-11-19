@@ -4,6 +4,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { generate } from '../packages/wiki-core/src/index.js';
 import { readChainDoc, type ChainDocProblem } from '../packages/wiki-core/src/dashboard/chain-doc.js';
+import { generateDashboard } from '../packages/wiki-core/src/dashboard/generate.js';
 import {
   createBootstrappedRepo,
   createPlanningRepo,
@@ -171,6 +172,85 @@ describe('dashboard generate', () => {
     expect(result.error).toBe('PARSE_ERROR');
     expect(fs.existsSync(path.join(repo.dir, 'wiki/catalog.md'))).toBe(false);
     expect(fs.existsSync(path.join(repo.dir, 'wiki/dashboard/generated'))).toBe(false);
+  });
+
+  it('fails when chain.md exists but cannot be read, and deletes nothing', async () => {
+    const repo = await planningRepo();
+    writeRecord(repo.dir, 'wiki/initiatives/IN-0001.md', {
+      id: 'IN-0001',
+      title: 'One',
+      status: 'in_progress',
+      type: 'initiative',
+      updated: '2026-11-01',
+    });
+    const generated = path.join(repo.dir, 'wiki/dashboard/generated');
+    fs.mkdirSync(generated, { recursive: true });
+    const planted = path.join(generated, 'planted.html');
+    fs.writeFileSync(planted, 'earlier run', 'utf-8');
+    fs.mkdirSync(path.join(repo.dir, 'wiki/dashboard/chain.md'), { recursive: true });
+
+    const result = await generate({ dir: repo.dir });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toBe('GENERATE_ERROR');
+    expect(result.message).toContain('wiki/dashboard/chain.md');
+    expect(fs.readFileSync(planted, 'utf-8')).toBe('earlier run');
+    expect(fs.existsSync(path.join(generated, 'index.html'))).toBe(false);
+  });
+
+  it('names the repo from the contract and falls back to the directory base name', async () => {
+    const withRepo = await planningRepo('org/name');
+    writeRecord(withRepo.dir, 'wiki/initiatives/IN-0001.md', {
+      id: 'IN-0001',
+      title: 'One',
+      status: 'in_progress',
+      type: 'initiative',
+      updated: '2026-11-01',
+    });
+    await generate({ dir: withRepo.dir });
+    expect(read(withRepo.dir, 'wiki/dashboard/generated/index.html')).toContain(
+      '<h1>name · initiatives</h1>',
+    );
+
+    const noRepo = await planningRepo('org/other');
+    const contractPath = path.join(noRepo.dir, 'wiki/.wiki-contract.json');
+    const meta = JSON.parse(fs.readFileSync(contractPath, 'utf-8')) as Record<string, unknown>;
+    delete meta.repo;
+    fs.writeFileSync(contractPath, JSON.stringify(meta), 'utf-8');
+    writeRecord(noRepo.dir, 'wiki/initiatives/IN-0001.md', {
+      id: 'IN-0001',
+      title: 'One',
+      status: 'in_progress',
+      type: 'initiative',
+      updated: '2026-11-01',
+    });
+    await generate({ dir: noRepo.dir });
+    expect(read(noRepo.dir, 'wiki/dashboard/generated/index.html')).toContain(
+      `<h1>${path.basename(noRepo.dir)} · initiatives</h1>`,
+    );
+  });
+
+  it('fails when the contract exists but cannot be read', async () => {
+    const repo = await planningRepo('org/name');
+    writeRecord(repo.dir, 'wiki/initiatives/IN-0001.md', {
+      id: 'IN-0001',
+      title: 'One',
+      status: 'in_progress',
+      type: 'initiative',
+      updated: '2026-11-01',
+    });
+    // A self-referential symlink is invisible to existsSync (so planningInstalled
+    // falls through to wiki/.dispatch/) but readFileSync fails with ELOOP.
+    const contractPath = path.join(repo.dir, 'wiki/.wiki-contract.json');
+    fs.unlinkSync(contractPath);
+    fs.symlinkSync(contractPath, contractPath);
+    fs.mkdirSync(path.join(repo.dir, 'wiki/.dispatch'), { recursive: true });
+
+    const result = await generate({ dir: repo.dir });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toBe('GENERATE_ERROR');
+    expect(result.message).toContain('wiki/.wiki-contract.json');
   });
 
   it('is byte-identical across runs and never writes the absolute path', async () => {
@@ -1116,6 +1196,34 @@ describe('owned folder', () => {
     await generate({ dir: repo.dir });
     expect(fs.existsSync(path.join(generated, 'link.html'))).toBe(false);
     expect(fs.readFileSync(outside, 'utf-8')).toBe('outside');
+  });
+
+  it('reports an lstat error other than ENOENT instead of a mkdir failure', async () => {
+    const repo = await wikiOnlyRepo();
+    const dashboard = path.join(repo.dir, 'wiki/dashboard');
+    fs.mkdirSync(dashboard, { recursive: true });
+    // No execute permission on wiki/dashboard: lstat of the child fails with
+    // EACCES while wiki/dashboard itself still lstats as a directory.
+    fs.chmodSync(dashboard, 0o000);
+    let result: ReturnType<typeof generateDashboard>;
+    try {
+      result = generateDashboard({
+        targetDir: repo.dir,
+        records: [],
+        workItemPrefix: 'WK',
+        initiativePrefix: 'IN',
+        repoName: 'proj',
+      });
+    } finally {
+      fs.chmodSync(dashboard, 0o755);
+    }
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toBe('GENERATE_ERROR');
+    expect(result.message).toContain('EACCES');
+    expect(result.message).toContain('inspect');
+    expect(result.message).not.toContain('Failed to create');
+    expect((result.detail as NodeJS.ErrnoException).code).toBe('EACCES');
   });
 });
 

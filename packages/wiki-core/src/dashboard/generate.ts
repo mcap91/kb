@@ -20,13 +20,21 @@ export interface GenerateDashboardOpts {
 function lstatOrNull(target: string): fs.Stats | null {
   try {
     return fs.lstatSync(target);
-  } catch {
-    return null;
+  } catch (err) {
+    // Only a missing path is "not here"; every other lstat failure (EACCES,
+    // ENOTDIR, ELOOP) reaches the caller so the real cause is reported.
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw err;
   }
 }
 
 function ensureRealDir(target: string, rel: string): Result<null> {
-  const stat = lstatOrNull(target);
+  let stat: fs.Stats | null;
+  try {
+    stat = lstatOrNull(target);
+  } catch (err) {
+    return fail('GENERATE_ERROR', `Failed to inspect ${rel}: ${String(err)}`, err);
+  }
   if (stat) {
     if (stat.isDirectory()) return ok(null);
     return fail('GENERATE_ERROR', `${rel} exists and is not a real directory`);

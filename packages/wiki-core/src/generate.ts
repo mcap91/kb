@@ -247,22 +247,40 @@ function resolvePrefixes(
   return { workItemPrefix: work.prefix, initiativePrefix: initiative.prefix };
 }
 
-/** The repo display name: the part after the slash of `repo`, else the base name of `dir`. */
-function repoDisplayName(targetDir: string): string {
+/**
+ * The repo display name: the part after the slash of `repo`, else the base name
+ * of `dir`. Falls back to the directory name only when the contract is absent
+ * (ENOENT) or has no non-empty string `repo` field; any other read or parse
+ * error is returned so the caller can stop the run.
+ */
+function repoDisplayName(targetDir: string): Result<string> {
   const contractPath = path.join(targetDir, 'wiki', '.wiki-contract.json');
+
+  let raw: string;
   try {
-    const parsed: unknown = JSON.parse(fs.readFileSync(contractPath, 'utf-8'));
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-      const repo = (parsed as Record<string, unknown>)['repo'];
-      if (typeof repo === 'string' && repo.length > 0) {
-        const slash = repo.lastIndexOf('/');
-        return slash === -1 ? repo : repo.slice(slash + 1);
-      }
+    raw = fs.readFileSync(contractPath, 'utf-8');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+      return ok(path.basename(targetDir));
     }
-  } catch {
-    // fall through to the directory base name
+    return fail('GENERATE_ERROR', `Failed to read wiki/.wiki-contract.json: ${String(err)}`, err);
   }
-  return path.basename(targetDir);
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    return fail('GENERATE_ERROR', `Failed to parse wiki/.wiki-contract.json: ${String(err)}`, err);
+  }
+
+  if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+    const repo = (parsed as Record<string, unknown>)['repo'];
+    if (typeof repo === 'string' && repo.length > 0) {
+      const slash = repo.lastIndexOf('/');
+      return ok(slash === -1 ? repo : repo.slice(slash + 1));
+    }
+  }
+  return ok(path.basename(targetDir));
 }
 
 /**
@@ -555,11 +573,26 @@ export async function generate(
 
   // 5. Dashboard pages, only while the planning layer is active.
   if (planning.data && prefixes) {
+    const repoNameResult = repoDisplayName(targetDir);
+    if (!repoNameResult.ok) {
+      return fail(repoNameResult.error, repoNameResult.message, repoNameResult.detail);
+    }
+
+    // A missing chain.md is empty data with no problem; any other read error
+    // (a directory, a permission failure) stops the run before any page is
+    // written or any stale page is deleted.
     const chainPath = path.join(targetDir, 'wiki', 'dashboard', 'chain.md');
     let chainText: string | undefined;
     try {
-      if (fs.existsSync(chainPath)) chainText = fs.readFileSync(chainPath, 'utf-8');
-    } catch {
+      chainText = fs.readFileSync(chainPath, 'utf-8');
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+        return fail(
+          'GENERATE_ERROR',
+          `Failed to read wiki/dashboard/chain.md: ${String(err)}`,
+          err,
+        );
+      }
       chainText = undefined;
     }
 
@@ -568,7 +601,7 @@ export async function generate(
       records: toDashboardRecords(records),
       workItemPrefix: prefixes.workItemPrefix,
       initiativePrefix: prefixes.initiativePrefix,
-      repoName: repoDisplayName(targetDir),
+      repoName: repoNameResult.data,
       chainText,
     });
     if (!dashboard.ok) return fail(dashboard.error, dashboard.message, dashboard.detail);
