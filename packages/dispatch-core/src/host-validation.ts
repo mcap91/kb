@@ -45,6 +45,7 @@ import { checkDataMountEntry, isMountableRoot, isWithinRoot } from './mountabili
 import { getRunDir, isRunId } from './paths.js';
 import { loadValidationRegistry, validationRegistryFingerprint, type ValidationRegistry } from './repo-config.js';
 import { writeJsonAtomic } from './run-state.js';
+import { loadKnownSecretValues, type SecretValue } from './secret-scrub.js';
 import { spawnIsolated } from './spawn-isolated.js';
 
 /** File name of the authoritative evidence JSON inside a run dir. */
@@ -200,6 +201,7 @@ async function runStep(opts: {
   runtimePaths: string[];
   dataMounts: string[];
   env: Record<string, string>;
+  secretValues: ReadonlyArray<SecretValue>;
 }): Promise<DispatchResult<ValidationStepResult>> {
   const plan = buildBwrapPlan({
     clonePath: opts.clonePath,
@@ -217,6 +219,7 @@ async function runStep(opts: {
     maxStderrBytes: OUTPUT_TAIL_BYTES,
     stdoutCapture: 'tail',
     groupTeardown: { killGraceMs: KILL_GRACE_MS },
+    secretValues: opts.secretValues,
   });
   if (!spawned.ok) return spawned;
   const r = spawned.data;
@@ -245,7 +248,12 @@ interface RegistrySteps {
  * the jail. The one code path for the delivery run and the base-commit
  * baseline, so both run under identical jail conditions.
  */
-async function runRegistrySteps(opts: { dir: string; sha: string; registry: ValidationRegistry | null }): Promise<DispatchResult<RegistrySteps>> {
+async function runRegistrySteps(opts: {
+  dir: string;
+  sha: string;
+  registry: ValidationRegistry | null;
+  secretValues: ReadonlyArray<SecretValue>;
+}): Promise<DispatchResult<RegistrySteps>> {
   const registry = opts.registry;
   let setup: ValidationStepResult | null = null;
   const commands: ValidationStepResult[] = [];
@@ -266,7 +274,7 @@ async function runRegistrySteps(opts: { dir: string; sha: string; registry: Vali
     }
     const path = [...runtime.data.map((p) => `${p}/bin`), BASE_PATH].join(':');
     const env = { ...registry.env, PATH: path, HOME: '/tmp', TMPDIR: '/tmp' };
-    const step = { clonePath, runtimePaths: runtime.data, dataMounts: dataMounts.data };
+    const step = { clonePath, runtimePaths: runtime.data, dataMounts: dataMounts.data, secretValues: opts.secretValues };
 
     if (registry.setup !== null) {
       // DECISION: npm lifecycle scripts are forced off for setup (A4.2 "scripts ignored"),
@@ -313,7 +321,7 @@ function stepsFailed(steps: RegistrySteps): boolean {
  * repo's HEAD (the merge target). Facts only: it never touches the outcome,
  * and a baseline that cannot run is recorded with its reason, not an error.
  */
-async function runBaseline(opts: RunHostValidationOpts): Promise<ValidationBaseline> {
+async function runBaseline(opts: RunHostValidationOpts, secretValues: ReadonlyArray<SecretValue>): Promise<ValidationBaseline> {
   const base = await execBash({
     scriptContent: 'git merge-base "$KB_DELIVERY_SHA" HEAD',
     cwd: opts.dir,
@@ -324,7 +332,7 @@ async function runBaseline(opts: RunHostValidationOpts): Promise<ValidationBasel
   if (base.data.exitCode !== 0 || baseSha === '') {
     return { status: 'not_run', reason: `no merge-base of ${opts.deliverySha} and HEAD: ${base.data.stderr.trim() || 'empty output'}` };
   }
-  const ran = await runRegistrySteps({ dir: opts.dir, sha: baseSha, registry: opts.registry });
+  const ran = await runRegistrySteps({ dir: opts.dir, sha: baseSha, registry: opts.registry, secretValues });
   if (!ran.ok) return { status: 'not_run', reason: ran.message };
   return { status: 'ran', base_sha: baseSha, ...ran.data };
 }
@@ -339,12 +347,18 @@ async function runBaseline(opts: RunHostValidationOpts): Promise<ValidationBasel
  * evidence file is written, so the merge gate sees evidence as missing.
  */
 export async function runHostValidation(opts: RunHostValidationOpts): Promise<DispatchResult<ValidationEvidence>> {
+  // Built once per run and threaded to every step, so `stdout_tail` and
+  // `stderr_tail` are scrubbed at capture. A loader failure (e.g.
+  // `BAD_RECORD`) is the failure — evidence is never written from a list kb
+  // could not build.
+  const secretValueList = await loadKnownSecretValues(opts.dir);
+  if (!secretValueList.ok) return secretValueList;
   const startedAt = new Date().toISOString();
-  const ran = await runRegistrySteps({ dir: opts.dir, sha: opts.deliverySha, registry: opts.registry });
+  const ran = await runRegistrySteps({ dir: opts.dir, sha: opts.deliverySha, registry: opts.registry, secretValues: secretValueList.data });
   if (!ran.ok) return ran;
   const { setup, commands } = ran.data;
   const failed = stepsFailed(ran.data);
-  const baseline = failed ? await runBaseline(opts) : undefined;
+  const baseline = failed ? await runBaseline(opts, secretValueList.data) : undefined;
   const evidence: ValidationEvidence = {
     schema_version: 1,
     handoff_id: opts.handoffId,

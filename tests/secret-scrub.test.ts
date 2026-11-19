@@ -17,15 +17,19 @@
  * filesystem tests use temp dirs. The planted values are obvious placeholder
  * strings, never real-looking live tokens.
  */
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
   buildSecretValueList,
   createSecretScrubber,
+  loadKnownSecretValues,
+  readCredentialLine,
+  scrubFileInPlace,
   scrubText,
+  scrubValue,
   type SecretValue,
 } from '../packages/dispatch-core/src/secret-scrub.js';
 import { spawnIsolated } from '../packages/dispatch-core/src/spawn-isolated.js';
@@ -252,6 +256,226 @@ describe('createSecretScrubber / scrubText', () => {
     expect(scrubText('a 15-char value is short', makeList(['SHORT', 'a'.repeat(15)]))).toBe(
       'a 15-char value is short',
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Unit: scrubValue
+// ---------------------------------------------------------------------------
+
+describe('scrubValue', () => {
+  it('replaces a planted value in a nested object, in an array, and in an Error message', () => {
+    const value = 'scrub-value-planted-0123456789-abcdef';
+    const list = makeList(['PLANT', value]);
+    const input = {
+      outer: { inner: `a ${value} b` },
+      arr: [`c ${value} d`, 7],
+      err: new Error(`failed with ${value}`),
+    };
+    const out = scrubValue(input, list);
+    expect(out.outer.inner).toBe('a [REDACTED:PLANT] b');
+    expect(out.arr[0]).toBe('c [REDACTED:PLANT] d');
+    expect(out.arr[1]).toBe(7);
+    const err = out.err as unknown as { name: string; message: string };
+    expect(err.message).toBe('failed with [REDACTED:PLANT]');
+    expect(out.err).not.toBeInstanceOf(Error);
+  });
+
+  it('leaves numbers, booleans and null unchanged', () => {
+    const list = makeList(['PLANT', 'scrub-value-planted-0123456789-abcdef']);
+    const input = { n: 3, f: 1.5, t: true, f2: false, z: null, u: undefined };
+    expect(scrubValue(input, list)).toEqual(input);
+  });
+
+  it('leaves its input unchanged', () => {
+    const value = 'scrub-value-planted-0123456789-abcdef';
+    const list = makeList(['PLANT', value]);
+    const input = { s: value, nested: { s: value }, arr: [value], err: new Error(value) };
+    const out = scrubValue(input, list);
+    expect(input.s).toBe(value);
+    expect(input.nested.s).toBe(value);
+    expect(input.arr[0]).toBe(value);
+    expect(input.err.message).toBe(value);
+    expect(JSON.stringify(out)).not.toContain(value);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Unit: scrubFileInPlace
+// ---------------------------------------------------------------------------
+
+describe('scrubFileInPlace', () => {
+  let dir: string;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'secret-scrub-file-'));
+  });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('replaces the value in a file and returns true', async () => {
+    const value = 'file-planted-value-0123456789-abcdef';
+    const path = join(dir, 'log.txt');
+    await writeFile(path, `before ${value} after\n`, 'utf8');
+    const result = await scrubFileInPlace(path, makeList(['FILE', value]));
+    expect(result).toEqual({ ok: true, data: true });
+    expect(await readFile(path, 'utf8')).toBe('before [REDACTED:FILE] after\n');
+  });
+
+  it('leaves a clean file unwritten, with the same mtime, and returns false', async () => {
+    const path = join(dir, 'clean.txt');
+    await writeFile(path, 'nothing to scrub here\n', 'utf8');
+    const before = await stat(path);
+    const result = await scrubFileInPlace(path, makeList(['FILE', 'file-planted-value-0123456789-abcdef']));
+    expect(result).toEqual({ ok: true, data: false });
+    const after = await stat(path);
+    expect(after.mtimeMs).toBe(before.mtimeMs);
+  });
+
+  it('returns ok(false) for a missing file', async () => {
+    const result = await scrubFileInPlace(
+      join(dir, 'missing.txt'),
+      makeList(['FILE', 'file-planted-value-0123456789-abcdef']),
+    );
+    expect(result).toEqual({ ok: true, data: false });
+  });
+
+  it('leaves no temp file in the directory', async () => {
+    const value = 'file-planted-value-0123456789-abcdef';
+    const path = join(dir, 'a.txt');
+    await writeFile(path, value, 'utf8');
+    await scrubFileInPlace(path, makeList(['FILE', value]));
+    expect(await readdir(dir)).toEqual(['a.txt']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Unit: readCredentialLine
+// ---------------------------------------------------------------------------
+
+describe('readCredentialLine', () => {
+  let dir: string;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'secret-scrub-cred-'));
+  });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('returns the value after the NAME= line', async () => {
+    const path = join(dir, 'secrets.env');
+    await writeFile(path, 'OTHER=x\nHF_TOKEN=the-value\n', 'utf8');
+    expect(await readCredentialLine('HF_TOKEN', path)).toEqual({ ok: true, data: 'the-value' });
+  });
+
+  it("gives today's missing-from-source-file message when the line is absent", async () => {
+    const path = join(dir, 'secrets.env');
+    await writeFile(path, 'OTHER=x\n', 'utf8');
+    expect(await readCredentialLine('HF_TOKEN', path)).toEqual({
+      ok: false,
+      error: 'CREDENTIAL_NOT_CONFIGURED',
+      message: 'Credential variable "HF_TOKEN" is not configured (missing from its named source file).',
+    });
+  });
+
+  it("gives today's could-not-read message when the file cannot be read", async () => {
+    const path = join(dir, 'absent.env');
+    const result = await readCredentialLine('HF_TOKEN', path);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toBe('CREDENTIAL_NOT_CONFIGURED');
+    expect(result.message.startsWith(`Credential variable "HF_TOKEN" is not configured (could not read ${path}: `)).toBe(true);
+    expect(result.message.endsWith(').')).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Unit: loadKnownSecretValues
+// ---------------------------------------------------------------------------
+
+describe('loadKnownSecretValues', () => {
+  let dir: string;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'secret-scrub-load-'));
+    await mkdir(join(dir, 'wiki', '.dispatch'), { recursive: true });
+  });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  async function writeSecrets(name: string, varName: string, value: string): Promise<string> {
+    const path = join(dir, name);
+    await writeFile(path, `${varName}=${value}\n`, 'utf8');
+    return path;
+  }
+
+  it('holds a planted profile value and a planted backend key, by name', async () => {
+    const profileValue = 'profile-planted-value-0123456789-abcde';
+    const backendValue = 'backend-planted-key-0123456789-abcdefg';
+    const profileFile = await writeSecrets('profile.env', 'HF_TOKEN', profileValue);
+    const backendFile = await writeSecrets('backend.env', 'OPENROUTER_API_KEY', backendValue);
+    await writeFile(
+      join(dir, 'wiki', '.dispatch', 'profiles.json'),
+      JSON.stringify({ schema_version: 1, hf: { inject: { HF_TOKEN: profileFile } } }),
+      'utf8',
+    );
+    await writeFile(
+      join(dir, 'wiki', '.dispatch', 'backends.json'),
+      JSON.stringify({ openrouter: { family: 'pi', base_url: null, api_key_env: 'OPENROUTER_API_KEY', secrets_file: backendFile } }),
+      'utf8',
+    );
+
+    const result = await loadKnownSecretValues(dir);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data).toEqual([
+      { name: 'HF_TOKEN', value: profileValue },
+      { name: 'OPENROUTER_API_KEY', value: backendValue },
+    ]);
+  });
+
+  it('skips an unreadable file and writes the stderr line, which names the file and holds no value', async () => {
+    const missingFile = join(dir, 'missing.env');
+    await writeFile(
+      join(dir, 'wiki', '.dispatch', 'profiles.json'),
+      JSON.stringify({ schema_version: 1, hf: { inject: { LOST_TOKEN: missingFile } } }),
+      'utf8',
+    );
+
+    const chunks: string[] = [];
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(((chunk: unknown) => {
+      chunks.push(String(chunk));
+      return true;
+    }) as typeof process.stderr.write);
+    try {
+      const result = await loadKnownSecretValues(dir);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.data).toEqual([]);
+      const text = chunks.join('');
+      expect(text).toContain(`[secret-scrub] warning: skipped LOST_TOKEN from ${missingFile}: CREDENTIAL_NOT_CONFIGURED`);
+      expect(text).not.toContain('=');
+    } finally {
+      stderrSpy.mockRestore();
+    }
+  });
+
+  it('returns BAD_RECORD for an invalid profiles.json', async () => {
+    await writeFile(
+      join(dir, 'wiki', '.dispatch', 'profiles.json'),
+      JSON.stringify({ schema_version: 2 }),
+      'utf8',
+    );
+    const result = await loadKnownSecretValues(dir);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toBe('BAD_RECORD');
   });
 });
 

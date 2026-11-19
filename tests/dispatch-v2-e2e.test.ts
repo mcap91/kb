@@ -27,9 +27,9 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import {
   REPORTED_ROLES,
@@ -2190,6 +2190,213 @@ describe('dispatch v2 e2e (fake-tier) — value-list secret scrubber wiring (moc
     } finally {
       await rm(repoRoot, { recursive: true, force: true });
       await rm(secretsDir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Scrub every kb-written surface (forwarder files, quarantine diff, both
+// response-doc copies, refusal payloads). Runs the REAL runDispatch
+// with only spawnIsolated mocked; the real tunnel forwarder is spawned and
+// then killed, so the cancel/exit cleanup (wait -> scrubFileInPlace) runs for
+// real against the files this mock plants. The fixture value is an obvious
+// placeholder, never a real-looking token.
+// ---------------------------------------------------------------------------
+
+const E2E_SECRET_NAME = 'HF_TOKEN';
+const E2E_SECRET_VALUE = 'e2e-planted-secret-value-0123456789-abcd';
+const E2E_REDACTED = `[REDACTED:${E2E_SECRET_NAME}]`;
+const FORWARDER_FILES = ['forwarder.log', 'tunnel-destinations.log', 'provider-usage.jsonl'] as const;
+
+/** A minimal Pi stream whose final assistant message is `text` (pi.ts contract). */
+function piReportFixture(text: string): string {
+  return (
+    [
+      JSON.stringify({
+        type: 'message_end',
+        message: {
+          role: 'assistant',
+          content: [{ type: 'text', text }],
+          stopReason: 'stop',
+          usage: { input: 1, output: 1, totalTokens: 2, cost: { total: 0 } },
+        },
+      }),
+      JSON.stringify({ type: 'agent_end', messages: [] }),
+    ].join('\n') + '\n'
+  );
+}
+
+interface SecretWorkerOpts {
+  fixture: string;
+  /** Write an in-scope `src/greet.mjs` into the clone. */
+  inScopeFile?: boolean;
+  /** Write a clone-root file with this exact name (and the planted value as content). */
+  outOfScopeFileName?: string;
+  exitCode?: number;
+  stdout?: string;
+  stderr?: string;
+}
+
+/** Mock spawnIsolated; plant the value in the run dir's forwarder files and in the clone. */
+function mockSecretWorker(opts: SecretWorkerOpts): void {
+  vi.spyOn(spawnIsolatedModule, 'spawnIsolated').mockImplementation(async (plan, spawnOpts) => {
+    if (spawnOpts?.stdoutLogPath) {
+      await writeFile(spawnOpts.stdoutLogPath, opts.fixture, 'utf8');
+      const runDir = dirname(spawnOpts.stdoutLogPath);
+      for (const name of FORWARDER_FILES) {
+        await writeFile(join(runDir, name), `${E2E_SECRET_VALUE}\n`, 'utf8');
+      }
+    }
+    if (opts.inScopeFile) {
+      await mkdir(join(plan.cwd, 'src'), { recursive: true });
+      await writeFile(join(plan.cwd, 'src', 'greet.mjs'), 'export const greet = (name) => `Hello, ${name}!`;\n', 'utf8');
+    }
+    if (opts.outOfScopeFileName !== undefined) {
+      await writeFile(join(plan.cwd, opts.outOfScopeFileName), `${E2E_SECRET_VALUE}\n`, 'utf8');
+    }
+    return {
+      ok: true,
+      data: {
+        stdout: opts.stdout ?? '',
+        stderr: opts.stderr ?? '',
+        exitCode: opts.exitCode ?? 0,
+        signal: null,
+        truncated: false,
+        timedOut: false,
+        streamDrainTimedOut: false,
+      },
+    };
+  });
+}
+
+/** Temp repo (with or without a granted profile holding the planted value). */
+async function setupSecretRepo(grantProfile: boolean): Promise<{ repoRoot: string; secretsDir: string | null }> {
+  if (!grantProfile) {
+    return { repoRoot: await setupS3Repo(), secretsDir: null };
+  }
+  const secretsDir = await createTempDir('kb-e2e-secret-surfaces-');
+  const secretFile = join(secretsDir, 'hf.env');
+  await writeFile(secretFile, `${E2E_SECRET_NAME}=${E2E_SECRET_VALUE}\n`, 'utf8');
+  const repoRoot = await setupS3Repo({
+    credentials: ['hf'],
+    profiles: { schema_version: 1, hf: { inject: { [E2E_SECRET_NAME]: secretFile } } },
+  });
+  return { repoRoot, secretsDir };
+}
+
+function runSecret(repoRoot: string) {
+  return runDispatch({
+    dir: repoRoot,
+    handoff: 'wiki/handoffs/HO-S3TEST.md',
+    model: 'deepseek',
+    backend: 'openrouter',
+    preflight: false,
+  });
+}
+
+/** The single run dir a failed run leaves behind (no `result.data.runDir` on failure). */
+async function findRunDir(repoRoot: string): Promise<string> {
+  const base = join(repoRoot, '.agent-runs', 'runs', 'HO-S3TEST');
+  const runs = await readdir(base);
+  expect(runs.length).toBeGreaterThan(0);
+  return join(base, runs[0]);
+}
+
+describe('dispatch v2 e2e (fake-tier) — kb-written surfaces (real forwarder, mocked spawnIsolated)', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('plants an obvious 40-character placeholder value', () => {
+    expect(E2E_SECRET_VALUE).toHaveLength(40);
+  });
+
+  it('scrubs all three forwarder files after a delivered run and scrubs both response-doc copies', async () => {
+    const { repoRoot, secretsDir } = await setupSecretRepo(true);
+    mockSecretWorker({ fixture: piReportFixture(`done: ${E2E_SECRET_VALUE}`), inScopeFile: true });
+    try {
+      const result = await runSecret(repoRoot);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.data.delivery.status).toBe('delivered');
+
+      for (const name of FORWARDER_FILES) {
+        const text = await readFile(join(result.data.runDir, name), 'utf8');
+        expect(text).toContain(E2E_REDACTED);
+        expect(text).not.toContain(E2E_SECRET_VALUE);
+      }
+      const responseDoc = await readFile(join(result.data.runDir, 'HO-S3TEST.response.md'), 'utf8');
+      expect(responseDoc).toContain(E2E_REDACTED);
+      expect(responseDoc).not.toContain(E2E_SECRET_VALUE);
+      const canonical = await readFile(join(repoRoot, 'wiki', 'handoffs', 'HO-S3TEST.response.md'), 'utf8');
+      expect(canonical).toContain(E2E_REDACTED);
+      expect(canonical).not.toContain(E2E_SECRET_VALUE);
+    } finally {
+      await rm(repoRoot, { recursive: true, force: true });
+      if (secretsDir) await rm(secretsDir, { recursive: true, force: true });
+    }
+  });
+
+  it('scrubs the forwarder files and the failure payload after a non-zero worker exit', async () => {
+    const { repoRoot, secretsDir } = await setupSecretRepo(true);
+    mockSecretWorker({ fixture: piReportFixture('failed'), exitCode: 1, stdout: E2E_SECRET_VALUE });
+    try {
+      const result = await runSecret(repoRoot);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error).toBe('PIPELINE_FAILED');
+      expect(JSON.stringify({ message: result.message, detail: result.detail })).not.toContain(E2E_SECRET_VALUE);
+
+      const runDir = await findRunDir(repoRoot);
+      for (const name of FORWARDER_FILES) {
+        const text = await readFile(join(runDir, name), 'utf8');
+        expect(text).toContain(E2E_REDACTED);
+        expect(text).not.toContain(E2E_SECRET_VALUE);
+      }
+    } finally {
+      await rm(repoRoot, { recursive: true, force: true });
+      if (secretsDir) await rm(secretsDir, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses an out-of-scope file named after the value and scrubs every refusal surface', async () => {
+    const { repoRoot, secretsDir } = await setupSecretRepo(true);
+    mockSecretWorker({ fixture: piReportFixture('done'), outOfScopeFileName: E2E_SECRET_VALUE });
+    try {
+      const result = await runSecret(repoRoot);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.data.delivery.status).toBe('refused_out_of_scope');
+      const offending = JSON.stringify(result.data.delivery);
+      expect(offending).not.toContain(E2E_SECRET_VALUE);
+      expect(offending).toContain(E2E_REDACTED);
+
+      const quarantine = await readFile(join(result.data.runDir, 'quarantine.diff'), 'utf8');
+      expect(quarantine).toContain(E2E_REDACTED);
+      expect(quarantine).not.toContain(E2E_SECRET_VALUE);
+      const responseDoc = await readFile(join(result.data.runDir, 'HO-S3TEST.response.md'), 'utf8');
+      expect(responseDoc).not.toContain(E2E_SECRET_VALUE);
+      const canonical = await readFile(join(repoRoot, 'wiki', 'handoffs', 'HO-S3TEST.response.md'), 'utf8');
+      expect(canonical).not.toContain(E2E_SECRET_VALUE);
+    } finally {
+      await rm(repoRoot, { recursive: true, force: true });
+      if (secretsDir) await rm(secretsDir, { recursive: true, force: true });
+    }
+  });
+
+  it('with no profile granted, the same out-of-scope test finds the plaintext value (the check bites)', async () => {
+    const { repoRoot } = await setupSecretRepo(false);
+    mockSecretWorker({ fixture: piReportFixture('done'), outOfScopeFileName: E2E_SECRET_VALUE });
+    try {
+      const result = await runSecret(repoRoot);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      const delivery = result.data.delivery;
+      expect(delivery.status).toBe('refused_out_of_scope');
+      if (delivery.status !== 'refused_out_of_scope') return;
+      expect(JSON.stringify(delivery.offendingPaths)).toContain(E2E_SECRET_VALUE);
+    } finally {
+      await rm(repoRoot, { recursive: true, force: true });
     }
   });
 });

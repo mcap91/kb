@@ -24,8 +24,12 @@
  * caught; `flush()` emits the held tail. `scrubText` is the same matcher over
  * a whole string.
  */
+import { readFile } from 'node:fs/promises';
+
 import type { DispatchResult } from './errors.js';
 import { fail, ok } from './errors.js';
+import { loadBackendsTable, loadProfilesConfig } from './repo-config.js';
+import { writeAtomic } from './run-state.js';
 
 /** A value below this length (UTF-16 code units) is too short to be treated as a secret. */
 export const MIN_VALUE_LENGTH = 16;
@@ -263,6 +267,112 @@ export function scrubText(text: string, list: ReadonlyArray<SecretValue>): strin
   const forms = collectForms(list);
   if (forms.length === 0 || text.length === 0) return text;
   return scrubBufferForms(Buffer.from(text, 'utf8'), list, forms).toString('utf8');
+}
+
+/**
+ * Deep-copy `value`, scrubbing every string leaf of a plain object or array
+ * with `scrubText`. An `Error` becomes `{ name, message }` with the message
+ * scrubbed (its stack is dropped — a stack can quote an arbitrary caught
+ * value). Numbers, booleans, null and undefined pass through unchanged, as
+ * do non-plain objects (Date, Buffer, functions). The input is never
+ * mutated.
+ */
+export function scrubValue<T>(value: T, list: ReadonlyArray<SecretValue>): T {
+  if (typeof value === 'string') return scrubText(value, list) as T;
+  if (value === null || typeof value !== 'object') return value;
+  if (value instanceof Error) {
+    return { name: value.name, message: scrubText(value.message, list) } as T;
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => scrubValue(item, list)) as T;
+  }
+  const proto = Object.getPrototypeOf(value) as object | null;
+  if (proto !== Object.prototype && proto !== null) return value;
+  const out: Record<string, unknown> = {};
+  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+    out[key] = scrubValue(child, list);
+  }
+  return out as T;
+}
+
+/**
+ * Scrub a whole file in place. A missing file is `ok(false)`; a read or write
+ * error is `FILE_WRITE_ERROR` naming the path only (never its content). An
+ * unchanged file is not written, so its mtime is preserved.
+ */
+export async function scrubFileInPlace(path: string, list: ReadonlyArray<SecretValue>): Promise<DispatchResult<boolean>> {
+  let text: string;
+  try {
+    text = await readFile(path, 'utf8');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return ok(false);
+    return fail('FILE_WRITE_ERROR', `Failed to scrub ${path}.`, err);
+  }
+  const scrubbed = scrubText(text, list);
+  if (scrubbed === text) return ok(false);
+  try {
+    await writeAtomic(path, scrubbed);
+  } catch (err) {
+    return fail('FILE_WRITE_ERROR', `Failed to scrub ${path}.`, err);
+  }
+  return ok(true);
+}
+
+/**
+ * Read one credential value out of a `NAME=value` line in `filePath` (no `~`
+ * expansion — the path is used verbatim). The two `CREDENTIAL_NOT_CONFIGURED`
+ * messages are the ones `resolveCredentialEnv` (pipeline.ts) has always
+ * produced; this is their one home.
+ */
+export async function readCredentialLine(varName: string, filePath: string): Promise<DispatchResult<string>> {
+  let content: string;
+  try {
+    content = await readFile(filePath, 'utf8');
+  } catch (err) {
+    return fail('CREDENTIAL_NOT_CONFIGURED', `Credential variable "${varName}" is not configured (could not read ${filePath}: ${err instanceof Error ? err.message : String(err)}).`);
+  }
+  const line = content.replace(/\r\n/g, '\n').split('\n').find((l) => l.startsWith(`${varName}=`));
+  if (line === undefined) {
+    return fail('CREDENTIAL_NOT_CONFIGURED', `Credential variable "${varName}" is not configured (missing from its named source file).`);
+  }
+  return ok(line.slice(varName.length + 1));
+}
+
+/**
+ * Build the value list from the credentials kb already knows about on this
+ * host: every profile `inject` value in profiles.json and every backend's
+ * `api_key_env` read from its `secrets_file`. A value whose read fails is
+ * skipped with one stderr line that names the var and its file and carries
+ * no content. A loader failure (e.g. `BAD_RECORD`) is returned as the
+ * failure. Credential-file leaves (claude, codex) are not included.
+ */
+export async function loadKnownSecretValues(dir: string): Promise<DispatchResult<SecretValue[]>> {
+  const profiles = await loadProfilesConfig(dir);
+  if (!profiles.ok) return profiles;
+  const backends = await loadBackendsTable(dir);
+  if (!backends.ok) return backends;
+
+  const pairs: SecretValuePair[] = [];
+  for (const profile of Object.values(profiles.data.profiles)) {
+    for (const [varName, filePath] of Object.entries(profile.inject)) {
+      const line = await readCredentialLine(varName, filePath);
+      if (!line.ok) {
+        process.stderr.write(`[secret-scrub] warning: skipped ${varName} from ${filePath}: ${line.error}\n`);
+        continue;
+      }
+      pairs.push({ name: varName, value: line.data });
+    }
+  }
+  for (const backend of Object.values(backends.data)) {
+    if (backend.api_key_env === null || backend.secrets_file === null) continue;
+    const line = await readCredentialLine(backend.api_key_env, backend.secrets_file);
+    if (!line.ok) {
+      process.stderr.write(`[secret-scrub] warning: skipped ${backend.api_key_env} from ${backend.secrets_file}: ${line.error}\n`);
+      continue;
+    }
+    pairs.push({ name: backend.api_key_env, value: line.data });
+  }
+  return buildSecretValueList({ values: pairs });
 }
 
 /**

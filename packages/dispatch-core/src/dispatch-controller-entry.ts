@@ -24,13 +24,73 @@ import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import type { DispatchResult } from './errors.js';
-import { runDispatch, type DispatchResult2 } from './pipeline.js';
+import { FORWARDER_EXIT_TIMEOUT_MS, runDispatch, type DispatchResult2 } from './pipeline.js';
 import { parseHandoff } from './ho.js';
 import { getRunDir } from './paths.js';
 import { writeJsonAtomic } from './run-state.js';
 
 /** v2 heartbeat cadence (operator ruling 2026-09-07, s1-rulings #4): 120s, not v1's 1s. */
 export const V2_HEARTBEAT_INTERVAL_MS = 120_000;
+
+/**
+ * Bound on the cancel cleanup closure the SIGTERM handler awaits: two
+ * forwarder waits (SIGTERM then SIGKILL, each `FORWARDER_EXIT_TIMEOUT_MS`)
+ * plus 5s for the scrub itself.
+ */
+export const CANCEL_CLEANUP_TIMEOUT_MS = 2 * FORWARDER_EXIT_TIMEOUT_MS + 5_000;
+
+/** Deps `installCancelHandler` needs; the handler registers nothing itself. */
+export interface CancelHandlerDeps {
+  getCleanup(): (() => Promise<void>) | undefined;
+  stopHeartbeat(): void;
+  /** After this call, `writeState` drops every write except the handler's own. */
+  markCancelled(): void;
+  writeCancelled(): void;
+  /** Awaits the controller's serialized write chain. */
+  flushWrites(): Promise<void>;
+  exit(code: number): void;
+  log(line: string): void;
+}
+
+/**
+ * Build the SIGTERM handler. It marks the run cancelled, stops the heartbeat,
+ * flushes pending state writes, awaits the registered cancel cleanup bounded
+ * by `CANCEL_CLEANUP_TIMEOUT_MS` (a cleanup that rejects or overruns is
+ * logged and does not stop the handler), writes the `cancelled` state, flushes
+ * again, and exits 143.
+ */
+export function installCancelHandler(deps: CancelHandlerDeps): () => Promise<void> {
+  return async (): Promise<void> => {
+    deps.markCancelled();
+    deps.stopHeartbeat();
+    await deps.flushWrites();
+
+    const cleanup = deps.getCleanup();
+    if (cleanup !== undefined) {
+      await new Promise<void>((resolvePromise) => {
+        const timer = setTimeout(() => {
+          deps.log(`[dispatch] warning: cancel cleanup did not finish within ${CANCEL_CLEANUP_TIMEOUT_MS}ms; continuing.`);
+          resolvePromise();
+        }, CANCEL_CLEANUP_TIMEOUT_MS);
+        cleanup().then(
+          () => {
+            clearTimeout(timer);
+            resolvePromise();
+          },
+          (err) => {
+            clearTimeout(timer);
+            deps.log(`[dispatch] warning: cancel cleanup failed: ${err instanceof Error ? err.message : String(err)}`);
+            resolvePromise();
+          },
+        );
+      });
+    }
+
+    deps.writeCancelled();
+    await deps.flushWrites();
+    deps.exit(143);
+  };
+}
 
 /** s1-rulings ruling 5's v2 run-state status vocabulary. `blocked`/`partial` retired (DEC-0010). */
 export type V2RunStatus =
@@ -351,10 +411,25 @@ async function main(): Promise<void> {
   // which would regress state.json back to `running` (the WK-0013 class).
   let writeChain: Promise<void> = Promise.resolve();
   let state = buildRunningState({ runId, handoffId, model, pid, startedAt, heartbeatAt: startedAt });
+  // Set by the SIGTERM handler; after it, only the handler's own
+  // `writeCancelled` writes (see the deps below).
+  let cancelled = false;
 
   const writeState = (next: V2RunState): void => {
+    if (cancelled) return;
     state = next;
     writeChain = writeChain.then(() => writeJsonAtomic(statePath, state)).catch(() => undefined);
+  };
+
+  // The handler's own terminal write, deliberately bypassing the `cancelled`
+  // guard above — the same `status`/`heartbeat_at`/`completed_at` fields
+  // `stopRun` (stop-run.ts) writes.
+  const writeCancelled = (): void => {
+    const now = new Date().toISOString();
+    state = { ...state, status: 'cancelled', heartbeat_at: now, completed_at: now };
+    writeChain = writeChain.then(() => writeJsonAtomic(statePath, state)).catch((err) => {
+      console.error(`[dispatch] warning: could not write cancelled state: ${err instanceof Error ? err.message : String(err)}`);
+    });
   };
 
   writeState(state);
@@ -366,6 +441,23 @@ async function main(): Promise<void> {
     writeState({ ...state, heartbeat_at: new Date().toISOString() });
   }, V2_HEARTBEAT_INTERVAL_MS);
   heartbeatTimer.unref?.();
+
+  let registeredCleanup: (() => Promise<void>) | undefined;
+  const cancelHandler = installCancelHandler({
+    getCleanup: () => registeredCleanup,
+    stopHeartbeat: () => {
+      shuttingDown = true;
+      clearInterval(heartbeatTimer);
+    },
+    markCancelled: () => {
+      cancelled = true;
+    },
+    writeCancelled,
+    flushWrites: () => writeChain,
+    exit: (code) => process.exit(code),
+    log: (line) => console.error(line),
+  });
+  process.once('SIGTERM', () => void cancelHandler());
 
   let pipelineResult: DispatchResult<DispatchResult2> | null = null;
   let thrown: unknown = null;
@@ -380,6 +472,9 @@ async function main(): Promise<void> {
       runId,
       preflight,
       verbose: false,
+      registerCancelCleanup: (cleanup) => {
+        registeredCleanup = cleanup;
+      },
     });
   } catch (err) {
     thrown = err;

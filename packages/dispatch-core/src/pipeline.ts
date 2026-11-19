@@ -58,7 +58,15 @@ import {
 } from './jail.js';
 import { isMountableRoot } from './mountability.js';
 import { spawnIsolated, type SpawnResult } from './spawn-isolated.js';
-import { buildSecretValueList, type CredentialFileSnapshot } from './secret-scrub.js';
+import {
+  buildSecretValueList,
+  readCredentialLine,
+  scrubFileInPlace,
+  scrubText,
+  scrubValue,
+  type CredentialFileSnapshot,
+  type SecretValue,
+} from './secret-scrub.js';
 import { attachStreamErrorHandlers } from './stream-utils.js';
 import { buildWorkerEnv } from './env-policy.js';
 import { createClone, removeClone, sweepOrphanClones } from './clone.js';
@@ -171,6 +179,12 @@ export interface DispatchOpts {
   preflight?: boolean;
   /** Verbose output */
   verbose?: boolean;
+  /**
+   * Register a cancel cleanup closure with the caller (dispatch-controller-
+   * entry.ts's SIGTERM handler). Called once, right after the tunnel forwarder
+   * is spawned; the closure stops the forwarder and scrubs its run-dir files.
+   */
+  registerCancelCleanup?: (cleanup: () => Promise<void>) => void;
 }
 
 export interface DispatchResult2 {
@@ -220,6 +234,7 @@ async function writeQuarantineDiff(opts: {
   baseSha: string;
   attrSha: string;
   tree: string;
+  secretValues: ReadonlyArray<SecretValue>;
 }): Promise<DispatchResult<string>> {
   const quarantinePath = join(opts.runDir, 'quarantine.diff');
   const script = buildQuarantineScript({
@@ -237,7 +252,7 @@ async function writeQuarantineDiff(opts: {
     return fail('DELIVERY_FAILED', 'Quarantine diff exceeded the maximum size.');
   }
   try {
-    await writeFile(quarantinePath, exec.data.stdout, 'utf8');
+    await writeFile(quarantinePath, scrubText(exec.data.stdout, opts.secretValues), 'utf8');
   } catch (err) {
     return fail('CAPTURE_FAILED', `Failed to write quarantine diff: ${quarantinePath}`, err);
   }
@@ -407,17 +422,9 @@ async function resolveCredentialEnv(resolution: CredentialResolution): Promise<D
   ];
 
   for (const { varName, filePath } of entries) {
-    let content: string;
-    try {
-      content = await readFile(filePath, 'utf8');
-    } catch (err) {
-      return fail('CREDENTIAL_NOT_CONFIGURED', `Credential variable "${varName}" is not configured (could not read ${filePath}: ${err instanceof Error ? err.message : String(err)}).`);
-    }
-    const line = content.replace(/\r\n/g, '\n').split('\n').find((l) => l.startsWith(`${varName}=`));
-    if (line === undefined) {
-      return fail('CREDENTIAL_NOT_CONFIGURED', `Credential variable "${varName}" is not configured (missing from its named source file).`);
-    }
-    env[varName] = line.slice(varName.length + 1);
+    const line = await readCredentialLine(varName, filePath);
+    if (!line.ok) return line;
+    env[varName] = line.data;
   }
 
   return ok(env);
@@ -943,7 +950,31 @@ export function buildInnerScript(opts: {
   ].join('\n');
 }
 
+interface DispatchRunCtx {
+  /** The launch value list; empty until the core builds it (step 12b-i). */
+  secretValues: SecretValue[];
+}
+
+/**
+ * Exported entry point: runs the core, then scrubs every string leaf of the
+ * returned result — ok data (refusal details included) and a fail result's
+ * message and detail alike. A thrown error becomes a new Error with its
+ * message scrubbed and no `cause` (the cause would carry the plaintext),
+ * because the controller's `deriveTerminalFields` has a thrown path. With an
+ * empty list, results and errors pass through unchanged.
+ */
 export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<DispatchResult2>> {
+  const ctx: DispatchRunCtx = { secretValues: [] };
+  try {
+    const result = await runDispatchCore(opts, ctx);
+    return scrubValue(result, ctx.secretValues);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    throw new Error(scrubText(message, ctx.secretValues));
+  }
+}
+
+async function runDispatchCore(opts: DispatchOpts, ctx: DispatchRunCtx): Promise<DispatchResult<DispatchResult2>> {
   const dir = resolve(opts.dir);
   const { verbose } = opts;
   // WK-0164: run start timestamp, captured before any clone/jail work — the
@@ -1187,6 +1218,49 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
   });
   if (!cloneResult.ok) return cloneResult;
   const { clonePath } = cloneResult.data;
+
+  // Cancel/settle cleanup shared by the controller's SIGTERM handler and the
+  // outer `finally` below: stop the host-side tunnel forwarder, then scrub
+  // the run-dir files it and the worker can carry a resolved value into. A
+  // no-op until the forwarder is spawned; idempotent (the second call returns
+  // the first call's promise, so nothing is signalled or rewritten twice).
+  let forwarderChild: ChildProcess | null = null;
+  let cancelCleanupPromise: Promise<void> | null = null;
+  const runCancelCleanup = (): Promise<void> => {
+    if (cancelCleanupPromise === null) {
+      cancelCleanupPromise = (async (): Promise<void> => {
+        const forwarder = forwarderChild;
+        if (forwarder !== null && forwarder.pid !== undefined && forwarder.exitCode === null && forwarder.signalCode === null) {
+          try {
+            forwarder.kill('SIGTERM');
+          } catch (err) {
+            logVerbose(verbose, `warning: could not signal tunnel forwarder: ${err}`);
+          }
+          const exited = await waitForChildExit(forwarder, FORWARDER_EXIT_TIMEOUT_MS);
+          if (!exited) {
+            try {
+              forwarder.kill('SIGKILL');
+            } catch (err) {
+              logVerbose(verbose, `warning: could not SIGKILL tunnel forwarder: ${err}`);
+            }
+            await waitForChildExit(forwarder, FORWARDER_EXIT_TIMEOUT_MS);
+          }
+        }
+        const files = [
+          join(runDir, 'forwarder.log'),
+          join(runDir, 'tunnel-destinations.log'),
+          join(runDir, 'provider-usage.jsonl'),
+        ];
+        for (const path of files) {
+          const scrubbed = await scrubFileInPlace(path, ctx.secretValues);
+          if (!scrubbed.ok) {
+            process.stderr.write(`[secret-scrub] warning: could not scrub ${path}: ${scrubbed.error}\n`);
+          }
+        }
+      })();
+    }
+    return cancelCleanupPromise;
+  };
 
   try {
     // 9b. Pre-create skeleton for write_scope sparse binds — bwrap cannot
@@ -1513,6 +1587,7 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       snapshots: credentialSnapshots,
     });
     if (!secretValueListResult.ok) return secretValueListResult;
+    ctx.secretValues = secretValueListResult.data;
     const proxyUrl = `http://127.0.0.1:${TUNNEL_RELAY_PORT}`;
     const baseWorkerEnv: Record<string, string> = {
       ...buildWorkerEnv({}),
@@ -1616,26 +1691,28 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
     // forwarder's own tap (tunnel.ts).
     const providerUsagePath = join(runDir, 'provider-usage.jsonl');
     const forwarderLogFd = openSync(forwarderLogPath, 'a');
-    const forwarderChild = spawn(
+    const forwarder = spawn(
       'node',
       [forwarderScriptPath, tunnelSocketPath, resolvedTargetUrl, handoff.web ? 'true' : 'false', tunnelDestinationsLogPath, JSON.stringify(allowedHosts), providerUsagePath],
       { stdio: ['ignore', forwarderLogFd, forwarderLogFd] },
     );
+    forwarderChild = forwarder;
     closeSync(forwarderLogFd);
-    forwarderChild.on('error', (err) => logVerbose(verbose, `warning: tunnel forwarder process error: ${err.message}`));
+    opts.registerCancelCleanup?.(runCancelCleanup);
+    forwarder.on('error', (err) => logVerbose(verbose, `warning: tunnel forwarder process error: ${err.message}`));
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 300));
 
     // 13/14. Spawn the jailed worker directly (D6 ruling 7 components 5-8).
     let spawnData: SpawnResult;
     try {
       logVerbose(verbose, `invoking ${canonicalModel} via bwrap+pi`);
-      const spawnResult = await spawnIsolated(plan, { timeoutMs: effectiveTimeoutMs, stdoutLogPath: join(runDir, 'worker-output.log'), secretValues: secretValueListResult.data });
+      const spawnResult = await spawnIsolated(plan, { timeoutMs: effectiveTimeoutMs, stdoutLogPath: join(runDir, 'worker-output.log'), secretValues: ctx.secretValues });
       if (!spawnResult.ok) return spawnResult;
       spawnData = spawnResult.data;
     } finally {
       // Post-jail: stop the host-side forwarder — nothing else reaps it,
       // since it runs outside bwrap and --die-with-parent doesn't reach it.
-      forwarderChild.kill();
+      forwarder.kill();
     }
 
     // WK-0266 ruling 3/Resolutions row 17: wait for the forwarder to actually
@@ -1644,7 +1721,7 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
     // every still-open response before exiting. `kill()` alone (above) does
     // not wait; reading immediately after it risked a race where that flush
     // lands after the read, silently undercounting n.
-    const forwarderExited = await waitForChildExit(forwarderChild, FORWARDER_EXIT_TIMEOUT_MS);
+    const forwarderExited = await waitForChildExit(forwarder, FORWARDER_EXIT_TIMEOUT_MS);
 
     // Exit/signal interpretation (D6 ruling 7 component 8; chassis
     // deriveTerminalStatus: `code === 0 && !signal` -> succeeded — native
@@ -1897,6 +1974,7 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
         // offending paths or values (the diff is the evidence a reviewer
         // reads; it names those paths itself).
         const quarantine = await writeQuarantineDiff({
+          secretValues: ctx.secretValues,
           runDir,
           clonePath,
           baseSha: admission.data.baseSha,
@@ -2025,6 +2103,7 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
     // runs, not just in unit tests that call deriveVerdict/writeResponseDoc
     // directly.
     const captureResult = await writeResponseDoc({
+      secretValues: ctx.secretValues,
       runDir,
       handoff: { id: handoff.id, title: handoff.title, mode: handoff.mode },
       delivery,
@@ -2127,6 +2206,11 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       hostValidation,
     });
   } finally {
+    // Cancel/settle cleanup before the clone goes away — a scrub failure is
+    // logged and never changes the run's result.
+    await runCancelCleanup().catch((err) => {
+      process.stderr.write(`[secret-scrub] warning: cancel cleanup failed: ${err instanceof Error ? err.message : String(err)}\n`);
+    });
     // 21. Remove clone — best-effort; clone.ts's 24h orphan sweep is the
     // safety net if this itself fails to run (never rejects, but belt+suspenders).
     await removeClone(clonePath).catch(() => undefined);

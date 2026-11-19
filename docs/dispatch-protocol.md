@@ -360,6 +360,17 @@ the list is the exact set of resolved pairs, never a name:
   is emitted. Every finish path — normal exit, timeout kill, spawn error — flushes both scrubbers before
   the run resolves. The scrubbed bytes feed the in-memory capture, the on-disk `worker-output.log`, and
   therefore `status`'s log tail; without a value list the bytes are unchanged.
+- **kb-written surfaces.** The same list scrubs every other host file kb writes from worker-influenced
+  text: the run dir's `forwarder.log`, `tunnel-destinations.log` and `provider-usage.jsonl` (scrubbed in
+  place after the forwarder exits — on every exit path, including a cancel); `quarantine.diff` before it
+  is written; the run-dir response doc and its canonical `wiki/handoffs/` copy; the returned run result
+  (so the controller's `state.json` `error` and `error_detail` fields hold no plaintext); and
+  host-validation evidence (`stdout_tail`/`stderr_tail`). Host validation gets its list the same way a
+  dispatch launch does — `loadKnownSecretValues(dir)` builds it once per validation run from every
+  profile `inject` value in `wiki/.dispatch/profiles.json` and every backend `api_key_env` value read from
+  its `secrets_file`. A value a loader cannot read is skipped, with one stderr line naming the var and the
+  file and never the content; a `scrubFileInPlace` failure logs one stderr line and never changes the
+  run's result.
 - A credential-file snapshot that is not valid JSON fails the build with `CREDENTIAL_NOT_CONFIGURED`,
   naming the label only and never the bytes.
 
@@ -444,8 +455,9 @@ A hit on 2 or 3 is `refused_out_of_scope` for those paths; a hit on 4 is `secret
 `IDEMPOTENT`, or `CONFLICT:<tree>`. The same tree from the same base is an idempotent no-op; a different
 tree from the same base is a structured `conflict`, never a clobber.
 
-On any refusal the pipeline writes the stage diff to `quarantine.diff` in the run dir; a diff that
-exceeds `MAX_BUFFER_BYTES` fails the run with `DELIVERY_FAILED` rather than truncating or committing.
+On any refusal the pipeline writes the stage diff to `quarantine.diff` in the run dir, through the value
+scrubber, so it holds no plaintext credential; a diff that exceeds `MAX_BUFFER_BYTES` fails the run with
+`DELIVERY_FAILED` rather than truncating or committing.
 
 | Outcome | Meaning |
 |---------|---------|
@@ -563,6 +575,10 @@ Mechanical lifecycle capabilities that close the manual gaps in the dispatch loo
 model, delivery status, branch, heartbeat age, and (for active runs) a log tail and turn/file-touched
 projection. `stop-run` kills a running dispatch by run id (`SIGTERM` to its process group) and marks its
 state `cancelled`; an already-terminal run or an already-dead process is a no-op success, not an error.
+The controller's SIGTERM handler marks the state `cancelled` first, then scrubs the run dir's forwarder
+files, both bounded by a 15 s cleanup cap. Because the state flips before the scrub finishes, wait for the
+controller process to exit before reading the run dir — a still-running controller may still be rewriting
+those files.
 
 ### `derive-review`
 
@@ -753,7 +769,9 @@ merge preconditions); the outcome stays red whatever the baseline says.
 (`.agent-runs/runs/<implement_id>/<run_id>/`). It holds `handoff_id`, `run_id`, `delivery_branch`,
 `delivery_sha`, `registry_fingerprint` (sha256 of the effective registry), per-step `argv`, `exit_code`,
 `signal`, `timed_out`, `duration_ms`, `stdout_tail`, `stderr_tail`, `result`, and an overall `outcome`
-(`pass` only when setup and every command passed). A failing command is evidence, not an error: the
+(`pass` only when setup and every command passed). Both tails are scrubbed at capture with the launch
+value list (`loadKnownSecretValues(dir)`, built once per validation run); evidence written before this
+scrubbing existed is not rescrubbed. A failing command is evidence, not an error: the
 review still derives. This JSON is the record; the review HO's evidence section renders from it.
 
 **Review dispatch.** A derived review is a `code_review` HO with a `dispatch/` `base_ref` and a

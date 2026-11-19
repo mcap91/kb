@@ -587,6 +587,48 @@ describe.skipIf(!BWRAP_FUNCTIONAL)('runHostValidation (WK-0294) — real bwrap',
     expect(result.data).toMatchObject({ setup: null, commands: [], outcome: 'pass', registry_fingerprint: validationRegistryFingerprint(null) });
   });
 
+  // Why: a profile value that reaches validation stdout must be scrubbed at
+  // capture (the validation jail never receives profile values;
+  // the command echoes the literal from its own submitted script).
+  it('scrubs a planted profile value out of registered-command evidence stdout_tail', async () => {
+    const value = 'validation-planted-value-0123456789-abc';
+    const secretsDir = await mkdtemp(join(tmpdir(), 'kb-host-validation-secret-'));
+    const secretsFile = join(secretsDir, 'hf.env');
+    await writeFile(secretsFile, `HF_TOKEN=${value}\n`, 'utf8');
+    try {
+      deliverySha = await deliver({ 'secret.sh': `echo '${value}'\n` });
+      await mkdir(join(repo, 'wiki', '.dispatch'), { recursive: true });
+      await writeFile(
+        join(repo, 'wiki', '.dispatch', 'profiles.json'),
+        JSON.stringify({ schema_version: 1, hf: { inject: { HF_TOKEN: secretsFile } } }),
+        'utf8',
+      );
+      const result = await run(
+        registry({ commands: [{ name: 'echo-secret', argv: ['bash', 'secret.sh'], timeout_ms: 30_000 }] }),
+      );
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      const stdoutTail = result.data.commands[0]?.stdout_tail ?? '';
+      expect(stdoutTail).toContain('[REDACTED:HF_TOKEN]');
+      expect(stdoutTail).not.toContain(value);
+    } finally {
+      await rm(secretsDir, { recursive: true, force: true });
+    }
+  });
+
+  it('shows the plaintext when no profile is configured (the check bites)', async () => {
+    const value = 'validation-planted-value-0123456789-abc';
+    deliverySha = await deliver({ 'secret.sh': `echo '${value}'\n` });
+    const result = await run(
+      registry({ commands: [{ name: 'echo-secret', argv: ['bash', 'secret.sh'], timeout_ms: 30_000 }] }),
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const stdoutTail = result.data.commands[0]?.stdout_tail ?? '';
+    expect(stdoutTail).toContain(value);
+    expect(stdoutTail).not.toContain('[REDACTED:HF_TOKEN]');
+  });
+
   // Why: WK-0316 AC2 — a deterministic reset of the probe connection (unlike the timing-dependent
   // bash /dev/tcp early close) must raise ECONNRESET on the server socket every time; with the
   // listener in place that is expected and must not crash the run.

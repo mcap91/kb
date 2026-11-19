@@ -26,6 +26,7 @@ import type { RecoveryBlockEvidence, RecoveryBlockPayload } from './recovery-blo
 import type { PiCompaction } from './adapters/pi.js';
 import type { BackendFamily } from './repo-config.js';
 import type { HostValidationBaselineSummary, HostValidationSummary } from './host-validation.js';
+import { scrubText, type SecretValue } from './secret-scrub.js';
 
 /**
  * kb-owned location of the vendored LiteLLM rate snapshot (WK-0123) — mirrors
@@ -407,6 +408,13 @@ export interface CaptureOpts {
    * absent/empty.
    */
   mountWrites?: Array<{ mountPath: string; files: string[] }>;
+  /**
+   * The run's launch value list (secret-scrub.ts). When set, the rendered
+   * response doc — frontmatter, worker report and every other section — is
+   * scrubbed before it is written, and the scrubbed text is returned so the
+   * canonical `wiki/handoffs/` copy is written from it too.
+   */
+  secretValues?: ReadonlyArray<SecretValue>;
 }
 
 export interface CaptureResult {
@@ -907,7 +915,8 @@ export async function writeResponseDoc(opts: CaptureOpts): Promise<DispatchResul
   }
   const body = bodyLines.join('\n');
 
-  const responseContent = `${frontmatter}\n${body}`;
+  const rawResponseContent = `${frontmatter}\n${body}`;
+  const responseContent = opts.secretValues === undefined ? rawResponseContent : scrubText(rawResponseContent, opts.secretValues);
   const responsePath = join(runDir, `${handoff.id}.response.md`);
 
   try {
