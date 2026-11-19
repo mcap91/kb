@@ -24,6 +24,8 @@ A WK with more than one slice gives every slice a `### Slice <id>` section after
 
 In a repo where dispatch is set up, every work item that will be built declares a `## Slices` table before it is ready, even if it has one row. Lint warns when the table is missing and errors when a slice of a multi-slice work item has no section.
 
+Keep each slice small enough that one code review covers it thoroughly; split a slice that is not.
+
 ## Each decision
 
 For a design choice, check one comparable system and cite it (file and function), or say plainly that none was found. Read a cited source's full text, never a summary of it.

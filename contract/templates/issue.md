@@ -49,9 +49,7 @@ Body sections:
   Checklist   — add items as work progresses; not required at creation.
   Acceptance  — testable criteria that define "done."
   Notes       — context, links, discussion. Optional.
-  Slices      — optional body table of merge units; see the commented example below
-                Notes. Add it only if this WK's work naturally splits into separately
-                written, separately reviewed units.
+  Slices      — body table listing the work item's merge units, one handoff per row; in a repo where dispatch is set up, every work item that will be built declares it, one row included; in a wiki-only repo it is optional. See the commented example below Notes.
   Resolutions — optional append-only body table of in-run decisions; see the commented
                 example below Notes. Rows are added as the work proceeds, never edited
                 or deleted.
@@ -75,11 +73,9 @@ Do NOT read other WK files for examples. This template is self-contained.
 ## Notes
 
 <!--
-Optional "## Slices" body table (WK-0211). Uncomment and fill in only if this WK's
-work naturally splits into separately written, separately reviewed units. Header is
+"## Slices" body table: in a repo where dispatch is set up, every work item that will be built declares it, one row included; in a wiki-only repo it is optional. Uncomment and fill it in. Header is
 fixed. `write_scope` and `depends_on` are comma-separated; `depends_on` holds row ids
-from this same table. `status` reuses the WK status enum and is written by
-merge-delivery, never by hand. With more than one slice, each slice needs its own
+from this same table. `status` reuses the WK status enum; the orchestrator sets a row to `done` after its slice merges (no tool writes it). With more than one slice, each slice needs its own
 "### Slice <id>" section; a handoff generated from the slice copies it verbatim.
 
 ## Slices
