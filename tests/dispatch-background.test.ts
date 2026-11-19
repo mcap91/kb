@@ -402,7 +402,7 @@ describe('deriveTerminalFields', () => {
   });
 
   it('maps secret_in_diff to refused with a null error', () => {
-    const result = pipelineOk({ status: 'secret_in_diff', patterns: ['aws_access_key_id'], quarantinePath: 'C:\\q.diff' });
+    const result = pipelineOk({ status: 'secret_in_diff', names: ['API_TOKEN'], quarantinePath: 'C:\\q.diff' });
     expect(deriveTerminalFields(result, null)).toEqual({
       status: 'refused',
       outcome: 'refused',

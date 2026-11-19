@@ -658,7 +658,7 @@ function describeOutcome(delivery: DeliveryOutcome): string {
     case 'refused_out_of_scope':
       return `Refused: changes touched paths outside the declared write_scope (${delivery.offendingPaths.join(', ')}). Diff quarantined at \`${delivery.quarantinePath}\`.`;
     case 'secret_in_diff':
-      return `Refused: the diff matched secret pattern(s) (${delivery.patterns.join(', ')}). Diff quarantined at \`${delivery.quarantinePath}\`.`;
+      return `Refused: the diff held value(s) of granted credential(s) (${delivery.names.join(', ')}). Diff quarantined at \`${delivery.quarantinePath}\`.`;
     case 'conflict':
       return `Delivery conflict: the branch already carries a different tree from the same base (existing tree \`${delivery.existingTree}\`, new tree \`${delivery.newTree}\`). Nothing was landed.`;
     case 'error':

@@ -10,15 +10,13 @@
  * bwrap/Pi host, not the git work. That live gate is a separate, manually-run
  * proof.
  *
- * A later freeze correction removed the S0-era pattern-only
- * `scanSecrets()` leg from pipeline.ts's delivery gate and replaced it with a
- * deterministic scan for granted credentials' literal values
- * (`buildInjectedValueScanFragment`, credentials.ts): the fragment is spliced
- * onto the SAME stage script pipeline.ts already runs, and reports
- * `SECRET_HIT=<VAR_NAME>` — names only, never values; delivery.ts's stage
- * parser reads those lines into the stage verdict. `scanSecrets()` itself is
- * unchanged and still directly unit-tested in dispatch-v2-delivery.test.ts;
- * it is simply no longer wired into pipeline.ts's own delivery-gate decision.
+ * A later freeze correction removed the S0-era pattern-only `scanSecrets()`
+ * leg from pipeline.ts's delivery gate. The gate now streams every staged
+ * blob and change-named path through `createSecretMatcher` (secret-scrub.ts)
+ * on the host, and reports granted values by NAME only
+ * (`StageResult.secretNames`) — never a value and never a rendering of the
+ * content it read. A granted value in a staged blob, or in an in-scope file a
+ * worker writes into an `export_mount`, refuses the delivery.
  *
  * No personal/absolute paths appear in fixtures (WK-0043 rule); all
  * filesystem tests use temp dirs. The seeded credential-value fixture below
@@ -54,10 +52,7 @@ import {
   buildQuarantineScript,
   type DeliveryOutcome,
 } from '../packages/dispatch-core/src/delivery.js';
-import {
-  buildInjectedValueScanFragment,
-  type CredentialResolution,
-} from '../packages/dispatch-core/src/credentials.js';
+import { buildSecretValueList, readCredentialLine } from '../packages/dispatch-core/src/secret-scrub.js';
 import { writeResponseDoc } from '../packages/dispatch-core/src/capture.js';
 import { parsePreflightOutput, gateGitVersion } from '../packages/dispatch-core/src/preflight.js';
 import * as preflightModule from '../packages/dispatch-core/src/preflight.js';
@@ -448,22 +443,19 @@ describe('dispatch v2 e2e (fake-tier) — full pipeline chain', () => {
       expect(admission.ok).toBe(true);
       if (!admission.ok) return;
 
-      // Exercise the REAL builder pipeline.ts calls — proves the scan the
-      // stage script runs is the one wiring actually produces
-      // (dispatch-v2-credentials.test.ts pins its exact line shape at the unit
-      // level; this proves the WIRING end to end). The injected value is an
-      // obvious placeholder string, never a real-looking live token.
+      // Exercise the REAL value-list builder pipeline.ts calls — proves the
+      // scan the stage runs is the one wiring actually produces. The injected
+      // value is an obvious placeholder string, never a real-looking live
+      // token.
       const secretsFile = join(secretsDir, 'hf-token.env');
       await writeFile(secretsFile, 'HF_TOKEN=hf_seeded_example_placeholder_only\n', 'utf8');
-      const resolution: CredentialResolution = {
-        granted: ['hf'],
-        injections: [{ profileName: 'hf', varName: 'HF_TOKEN', filePath: secretsFile }],
-        backendApiKeyEnv: null,
-        backendSecretsFile: null,
-        credentialEndpoints: [],
-      };
-      const valueScanLines = buildInjectedValueScanFragment(resolution);
-      expect(valueScanLines.length).toBeGreaterThan(0);
+      const resolvedValue = await readCredentialLine('HF_TOKEN', secretsFile);
+      expect(resolvedValue.ok).toBe(true);
+      if (!resolvedValue.ok) return;
+      const valueList = buildSecretValueList({ values: [{ name: 'HF_TOKEN', value: resolvedValue.data }] });
+      expect(valueList.ok).toBe(true);
+      if (!valueList.ok) return;
+      const secretValues = valueList.data;
 
       const clonePath = join(runDir, 'clone');
       execFileSync('git', ['clone', '-q', repoRoot, clonePath]);
@@ -479,16 +471,16 @@ describe('dispatch v2 e2e (fake-tier) — full pipeline chain', () => {
         baseSha: admission.data.baseSha,
         attrSha: admission.data.attrSha,
         writeScope: handoff.write_scope,
-        valueScanLines,
+        secretValues,
       });
       expect(stageRun.ok).toBe(true);
       if (!stageRun.ok) return;
-      // Names only cross back: the diff body never does.
-      expect(stageRun.stage.secretHits).toEqual(['HF_TOKEN']);
+      // Names only cross back: the content the scan read never does.
+      expect(stageRun.stage.secretNames).toEqual(['HF_TOKEN']);
       const verdict = classifyStage(stageRun.stage, handoff.write_scope);
       expect(verdict.kind).toBe('secret_in_diff');
       if (verdict.kind !== 'secret_in_diff') return;
-      expect(verdict.patterns).toEqual(['HF_TOKEN']);
+      expect(verdict.names).toEqual(['HF_TOKEN']);
 
       const quarantinePath = join(runDir, 'quarantine.diff');
       const quarantineScript = buildQuarantineScript({
@@ -505,7 +497,7 @@ describe('dispatch v2 e2e (fake-tier) — full pipeline chain', () => {
       if (!quarantineExec.ok) return;
       await writeFile(quarantinePath, quarantineExec.data.stdout, 'utf8');
 
-      const delivery: DeliveryOutcome = { status: 'secret_in_diff', patterns: verdict.patterns, quarantinePath };
+      const delivery: DeliveryOutcome = { status: 'secret_in_diff', names: verdict.names, quarantinePath };
 
       const captureResult = await writeResponseDoc({
         runDir,
@@ -767,6 +759,8 @@ interface S3RepoOpts {
    * mode=implement.
    */
   mode?: 'implement' | 'code_review' | 'redteam' | 'research';
+  /** Host paths bound rw into the jail and scanned for granted values afterwards. */
+  exportMounts?: string[];
 }
 
 /** A clean, committed temp repo with an HO fixture + wiki/.dispatch/ tables (S3 ruling 1). */
@@ -776,7 +770,7 @@ async function setupS3Repo(opts: S3RepoOpts = {}): Promise<string> {
   execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: repoRoot });
   execFileSync('git', ['config', 'user.name', 'Test User'], { cwd: repoRoot });
 
-  const { credentials = [], web = false, vars = [], mode = 'implement' } = opts;
+  const { credentials = [], web = false, vars = [], mode = 'implement', exportMounts = [] } = opts;
   const writeScope = mode === 'implement' ? ['src/'] : [];
   const hoContent = `---
 id: HO-S3TEST
@@ -787,6 +781,7 @@ base_ref: null
 web: ${web}
 credentials: ${JSON.stringify(credentials)}
 data_mounts: []
+export_mounts: ${JSON.stringify(exportMounts)}
 read_first: []
 vars: ${JSON.stringify(vars)}
 work_item: WK-9003
@@ -1411,6 +1406,108 @@ describe('dispatch v2 e2e (fake-tier) — advisory mutation check (mocked spawnI
       await rm(repoRoot, { recursive: true, force: true });
     }
   });
+});
+
+// ---------------------------------------------------------------------------
+// WK-0326 s3 — the export-mount scan. A worker that writes a granted value
+// into an `export_mount` refuses the delivery, and that refusal is decided as
+// soon as the worker and its forwarder exit — before the stage verdict and
+// before the worker's own exit code are consulted.
+// ---------------------------------------------------------------------------
+
+describe('dispatch v2 e2e (fake-tier) — export_mount value scan (mocked spawnIsolated)', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const VALUE = 'hf_seeded_example_placeholder_only';
+
+  /**
+   * Run the real pipeline over a fixture HO granting `hf`, with the worker
+   * mocked to write the granted value into the export mount. `cleanClone`
+   * additionally writes an in-scope file so only the mount scan can refuse;
+   * `exitCode` controls the worker's own exit status.
+   */
+  async function runWithMountWrite(opts: { cleanClone: boolean; exitCode: number }): Promise<{
+    repoRoot: string;
+    mountDir: string;
+    secretsDir: string;
+    result: Awaited<ReturnType<typeof runDispatch>>;
+  }> {
+    const mountDir = await createTempDir('kb-e2e-export-mount-');
+    const secretsDir = await createTempDir('kb-e2e-export-secret-');
+    const secretFile = join(secretsDir, 'hf.env');
+    await writeFile(secretFile, `HF_TOKEN=${VALUE}\n`, 'utf8');
+
+    const repoRoot = await setupS3Repo({
+      credentials: ['hf'],
+      exportMounts: [mountDir],
+      profiles: { schema_version: 1, hf: { inject: { HF_TOKEN: secretFile } } },
+    });
+    vi.spyOn(spawnIsolatedModule, 'spawnIsolated').mockImplementation(async (plan, spawnOpts) => {
+      if (spawnOpts?.stdoutLogPath) {
+        await writeFile(spawnOpts.stdoutLogPath, readFixtureFile('pi-output-errored-single-message.jsonl'), 'utf8');
+      }
+      if (opts.cleanClone) {
+        await mkdir(join(plan.cwd, 'src'), { recursive: true });
+        await writeFile(join(plan.cwd, 'src', 'greet.mjs'), 'export const x = 1;\n', 'utf8');
+      }
+      await writeFile(join(mountDir, 'leaked.env'), `HF_TOKEN=${VALUE}\n`, 'utf8');
+      return {
+        ok: true,
+        data: {
+          stdout: '',
+          stderr: '',
+          exitCode: opts.exitCode,
+          signal: null,
+          truncated: false,
+          timedOut: false,
+          streamDrainTimedOut: false,
+        },
+      };
+    });
+    const result = await runDispatch({
+      dir: repoRoot,
+      handoff: 'wiki/handoffs/HO-S3TEST.md',
+      model: 'deepseek',
+      backend: 'openrouter',
+      preflight: false,
+    });
+    return { repoRoot, mountDir, secretsDir, result };
+  }
+
+  it('refuses DELIVERY_FAILED naming the variable when the worker leaks a granted value to a mount', async () => {
+    const { repoRoot, mountDir, secretsDir, result } = await runWithMountWrite({ cleanClone: true, exitCode: 0 });
+    try {
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error).toBe('DELIVERY_FAILED');
+      expect(result.message).toContain('HF_TOKEN');
+      // No delivery branch, so nothing left the mother.
+      const branchCheck = execFileSync('git', ['branch', '--list', 'dispatch/HO-S3TEST'], { cwd: repoRoot })
+        .toString()
+        .trim();
+      expect(branchCheck).toBe('');
+    } finally {
+      await rm(repoRoot, { recursive: true, force: true });
+      await rm(mountDir, { recursive: true, force: true });
+      await rm(secretsDir, { recursive: true, force: true });
+    }
+  }, 120_000);
+
+  it('the mount refusal wins over a non-zero worker exit', async () => {
+    const { repoRoot, mountDir, secretsDir, result } = await runWithMountWrite({ cleanClone: false, exitCode: 1 });
+    try {
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error).toBe('DELIVERY_FAILED');
+      expect(result.message).toContain('HF_TOKEN');
+    } finally {
+      await rm(repoRoot, { recursive: true, force: true });
+      await rm(mountDir, { recursive: true, force: true });
+      await rm(secretsDir, { recursive: true, force: true });
+    }
+  }, 120_000);
 });
 
 // ---------------------------------------------------------------------------

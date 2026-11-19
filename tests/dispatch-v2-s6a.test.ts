@@ -976,7 +976,7 @@ describe('capture.ts — mechanical verdict ladder (DEC-0010 / WK-0095)', () => 
     const handoff = { id: 'HO-TEST', title: 'Test task', mode: 'implement' };
     const delivery: DeliveryOutcome = {
       status: 'secret_in_diff',
-      patterns: ['sk-live-redacted'],
+      names: ['API_TOKEN'],
       quarantinePath: '/tmp/quarantine.diff',
     };
     const result = await writeResponseDoc({ runDir, handoff, delivery });

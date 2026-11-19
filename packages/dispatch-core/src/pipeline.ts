@@ -25,9 +25,9 @@
  * (ELv2: design mirrored only, no chassis code copied).
  */
 import { spawn, type ChildProcess } from 'node:child_process';
-import { closeSync, constants as fsConstants, existsSync, openSync } from 'node:fs';
+import { closeSync, constants as fsConstants, createReadStream, existsSync, openSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
-import { mkdir, readdir, readFile, realpath, stat, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, readdir, readFile, readlink, realpath, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -60,6 +60,9 @@ import { isMountableRoot } from './mountability.js';
 import { spawnIsolated, type SpawnResult } from './spawn-isolated.js';
 import {
   buildSecretValueList,
+  createSecretMatcher,
+  MIN_VALUE_LENGTH,
+  namesInListOrder,
   readCredentialLine,
   scrubFileInPlace,
   scrubText,
@@ -77,6 +80,7 @@ import {
   buildLandScript,
   parseLandOutput,
   buildQuarantineScript,
+  DELIVERY_SCAN_CAP_BYTES,
   type DeliveryOutcome,
 } from './delivery.js';
 import { writeResponseDoc, buildProvenanceWriteBack, type WorkerUsageDetail, type ProviderCostCoverage } from './capture.js';
@@ -88,7 +92,6 @@ import { loadProfilesConfig, loadBackendsTable, type BackendFamily, type EffortM
 import {
   resolveCredentials,
   checkCredentialPolicy,
-  buildInjectedValueScanFragment,
   type CredentialResolution,
 } from './credentials.js';
 import {
@@ -790,44 +793,144 @@ export function buildEffortArgs(mapping: EffortMapping, effort: string): string[
   return [mapping.flag, effort];
 }
 
+/** Maximum number of files one export-mount scan may select before it fails. */
+export const EXPORT_SCAN_MAX_FILES = 10_000;
+
+interface MountEntry {
+  relPath: string;
+  kind: 'file' | 'symlink';
+  size: number;
+  ctimeMs: number;
+}
+
+/** Recursively list a mount without ever following a symlink; every walk/lstat error fails closed. */
+async function walkMount(mountPath: string): Promise<DispatchResult<MountEntry[]>> {
+  const entries: MountEntry[] = [];
+  const dirs: string[] = [''];
+  while (dirs.length > 0) {
+    const rel = dirs.pop()!;
+    const full = rel === '' ? mountPath : join(mountPath, rel);
+    let children;
+    try {
+      children = await readdir(full, { withFileTypes: true });
+    } catch (err) {
+      return fail('DELIVERY_FAILED', `Failed to walk export_mount ${mountPath}.`, err);
+    }
+    children.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+    for (const child of children) {
+      const childRel = rel === '' ? child.name : `${rel}/${child.name}`;
+      let childStat;
+      try {
+        childStat = await lstat(join(mountPath, childRel));
+      } catch (err) {
+        return fail('DELIVERY_FAILED', `Failed to inspect an export_mount entry in ${mountPath}.`, err);
+      }
+      if (childStat.isDirectory()) {
+        dirs.push(childRel);
+      } else if (childStat.isSymbolicLink()) {
+        entries.push({ relPath: childRel, kind: 'symlink', size: childStat.size, ctimeMs: childStat.ctimeMs });
+      } else if (childStat.isFile()) {
+        entries.push({ relPath: childRel, kind: 'file', size: childStat.size, ctimeMs: childStat.ctimeMs });
+      }
+    }
+  }
+  return ok(entries);
+}
+
+/** Stream one mount file through a fresh matcher; never holds the whole file in memory. */
+async function scanMountFile(
+  fullPath: string,
+  secretValues: ReadonlyArray<SecretValue>,
+): Promise<{ ok: true; names: string[] } | { ok: false; detail: unknown }> {
+  const matcher = createSecretMatcher(secretValues);
+  return new Promise((resolve) => {
+    const stream = createReadStream(fullPath);
+    stream.on('data', (chunk) => matcher.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
+    stream.on('error', (err) => resolve({ ok: false, detail: err }));
+    stream.on('end', () => resolve({ ok: true, names: matcher.names() }));
+  });
+}
+
 /**
- * Step 19b: host-side mount-write manifest (WK-0164) — walks each
- * `export_mount` path on the HOST (never inside the jail, never worker
- * self-report) and collects files whose mtime is newer than `since` (the
- * run's start time). Best-effort per mount: a walk failure (mount path
- * doesn't exist, permission denied) logs a verbose warning and yields an
- * empty file list for that mount rather than failing the pipeline over a
- * traceability walk.
+ * Step 19b: host-side export-mount scan (WK-0164; value scan WK-0326 s3).
+ * Walks each `export_mount` path on the HOST — never inside the jail, never a
+ * worker self-report — selects entries whose ctime is newer than `since`
+ * (the run's start time), then streams every selected path, regular file and
+ * symlink target through a fresh `createSecretMatcher`. A walk/lstat/readlink/
+ * read failure, more selected files than `limits.maxFiles`, more bytes than
+ * `limits.maxBytes`, or a granted value in any selected entry all fail the
+ * run with `DELIVERY_FAILED`; the value message names the variables, never a
+ * path or content. An empty value list returns the selection and reads no
+ * file.
  * @internal pipeline.ts internal — exported only for direct unit testing.
  */
 export async function collectMountWrites(
   exportMounts: string[],
   since: Date,
-  verbose: boolean | undefined,
-): Promise<Array<{ mountPath: string; files: string[] }>> {
-  const results: Array<{ mountPath: string; files: string[] }> = [];
+  secretValues: ReadonlyArray<SecretValue>,
+  limits: { maxBytes: number; maxFiles: number } = {
+    maxBytes: DELIVERY_SCAN_CAP_BYTES,
+    maxFiles: EXPORT_SCAN_MAX_FILES,
+  },
+): Promise<DispatchResult<Array<{ mountPath: string; files: string[] }>>> {
+  const perMount = new Map<string, MountEntry[]>();
+  let selectedCount = 0;
+  let totalBytes = 0;
   for (const mountPath of exportMounts) {
-    const files: string[] = [];
-    try {
-      const entries = await readdir(mountPath, { recursive: true });
-      for (const relPath of entries) {
-        const fullPath = join(mountPath, relPath);
-        let fileStat;
-        try {
-          fileStat = await stat(fullPath);
-        } catch {
-          continue;
-        }
-        if (fileStat.isFile() && fileStat.mtime > since) {
-          files.push(relPath);
+    const walked = await walkMount(mountPath);
+    if (!walked.ok) return walked;
+    const selected = walked.data.filter((entry) => entry.ctimeMs > since.getTime());
+    selectedCount += selected.length;
+    for (const entry of selected) totalBytes += entry.size;
+    if (selectedCount > limits.maxFiles) {
+      return fail('DELIVERY_FAILED', `Export mount scan selected more than ${limits.maxFiles} files.`);
+    }
+    if (totalBytes > limits.maxBytes) {
+      return fail('DELIVERY_FAILED', `Export mount scan content exceeded the cap of ${limits.maxBytes} bytes.`);
+    }
+    perMount.set(mountPath, selected);
+  }
+
+  const found = new Set<string>();
+  const scanActive = secretValues.some((entry) => entry.value.length >= MIN_VALUE_LENGTH);
+  if (scanActive) {
+    for (const mountPath of exportMounts) {
+      for (const entry of perMount.get(mountPath) ?? []) {
+        const pathMatcher = createSecretMatcher(secretValues);
+        pathMatcher.push(Buffer.from(entry.relPath, 'utf8'));
+        for (const name of pathMatcher.names()) found.add(name);
+        if (entry.kind === 'symlink') {
+          let target: string;
+          try {
+            target = await readlink(join(mountPath, entry.relPath));
+          } catch (err) {
+            return fail('DELIVERY_FAILED', `Failed to read a symlink in export mount ${mountPath}.`, err);
+          }
+          const targetMatcher = createSecretMatcher(secretValues);
+          targetMatcher.push(Buffer.from(target, 'utf8'));
+          for (const name of targetMatcher.names()) found.add(name);
+        } else {
+          const fileScan = await scanMountFile(join(mountPath, entry.relPath), secretValues);
+          if (!fileScan.ok) {
+            return fail('DELIVERY_FAILED', `Failed to read an export mount file in ${mountPath}.`, fileScan.detail);
+          }
+          for (const name of fileScan.names) found.add(name);
         }
       }
-    } catch (err) {
-      logVerbose(verbose, `warning: mount-write walk failed for export_mount ${mountPath}: ${err}`);
     }
-    results.push({ mountPath, files });
   }
-  return results;
+  if (found.size > 0) {
+    return fail(
+      'DELIVERY_FAILED',
+      `An export mount file holds credential value(s): ${namesInListOrder(secretValues, found).join(', ')}.`,
+    );
+  }
+  return ok(
+    exportMounts.map((mountPath) => ({
+      mountPath,
+      files: (perMount.get(mountPath) ?? []).map((entry) => entry.relPath),
+    })),
+  );
 }
 
 /**
@@ -1769,6 +1872,17 @@ async function runDispatchCore(opts: DispatchOpts, ctx: DispatchRunCtx): Promise
     // lands after the read, silently undercounting n.
     const forwarderExited = await waitForChildExit(forwarder, FORWARDER_EXIT_TIMEOUT_MS);
 
+    // 19b. Export-mount scan (WK-0164; value scan WK-0326 s3): host-side,
+    // deterministic walk of every export_mount path — never a worker
+    // self-report. Runs here, as soon as the worker and its forwarder have
+    // exited and BEFORE the exit-code check below, so a worker that writes a
+    // granted value to a mount and then fails is still caught. A hit, an
+    // over-cap mount, or a scan error fails the run with `DELIVERY_FAILED`.
+    logVerbose(verbose, 'scanning export_mounts for granted values');
+    const mountScan = await collectMountWrites(handoff.export_mounts, runStartTime, ctx.secretValues);
+    if (!mountScan.ok) return mountScan;
+    const mountWrites = mountScan.data;
+
     // Exit/signal interpretation (D6 ruling 7 component 8; chassis
     // deriveTerminalStatus: `code === 0 && !signal` -> succeeded — native
     // Linux's `.signal` is authoritative, no classifySignalExit guessing).
@@ -1979,22 +2093,19 @@ async function runDispatchCore(opts: DispatchOpts, ctx: DispatchRunCtx): Promise
       // listing plus the ignored-in-scope list into a temp dir that
       // `runStageScript` removes in a `finally`. `attrSha` is the admission
       // HEAD, never a chained `base_ref` (which can be an unreviewed
-      // `dispatch/` commit). The injected-value scan fragment reuses the
-      // stage script's own `$GIT`/`$CLONE_PATH` scope, re-diffing into a
-      // throwaway `$DIFF_FILE` and grepping it for each granted credential's
-      // literal value in the same exec round trip — only var NAMES
-      // (`SECRET_HIT=<VAR_NAME>`) cross back into stdout. A non-zero stage
-      // exit fails closed BEFORE any parse, so a stage that printed TREE and
-      // then failed never reaches check or land.
+      // `dispatch/` commit). `runStageScript` then streams every staged blob
+      // through `createSecretMatcher` host-side; only var NAMES cross back
+      // (`StageResult.secretNames`), never a value. A non-zero stage exit
+      // fails closed BEFORE any parse, so a stage that printed TREE and then
+      // failed never reaches check or land.
       logVerbose(verbose, 'staging changes in the clone');
-      const valueScanLines = buildInjectedValueScanFragment(credResult.data);
       const stageRun = await runStageScript({
         clonePath,
         baseSha: admission.data.baseSha,
         attrSha: admission.data.attrSha,
         writeScope: handoff.write_scope,
         skeletonPaths: createdSkeletonPaths,
-        valueScanLines,
+        secretValues: ctx.secretValues,
       });
       if (!stageRun.ok) {
         return fail('DELIVERY_FAILED', stageRun.message);
@@ -2035,8 +2146,8 @@ async function runDispatchCore(opts: DispatchOpts, ctx: DispatchRunCtx): Promise
           logVerbose(verbose, `refused: out-of-scope paths ${verdict.offendingPaths.join(', ')}`);
           delivery = { status: 'refused_out_of_scope', offendingPaths: verdict.offendingPaths, quarantinePath: quarantine.data };
         } else {
-          logVerbose(verbose, `refused: granted credential value(s) found in diff: ${verdict.patterns.join(', ')}`);
-          delivery = { status: 'secret_in_diff', patterns: verdict.patterns, quarantinePath: quarantine.data };
+          logVerbose(verbose, `refused: granted credential value(s) found in diff: ${verdict.names.join(', ')}`);
+          delivery = { status: 'secret_in_diff', names: verdict.names, quarantinePath: quarantine.data };
         }
       } else {
         // 18. Land exactly the checked tree.
@@ -2112,12 +2223,6 @@ async function runDispatchCore(opts: DispatchOpts, ctx: DispatchRunCtx): Promise
       }
       delivery = { status: 'no_changes' };
     }
-
-    // 19b. Mount-write manifest (WK-0164): host-side, deterministic walk of
-    // each export_mount path — never a worker self-report. Runs after the
-    // worker has exited and delivery is resolved, before capture.
-    logVerbose(verbose, 'walking export_mounts for mount-write manifest');
-    const mountWrites = await collectMountWrites(handoff.export_mounts, runStartTime, verbose);
 
     // 19c. Host validation of the delivery. A red suite or a validation that
     // cannot run never changes the delivered outcome; it is evidence, shown in

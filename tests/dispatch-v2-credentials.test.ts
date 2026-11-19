@@ -14,7 +14,6 @@ import {
   resolveCredentials,
   checkCredentialPolicy,
   buildInjectionScript,
-  buildInjectedValueScanFragment,
 } from '../packages/dispatch-core/src/credentials.js';
 import type { CredentialResolution } from '../packages/dispatch-core/src/credentials.js';
 import type { Handoff } from '../packages/dispatch-core/src/ho.js';
@@ -325,29 +324,5 @@ describe('credentials.ts — buildInjectionScript', () => {
     expect(script.existenceCheckLines).toEqual([
       `if ! grep -q '^HF_TOKEN=' '/home/operator/.secrets/hf-token.env'; then echo "CREDENTIAL_NOT_CONFIGURED:HF_TOKEN"; exit 1; fi`,
     ]);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// buildInjectedValueScanFragment
-// ---------------------------------------------------------------------------
-
-describe('credentials.ts — buildInjectedValueScanFragment', () => {
-  it('emits a grep-for-value line and a SECRET_HIT output line for one injection', () => {
-    const resolution = makeResolution({
-      granted: ['hf'],
-      injections: [{ profileName: 'hf', varName: 'HF_TOKEN', filePath: '/home/operator/.secrets/hf-token.env' }],
-    });
-
-    const lines = buildInjectedValueScanFragment(resolution);
-    expect(lines).toEqual([
-      `_VAL="$(grep -m1 '^HF_TOKEN=' '/home/operator/.secrets/hf-token.env' | cut -d= -f2-)"`,
-      `if [ -n "$_VAL" ] && grep -qF "$_VAL" "$DIFF_FILE"; then echo "SECRET_HIT=HF_TOKEN"; fi`,
-    ]);
-  });
-
-  it('returns an empty array when there are no injections', () => {
-    const resolution = makeResolution();
-    expect(buildInjectedValueScanFragment(resolution)).toEqual([]);
   });
 });
