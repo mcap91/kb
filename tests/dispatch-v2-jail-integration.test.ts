@@ -45,9 +45,29 @@ import { join } from 'node:path';
 import { checkWriteScopeMountGuard, precreateWriteScopeSkeleton, precreateWikiMountSkeleton, runDispatch } from '../packages/dispatch-core/src/pipeline.js';
 import { buildBwrapPlan } from '../packages/dispatch-core/src/jail.js';
 import { checkMaskPathsNotSymlinks, createClone, removeClone } from '../packages/dispatch-core/src/clone.js';
+import * as execDirectModule from '../packages/dispatch-core/src/exec-direct.js';
+import { ok as dispatchOk } from '../packages/dispatch-core/src/errors.js';
 import { spawnIsolated } from '../packages/dispatch-core/src/spawn-isolated.js';
 import * as spawnIsolatedModule from '../packages/dispatch-core/src/spawn-isolated.js';
 import * as tierModule from '../packages/dispatch-core/src/tier.js';
+
+/**
+ * Pin the `pi` CLI to a SYSTEM_ROOTS path for the `command -v pi` probe in
+ * `resolveToolchainPaths` (pipeline.ts). On a dev host `pi` lives under the
+ * real `$HOME`; when the suite runs with `$HOME` pointed at an empty dir its
+ * resolved path falls outside every mountable root and runDispatch refuses
+ * `CLI_PATH_NOT_MOUNTABLE` before spawnIsolated (the seam under test) is
+ * reached. spawnIsolated is mocked below, so the faked path never runs.
+ */
+function stubPiCliOnPath(): void {
+  const real = execDirectModule.execBash;
+  vi.spyOn(execDirectModule, 'execBash').mockImplementation(async (opts) => {
+    if (opts.scriptContent === 'command -v pi 2>/dev/null') {
+      return dispatchOk({ stdout: '/usr/bin/pi', stderr: '', exitCode: 0 });
+    }
+    return real(opts);
+  });
+}
 import { slicesSection } from './helpers/slice-fixture.js';
 
 // ---------------------------------------------------------------------------
@@ -624,7 +644,7 @@ describe('runDispatch() wiring -- skeleton functions run before plan build/spawn
       await writeFile(
         join(wikiDir, '.dispatch', 'backends.json'),
         JSON.stringify(
-          { openrouter: { family: 'pi', base_url: 'https://openrouter.ai/api/v1', api_key_env: 'OPENROUTER_API_KEY', secrets_file: null } },
+          { openrouter: { family: 'pi', base_url: 'https://openrouter.ai/api/v1', api_key_env: null, secrets_file: null } },
           null,
           2,
         ),
@@ -661,6 +681,7 @@ Placeholder fixture. spawnIsolated is mocked below, so no worker ever runs.
 `;
       await writeFile(join(repoRoot, hoRelPath), hoContent, 'utf8');
 
+      stubPiCliOnPath();
       vi.spyOn(tierModule, 'probeBwrap').mockResolvedValue({
         available: true,
         bwrapVersion: 'bubblewrap 0.9.0 (mocked)',

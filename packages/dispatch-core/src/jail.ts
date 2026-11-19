@@ -34,12 +34,10 @@
  *   6-env. --clearenv + --setenv      opt-in allowlist env (WK-0294)
  *   6a. toolchain leaf binds (DEC-0011) --ro-bind-try each opts.toolchainPaths
  *                                      entry (CLI binaries living under $HOME)
- *   6b. auth leaf binds (DEC-0011)    the ONLY $HOME paths let through —
- *                                      opts.authLeafBinds, ro or rw per entry
- *   6c. runtime env binds (WK-0201)   strict --ro-bind each
+ *   6b. runtime env binds              strict --ro-bind each
  *                                      opts.runtimeEnvPaths entry
  *                                      (operator-declared, admission-validated)
- *   6d. resolver bind (WK-0301)       jails that keep network only
+ *   6c. resolver bind                 jails that keep network only
  *                                      (`unshareNet === false`): if the
  *                                      resolv-conf path is a symlink whose
  *                                      realpath target lies outside the
@@ -67,12 +65,16 @@
  *   13. secret-mask binds             `<clone>/.env` -> /dev/null,
  *                                      `<clone>/.claude` -> fresh tmpfs, each
  *                                      only when the path exists in the
- *                                      clone (same existence checks the
- *                                      former `withSecretMaskArgs` post-step
- *                                      used) -- inlined here, immediately
+ *                                      clone -- inlined here, immediately
  *                                      before the final bind below, so
  *                                      nothing can ever land after them
  *                                      again
+ *   13a. run-dir read-only bind       `--ro-bind <runDir> <runDir>`: the
+ *                                      run dir is worker-influenced content
+ *                                      (prompt, logs), never a worker
+ *                                      writable surface; read-only for
+ *                                      every mode, emitted right before the
+ *                                      final `.git` bind
  *   14. `.git` read-only bind         unconditional strict
  *                                      `--ro-bind <clone>/.git <clone>/.git`
  *                                      (not -try: a clone always has .git)
@@ -142,12 +144,9 @@ export interface JailOpts {
    *  already proven to exist at admission time. */
   runtimeEnvPaths?: readonly string[];
 
-  /** Per-family auth leaf file binds — the ONLY $HOME paths let through.
-   *  Each entry is { path, access } where access = 'ro' | 'rw'. */
-  authLeafBinds?: ReadonlyArray<{ path: string; access: 'ro' | 'rw' }>;
-
   /** Absolute path to the run directory (prompt, relay script, tunnel socket,
-   *  logs). Bound writable — chassis's `runtimeRoots` category. */
+   *  logs). Bound read-only — the worker reads its prompt, but never writes
+   *  directly into the run dir (its stdout/stderr are captured elsewhere). */
   runDirPath?: string;
 
   /** Allowlist env (WK-0294, DEC-0047 A4.3): when set, bwrap starts the child
@@ -289,12 +288,6 @@ function buildJailPlanSteps(opts: JailOpts): JailPlanSteps {
     }
   }
 
-  // 6-rundir: run directory as a writable bind (chassis: runtimeRoots).
-  // Prompt, relay script, tunnel socket, and logs all live here.
-  if (opts.runDirPath) {
-    bind('bind', opts.runDirPath, opts.runDirPath);
-  }
-
   // 6a. Toolchain binary paths under $HOME — exact leaves, never a $HOME directory bind.
   if (opts.toolchainPaths) {
     for (const p of opts.toolchainPaths) {
@@ -302,15 +295,8 @@ function buildJailPlanSteps(opts: JailOpts): JailPlanSteps {
     }
   }
 
-  // 6b. Per-family auth leaf binds — the ONLY $HOME paths (DEC-0011 wall 1).
-  if (opts.authLeafBinds) {
-    for (const leaf of opts.authLeafBinds) {
-      bind(leaf.access === 'rw' ? 'bind' : 'ro-bind', leaf.path, leaf.path);
-    }
-  }
-
-  // 6c. Operator-declared runtime env roots (WK-0201) — strict --ro-bind,
-  // already admission-validated (realpath'd, mountable, bin/ exists, no
+  // 6b. Operator-declared runtime env roots — strict --ro-bind, already
+  // admission-validated (realpath'd, mountable, bin/ exists, no
   // export_mounts overlap). PATH injection for <path>/bin happens in
   // pipeline.ts's buildJailPathExport, not here — this module only mounts.
   if (opts.runtimeEnvPaths) {
@@ -319,7 +305,7 @@ function buildJailPlanSteps(opts: JailOpts): JailPlanSteps {
     }
   }
 
-  // 6d. Resolver bind (WK-0301) — only for jails that keep network. Every
+  // 6c. Resolver bind — only for jails that keep network. Every
   // real caller sets `unshareNet` explicitly (host-validation.ts's setup
   // step: `false`; every worker plan, pipeline.ts: `true`), so a plan that
   // leaves `unshareNet` unset (test fixtures unrelated to networking) never
@@ -376,13 +362,13 @@ function buildJailPlanSteps(opts: JailOpts): JailPlanSteps {
     bind('ro-bind', opts.relayScriptPath, opts.relayScriptPath);
   }
 
-  // 13: secret-mask binds -- moved in from the former post-step
-  // `withSecretMaskArgs`, same existence checks:
+  // 13: secret-mask binds -- inlined here (pipeline.ts used to apply them as
+  // a separate post-step), same existence checks:
   // a committed `.env` is masked with /dev/null (a worker must never read
   // secrets baked into the mother repo's own working-tree `.env`); a
   // committed `.claude/` is masked with a fresh tmpfs (committed agent
   // config must never reach the jail). Placed here, immediately before the
-  // unconditional `.git` bind below, so no later caller-side step can ever
+  // run-dir and `.git` binds below, so no later caller-side step can ever
   // re-order a mask after it again.
   const envPath = `${opts.clonePath}/.env`;
   const claudeDirPath = `${opts.clonePath}/.claude`;
@@ -393,14 +379,24 @@ function buildJailPlanSteps(opts: JailOpts): JailPlanSteps {
     synthetic('tmpfs', claudeDirPath);
   }
 
+  // 13a: run-dir read-only bind (final mount group). The run dir holds the
+  // prompt, logs, and tunnel/relay files the worker READS; making it read-only
+  // in every mode stops a worker from writing directly around the stdout
+  // capture path. Emitted immediately before the `.git` bind, which stays the
+  // last mount operation of every plan.
+  if (opts.runDirPath) {
+    bind('ro-bind', opts.runDirPath, opts.runDirPath);
+  }
+
   // 14: read-only `.git` bind -- the LAST mount operation of
   // EVERY plan this function renders (worker plans for every family and
   // every host-validation step): strict `--ro-bind`, never `-try` (a clone
   // always has `.git`; a missing one is a bug worth bwrap failing loudly
   // on). This is the only protection a host-validation jail has (no
   // write_scope, whole clone rw per step 7-8 above) and the backstop for
-  // every worker jail regardless of its write_scope shape. Only the `--file`
-  // args (jail-`/tmp` destinations) and `--chdir` follow it -- a tracked
+  // every worker jail regardless of its write_scope shape. Only the injected-
+  // file args (`--file` jail-`/tmp` destinations and `--ro-bind-data`
+  // credential snapshots) and `--chdir` follow it -- a tracked
   // symlink such as `.claude -> .git` cannot overlay this bind because the
   // mask above already landed first and this is unconditional and last.
   bind('ro-bind', `${opts.clonePath}/.git`, `${opts.clonePath}/.git`);
@@ -467,9 +463,13 @@ export interface BwrapMount {
  * `--file 3 /tmp/.pi-agent/models.json` materialized correctly against fd 3
  * fed by a fifo (bash process substitution), and two `--file` entries can
  * share a newly-created parent directory. Default mode is 0666
- * (umask-subject; bwrap's `--perms` would tighten this, not wired here —
- * nothing currently injected is secret-shaped, see pipeline.ts's
- * script-side `injectionScript` for how actual credentials are handled).
+ * (umask-subject; bwrap's `--perms` would tighten this, not wired here).
+ *
+ * `--ro-bind-data FD DEST` is the read-only twin (captured against bubblewrap
+ * 0.9.0 on this host, 2026-11-18): it materializes the same bytes and a write
+ * to DEST fails "Read-only file system". Credential snapshots use it so the
+ * worker's CLI can read its login while every mode — `implement` included —
+ * leaves the file unwritable.
  */
 export interface BwrapInjectedFile {
   /** fd bwrap reads from — 3, 4, 5, ... in declaration order (0-2 are reserved for the child's own stdio). Assigned by `buildBwrapPlan`; `spawnIsolated` wires a pipe at this same stdio index. */
@@ -478,6 +478,8 @@ export interface BwrapInjectedFile {
   dest: string;
   /** File content to materialize at dest. */
   content: string;
+  /** When true, bwrap materializes the file read-only (`--ro-bind-data`) instead of writable (`--file`). Set for credential snapshots; every other injected file stays writable so the worker can rewrite it. */
+  readOnly: boolean;
 }
 
 /**
@@ -515,8 +517,8 @@ export interface BuildBwrapPlanOpts extends JailOpts {
   command: string[];
   /** Environment for the spawned bwrap process (`child_process.spawn`'s `env`). Defaults to `{}`. */
   env?: Record<string, string>;
-  /** Files to materialize inside the jail via bwrap `--file` (e.g. models.json under the worker's tmpfs config dir). fd numbers are assigned here, in array order, starting at 3. */
-  injectedFiles?: ReadonlyArray<{ content: string; dest: string }>;
+  /** Files to materialize inside the jail via bwrap `--file` (e.g. models.json under the worker's tmpfs config dir), or `--ro-bind-data` when `readOnly` is true (credential snapshots). fd numbers are assigned here, in array order, starting at 3. */
+  injectedFiles?: ReadonlyArray<{ content: string; dest: string; readOnly?: boolean }>;
 }
 
 /**
@@ -532,11 +534,12 @@ export function buildBwrapPlan(opts: BuildBwrapPlanOpts): BwrapPlan {
     fd: 3 + i,
     dest: f.dest,
     content: f.content,
+    readOnly: f.readOnly === true,
   }));
-  // --file is a bwrap OPTION (parsed like --bind etc.), so it must land
-  // before the `--` terminator — after it, tokens belong to the worker's own
-  // argv instead of bwrap.
-  const fileArgv = injectedFiles.flatMap((f) => ['--file', String(f.fd), f.dest]);
+  // --file/--ro-bind-data are bwrap OPTIONS (parsed like --bind etc.), so
+  // they must land before the `--` terminator — after it, tokens belong to
+  // the worker's own argv instead of bwrap.
+  const fileArgv = injectedFiles.flatMap((f) => [f.readOnly ? '--ro-bind-data' : '--file', String(f.fd), f.dest]);
 
   return {
     bwrapArgs: [...mountArgv, ...fileArgv, '--chdir', cwd, '--', ...opts.command],

@@ -71,28 +71,87 @@ import { slicesSection } from './helpers/slice-fixture.js';
 /**
  * Stub the one host dependency `resolveToolchainPaths` (pipeline.ts) has:
  * `command -v <cliName>` via exec-direct.ts's `execBash`, used to resolve
- * the claude/codex CLI's real absolute path. On a dev host with the CLI
- * installed this resolves for real; inside the validation jail's
- * allowlisted PATH it does not (WK-0306) — a host fact unrelated to what
- * these mocked-spawnIsolated tests actually check (exec-line splicing,
- * schema injection, response-doc fields). Intercepts only the exact
- * `command -v <cliName>` probe and lets every other `execBash` call
- * (fingerprinting, stage, land, preflight) run for real, preserving
- * this file's "mostly real runDispatch()" contract.
+ * the CLI's real absolute path. On a dev host with the CLI installed this
+ * resolves for real; inside the validation jail's allowlisted PATH it does
+ * not — a host fact unrelated to what these mocked-spawnIsolated
+ * tests actually check (exec-line splicing, schema injection, response-doc
+ * fields). Intercepts only the exact `command -v <cliName>` probe and lets
+ * every other `execBash` call (fingerprinting, stage, land, preflight) run
+ * for real, preserving this file's "mostly real runDispatch()" contract.
+ *
+ * One spy is installed for the whole file and consults a name→path map, so
+ * a global default (`pi` under a throwaway `$HOME`, see the beforeEach
+ * below) and a per-test override compose instead of nesting spies — nesting
+ * would make the outer spy the captured `real`, i.e. recurse forever.
  */
+const cliPathStubs = new Map<string, string>();
+let installedCliStub: unknown;
+
 function stubCliOnPath(cliName: string, cliPath: string): void {
-  const real = execDirectModule.execBash;
-  vi.spyOn(execDirectModule, 'execBash').mockImplementation(async (opts) => {
-    if (opts.scriptContent === `command -v ${cliName} 2>/dev/null`) {
-      return dispatchOk({ stdout: cliPath, stderr: '', exitCode: 0 });
-    }
-    return real(opts);
-  });
+  if (installedCliStub !== execDirectModule.execBash) {
+    cliPathStubs.clear();
+    const real = execDirectModule.execBash;
+    installedCliStub = vi.spyOn(execDirectModule, 'execBash').mockImplementation(async (opts) => {
+      if (cliPathStubs.has(opts.scriptContent)) {
+        return dispatchOk({ stdout: cliPathStubs.get(opts.scriptContent)!, stderr: '', exitCode: 0 });
+      }
+      return real(opts);
+    });
+  }
+  cliPathStubs.set(`command -v ${cliName} 2>/dev/null`, cliPath);
 }
 
 function readFixtureFile(name: string): string {
   return readFileSync(join(__dirname, 'fixtures', name), 'utf8');
 }
+
+// ---------------------------------------------------------------------------
+// Hermetic $HOME. A host with no ~/.claude/.credentials.json and no
+// ~/.codex/auth.json must still run the whole suite: every test gets a
+// throwaway $HOME with planted credential files and the original $HOME is
+// restored afterward. Tests that do not dispatch a claude/codex run are
+// unaffected; tests that do read these exact bytes (pipeline.ts reads each
+// once and materializes it read-only in the jail).
+// ---------------------------------------------------------------------------
+const PLANTED_CLAUDE_CREDENTIAL_VALUE = 'planted-claude-access-0123456789';
+const PLANTED_CODEX_CREDENTIAL_VALUE = 'planted-codex-access-0123456789';
+const PLANTED_CLAUDE_CREDENTIAL_PATH = '.claude/.credentials.json';
+const PLANTED_CODEX_CREDENTIAL_PATH = '.codex/auth.json';
+const PLANTED_CLAUDE_CREDENTIAL_JSON = JSON.stringify({
+  claudeAiOauth: { accessToken: PLANTED_CLAUDE_CREDENTIAL_VALUE },
+});
+const PLANTED_CODEX_CREDENTIAL_JSON = JSON.stringify({
+  tokens: { access_token: PLANTED_CODEX_CREDENTIAL_VALUE },
+});
+
+let savedHome: string | undefined;
+let testHome: string | undefined;
+
+beforeEach(async () => {
+  vi.restoreAllMocks();
+  savedHome = process.env.HOME;
+  testHome = await createTempDir('kb-e2e-home-');
+  await mkdir(join(testHome, '.claude'), { recursive: true });
+  await writeFile(join(testHome, PLANTED_CLAUDE_CREDENTIAL_PATH), PLANTED_CLAUDE_CREDENTIAL_JSON, 'utf8');
+  await mkdir(join(testHome, '.codex'), { recursive: true });
+  await writeFile(join(testHome, PLANTED_CODEX_CREDENTIAL_PATH), PLANTED_CODEX_CREDENTIAL_JSON, 'utf8');
+  process.env.HOME = testHome;
+  // Hermetic toolchain: on a dev host the `pi` CLI is installed under the real
+  // $HOME, so with $HOME pointed at the throwaway dir its resolved path lands
+  // outside every mountable root and runDispatch refuses CLI_PATH_NOT_MOUNTABLE
+  // before the gate under test. spawnIsolated is mocked in this file, so pin
+  // the CLI to a SYSTEM_ROOTS path; real `node` and `npm prefix -g` already
+  // resolve under /usr. Claude/codex tests add their own `stubCliOnPath`.
+  stubCliOnPath('pi', '/usr/bin/pi');
+});
+
+afterEach(async () => {
+  vi.restoreAllMocks();
+  if (savedHome === undefined) delete process.env.HOME;
+  else process.env.HOME = savedHome;
+  if (testHome) await rm(testHome, { recursive: true, force: true });
+  testHome = undefined;
+});
 
 // ---------------------------------------------------------------------------
 // Fixture — a small, purpose-built HO-TEST.md (distinct from the frozen
@@ -801,7 +860,7 @@ clone/jail/worker step runs, so this body is never read by a worker.
     deepseek: { available_on: ['openrouter'], model_id: 'deepseek/deepseek-v4-flash-0731' },
   };
   const backends = opts.backends ?? {
-    openrouter: { family: 'pi', base_url: 'https://openrouter.ai/api/v1', api_key_env: 'OPENROUTER_API_KEY', secrets_file: null },
+    openrouter: { family: 'pi', base_url: 'https://openrouter.ai/api/v1', api_key_env: null, secrets_file: null },
   };
   const profiles = opts.profiles ?? { schema_version: 1 };
   await writeFile(join(repoRoot, 'wiki', '.dispatch', 'models.json'), JSON.stringify(models, null, 2), 'utf8');
@@ -1012,6 +1071,10 @@ describe('dispatch v2 e2e (fake-tier) — isolation route (mocked bwrap probe)',
       kernelVersion: 'test-kernel',
       usernsSysctl: null,
     });
+    // Hermetic toolchain: this test runs with a throwaway $HOME (see the
+    // file-level beforeEach), so the host `claude` under the real $HOME would
+    // resolve outside every mountable root. Pin it to SYSTEM_ROOTS.
+    stubCliOnPath('claude', '/usr/bin/claude');
 
     const repoRoot = await setupS3Repo({
       backends: {
@@ -1098,10 +1161,16 @@ function mockSpawnIsolated(fixtureContent: string): { getInnerScript: () => stri
  */
 function mockSpawnIsolatedCaptureSecrets(fixtureContent: string): {
   getSecretValues: () => ReadonlyArray<{ name: string; value: string }> | undefined;
+  getBwrapArgs: () => readonly string[] | undefined;
+  getInjectedFiles: () => ReadonlyArray<{ content: string; dest: string; readOnly: boolean }> | undefined;
 } {
   let captured: ReadonlyArray<{ name: string; value: string }> | undefined;
+  let capturedBwrapArgs: readonly string[] | undefined;
+  let capturedInjectedFiles: ReadonlyArray<{ content: string; dest: string; readOnly: boolean }> | undefined;
   vi.spyOn(spawnIsolatedModule, 'spawnIsolated').mockImplementation(async (plan, opts) => {
     captured = opts?.secretValues;
+    capturedBwrapArgs = plan.bwrapArgs;
+    capturedInjectedFiles = plan.injectedFiles;
     if (opts?.stdoutLogPath) {
       await writeFile(opts.stdoutLogPath, fixtureContent, 'utf8');
     }
@@ -1118,7 +1187,11 @@ function mockSpawnIsolatedCaptureSecrets(fixtureContent: string): {
       },
     };
   });
-  return { getSecretValues: () => captured };
+  return {
+    getSecretValues: () => captured,
+    getBwrapArgs: () => capturedBwrapArgs,
+    getInjectedFiles: () => capturedInjectedFiles,
+  };
 }
 
 describe('dispatch v2 e2e (fake-tier) — WK-0122 effort passthrough (mocked spawnIsolated)', () => {
@@ -1940,6 +2013,142 @@ describe('dispatch v2 e2e (fake-tier) — value-list secret scrubber wiring (moc
     } finally {
       await rm(repoRoot, { recursive: true, force: true });
       await rm(secretsDir, { recursive: true, force: true });
+    }
+  });
+
+  it('claude: reads ~/.claude/.credentials.json once, scrubs its leaves, and injects it read-only (no $HOME bind)', async () => {
+    const home = process.env.HOME as string;
+    const repoRoot = await setupS3Repo({
+      backends: {
+        'claude-saas': { family: 'claude', base_url: null, api_key_env: null, secrets_file: null },
+      },
+      models: {
+        'claude-sonnet-5': { available_on: ['claude-saas'], model_id: 'claude-sonnet-5' },
+      },
+    });
+    const { getSecretValues, getBwrapArgs, getInjectedFiles } = mockSpawnIsolatedCaptureSecrets(
+      readFixtureFile('claude-p-output.txt'),
+    );
+    stubCliOnPath('claude', '/usr/bin/claude');
+    try {
+      const result = await runDispatch({
+        dir: repoRoot,
+        handoff: 'wiki/handoffs/HO-S3TEST.md',
+        model: 'claude-sonnet-5',
+        backend: 'claude-saas',
+        preflight: false,
+      });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      const credPath = join(home, PLANTED_CLAUDE_CREDENTIAL_PATH);
+      // The file's leaf is in the scrubber list under `<label>:<path>`.
+      expect(getSecretValues() ?? []).toContainEqual({
+        name: '.claude/.credentials.json:claudeAiOauth.accessToken',
+        value: PLANTED_CLAUDE_CREDENTIAL_VALUE,
+      });
+      // The exact bytes are materialized read-only via --ro-bind-data.
+      expect(getInjectedFiles() ?? []).toContainEqual(
+        expect.objectContaining({
+          content: PLANTED_CLAUDE_CREDENTIAL_JSON,
+          dest: credPath,
+          readOnly: true,
+        }),
+      );
+      const args = getBwrapArgs() ?? [];
+      const roBindDataIdx = args.indexOf('--ro-bind-data');
+      expect(roBindDataIdx).toBeGreaterThan(0);
+      expect(args[roBindDataIdx + 2]).toBe(credPath);
+      // Never a bind of the host credential path.
+      for (let i = 0; i + 2 < args.length; i += 1) {
+        if (args[i] === '--bind' || args[i] === '--ro-bind' || args[i] === '--ro-bind-try') {
+          expect([args[i + 1], args[i + 2]]).not.toEqual([credPath, credPath]);
+        }
+      }
+    } finally {
+      await rm(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('codex: injects ~/.codex/auth.json read-only and never mounts the host config.toml', async () => {
+    const home = process.env.HOME as string;
+    const repoRoot = await setupS3Repo({
+      backends: {
+        'codex-saas': { family: 'codex', base_url: null, api_key_env: null, secrets_file: null },
+      },
+      models: {
+        'gpt-5.5': { available_on: ['codex-saas'], model_id: 'gpt-5.5' },
+      },
+    });
+    const { getSecretValues, getInjectedFiles, getBwrapArgs } = mockSpawnIsolatedCaptureSecrets(
+      readFixtureFile('codex-exec-output-stream-json.jsonl'),
+    );
+    stubCliOnPath('codex', '/usr/bin/codex');
+    try {
+      const result = await runDispatch({
+        dir: repoRoot,
+        handoff: 'wiki/handoffs/HO-S3TEST.md',
+        model: 'gpt-5.5',
+        backend: 'codex-saas',
+        preflight: false,
+      });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      const authPath = join(home, PLANTED_CODEX_CREDENTIAL_PATH);
+      expect(getSecretValues() ?? []).toContainEqual({
+        name: '.codex/auth.json:tokens.access_token',
+        value: PLANTED_CODEX_CREDENTIAL_VALUE,
+      });
+      const injected = getInjectedFiles() ?? [];
+      expect(injected).toContainEqual(
+        expect.objectContaining({
+          content: PLANTED_CODEX_CREDENTIAL_JSON,
+          dest: authPath,
+          readOnly: true,
+        }),
+      );
+      // No codex plan references the host config.toml at all.
+      expect(injected.some((f) => f.dest.endsWith('config.toml'))).toBe(false);
+      const args = getBwrapArgs() ?? [];
+      expect(args.join('\n')).not.toContain('config.toml');
+      expect(args).not.toContain(`${home}/.codex/config.toml`);
+    } finally {
+      await rm(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('claude with no credential file stops before spawn with CREDENTIAL_NOT_CONFIGURED naming the file', async () => {
+    // A $HOME with no .claude/.credentials.json (the top-level fixture plants
+    // one, so point HOME at an empty temp dir for this test).
+    const emptyHome = await createTempDir('kb-e2e-home-empty-');
+    process.env.HOME = emptyHome;
+    const repoRoot = await setupS3Repo({
+      backends: {
+        'claude-saas': { family: 'claude', base_url: null, api_key_env: null, secrets_file: null },
+      },
+      models: {
+        'claude-sonnet-5': { available_on: ['claude-saas'], model_id: 'claude-sonnet-5' },
+      },
+    });
+    const spawn = vi.spyOn(spawnIsolatedModule, 'spawnIsolated');
+    stubCliOnPath('claude', '/usr/bin/claude');
+    try {
+      const result = await runDispatch({
+        dir: repoRoot,
+        handoff: 'wiki/handoffs/HO-S3TEST.md',
+        model: 'claude-sonnet-5',
+        backend: 'claude-saas',
+        preflight: false,
+      });
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error).toBe('CREDENTIAL_NOT_CONFIGURED');
+      expect(result.message).toContain(join(emptyHome, PLANTED_CLAUDE_CREDENTIAL_PATH));
+      expect(spawn).not.toHaveBeenCalled();
+    } finally {
+      await rm(repoRoot, { recursive: true, force: true });
+      await rm(emptyHome, { recursive: true, force: true });
     }
   });
 

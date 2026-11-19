@@ -508,7 +508,7 @@ describe('runDispatch — base drift end to end (WK-0152)', () => {
     await writeFile(
       join(repo, 'wiki', '.dispatch', 'backends.json'),
       JSON.stringify(
-        { openrouter: { family: 'pi', base_url: 'https://openrouter.ai/api/v1', api_key_env: 'OPENROUTER_API_KEY', secrets_file: null } },
+        { openrouter: { family: 'pi', base_url: 'https://openrouter.ai/api/v1', api_key_env: null, secrets_file: null } },
         null,
         2,
       ),

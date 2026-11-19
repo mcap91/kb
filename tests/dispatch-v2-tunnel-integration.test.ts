@@ -123,8 +123,28 @@ import {
   type TunnelConfig,
 } from '../packages/dispatch-core/src/tunnel.js';
 import { buildPiBaseUrl, runDispatch, summarizeProviderUsage, type ProviderUsageRecord } from '../packages/dispatch-core/src/pipeline.js';
+import * as execDirectModule from '../packages/dispatch-core/src/exec-direct.js';
+import { ok as dispatchOk } from '../packages/dispatch-core/src/errors.js';
 import * as spawnIsolatedModule from '../packages/dispatch-core/src/spawn-isolated.js';
 import { slicesSection } from './helpers/slice-fixture.js';
+
+/**
+ * Pin the `pi` CLI to a SYSTEM_ROOTS path for the `command -v pi` probe in
+ * `resolveToolchainPaths` (pipeline.ts). On a dev host `pi` lives under the
+ * real `$HOME`; when the suite runs with `$HOME` pointed at an empty dir its
+ * resolved path falls outside every mountable root and runDispatch refuses
+ * `CLI_PATH_NOT_MOUNTABLE` before the run reaches the forwarder/spawn seam
+ * under test. spawnIsolated is mocked, so the faked path never runs.
+ */
+function stubPiCliOnPath(): void {
+  const real = execDirectModule.execBash;
+  vi.spyOn(execDirectModule, 'execBash').mockImplementation(async (opts) => {
+    if (opts.scriptContent === 'command -v pi 2>/dev/null') {
+      return dispatchOk({ stdout: '/usr/bin/pi', stderr: '', exitCode: 0 });
+    }
+    return real(opts);
+  });
+}
 
 function readFixtureFile(name: string): string {
   return readFileSync(join(__dirname, 'fixtures', name), 'utf8');
@@ -1036,7 +1056,7 @@ mocked below, so this body is never read by a real worker.
     await mkdir(join(repoRoot, 'wiki', '.dispatch'), { recursive: true });
     const models = { deepseek: { available_on: ['openrouter'], model_id: 'deepseek/deepseek-v4-flash-0731' } };
     const backends = {
-      openrouter: { family: 'pi', base_url: 'https://openrouter.ai/api/v1', api_key_env: 'OPENROUTER_API_KEY', secrets_file: null },
+      openrouter: { family: 'pi', base_url: 'https://openrouter.ai/api/v1', api_key_env: null, secrets_file: null },
     };
     const profiles = { schema_version: 1 };
     await writeFile(join(repoRoot, 'wiki', '.dispatch', 'models.json'), JSON.stringify(models, null, 2), 'utf8');
@@ -1066,6 +1086,7 @@ describe('WK-0160 D8: env wiring -- runDispatch() real workerEnv carries NO_PROX
 
   it('captures the real workerEnv the pipeline builds and asserts NO_PROXY/no_proxy = 127.0.0.1,localhost', async () => {
     const repoRoot = await setupEnvWiringRepo();
+    stubPiCliOnPath();
     let capturedEnv: Record<string, string> | undefined;
     vi.spyOn(spawnIsolatedModule, 'spawnIsolated').mockImplementation(async (plan, opts) => {
       capturedEnv = plan.env;
@@ -1120,6 +1141,7 @@ describe('runDispatch() real forwarder survives a "type": "module" target repo',
 
   it('creates the real tunnel.sock (the forwarder reached its listening state despite the ESM package.json) and the run still reaches spawnIsolated', async () => {
     const repoRoot = await setupEnvWiringRepo({ esModule: true });
+    stubPiCliOnPath();
     let tunnelSocketExisted: boolean | undefined;
     vi.spyOn(spawnIsolatedModule, 'spawnIsolated').mockImplementation(async (plan, opts) => {
       // Pre-fix, the forwarder crashes at startup under this repo's own ESM

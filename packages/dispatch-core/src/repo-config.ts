@@ -219,6 +219,13 @@ function validateBackendEntry(name: string, raw: unknown): DispatchResult<Backen
     return fail('BAD_RECORD', `Backend "${name}" in backends.json: "rate_key_prefix" must be a string when present.`);
   }
 
+  // A backend that names an api_key_env must say where the key lives: the
+  // value can only be resolved from a secrets_file, so an env name without
+  // one is a config error, refused before any dispatch.
+  if (typeof raw.api_key_env === 'string' && raw.secrets_file === null) {
+    return fail('BAD_RECORD', `Backend "${name}" in backends.json sets "api_key_env" but has no "secrets_file".`);
+  }
+
   const entry: BackendEntry = {
     family: raw.family as BackendFamily,
     base_url: raw.base_url as string | null,

@@ -335,6 +335,42 @@ describe('repo-config.ts — wiki/.dispatch/ table loaders', () => {
       expect(result.message).toContain('api_key_env');
     });
 
+    it('refuses an api_key_env with no secrets_file, naming the backend', async () => {
+      await writeDispatchConfig(
+        dir,
+        'backends.json',
+        JSON.stringify({ openrouter: { family: 'pi', base_url: 'https://openrouter.ai/api/v1', api_key_env: 'OPENROUTER_API_KEY', secrets_file: null } }),
+      );
+
+      const result = await loadBackendsTable(dir);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error).toBe('BAD_RECORD');
+      expect(result.message).toContain('openrouter');
+      expect(result.message).toContain('secrets_file');
+    });
+
+    it('accepts an api_key_env with a secrets_file', async () => {
+      await writeDispatchConfig(
+        dir,
+        'backends.json',
+        JSON.stringify({
+          openrouter: {
+            family: 'pi',
+            base_url: 'https://openrouter.ai/api/v1',
+            api_key_env: 'OPENROUTER_API_KEY',
+            secrets_file: '/home/operator/.config/kb-dispatch/secrets.env',
+          },
+        }),
+      );
+
+      const result = await loadBackendsTable(dir);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.data.openrouter.api_key_env).toBe('OPENROUTER_API_KEY');
+      expect(result.data.openrouter.secrets_file).toBe('/home/operator/.config/kb-dispatch/secrets.env');
+    });
+
     // -------------------------------------------------------------------
     // effort_mapping (WK-0122) — per-family effort/reasoning CLI mapping.
     // -------------------------------------------------------------------
@@ -533,7 +569,7 @@ describe('repo-config.ts — wiki/.dispatch/ table loaders', () => {
           'openrouter-openai': {
             family: 'pi',
             base_url: 'https://openrouter.ai/api/v1',
-            api_key_env: 'OPENROUTER_API_KEY',
+            api_key_env: null,
             secrets_file: null,
             rate_key_prefix: 'openrouter/',
           },
@@ -557,7 +593,7 @@ describe('repo-config.ts — wiki/.dispatch/ table loaders', () => {
           'openrouter-openai': {
             family: 'pi',
             base_url: 'https://openrouter.ai/api/v1',
-            api_key_env: 'OPENROUTER_API_KEY',
+            api_key_env: null,
             secrets_file: null,
             rate_key_prefix: 42,
           },

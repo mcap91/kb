@@ -284,7 +284,7 @@ describe('WK-0272 full path — create/derive then dispatch with no manual commi
     await writeFile(
       join(repo, 'wiki', '.dispatch', 'backends.json'),
       JSON.stringify(
-        { openrouter: { family: 'pi', base_url: 'https://openrouter.ai/api/v1', api_key_env: 'OPENROUTER_API_KEY', secrets_file: null } },
+        { openrouter: { family: 'pi', base_url: 'https://openrouter.ai/api/v1', api_key_env: null, secrets_file: null } },
         null,
         2,
       ),

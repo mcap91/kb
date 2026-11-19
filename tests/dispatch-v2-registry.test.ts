@@ -229,7 +229,7 @@ describe('model-registry.ts — resolveModelFromConfig', () => {
         openrouter: {
           family: 'pi',
           base_url: 'https://openrouter.ai/api/v1',
-          api_key_env: 'OPENROUTER_API_KEY',
+          api_key_env: null,
           secrets_file: null,
         },
       }),
@@ -254,7 +254,7 @@ describe('model-registry.ts — resolveModelFromConfig', () => {
         openrouter: {
           family: 'pi',
           base_url: 'https://openrouter.ai/api/v1',
-          api_key_env: 'OPENROUTER_API_KEY',
+          api_key_env: null,
           secrets_file: null,
         },
       }),
@@ -333,7 +333,7 @@ describe('model-registry.ts — resolveModelFromConfig', () => {
         openrouter: {
           family: 'pi',
           base_url: 'https://openrouter.ai/api/v1',
-          api_key_env: 'OPENROUTER_API_KEY',
+          api_key_env: null,
           secrets_file: null,
         },
       }),
@@ -360,7 +360,7 @@ describe('model-registry.ts — resolveModelFromConfig', () => {
         openrouter: {
           family: 'pi',
           base_url: 'https://openrouter.ai/api/v1',
-          api_key_env: 'OPENROUTER_API_KEY',
+          api_key_env: null,
           secrets_file: null,
         },
       }),
@@ -396,7 +396,7 @@ describe('model-registry.ts — resolveModelByMode', () => {
       'gpt-5.6': { available_on: ['codex-saas'], model_id: 'gpt-5.6-terra', use_for: ['code_review'] },
     }));
     await writeDispatchConfig(dir, 'backends.json', JSON.stringify({
-      openrouter: { family: 'pi', base_url: 'https://openrouter.ai/api/v1', api_key_env: 'OPENROUTER_API_KEY', secrets_file: null },
+      openrouter: { family: 'pi', base_url: 'https://openrouter.ai/api/v1', api_key_env: null, secrets_file: null },
       'codex-saas': { family: 'codex', base_url: null, api_key_env: null, secrets_file: null },
     }));
 
@@ -428,7 +428,7 @@ describe('model-registry.ts — resolveModelByMode', () => {
       qwen: { available_on: ['ollama'], model_id: 'qwen3:8b', use_for: ['implement'] },
     }));
     await writeDispatchConfig(dir, 'backends.json', JSON.stringify({
-      openrouter: { family: 'pi', base_url: 'https://openrouter.ai/api/v1', api_key_env: 'OPENROUTER_API_KEY', secrets_file: null },
+      openrouter: { family: 'pi', base_url: 'https://openrouter.ai/api/v1', api_key_env: null, secrets_file: null },
       ollama: { family: 'pi', base_url: 'http://localhost:11434/v1', api_key_env: null, secrets_file: null },
     }));
 
@@ -457,7 +457,7 @@ describe('model-registry.ts — resolveModelByMode', () => {
       deepseek: { available_on: ['openrouter', 'ollama'], model_id: 'deepseek/deepseek-v4-flash-0731', use_for: ['implement'] },
     }));
     await writeDispatchConfig(dir, 'backends.json', JSON.stringify({
-      openrouter: { family: 'pi', base_url: 'https://openrouter.ai/api/v1', api_key_env: 'OPENROUTER_API_KEY', secrets_file: null },
+      openrouter: { family: 'pi', base_url: 'https://openrouter.ai/api/v1', api_key_env: null, secrets_file: null },
       ollama: { family: 'pi', base_url: 'http://localhost:11434/v1', api_key_env: null, secrets_file: null },
     }));
 
@@ -474,7 +474,7 @@ describe('model-registry.ts — resolveModelByMode', () => {
     }));
     await writeDispatchConfig(dir, 'backends.json', JSON.stringify({
       'claude-saas': { family: 'claude', base_url: null, api_key_env: null, secrets_file: null },
-      openrouter: { family: 'pi', base_url: 'https://openrouter.ai/api/v1', api_key_env: 'OPENROUTER_API_KEY', secrets_file: null },
+      openrouter: { family: 'pi', base_url: 'https://openrouter.ai/api/v1', api_key_env: null, secrets_file: null },
     }));
 
     const result = await resolveModelByMode(dir, 'implement');
@@ -504,7 +504,7 @@ describe('model-registry.ts — resolveModelInferBackend', () => {
       deepseek: { available_on: ['openrouter'], model_id: 'deepseek/deepseek-v4-flash-0731' },
     }));
     await writeDispatchConfig(dir, 'backends.json', JSON.stringify({
-      openrouter: { family: 'pi', base_url: 'https://openrouter.ai/api/v1', api_key_env: 'OPENROUTER_API_KEY', secrets_file: null },
+      openrouter: { family: 'pi', base_url: 'https://openrouter.ai/api/v1', api_key_env: null, secrets_file: null },
     }));
 
     const result = await resolveModelInferBackend(dir, 'deepseek');
@@ -519,7 +519,7 @@ describe('model-registry.ts — resolveModelInferBackend', () => {
       deepseek: { available_on: ['openrouter', 'vllm-ec2'], model_id: 'deepseek/deepseek-v4-flash-0731' },
     }));
     await writeDispatchConfig(dir, 'backends.json', JSON.stringify({
-      openrouter: { family: 'pi', base_url: 'https://openrouter.ai/api/v1', api_key_env: 'OPENROUTER_API_KEY', secrets_file: null },
+      openrouter: { family: 'pi', base_url: 'https://openrouter.ai/api/v1', api_key_env: null, secrets_file: null },
       'vllm-ec2': { family: 'pi', base_url: 'http://ec2-host:8000/v1', api_key_env: null, secrets_file: null },
     }));
 
@@ -535,7 +535,7 @@ describe('model-registry.ts — resolveModelInferBackend', () => {
       deepseek: { available_on: ['openrouter'], model_id: 'deepseek/deepseek-v4-flash-0731' },
     }));
     await writeDispatchConfig(dir, 'backends.json', JSON.stringify({
-      openrouter: { family: 'pi', base_url: 'https://openrouter.ai/api/v1', api_key_env: 'OPENROUTER_API_KEY', secrets_file: null },
+      openrouter: { family: 'pi', base_url: 'https://openrouter.ai/api/v1', api_key_env: null, secrets_file: null },
     }));
 
     const result = await resolveModelInferBackend(dir, 'nonexistent');

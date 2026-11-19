@@ -58,7 +58,7 @@ import {
 } from './jail.js';
 import { isMountableRoot } from './mountability.js';
 import { spawnIsolated, type SpawnResult } from './spawn-isolated.js';
-import { buildSecretValueList } from './secret-scrub.js';
+import { buildSecretValueList, type CredentialFileSnapshot } from './secret-scrub.js';
 import { attachStreamErrorHandlers } from './stream-utils.js';
 import { buildWorkerEnv } from './env-policy.js';
 import { createClone, removeClone, sweepOrphanClones } from './clone.js';
@@ -730,34 +730,35 @@ export function buildJailPathExport(toolchain: ToolchainResolution, runtimeEnvPa
 }
 
 /**
- * Per-family auth leaf binds — the ONLY $HOME paths let through the
- * visibility wall (DEC-0011 ruling 1, WK-0103). Claude's credentials file
- * gets rw for implement (token refresh persists mid-run) and ro for advisory
- * modes (code_review/redteam/research — no write authority to begin with);
- * Codex's auth.json + config.toml are always ro (codex itself only reads
- * them); Pi needs no auth leaf (its API key is env-injected and its config
- * dir lives on the jail's own tmpfs, never under $HOME).
+ * The `$HOME`-relative paths a family's CLI needs to reach its login. The
+ * launch reads each once on the host and materializes the same bytes in the
+ * jail read-only (`--ro-bind-data`) in every mode — `implement` included, so a
+ * worker can never rewrite or refresh its own credential file. The host path
+ * itself is never bind-mounted, so nothing else under `$HOME` is exposed.
+ *
+ * The family's fixed needs (the visibility wall):
+ * - Claude: `~/.claude/.credentials.json` only.
+ * - Codex: `~/.codex/auth.json` only. `~/.codex/config.toml` is NOT read or
+ *   mounted — the worker's config dir is jail tmpfs, so a host config.toml
+ *   would only leak host settings.
+ * - Pi: none (its key is env-injected, its config dir is jail tmpfs).
+ *
+ * `$HOME` is read at call time. No `$HOME` means no credential file: the
+ * caller's read then fails closed with `CREDENTIAL_NOT_CONFIGURED`.
  * @internal pipeline.ts internal — exported only for direct unit testing.
  */
-export function buildAuthLeafBinds(family: BackendFamily, mode: string): Array<{ path: string; access: 'ro' | 'rw' }> {
+export function buildAuthLeafBinds(family: BackendFamily): Array<{ path: string; label: string; readOnly: true }> {
   const home = process.env.HOME ?? '';
   if (!home) return [];
 
   if (family === 'claude') {
-    const credPath = `${home}/.claude/.credentials.json`;
-    // Implement gets rw (token refresh persists); advisory modes get ro
-    const access = mode === 'implement' ? 'rw' as const : 'ro' as const;
-    return [{ path: credPath, access }];
+    return [{ path: `${home}/.claude/.credentials.json`, label: '.claude/.credentials.json', readOnly: true }];
   }
 
   if (family === 'codex') {
-    return [
-      { path: `${home}/.codex/auth.json`, access: 'ro' },
-      { path: `${home}/.codex/config.toml`, access: 'ro' },
-    ];
+    return [{ path: `${home}/.codex/auth.json`, label: '.codex/auth.json', readOnly: true }];
   }
 
-  // Pi: no auth leaf needed (API key is env-injected, config dir is jail tmpfs)
   return [];
 }
 
@@ -1042,7 +1043,7 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       toolchainResult.unmountable,
     );
   }
-  const authLeafBinds = buildAuthLeafBinds(model.family, handoff.mode);
+  const credentialFiles = buildAuthLeafBinds(model.family);
 
   // 5. Run ID — injected by the background controller, or minted here for standalone callers.
   const runId = opts.runId ?? `RUN-${randomUUID()}`;
@@ -1222,7 +1223,7 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
     // per-callsite `model.family` re-narrowing.
     let workerDir = '';
     let execLines: string[] = [];
-    let bwrapInjectedFiles: Array<{ content: string; dest: string }> = [];
+    let bwrapInjectedFiles: Array<{ content: string; dest: string; readOnly?: boolean }> = [];
 
     // WK-0125/DEC-0037: implement-mode constrained decoding. Read once here
     // (consumed by the codex/claude branches below) — Pi has no constrained-
@@ -1482,11 +1483,34 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
     // contract.
     const credentialEnvResult = await resolveCredentialEnv(credResult.data);
     if (!credentialEnvResult.ok) return credentialEnvResult;
+    // 12b-ii. Credential snapshots. Each family file is read
+    // once here on the host as UTF-8; the same bytes are materialized at the
+    // same path in the jail read-only (`--ro-bind-data`, via the injected
+    // file's readOnly flag), never bind-mounted from `$HOME`. A missing or
+    // unreadable file fails closed, naming the file, before any spawn;
+    // malformed JSON is caught by buildSecretValueList below. Pi has no
+    // files, so this loop is empty for it.
+    const credentialSnapshots: CredentialFileSnapshot[] = [];
+    for (const file of credentialFiles) {
+      let bytes: string;
+      try {
+        bytes = await readFile(file.path, 'utf8');
+      } catch {
+        return fail(
+          'CREDENTIAL_NOT_CONFIGURED',
+          `Credential file "${file.path}" is not readable; cannot configure the run.`,
+        );
+      }
+      credentialSnapshots.push({ label: file.label, bytes });
+      bwrapInjectedFiles.push({ content: bytes, dest: file.path, readOnly: true });
+    }
     // 12b-i. Value list for the stdout/stderr scrubber, built at launch from
     // the exact resolved pairs the worker env injects — never from a
-    // re-read that could disagree with what was actually exported.
+    // re-read that could disagree with what was actually exported — plus the
+    // credential files just read.
     const secretValueListResult = buildSecretValueList({
       values: Object.entries(credentialEnvResult.data).map(([name, value]) => ({ name, value })),
+      snapshots: credentialSnapshots,
     });
     if (!secretValueListResult.ok) return secretValueListResult;
     const proxyUrl = `http://127.0.0.1:${TUNNEL_RELAY_PORT}`;
@@ -1565,7 +1589,6 @@ export async function runDispatch(opts: DispatchOpts): Promise<DispatchResult<Di
       tunnelSocketPath,
       relayScriptPath,
       toolchainPaths: toolchainResult.bindPaths,
-      authLeafBinds,
       runtimeEnvPaths: admission.data.runtimeEnvPaths,
       runDirPath: runDir,
       command: ['bash', '-c', innerScript],

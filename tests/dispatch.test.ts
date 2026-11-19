@@ -900,8 +900,29 @@ function mockSpawnIsolatedForTimeout(behavior: 'timed_out' | 'completes'): { get
 }
 
 describe('pipeline.ts — WK-0244 per-HO worker timeout (stubbed-clock seam: mocked spawnIsolated, no real wait)', () => {
-  afterEach(() => {
+  // A claude dispatch reads ~/.claude/.credentials.json once at launch; the
+  // suite must run on a host that has none, so plant one in a throwaway HOME.
+  let savedHome: string | undefined;
+  let testHome: string | undefined;
+
+  beforeEach(async () => {
+    savedHome = process.env.HOME;
+    testHome = await makeTempDir('kb-dispatch-home-');
+    await mkdir(join(testHome, '.claude'), { recursive: true });
+    await writeFile(
+      join(testHome, '.claude', '.credentials.json'),
+      JSON.stringify({ claudeAiOauth: { accessToken: 'planted-claude-access-0123456789' } }),
+      'utf8',
+    );
+    process.env.HOME = testHome;
+  });
+
+  afterEach(async () => {
     vi.restoreAllMocks();
+    if (savedHome === undefined) delete process.env.HOME;
+    else process.env.HOME = savedHome;
+    if (testHome) await rm(testHome, { recursive: true, force: true });
+    testHome = undefined;
   });
 
   it('AC2 regression: no timeout_secs keeps the 1800s default watchdog bound, and the kill message reports 1800s', async () => {

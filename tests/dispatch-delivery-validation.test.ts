@@ -7,7 +7,7 @@
  * delivered outcome, and that the response doc and run result carry the
  * outcome.
  */
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
@@ -153,9 +153,30 @@ async function evidenceFile(result: { runDir: string }): Promise<string> {
 
 describe('host validation at delivery (mocked spawnIsolated)', () => {
   const repos: string[] = [];
+  // A claude dispatch reads ~/.claude/.credentials.json once at launch; the
+  // suite must run on a host that has none, so plant one in a throwaway HOME.
+  let savedHome: string | undefined;
+  let testHome: string | undefined;
+
+  beforeEach(async () => {
+    savedHome = process.env.HOME;
+    testHome = await mkdtemp(join(tmpdir(), 'kb-delivery-home-'));
+    await mkdir(join(testHome, '.claude'), { recursive: true });
+    await writeFile(
+      join(testHome, '.claude', '.credentials.json'),
+      JSON.stringify({ claudeAiOauth: { accessToken: 'planted-claude-access-0123456789' } }),
+      'utf8',
+    );
+    process.env.HOME = testHome;
+  });
+
   afterEach(async () => {
     vi.restoreAllMocks();
     for (const r of repos.splice(0)) await rm(r, { recursive: true, force: true });
+    if (savedHome === undefined) delete process.env.HOME;
+    else process.env.HOME = savedHome;
+    if (testHome) await rm(testHome, { recursive: true, force: true });
+    testHome = undefined;
   });
 
   it('writes passing evidence into the run dir and shows one pass line in the response doc', async () => {

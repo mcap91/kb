@@ -20,8 +20,28 @@ import { runDispatch } from '../packages/dispatch-core/src/pipeline.js';
 import { stageReviewEvidence } from '../packages/dispatch-core/src/host-validation.js';
 import { validationRegistryFingerprint } from '../packages/dispatch-core/src/repo-config.js';
 import type { BwrapPlan } from '../packages/dispatch-core/src/jail.js';
+import * as execDirectModule from '../packages/dispatch-core/src/exec-direct.js';
+import { ok as dispatchOk } from '../packages/dispatch-core/src/errors.js';
 import * as spawnIsolatedModule from '../packages/dispatch-core/src/spawn-isolated.js';
 import * as tierModule from '../packages/dispatch-core/src/tier.js';
+
+/**
+ * Pin the `pi` CLI to a SYSTEM_ROOTS path for the `command -v pi` probe in
+ * `resolveToolchainPaths` (pipeline.ts). On a dev host `pi` lives under the
+ * real `$HOME`; when the suite runs with `$HOME` pointed at an empty dir its
+ * resolved path falls outside every mountable root and runDispatch refuses
+ * `CLI_PATH_NOT_MOUNTABLE` before the run reaches the jail under test. The
+ * worker command is replaced with `cat` below, so the faked path never runs.
+ */
+function stubPiCliOnPath(): void {
+  const real = execDirectModule.execBash;
+  vi.spyOn(execDirectModule, 'execBash').mockImplementation(async (opts) => {
+    if (opts.scriptContent === 'command -v pi 2>/dev/null') {
+      return dispatchOk({ stdout: '/usr/bin/pi', stderr: '', exitCode: 0 });
+    }
+    return real(opts);
+  });
+}
 
 function probeBwrapFunctional(): boolean {
   try {
@@ -103,7 +123,7 @@ async function setupRepo(shape: 'tracked' | 'nested-private'): Promise<string> {
   );
   await writeFile(
     join(wiki, '.dispatch', 'backends.json'),
-    JSON.stringify({ openrouter: { family: 'pi', base_url: 'https://openrouter.ai/api/v1', api_key_env: 'OPENROUTER_API_KEY', secrets_file: null } }),
+    JSON.stringify({ openrouter: { family: 'pi', base_url: 'https://openrouter.ai/api/v1', api_key_env: null, secrets_file: null } }),
   );
   await writeFile(join(wiki, '.dispatch', 'profiles.json'), JSON.stringify({ schema_version: 1 }));
   // The response lands on main after the delivery branch was cut — invisible to a base_ref clone.
@@ -157,6 +177,7 @@ describe.skipIf(!BWRAP_FUNCTIONAL).each(['tracked', 'nested-private'] as const)(
     // Why: A4.4 — the reviewer reads the response and evidence from its run dir, in its real jail, in both shapes.
     it('stages the response and evidence into the review run dir and the worker jail can read both', async () => {
       repo = await setupRepo(shape);
+      stubPiCliOnPath();
       vi.spyOn(tierModule, 'probeBwrap').mockResolvedValue({
         available: true,
         bwrapVersion: 'bubblewrap (real, probe mocked)',
@@ -166,7 +187,11 @@ describe.skipIf(!BWRAP_FUNCTIONAL).each(['tracked', 'nested-private'] as const)(
       });
       let jailRead = '';
       vi.spyOn(spawnIsolatedModule, 'spawnIsolated').mockImplementation(async (plan, opts) => {
-        const runDirBind = plan.mounts.find((m) => m.kind === 'bind' && m.dst.includes(`/runs/${REVIEW}/`));
+        // The run dir is mounted read-only; the relay.cjs file is the
+        // other ro-bind under the same run dir, so exclude it by name.
+        const runDirBind = plan.mounts.find(
+          (m) => m.kind === 'ro-bind' && m.dst.includes(`/runs/${REVIEW}/`) && !m.dst.endsWith('/relay.cjs'),
+        );
         const runDir = runDirBind?.dst ?? '';
         const read = await realSpawnIsolated(
           withCommand(plan, ['cat', join(runDir, 'implement-response.md'), join(runDir, 'validation-evidence.json')]),

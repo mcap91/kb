@@ -31,7 +31,7 @@ import {
   type BwrapMount,
   type JailOpts,
 } from '../packages/dispatch-core/src/jail.js';
-import { familyWriteScope } from '../packages/dispatch-core/src/pipeline.js';
+import { buildAuthLeafBinds, familyWriteScope } from '../packages/dispatch-core/src/pipeline.js';
 import { spawnIsolated } from '../packages/dispatch-core/src/spawn-isolated.js';
 
 const clonePath = '/home/user/.kb-dispatch/clones/RUN-JAIL';
@@ -550,8 +550,8 @@ describe('buildBwrapPlan — injectedFiles', () => {
     const plan = buildBwrapPlan({ clonePath, command: ['pi'], injectedFiles });
 
     const expectedInjected: BwrapInjectedFile[] = [
-      { fd: 3, dest: injectedFiles[0].dest, content: injectedFiles[0].content },
-      { fd: 4, dest: injectedFiles[1].dest, content: injectedFiles[1].content },
+      { fd: 3, dest: injectedFiles[0].dest, content: injectedFiles[0].content, readOnly: false },
+      { fd: 4, dest: injectedFiles[1].dest, content: injectedFiles[1].content, readOnly: false },
     ];
     expect(plan.injectedFiles).toEqual(expectedInjected);
 
@@ -577,6 +577,22 @@ describe('buildBwrapPlan — injectedFiles', () => {
   it('defaults injectedFiles to [] and emits no --file tokens when none are given', () => {
     const plan = buildBwrapPlan({ clonePath, command: ['pi'] });
     expect(plan.injectedFiles).toEqual([]);
+    expect(plan.bwrapArgs).not.toContain('--file');
+    expect(plan.bwrapArgs).not.toContain('--ro-bind-data');
+  });
+
+  it('an injected file with readOnly:true renders --ro-bind-data, one without renders --file', () => {
+    const dest = `${clonePath}/tmp/.claude/.credentials.json`;
+    const plan = buildBwrapPlan({
+      clonePath,
+      command: ['claude'],
+      injectedFiles: [{ content: '{"token":"x"}', dest, readOnly: true }],
+    });
+
+    expect(plan.injectedFiles).toEqual([
+      { fd: 3, dest, content: '{"token":"x"}', readOnly: true },
+    ]);
+    expect(plan.bwrapArgs).toEqual(expect.arrayContaining(['--ro-bind-data', '3', dest]));
     expect(plan.bwrapArgs).not.toContain('--file');
   });
 });
@@ -816,16 +832,15 @@ describe('buildBwrapPlan — no trailing bare "--"', () => {
 // family's auth leaf; auth leaf exact path + correct ro/rw per mode;
 // declared data_mounts present, undeclared paths absent").
 //
-// jail.ts itself has no notion of "family" — systemRoots, toolchainPaths,
-// and authLeafBinds are opts a family-aware CALLER (pipeline.ts, Wave 2)
-// populates. These tests build the opts each family WOULD receive, per the
-// evidence captured for this wave: pi/codex/claude CLIs live under
-// ~/.npm-global-wsl/ (under $HOME — needs an exact toolchainPaths leaf);
-// claude's auth leaf is ~/.claude/.credentials.json (rw for implement, ro
-// for advisory modes, e.g. code_review); codex's is ~/.codex/auth.json
-// (ro); Pi needs no auth leaf at all (its API key is env-injected and
-// PI_CODING_AGENT_DIR lives on the jail's own /tmp tmpfs) — and assert
-// buildJailArgs/buildBwrapPlan render them correctly.
+// jail.ts itself has no notion of "family" — systemRoots and toolchainPaths
+// are opts a family-aware CALLER (pipeline.ts, Wave 2) populates. These
+// tests build the opts each family WOULD receive, per the evidence captured
+// for this wave: pi/codex/claude CLIs live under ~/.npm-global-wsl/ (under
+// $HOME — needs an exact toolchainPaths leaf). No family gets a $HOME
+// credential bind any more: each credential file reaches the jail as a
+// read-only injected file (pipeline.ts `buildAuthLeafBinds` + jail.ts's
+// `--ro-bind-data`), never as a mount — and these tests assert
+// buildJailArgs/buildBwrapPlan render no such bind.
 // ---------------------------------------------------------------------------
 
 describe('DEC-0011 visibility wall assertions (WK-0103)', () => {
@@ -833,26 +848,9 @@ describe('DEC-0011 visibility wall assertions (WK-0103)', () => {
   type Family = 'pi' | 'codex' | 'claude';
   const families: Family[] = ['pi', 'codex', 'claude'];
 
-  /** The toolchain + auth-leaf opts a family-aware caller would pass for `mode`. */
+  /** The toolchain opts a family-aware caller would pass for `mode`; no credential mount for any family. */
   function familyOpts(family: Family, mode: string): JailOpts {
     const toolchainPaths = [`${HOME}/.npm-global-wsl/bin/${family}`];
-    if (family === 'claude') {
-      return {
-        clonePath,
-        mode,
-        toolchainPaths,
-        authLeafBinds: [{ path: `${HOME}/.claude/.credentials.json`, access: mode === 'implement' ? 'rw' : 'ro' }],
-      };
-    }
-    if (family === 'codex') {
-      return {
-        clonePath,
-        mode,
-        toolchainPaths,
-        authLeafBinds: [{ path: `${HOME}/.codex/auth.json`, access: 'ro' }],
-      };
-    }
-    // pi: no auth leaf at all — API key is env-injected, PI_CODING_AGENT_DIR lives on the jail's own tmpfs.
     return { clonePath, mode, toolchainPaths };
   }
 
@@ -867,71 +865,55 @@ describe('DEC-0011 visibility wall assertions (WK-0103)', () => {
     }
   });
 
-  it('2. no $HOME directory bind exists for any family — only the exact declared auth leaf', () => {
-    for (const family of families) {
-      // Auth-leaf-only fixture (no toolchainPaths) isolates the property under
-      // test: $HOME is visible ONLY through the declared auth leaf, nothing
-      // broader (toolchain-leaf exemption is proven separately by test 4).
-      const opts: JailOpts =
-        family === 'claude'
-          ? { clonePath, mode: 'implement', authLeafBinds: [{ path: `${HOME}/.claude/.credentials.json`, access: 'rw' }] }
-          : family === 'codex'
-            ? { clonePath, mode: 'implement', authLeafBinds: [{ path: `${HOME}/.codex/auth.json`, access: 'ro' }] }
-            : { clonePath, mode: 'implement' }; // pi: no auth leaf binds at all
-
-      const { mounts } = buildBwrapPlan({ ...opts, command: ['agent'] });
-      const authLeafPaths = new Set((opts.authLeafBinds ?? []).map((l) => l.path));
+  it('2. no family plan mounts any $HOME path: credentials arrive as read-only injected files, never binds', () => {
+    // No toolchainPaths: isolates the property under test (the toolchain
+    // leaf exemption is proven separately by test 4). jail.ts has no family
+    // notion, so one representative plan per family/mode group proves it:
+    // no mount is ever sourced from $HOME — the credential file is
+    // materialized by bwrap `--ro-bind-data`, an injected file, not a mount
+    // (proven directly in the buildAuthLeafBinds test below).
+    for (const mode of ['implement', 'code_review']) {
+      const { mounts } = buildBwrapPlan({ clonePath, mode, command: ['agent'] });
       const homeSrcs = mounts
         .map((m) => m.src)
         .filter((src): src is string => typeof src === 'string' && src.startsWith(HOME));
-
-      if (family === 'pi') {
-        expect(homeSrcs).toHaveLength(0);
-      }
-      for (const src of homeSrcs) {
-        expect(authLeafPaths.has(src)).toBe(true);
-      }
+      expect(homeSrcs).toHaveLength(0);
     }
   });
 
-  describe('3. auth leaf binds: exact path + correct access per family/mode', () => {
-    it('claude implement: ~/.claude/.credentials.json is writable', () => {
-      const path = `${HOME}/.claude/.credentials.json`;
-      const plan = buildBwrapPlan({
-        clonePath,
-        mode: 'implement',
-        authLeafBinds: [{ path, access: 'rw' }],
-        command: ['claude'],
-      });
-      expect(plan.mounts).toEqual(expect.arrayContaining([{ kind: 'bind', src: path, dst: path }]));
+  describe('3. buildAuthLeafBinds: exact file per family, read-only in every mode', () => {
+    const savedHome = process.env.HOME;
+    beforeEach(() => {
+      process.env.HOME = HOME;
+    });
+    afterEach(() => {
+      if (savedHome === undefined) delete process.env.HOME;
+      else process.env.HOME = savedHome;
     });
 
-    it('claude advisory (code_review): ~/.claude/.credentials.json is read-only', () => {
-      const path = `${HOME}/.claude/.credentials.json`;
-      const plan = buildBwrapPlan({
-        clonePath,
-        mode: 'code_review',
-        authLeafBinds: [{ path, access: 'ro' }],
-        command: ['claude'],
-      });
-      expect(plan.mounts).toEqual(expect.arrayContaining([{ kind: 'ro-bind', src: path, dst: path }]));
+    // The result is mode-independent by construction (`readOnly` is always
+    // true), so "every mode" is proven by the file list never carrying a
+    // writable entry — `implement` cannot get a different shape.
+    it('claude → ~/.claude/.credentials.json only, read-only', () => {
+      expect(buildAuthLeafBinds('claude')).toEqual([
+        { path: `${HOME}/.claude/.credentials.json`, label: '.claude/.credentials.json', readOnly: true },
+      ]);
     });
 
-    it('codex: ~/.codex/auth.json is read-only', () => {
-      const path = `${HOME}/.codex/auth.json`;
-      const plan = buildBwrapPlan({
-        clonePath,
-        mode: 'implement',
-        authLeafBinds: [{ path, access: 'ro' }],
-        command: ['codex'],
-      });
-      expect(plan.mounts).toEqual(expect.arrayContaining([{ kind: 'ro-bind', src: path, dst: path }]));
+    it('codex → ~/.codex/auth.json only (no config.toml), read-only', () => {
+      expect(buildAuthLeafBinds('codex')).toEqual([
+        { path: `${HOME}/.codex/auth.json`, label: '.codex/auth.json', readOnly: true },
+      ]);
     });
 
-    it('pi: no auth leaf binds at all', () => {
-      const plan = buildBwrapPlan({ clonePath, mode: 'implement', command: ['pi', '-p'] });
-      const homeMounts = plan.mounts.filter((m) => m.src !== undefined && m.src.startsWith(HOME));
-      expect(homeMounts).toHaveLength(0);
+    it('pi → no credential file', () => {
+      expect(buildAuthLeafBinds('pi')).toEqual([]);
+    });
+
+    it('no $HOME → no credential file (the caller then fails closed with CREDENTIAL_NOT_CONFIGURED)', () => {
+      delete process.env.HOME;
+      expect(buildAuthLeafBinds('claude')).toEqual([]);
+      expect(buildAuthLeafBinds('codex')).toEqual([]);
     });
   });
 
@@ -963,7 +945,7 @@ describe('DEC-0011 visibility wall assertions (WK-0103)', () => {
     expect(argv).not.toContain(undeclared);
   });
 
-  it('6. runDirPath produces a writable bind of the run directory', () => {
+  it('6. runDirPath produces a READ-ONLY bind of the run directory, placed immediately before the final .git bind', () => {
     const runDir = `${HOME}/projects/repo/.agent-runs/runs/HO-0001/RUN-abc123`;
     const opts: JailOpts = {
       clonePath,
@@ -972,8 +954,19 @@ describe('DEC-0011 visibility wall assertions (WK-0103)', () => {
     const plan = buildBwrapPlan({ ...opts, command: ['pi'] });
 
     expect(plan.mounts).toEqual(expect.arrayContaining([
-      { kind: 'bind', src: runDir, dst: runDir },
+      { kind: 'ro-bind', src: runDir, dst: runDir },
     ]));
+    // No writable bind of the run dir exists any more.
+    expect(plan.mounts.find((m) => m.kind === 'bind' && m.dst === runDir)).toBeUndefined();
+    // The run-dir bind is emitted immediately before the .git bind, which
+    // stays the last mount of every plan.
+    const runDirIdx = plan.mounts.findIndex((m) => m.kind === 'ro-bind' && m.dst === runDir);
+    expect(plan.mounts[runDirIdx + 1]).toEqual({
+      kind: 'ro-bind',
+      src: `${clonePath}/.git`,
+      dst: `${clonePath}/.git`,
+    });
+    expectGitBindIsLastMount(plan.mounts, clonePath);
   });
 });
 

@@ -192,12 +192,19 @@ trusted to carry the whole containment story.
 ### Wall 1 — bwrap sandbox: deny-by-default visibility
 
 A worker sees exactly: curated read-only system roots (`/usr /bin /sbin /lib /lib64 /etc /opt /var`),
-its own ephemeral clone (checked out at the pinned `base_sha`), its family's single auth leaf, and the
-HO's declared `data_mounts`/`export_mounts`. There is no whole-root bind and no blanket `$HOME` access.
+its own ephemeral clone (checked out at the pinned `base_sha`), its family's credential snapshot (if
+any), and the HO's declared `data_mounts`/`export_mounts`. There is no whole-root bind and no blanket
+`$HOME` access.
 
-- **Auth leaf** — the only `$HOME` paths let through: Claude's `~/.claude/.credentials.json` (`rw` for
-  `implement`, `ro` otherwise); Codex's `~/.codex/auth.json` + `config.toml` (`ro`); Pi needs none (its
-  key is env-injected, its config dir is jail tmpfs).
+- **Credential snapshots, not a `$HOME` bind** — the mount list names no `$HOME` credential path. At
+  launch each family's needed files are read once on the host as UTF-8 and carried as a value-list
+  snapshot (see "Resolved-value scrubbing"): Claude's `~/.claude/.credentials.json`; Codex's
+  `~/.codex/auth.json` only (the host `~/.codex/config.toml` is no longer mounted); Pi needs none (its
+  key is env-injected, its config dir is jail tmpfs). The same bytes are materialized at the same path
+  read-only through bwrap's `--ro-bind-data`, for every mode including `implement` — there is no host
+  copy and no writable auth leaf. A missing or unreadable file stops the run before spawn with
+  `CREDENTIAL_NOT_CONFIGURED`, naming the file only; malformed JSON fails the value-list build, naming
+  the snapshot label only, never the bytes.
 - **`write_scope` mounts bind exact files for every family** — Claude, Codex, and Pi (Pi binds exactly
   what was declared; Claude and Codex each get the declared file or directory, never a parent widened
   to cover it). A Claude worker edits a write_scope file in place through Bash, with its native `Edit`/
@@ -213,14 +220,17 @@ HO's declared `data_mounts`/`export_mounts`. There is no whole-root bind and no 
   entry is checked before the first create. A further mount guard still runs as the final check, over
   the family-resolved mount list, after the skeleton exists on disk — belt-and-suspenders over the
   same clone, never a substitute for resolving and refusing before creation.
-- **Secret masking, then the final read-only `.git` bind** — a clone's own `.env` is masked to
-  `/dev/null` and `.claude/` to a fresh tmpfs when either is present (a committed secret or agent
-  config in the mother repo's working tree must never reach the jail), immediately followed, as the
-  LAST mount operation of every plan (worker and host-validation alike), by an unconditional, strict
+- **Secret masking, the read-only run dir, then the final read-only `.git` bind** — a clone's own
+  `.env` is masked to `/dev/null` and `.claude/` to a fresh tmpfs when either is present (a committed
+  secret or agent config in the mother repo's working tree must never reach the jail). The run dir is
+  then bound read-only (`--ro-bind <run-dir> <run-dir>`), and last, as the LAST mount operation of
+  every plan (worker and host-validation alike), an unconditional, strict
   `--ro-bind <clone>/.git <clone>/.git`. That order matters: bwrap resolves later binds over earlier
   ones, so no mask (nor any write_scope bind) can ever land after the `.git` bind and reopen it — this
   is the sole protection for a host-validation jail, which declares no `write_scope` and otherwise
-  binds the whole clone read-write. A tracked symlink at a mask path (`.claude -> .`, `.claude -> .git`,
+  binds the whole clone read-write. Only injected-file args (`--file` jail-`/tmp` destinations and the
+  `--ro-bind-data` credential snapshots) and `--chdir` follow the `.git` bind. A tracked symlink at a
+  mask path (`.claude -> .`, `.claude -> .git`,
   `.env -> <file>`) is refused before any jail ever starts: cloning fails closed, naming the path.
 - **Worker env** — minted from an allowlist: only `PATH`, `HOME`, `USER`, `SHELL`, `TERM`, `LANG`, and
   `LC_*` are copied from the host, then secret-shaped, posture, and proxy names are dropped. `TMPDIR`
@@ -326,10 +336,13 @@ delivery diff. At launch `runDispatch` builds one ordered value list and hands i
 the list is the exact set of resolved pairs, never a name:
 
 - **Value sources.** Each granted profile's `inject` entries (the value read from its file, keyed by the
-  env var name) and the backend's own key read from `api_key_env` + `secrets_file`. (The list builder
-  also accepts credential-file snapshots — every string leaf of a parsed JSON file at least 16
-  characters long, named `<label>:<key.path>` with array indices as `[n]`, e.g. `x:a[0].b` — for the
-  next increment; no live step feeds snapshots to it yet.)
+  env var name); the backend's own key read from `api_key_env` + `secrets_file` (an entry that sets
+  `api_key_env` must name its `secrets_file` — `loadRepoConfig` refuses otherwise with `BAD_RECORD`,
+  naming the backend, so a key is never silently unscrubbed); and each family's credential-file
+  snapshot — every string leaf of a parsed JSON file at least 16 characters long, named
+  `<label>:<key.path>` with array indices as `[n]`, e.g. `x:a[0].b`. Claude's
+  `~/.claude/.credentials.json` and Codex's `~/.codex/auth.json` are read once on the host at launch
+  and both scrubbed (the snapshot) and injected read-only (`--ro-bind-data`).
 - **Match forms.** Five per value, deduplicated: the raw value, its JSON-escaped form once and twice,
   its `encodeURIComponent` form, and standard base64 of its UTF-8 bytes. This catches a value logged
   verbatim, embedded in a JSON string, double-escaped in a nested JSON string, URL-encoded, or
@@ -391,8 +404,11 @@ timeout in effect at the kill), `elapsed_secs` (seconds since `started_at`), and
 `heartbeat_age_secs` (age, in seconds, of the last `heartbeat_at` at the moment of the kill). A
 run that ends any other way writes none of the three.
 
-A local model (Ollama, vLLM, …) is just a `pi`-family backend entry with a `base_url` pointing at the
-local server and `api_key_env: null` — there is no separate pluggable-agent-wrapper mechanism. Codex
+An entry that sets `api_key_env` must also set `secrets_file`: `loadRepoConfig` refuses the entry with
+`BAD_RECORD`, naming the backend, so a key can never be declared without a file to read it from (and
+scrub it from). A local model (Ollama, vLLM, …) is just a `pi`-family backend entry with a `base_url`
+pointing at the local server and `api_key_env: null` — there is no separate pluggable-agent-wrapper
+mechanism. Codex
 and Claude backends normally leave `base_url: null` (the CLI reaches its SaaS provider directly);
 setting a custom endpoint is the exception (Azure OpenAI, a proxy). `effort_mapping` is a capability
 declaration, not a boolean flag: a backend with no mapping does not support `--effort`, full stop
@@ -743,7 +759,7 @@ review still derives. This JSON is the record; the review HO's evidence section 
 **Review dispatch.** A derived review is a `code_review` HO with a `dispatch/` `base_ref` and a
 `reviewed_run` stamp. Dispatching one copies the evidence JSON and
 `wiki/handoffs/<implement_id>.response.md` into the review's own run dir as `validation-evidence.json`
-and `implement-response.md`. The run dir is bound into every jail, so the reviewer reads both in either
+and `implement-response.md`. The run dir is bound read-only into every jail, so the reviewer reads both in either
 wiki shape. The prompt names the two paths and says that executing tests or the toolchain is out of
 scope. If the evidence or the response is gone, the dispatch refuses; re-run `derive-review`. The copies
 belong to the reviewer only: the merge gate never reads them.
