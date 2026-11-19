@@ -78,6 +78,7 @@ a.card:hover{border-color:var(--border-strong)}
 .ctitle{font-family:var(--sans); font-size:14px; font-weight:600; color:var(--ink); margin-top:6px; line-height:1.5;
   display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden}
 .cmeta{font-size:11px; color:var(--ink-2); margin-top:6px; line-height:1.5}
+.cmeta a{color:var(--accent); text-decoration:none; border-bottom:1px dotted color-mix(in srgb, var(--accent) 45%, transparent)}
 .pri-critical{color:var(--pri-critical); font-weight:700} .pri-high{color:var(--pri-high)} .pri-medium{color:var(--pri-medium)} .pri-low{color:var(--ink-3)}
 .chip{display:inline-flex; align-items:center; gap:5px; padding:2px 9px; border-radius:5px; font-size:11px; font-weight:600; letter-spacing:.03em; white-space:nowrap; margin-top:10px}
 .chip::before{content:''; width:6px; height:6px; border-radius:50%; background:currentColor}
@@ -114,23 +115,6 @@ a.card:hover{border-color:var(--border-strong)}
 .side .card{flex:0 1 230px}
 .tag{display:inline-block; font-size:11px; color:var(--ink-3); border:1px solid var(--border); border-radius:4px; padding:1px 6px; margin:2px 4px 0 0}
 .path .ctitle{font-size:13px; font-weight:500}
-.facts{font-size:11.5px; color:var(--ink-2); margin-bottom:8px; line-height:1.9}
-.facts .chip{margin-top:0}
-.facts a,.cmeta a{color:var(--accent); text-decoration:none; border-bottom:1px dotted color-mix(in srgb, var(--accent) 45%, transparent)}
-.rec h1{font-size:19px} .rec .subtitle{font-size:12px}
-.md{background:var(--surface); border:1px solid var(--border); border-radius:var(--r); padding:18px 24px; font-family:var(--sans); font-size:12.5px; line-height:1.6; max-width:980px}
-.md h1,.md h2,.md h3,.md h4,.md h5,.md h6{font-family:var(--sans); letter-spacing:-.01em; line-height:1.3; margin:18px 0 6px}
-.md h1{font-size:16px} .md h2{font-size:14.5px} .md h3{font-size:13px} .md h4,.md h5,.md h6{font-size:12.5px}
-.md > :first-child{margin-top:0}
-.md p{margin:8px 0}
-.md ul,.md ol{margin:6px 0 6px 22px}
-.md li{margin:2px 0}
-.md li > ul,.md li > ol{margin-top:2px; margin-bottom:2px}
-.md code{font-family:var(--mono); font-size:11.5px; background:var(--surface-2); border:1px solid var(--border); border-radius:4px; padding:0 4px}
-.md pre{font-family:var(--mono); font-size:11px; background:var(--surface-2); border:1px solid var(--border); border-radius:6px; padding:10px 12px; margin:10px 0; overflow-x:auto; line-height:1.5}
-.md pre code{background:none; border:0; padding:0}
-.md a{color:var(--accent); text-decoration:none; border-bottom:1px dotted color-mix(in srgb, var(--accent) 45%, transparent)}
-.md input[type=checkbox]{margin-right:4px; vertical-align:-1px}
 #jump{background:var(--surface); color:var(--ink); border:1px solid var(--border-strong); border-radius:6px; padding:6px 10px; font:inherit; width:160px}
 @media (max-width:760px){ .row{flex-direction:column} .head{flex-direction:column}
   .toc{grid-template-columns:1fr; grid-auto-flow:row; grid-template-rows:none!important} }`;

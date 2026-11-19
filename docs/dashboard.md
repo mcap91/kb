@@ -12,8 +12,7 @@ the five standard views. A repo with the wiki layer only gets the five views and
 | `wiki/dashboard/generated/index.html` | Every initiative, one line each, in three boxes: in progress, to do, done. A color legend and links to the critical path, `chain.md` and the work item page |
 | `wiki/dashboard/generated/critical-path.html` | Each critical path in `chain.md`: its stages in build order, an open count and gate per stage, a card per work item. Written only when `chain.md` has a critical path |
 | `wiki/dashboard/generated/IN-XXXX/chain.html` | One initiative: the Next box, the Done strip, its chain of stages from `chain.md`, the open work items no stage names, and the Parked strip |
-| `wiki/dashboard/generated/wk.html` | Type a work item id or number to see it with its initiative and its neighbors: depends on, blocks, related, and the nearest open ids of the same initiative |
-| `wiki/dashboard/generated/records/<ID>.html` | One page per work item and initiative: status, priority, type, initiative, relations, and the record body rendered as HTML |
+| `wiki/dashboard/generated/wk.html` | Type a work item id or number to see it with its initiative and its neighbors: depends on, blocks, related, and the nearest open ids of the same initiative. "open record" opens the record's markdown file |
 
 Open `index.html` in a browser or in an editor preview. Every page links to the others with relative
 links, has a light/dark button, and loads nothing from the network.
@@ -83,23 +82,6 @@ What the pages do with it:
 
 `wiki lint` checks the parts code reads, with the rule `CHAIN_DOC_SHAPE` (see `contract/lint.md`).
 
-## Record pages
-
-Each work item and initiative gets `records/<ID>.html`. The record body is converted to HTML by a small
-built-in converter, with no extra dependency. It renders:
-
-- headings, paragraphs, and nested `-`, `*` and `1.` lists;
-- task items `- [ ]` and `- [x]` as checkboxes;
-- fenced code blocks, inline code and `**bold**`;
-- links `[text](target)` where the target is `http:`, `https:`, a `#` anchor or a relative path.
-  A relative path is rewritten so it opens the same file from the page;
-- `[[ID]]` as a link: a work item or initiative to its record page, any other record to its file. An id
-  with no record shows as plain text.
-
-Everything else shows as text and is never dropped: tables (in a monospace block, so the columns stay
-readable), block quotes, raw HTML, HTML comments and horizontal rules. No text from a record is passed
-through as HTML, and a link with any other target, such as `javascript:`, shows as text.
-
 ## Changing the pages
 
 The code lives in `packages/wiki-core/src/dashboard/`:
@@ -108,7 +90,6 @@ The code lives in `packages/wiki-core/src/dashboard/`:
 |---|---|
 | Colors, fonts, sizes, spacing | `style.ts` |
 | What a page shows, or its layout | `pages.ts` (one builder per page) |
-| How a record body renders | `markdown.ts` |
 | What code reads from `chain.md` | `chain-doc.ts`, with the template, the lint rule docs and the overseer role text |
 
 Tests in `tests/wiki-dashboard.test.ts` read the `data-` attributes and the text of the pages, never CSS

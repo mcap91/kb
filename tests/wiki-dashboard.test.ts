@@ -5,7 +5,6 @@ import * as path from 'node:path';
 import { generate } from '../packages/wiki-core/src/index.js';
 import { readChainDoc, type ChainDocProblem } from '../packages/wiki-core/src/dashboard/chain-doc.js';
 import { generateDashboard } from '../packages/wiki-core/src/dashboard/generate.js';
-import { markdownToHtml, type MarkdownLinks } from '../packages/wiki-core/src/dashboard/markdown.js';
 import {
   createBootstrappedRepo,
   createPlanningRepo,
@@ -144,12 +143,13 @@ describe('dashboard generate', () => {
       'wiki/backlog.md',
       'wiki/archive.md',
     ]);
-    // index, wk, the initiative's chain page and its record page; no critical path page without chain.md
-    expect(result.data.dashboard).toEqual({ dir: 'wiki/dashboard/generated', pages: 4 });
+    // index, wk and the initiative's chain page; no critical path page without chain.md
+    expect(result.data.dashboard).toEqual({ dir: 'wiki/dashboard/generated', pages: 3 });
     expect(fs.existsSync(path.join(repo.dir, 'wiki/dashboard/generated/index.html'))).toBe(true);
     expect(fs.existsSync(path.join(repo.dir, 'wiki/dashboard/generated/wk.html'))).toBe(true);
     expect(fs.existsSync(path.join(repo.dir, 'wiki/dashboard/generated/IN-0001/chain.html'))).toBe(true);
-    expect(fs.existsSync(path.join(repo.dir, 'wiki/dashboard/generated/records/IN-0001.html'))).toBe(true);
+    // Records open as their markdown files; no page per record.
+    expect(fs.existsSync(path.join(repo.dir, 'wiki/dashboard/generated/records'))).toBe(false);
     expect(fs.existsSync(path.join(repo.dir, 'wiki/dashboard/generated/critical-path.html'))).toBe(false);
   });
 
@@ -1086,14 +1086,14 @@ describe('wk.html', () => {
     await generate({ dir: repo.dir });
     const data = wkData(read(repo.dir, 'wiki/dashboard/generated/wk.html'));
     const wkPath = path.join(repo.dir, 'wiki/dashboard/generated/wk.html');
-    // Both links open the generated record page, not the markdown file.
-    expect(data['WK-0001'].href).toBe('records/WK-0001.html');
+    // Both links open the record's markdown file.
+    expect(data['WK-0001'].href).toBe('../../issues/WK-0001.md');
     expect(fs.existsSync(path.resolve(path.dirname(wkPath), data['WK-0001'].href))).toBe(true);
 
     const chainHtml = read(repo.dir, 'wiki/dashboard/generated/IN-0001/chain.html');
     const link = /<a href="([^"]+)">IN-0001 record<\/a>/.exec(chainHtml);
     expect(link).not.toBeNull();
-    expect(link![1]).toBe('../records/IN-0001.html');
+    expect(link![1]).toBe('../../../initiatives/IN-0001.md');
     const chainPath = path.join(repo.dir, 'wiki/dashboard/generated/IN-0001/chain.html');
     expect(fs.existsSync(path.resolve(path.dirname(chainPath), link![1]))).toBe(true);
   });
@@ -1126,9 +1126,6 @@ describe('wk.html', () => {
     expect(chainHtml).not.toContain('<b>x');
     expect(wk).not.toContain('<b>x');
     expect(wkData(wk)['WK-0001'].title).toBe(title);
-    const recordPage = read(repo.dir, 'wiki/dashboard/generated/records/WK-0001.html');
-    expect(recordPage).toContain('&lt;/script&gt;&lt;b&gt;x');
-    expect(recordPage).not.toContain('<b>x');
   });
 });
 
@@ -1231,189 +1228,6 @@ Gate: the second gate
     expect(html).not.toContain('data-chain>');
     expect(html).not.toContain('data-off-chain');
     expect(section(html, 'data-band="To do"')).toContain('data-wk="WK-0001"');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// records/<ID>.html and the markdown converter
-// ---------------------------------------------------------------------------
-
-describe('record pages', () => {
-  const BODY = [
-    '# Heading one',
-    '',
-    '## Heading two',
-    '',
-    'A paragraph with `inline code`, **bold words**, a [site](https://example.com),',
-    'a [relative doc](../../docs/guide.md#part) and [[WK-0002]] and [[DEC-0001]] and [[WK-9999]].',
-    'A [bad link](javascript:alert(1)) stays text.',
-    '',
-    '- outer item',
-    '  - nested item',
-    '- [ ] open task',
-    '- [x] checked task',
-    '',
-    '1. first numbered',
-    '2. second numbered',
-    '',
-    '```',
-    'const kept = "<as is>";',
-    '```',
-    '',
-    '| col a | col b |',
-    '|---|---|',
-    '| cell | value |',
-    '',
-    '> quoted line',
-    '',
-    '<!-- hidden comment -->',
-    '',
-    '<script>alert("x")</script>',
-  ].join('\n');
-
-  async function recordRepo(): Promise<TmpRepo> {
-    const repo = await planningRepo();
-    writeRecord(repo.dir, 'wiki/initiatives/IN-0001.md', {
-      id: 'IN-0001',
-      title: 'One',
-      status: 'in_progress',
-      type: 'initiative',
-      updated: '2026-11-01',
-    });
-    writeRecord(
-      repo.dir,
-      'wiki/issues/WK-0001.md',
-      {
-        id: 'WK-0001',
-        title: 'Rich body',
-        status: 'todo',
-        priority: 'high',
-        type: 'feature',
-        updated: '2026-11-02',
-        initiative: 'IN-0001',
-        depends_on: ['WK-0002'],
-        related: ['DEC-0001'],
-      },
-      BODY,
-    );
-    writeRecord(repo.dir, 'wiki/issues/WK-0002.md', {
-      id: 'WK-0002',
-      title: 'Two',
-      status: 'todo',
-      type: 'feature',
-      updated: '2026-11-01',
-      initiative: 'IN-0001',
-    });
-    writeRecord(repo.dir, 'wiki/decisions/DEC-0001.md', {
-      id: 'DEC-0001',
-      title: 'A decision',
-      status: 'accepted',
-      type: 'decision',
-      updated: '2026-11-01',
-    });
-    return repo;
-  }
-
-  it('writes one page per work item and initiative, and removes the page of a deleted record', async () => {
-    const repo = await recordRepo();
-    await generate({ dir: repo.dir });
-    const pages = listPages(repo.dir).filter(p => p.startsWith('records/'));
-    expect(pages).toEqual(['records/IN-0001.html', 'records/WK-0001.html', 'records/WK-0002.html']);
-    fs.rmSync(path.join(repo.dir, 'wiki/issues/WK-0002.md'));
-    await generate({ dir: repo.dir });
-    expect(listPages(repo.dir)).not.toContain('records/WK-0002.html');
-  });
-
-  it('renders the header, the relations and the body, and links the initiative chain', async () => {
-    const repo = await recordRepo();
-    await generate({ dir: repo.dir });
-    const html = read(repo.dir, 'wiki/dashboard/generated/records/WK-0001.html');
-    expect(html).toContain('data-record="WK-0001"');
-    expect(html).toMatch(/data-record-initiative="IN-0001"><a href="\.\.\/IN-0001\/chain\.html">IN-0001<\/a>/);
-    const relations = div(html, 'data-relations');
-    expect(relations).toContain('<a href="WK-0002.html">WK-0002</a>');
-    expect(relations).toContain('<a href="../../../decisions/DEC-0001.md">DEC-0001</a>');
-    const body = element(html, 'data-body', 'article');
-    expect(body).toContain('<h1>Heading one</h1>');
-    expect(body).toContain('<h2>Heading two</h2>');
-    expect(body).toContain('<code>inline code</code>');
-    expect(body).toContain('<strong>bold words</strong>');
-  });
-
-  it('turns only safe link targets into links and resolves relative and record links', async () => {
-    const repo = await recordRepo();
-    await generate({ dir: repo.dir });
-    const pageDir = path.join(repo.dir, 'wiki/dashboard/generated/records');
-    const body = element(read(repo.dir, 'wiki/dashboard/generated/records/WK-0001.html'), 'data-body', 'article');
-    expect(body).toContain('<a href="https://example.com">site</a>');
-    // The relative link opens the same file from the page as from the record file.
-    const rel = /<a href="([^"]+)">relative doc<\/a>/.exec(body);
-    expect(rel).not.toBeNull();
-    const fromRecord = path.resolve(path.join(repo.dir, 'wiki/issues'), '../../docs/guide.md');
-    expect(path.resolve(pageDir, rel![1].split('#')[0])).toBe(fromRecord);
-    expect(rel![1].endsWith('#part')).toBe(true);
-    expect(body).toContain('<a href="WK-0002.html">WK-0002</a>');
-    expect(body).toContain('<a href="../../../decisions/DEC-0001.md">DEC-0001</a>');
-    expect(body).not.toMatch(/<a [^>]*>WK-9999<\/a>/);
-    expect(body).toContain('WK-9999');
-    expect(body).not.toContain('href="javascript:');
-    expect(body).toContain('[bad link](javascript:alert(1))');
-  });
-
-  it('shows tables, quotes, comments and raw HTML as text and keeps every word', async () => {
-    const repo = await recordRepo();
-    await generate({ dir: repo.dir });
-    const html = read(repo.dir, 'wiki/dashboard/generated/records/WK-0001.html');
-    const body = element(html, 'data-body', 'article');
-    expect(body).toContain('<pre class="table">| col a | col b |\n|---|---|\n| cell | value |</pre>');
-    expect(body).toContain('&gt; quoted line');
-    expect(body).toContain('&lt;!-- hidden comment --&gt;');
-    expect(body).toContain('&lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt;');
-    expect(body).toContain('<pre><code>const kept = &quot;&lt;as is&gt;&quot;;</code></pre>');
-    // The only script elements are the page's own light/dark scripts, and none holds record text.
-    const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]);
-    expect(scripts).toHaveLength(2);
-    for (const script of scripts) expect(script).not.toContain('alert');
-    const text = body.replace(/<[^>]+>/g, ' ');
-    // A link's target is its href, not page text; the words of the record are all visible.
-    const visible = BODY.replace(/\]\((?:https?:|\.\.)[^)]*\)/g, ']');
-    for (const word of visible.match(/[A-Za-z]{4,}/g) ?? []) expect(text).toContain(word);
-  });
-});
-
-describe('markdown converter', () => {
-  const links: MarkdownLinks = {
-    recordHref: id => (id === 'WK-0001' ? 'WK-0001.html' : undefined),
-    relativeHref: target => `rel/${target}`,
-  };
-
-  it('nests lists by indentation and renders task items as disabled checkboxes', () => {
-    const html = markdownToHtml('- a\n  - b\n    - c\n- d\n- [ ] open\n- [x] done\n\n1. one\n2. two', links);
-    expect(html).toContain('<ul><li>a<ul><li>b<ul><li>c</li></ul></li></ul></li><li>d</li>');
-    expect(html).toContain('<li><input type="checkbox" disabled> open</li>');
-    expect(html).toContain('<li><input type="checkbox" disabled checked> done</li>');
-    expect(html).toContain('<ol><li>one</li><li>two</li></ol>');
-  });
-
-  it('joins wrapped list and paragraph lines and keeps fenced text unchanged', () => {
-    const html = markdownToHtml('- item\n  continues here\n\nline one\nline two\n\n```\n  **not bold**\n```', links);
-    expect(html).toContain('<li>item continues here</li>');
-    expect(html).toContain('<p>line one line two</p>');
-    expect(html).toContain('<pre><code>  **not bold**</code></pre>');
-  });
-
-  it('links record ids, safe targets and relative paths, and leaves the rest as text', () => {
-    const html = markdownToHtml(
-      '[[WK-0001]] [[WK-0002]] [a](#x) [b](http://h) [c](docs/x.md) [d](/abs) [e](data:text/html,x)',
-      links,
-    );
-    expect(html).toContain('<a href="WK-0001.html">WK-0001</a>');
-    expect(html).not.toContain('>WK-0002</a>');
-    expect(html).toContain('<a href="#x">a</a>');
-    expect(html).toContain('<a href="http://h">b</a>');
-    expect(html).toContain('<a href="rel/docs/x.md">c</a>');
-    expect(html).toContain('[d](/abs)');
-    expect(html).toContain('[e](data:text/html,x)');
   });
 });
 
@@ -1579,6 +1393,6 @@ describe('robustness and surfaces', () => {
       cwd: ROOT,
       encoding: 'utf-8',
     });
-    expect(out).toContain('wiki/dashboard/generated/ (4 pages)');
+    expect(out).toContain('wiki/dashboard/generated/ (3 pages)');
   });
 });

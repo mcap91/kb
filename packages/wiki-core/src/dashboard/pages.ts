@@ -1,6 +1,5 @@
 import * as path from 'node:path';
 import { chainIds, type Chain, type ChainDocData } from './chain-doc.js';
-import { markdownToHtml } from './markdown.js';
 import type { DashboardRecord } from './types.js';
 import {
   cutTitle,
@@ -97,24 +96,12 @@ interface BuildContext {
   byId: Map<string, DashboardRecord>;
   workItems: DashboardRecord[];
   initiatives: DashboardRecord[];
-  /** Work item and initiative ids that get a record page. */
-  paged: Set<string>;
   recordsWhere(predicate: (record: DashboardRecord) => boolean): string[];
 }
 
-/** The record page of a work item or initiative, relative to the owned folder. */
-function recordPage(id: string): string {
-  return `records/${id}.html`;
-}
-
-/**
- * The link to a record from a page directory: a work item or initiative goes to
- * its record page, any other record to its file; an id with no record has none.
- */
-function recordLink(ctx: BuildContext, pageDir: string, id: string): string | undefined {
-  if (ctx.paged.has(id)) return relativeHref(pageDir, path.join(ctx.generatedDir, recordPage(id)));
-  const record = ctx.byId.get(id);
-  return record ? relativeHref(pageDir, record.absPath) : undefined;
+/** The link to a record's markdown file from a page directory. */
+function recordHref(pageDir: string, record: DashboardRecord): string {
+  return relativeHref(pageDir, record.absPath);
 }
 
 /** Open dependencies of a work item: each `depends_on` id that is not done and not closed. */
@@ -502,7 +489,7 @@ function buildChain(input: PageBuildInput, ctx: BuildContext, initiative: Dashbo
   const newest = maxDate([initiative.updated, ...pageWorkItems.map(w => w.updated)]);
   const links = [
     link('../index.html', 'all initiatives'),
-    link(relativeHref(pageDir, path.join(ctx.generatedDir, recordPage(initiative.id))), `${initiative.id} record`),
+    link(recordHref(pageDir, initiative), `${initiative.id} record`),
   ];
   const head =
     `<h1>${escapeHtml(initiative.id)} · the chain</h1>\n` +
@@ -558,7 +545,7 @@ function buildWkData(input: PageBuildInput, ctx: BuildContext): Record<string, u
         kind: 'work',
         title: record.title,
         status: record.status,
-        href: recordPage(record.id),
+        href: recordHref(ctx.generatedDir, record),
         priority: record.priority ?? null,
         type: record.itemType ?? null,
         updated: record.updated ?? null,
@@ -570,7 +557,7 @@ function buildWkData(input: PageBuildInput, ctx: BuildContext): Record<string, u
         kind: 'initiative',
         title: record.title,
         status: record.status,
-        href: recordPage(record.id),
+        href: recordHref(ctx.generatedDir, record),
         chain: `${record.id}/chain.html`,
       };
     }
@@ -629,80 +616,6 @@ function buildWk(input: PageBuildInput, ctx: BuildContext): string {
 }
 
 // ---------------------------------------------------------------------------
-// records/<ID>.html
-// ---------------------------------------------------------------------------
-
-function idLinks(ctx: BuildContext, pageDir: string, ids: string[]): string {
-  return ids
-    .map(id => {
-      const href = recordLink(ctx, pageDir, id);
-      return href ? link(href, id) : escapeHtml(id);
-    })
-    .join(', ');
-}
-
-function buildRecord(input: PageBuildInput, ctx: BuildContext, record: DashboardRecord): string {
-  const pageDir = path.join(ctx.generatedDir, 'records');
-  const recordDir = path.dirname(record.absPath);
-  const isWork = record.prefix === input.workItemPrefix;
-
-  const facts = [chip(record.status)];
-  if (record.itemType) facts.push(escapeHtml(record.itemType));
-  if (record.priority) facts.push(`<span class="pri-${escapeHtml(record.priority)}">${escapeHtml(record.priority)}</span>`);
-  if (record.updated) facts.push(`updated ${escapeHtml(record.updated)}`);
-  let initiativeLine = '';
-  if (isWork) {
-    const initiative = record.initiative ? ctx.byId.get(record.initiative) : undefined;
-    initiativeLine = `<div class="facts">${
-      initiative && ctx.paged.has(initiative.id)
-        ? `<span data-record-initiative="${escapeHtml(initiative.id)}">${link(`../${initiative.id}/chain.html`, initiative.id)} · ${escapeHtml(cutTitle(initiative.title, ROW_TITLE_MAX))}</span>`
-        : `<span data-record-initiative="${escapeHtml(record.initiative ?? 'none')}">${escapeHtml(record.initiative ?? 'no initiative')}</span>`
-    }</div>\n`;
-  }
-
-  const relations = (
-    [
-      ['depends on', record.depends_on],
-      ['blocks', record.blocks],
-      ['related', record.related],
-    ] as Array<[string, string[]]>
-  )
-    .filter(([, ids]) => ids.length > 0)
-    .map(([label, ids]) => `${label} ${idLinks(ctx, pageDir, ids)}`);
-
-  const body = markdownToHtml(record.body, {
-    recordHref: id => recordLink(ctx, pageDir, id),
-    relativeHref: target => {
-      const hash = target.indexOf('#');
-      const file = hash < 0 ? target : target.slice(0, hash);
-      const fragment = hash < 0 ? '' : target.slice(hash);
-      if (file === '') return fragment;
-      return relativeHref(pageDir, path.resolve(recordDir, file)) + fragment;
-    },
-  });
-
-  const links = [link('../index.html', 'all initiatives')];
-  if (isWork) links.push(link(`../wk.html#${record.id}`, 'neighbors'));
-  else links.push(link(`../${record.id}/chain.html`, 'chain'));
-  links.push(link(relativeHref(pageDir, record.absPath), 'source'));
-
-  const head =
-    `<div class="rec">` +
-    `<h1 data-record="${escapeHtml(record.id)}">${escapeHtml(record.id)}</h1>\n` +
-    `<p class="subtitle">${escapeHtml(record.title)}</p>\n` +
-    `<div class="facts">${facts.join(' · ')}</div>\n` +
-    initiativeLine +
-    (relations.length > 0 ? `<div class="facts" data-relations>${relations.join(' · ')}</div>\n` : '') +
-    stampLine(record.updated, input, links) +
-    `</div>`;
-  return pageShell({
-    title: `${record.id} · ${cutTitle(record.title, 60)}`,
-    headHtml: head,
-    bodyHtml: `<article class="md" data-body>\n${body}\n</article>`,
-  });
-}
-
-// ---------------------------------------------------------------------------
 // Entry
 // ---------------------------------------------------------------------------
 
@@ -722,7 +635,6 @@ export function buildPages(input: PageBuildInput): Map<string, string> {
     byId,
     workItems,
     initiatives,
-    paged: new Set([...workItems, ...initiatives].map(r => r.id)),
     recordsWhere: predicate => input.records.filter(predicate).map(r => r.id),
   };
 
@@ -732,9 +644,6 @@ export function buildPages(input: PageBuildInput): Map<string, string> {
   if (input.chain.paths.length > 0) pages.set(CRITICAL_PATH_PAGE, buildCriticalPath(input, ctx));
   for (const initiative of initiatives) {
     pages.set(`${initiative.id}/chain.html`, buildChain(input, ctx, initiative));
-  }
-  for (const record of [...workItems, ...initiatives]) {
-    pages.set(recordPage(record.id), buildRecord(input, ctx, record));
   }
   return pages;
 }
