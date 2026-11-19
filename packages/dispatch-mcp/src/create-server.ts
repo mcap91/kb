@@ -35,22 +35,30 @@ const DESTRUCTIVE = new Set(['cleanup', 'dispatch', 'merge-delivery', 'stop-run'
 // probes are rejected (wsl.exe latency on every connect, duplicating
 // check-environment's own lazy/cached probing); lazy is rejected too (instructions
 // ship in the MCP initialize handshake, so they must exist at connect time).
+export const REFERENCE_URI = 'kb-dispatch://reference';
+
 export const INSTRUCTIONS = [
   '## kb-dispatch: the loop',
   '',
-  'One slice is one handoff (HO). Code runs the gates; you decide what is next.',
+  'One slice is one handoff (HO); code runs the gates.',
   '',
-  '1. `create-handoff` with `wk` + `slice` (every implement handoff comes from a slice; a fix-up is the same call plus `base_ref` and `fixup_context`), then `dispatch`. Run the `watch` command in the background. Read `wiki/handoffs/HO-XXXX.response.md`.',
-  "2. Every implement delivery's response carries a `Host validation:` line from the repo's tests. Never run tests yourself.",
+  '1. `create-handoff` with `wk` + `slice` (a fix-up adds `base_ref` + `fixup_context`), then `dispatch` and run the `watch` command in the background. Read `wiki/handoffs/HO-XXXX.response.md`.',
+  "2. The response carries a `Host validation:` line from the repo's tests. Never run tests yourself.",
   '3. `derive-review`, then `dispatch` the review HO. Its findings advise; they do not decide the merge.',
   '4. Judge every finding: `fix`, `dismiss` or `defer`, with a reason for `dismiss` and `defer`. Do not ask the operator to approve a fix-up.',
-  '   - Any `fix`: one fix-up HO for all of them (`base_ref: dispatch/HO-XXXX`, `fixup_context` = the findings to fix). Each fix adds a test that fails before the fix and passes after it. `derive-review` on the fix-up HO then reviews only the fix-up; skip it only if trivial.',
+  '   - Any `fix`: one fix-up HO for all of them (`base_ref: dispatch/HO-XXXX`, `fixup_context` = the findings to fix). Each fix adds a test that fails before the fix and passes after it. `derive-review` on the fix-up HO then reviews only the fix-up; skip only if trivial.',
   '   - At most two fix-ups on one chain; past that, stop and report to the operator: the slice or the spec is wrong.',
-  '5. `merge-delivery` on the last HO of the chain, with your `judgments` for every finding of every review on the chain. Finding ids come from the review response; each entry is `{finding, judgment, reason}` (plus `review` with several reviews). It refuses while a finding has no judgment, while a `fix` has no delivery after the review, while the chain has no finished review, or while the tests are red. Red tests: send a fix-up, or report. An override needs an explicit operator instruction.',
-  '6. Update the work item record after every step.',
+  '5. `merge-delivery` on the last HO of the chain, with your `judgments` for every finding of every review on the chain. Finding ids come from the review response; each entry is `{finding, judgment, reason}` (plus `review` with several reviews). It refuses while a finding has no judgment, while a `fix` has no delivery after the review, while the chain has no finished review, or while the tests are red. Red tests: send a fix-up, or report. An override needs an operator instruction.',
+  '6. Update the work item each step.',
   '',
   'Return to the operator only for: the completion report, a chain past two fix-ups, a merge conflict, a refusal or run outcome that needs operator action, a dead credential, or a new design decision.',
   '',
+  `Read the \`kb-dispatch\` resource \`${REFERENCE_URI}\` before your first \`create-handoff\`: tools, modes, refusal codes, credentials, full recipe.`,
+  '',
+  'Write each `### Slice` section as close to mechanical as possible: the functions to change and their exact new behavior, one test per acceptance item, every file the worker must read.',
+].join('\n');
+
+export const REFERENCE = [
   '## Tools',
   '',
   '| Tool | Purpose |',
@@ -140,6 +148,17 @@ export function createServer(): McpServer {
     {
       instructions: INSTRUCTIONS,
     },
+  );
+
+  // The full text (tools, modes, refusal codes, credentials, recipe) is served as a
+  // resource: a client may deliver only the first 2,048 characters of the instructions.
+  server.registerResource(
+    'kb-dispatch reference',
+    REFERENCE_URI,
+    { mimeType: 'text/markdown', description: 'Tools, modes, refusal codes, credentials and the full orchestration recipe.' },
+    (uri) => ({
+      contents: [{ uri: uri.href, mimeType: 'text/markdown', text: REFERENCE }],
+    }),
   );
 
   for (const tool of tools) {

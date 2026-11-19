@@ -801,6 +801,13 @@ a stale run can never resurface as "latest."
 The full dispatch loop with lifecycle tools. One slice of a work item is one handoff. Code runs the
 gates; the orchestrator decides what is next.
 
+The kb-dispatch MCP server instructions carry only the loop. A client may deliver only the first 2,048
+characters of a server's instructions, so everything else lives on the server as the resource
+`kb-dispatch://reference` (MIME type `text/markdown`): the tool table, dispatch modes, refusal codes,
+parallel-work rules, available models, credentials, and the full orchestration recipe. Read it with the
+client's resource-read tool (Claude Code: ReadMcpResourceTool; Codex: `read_mcp_resource`) before the
+first `create-handoff`.
+
 ```
 orchestrator authors HO          → create-handoff (--wk --slice; every implement handoff comes from a slice)
 orchestrator dispatches          → dispatch + watch
