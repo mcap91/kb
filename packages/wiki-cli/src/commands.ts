@@ -304,6 +304,9 @@ export async function cmdGenerate(args: string[]): Promise<void> {
   for (const f of result.data.generated) {
     console.log(`  ${f}`);
   }
+  if (result.data.dashboard) {
+    console.log(`  ${result.data.dashboard.dir}/ (${result.data.dashboard.pages} pages)`);
+  }
 }
 
 // ---------------------------------------------------------------------------
