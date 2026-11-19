@@ -20,8 +20,10 @@ import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 
 import {
+  buildForwarderEnv,
   buildTunnelBashLines,
   buildTunnelScripts,
+  FORWARDER_API_KEY_ENV,
   TUNNEL_RELAY_PORT,
   TUNNEL_SOCKET_NAME,
 } from '../packages/dispatch-core/src/tunnel.js';
@@ -538,6 +540,43 @@ describe('WK-0266 ruling 1/2 — provider-usage tap generated into the forwarder
 // unedited, but only the 5 copied files' lines are checked here (its other
 // listed files were never copied — rule 33).
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// The host-side forwarder's key env. Pure env
+// wiring only; the key's actual header splice is covered end-to-end by
+// dispatch-v2-tunnel-integration.test.ts's real forwarder process.
+// ---------------------------------------------------------------------------
+
+describe('buildForwarderEnv', () => {
+  it('sets KB_FORWARDER_API_KEY from a non-empty key', () => {
+    const env = buildForwarderEnv({ PATH: '/usr/bin' }, 'planted-key-0123456789');
+    expect(env[FORWARDER_API_KEY_ENV]).toBe('planted-key-0123456789');
+  });
+
+  it('deletes the name when the key is undefined', () => {
+    const env = buildForwarderEnv({ PATH: '/usr/bin', [FORWARDER_API_KEY_ENV]: 'stale' }, undefined);
+    expect(FORWARDER_API_KEY_ENV in env).toBe(false);
+  });
+
+  it('deletes the name when the key is the empty string', () => {
+    const env = buildForwarderEnv({ PATH: '/usr/bin', [FORWARDER_API_KEY_ENV]: 'stale' }, '');
+    expect(FORWARDER_API_KEY_ENV in env).toBe(false);
+  });
+
+  it('keeps PATH and every other parent key', () => {
+    const env = buildForwarderEnv({ PATH: '/usr/bin', HOME: '/home/test', LANG: 'C.UTF-8' }, 'k');
+    expect(env.PATH).toBe('/usr/bin');
+    expect(env.HOME).toBe('/home/test');
+    expect(env.LANG).toBe('C.UTF-8');
+  });
+
+  it('returns a copy -- never mutates the input env', () => {
+    const parent: NodeJS.ProcessEnv = { PATH: '/usr/bin' };
+    const env = buildForwarderEnv(parent, 'planted-key-0123456789');
+    expect(env).not.toBe(parent);
+    expect(parent[FORWARDER_API_KEY_ENV]).toBeUndefined();
+  });
+});
 
 describe('WK-0266 golden fixtures (tests/fixtures/openrouter-sse/) match SHA256SUMS', () => {
   const fixturesDir = join(process.cwd(), 'tests', 'fixtures', 'openrouter-sse');

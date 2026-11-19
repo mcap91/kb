@@ -86,6 +86,36 @@ export const TUNNEL_RELAY_PORT = 18787;
 export const TUNNEL_SOCKET_NAME = 'tunnel.sock';
 
 /**
+ * Env var the host-side forwarder reads its forced pi backend key from. Set
+ * only in the forwarder's own spawn environment (never `argv`, never the
+ * generated script text, never a log line) so the key never enters the jail
+ * for a pi run — the forwarder, outside bwrap, is the one process that can
+ * carry it to the real endpoint.
+ */
+export const FORWARDER_API_KEY_ENV = 'KB_FORWARDER_API_KEY';
+
+/**
+ * Build the forwarder child's spawn environment from the parent's. A copy is
+ * always returned; the parent object is never mutated. When `apiKey` is a
+ * non-empty string the forwarder's key var is set to it; when `apiKey` is
+ * empty or undefined the name is deleted from the copy, so an ambient
+ * `KB_FORWARDER_API_KEY` in the parent environment can never leak into a
+ * non-pi run's forwarder (fail-closed on every other family).
+ */
+export function buildForwarderEnv(
+  parentEnv: NodeJS.ProcessEnv,
+  apiKey: string | undefined,
+): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...parentEnv };
+  if (typeof apiKey === 'string' && apiKey.length > 0) {
+    env[FORWARDER_API_KEY_ENV] = apiKey;
+  } else {
+    delete env[FORWARDER_API_KEY_ENV];
+  }
+  return env;
+}
+
+/**
  * Forwarder/relay script filename convention, staged under the run dir
  * alongside `TUNNEL_SOCKET_NAME`. `.cjs`, never `.js` — Node resolves a
  * `.js` file's module type from the nearest `package.json`, which for the
@@ -151,6 +181,13 @@ const WEB_ENABLED_ARG = process.argv[4];
 const LOG_PATH = process.argv[5];
 const ALLOWED_HOSTS_JSON = process.argv[6];
 const PROVIDER_USAGE_PATH = process.argv[7];
+
+// Pi backend key handed to this process by the pipeline's spawn env
+// Read ONCE here so the request path never touches process.env again.
+// Never logged, never written to any file, never put on argv -- it is only
+// spliced into the authorization header of the one request shape that needs
+// it (origin-form POST <TARGET path>/chat/completions, below).
+const FORWARDER_API_KEY = process.env.${FORWARDER_API_KEY_ENV} || '';
 
 if (!SOCKET_PATH || !TARGET_URL || !WEB_ENABLED_ARG || !LOG_PATH) {
   console.error('usage: node forwarder.cjs <socketPath> <targetUrl> <webEnabled:true|false> <logPath> <allowedHostsJson> [providerUsagePath]');
@@ -373,6 +410,21 @@ const server = http.createServer((req, res) => {
   const outHeaders = Object.assign({}, req.headers);
   delete outHeaders['proxy-connection'];
   outHeaders.host = destPort === (destIsTls ? 443 : 80) ? destHostname : destHostname + ':' + destPort;
+
+  // Pi's backend key: pi's own models.json holds the literal
+  // placeholder, so THIS process substitutes the real key -- but only for the
+  // one request shape pi sends to its configured chat route. An absolute-URI
+  // request names its own destination (a proxy client), a GET is a different
+  // call, and any other path is not the completion route, so all of those
+  // keep the client's headers unchanged. Header keys are lowercase in Node's
+  // req.headers, so assigning authorization replaces any incoming value.
+  if (FORWARDER_API_KEY && !isAbsolute && req.method === 'POST') {
+    const requestPath = url.split('?')[0];
+    const targetBasePath = TARGET.pathname.replace(/\\/$/, '');
+    if (requestPath === targetBasePath + '/chat/completions') {
+      outHeaders.authorization = 'Bearer ' + FORWARDER_API_KEY;
+    }
+  }
 
   const upstreamReq = transport.request(
     {

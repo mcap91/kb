@@ -99,7 +99,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { closeSync, existsSync, openSync, readFileSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import {
   createServer as createHttpServer,
@@ -116,6 +116,7 @@ import { join } from 'node:path';
 import {
   buildTunnelBashLines,
   buildTunnelScripts,
+  FORWARDER_API_KEY_ENV,
   TUNNEL_RELAY_PORT,
   TUNNEL_SOCKET_NAME,
   TUNNEL_FORWARDER_SCRIPT_NAME,
@@ -127,6 +128,7 @@ import * as execDirectModule from '../packages/dispatch-core/src/exec-direct.js'
 import { ok as dispatchOk } from '../packages/dispatch-core/src/errors.js';
 import * as spawnIsolatedModule from '../packages/dispatch-core/src/spawn-isolated.js';
 import { slicesSection } from './helpers/slice-fixture.js';
+import { stubToolchainProbes } from './helpers/toolchain-stub.js';
 
 /**
  * Pin the `pi` CLI to a SYSTEM_ROOTS path for the `command -v pi` probe in
@@ -339,6 +341,8 @@ interface TunnelHarness {
   config: TunnelConfig;
   /** WK-0266: the forwarder's provider-usage.jsonl path, when requested via `opts.providerUsage`. */
   providerUsagePath?: string;
+  /** Path the forwarder's own stdout/stderr is captured to (the pipeline's real `forwarder.log`). */
+  forwarderLogPath: string;
 }
 
 /**
@@ -365,6 +369,8 @@ async function startTunnelHarness(opts: {
    * creates its socket.
    */
   esModuleTarget?: boolean;
+  /** Extra/overriding env for the forwarder's own spawn (e.g. its forced key var). */
+  forwarderEnv?: NodeJS.ProcessEnv;
 }): Promise<TunnelHarness> {
   const tmpDir = await createTempDir('tunnel-integration-');
   if (opts.esModuleTarget) {
@@ -397,14 +403,20 @@ async function startTunnelHarness(opts: {
   const providerUsagePath = opts.providerUsage ? join(tmpDir, 'provider-usage.jsonl') : undefined;
   const forwarderArgs = [forwarderPath, socketPath, config.targetUrl, config.webEnabled ? 'true' : 'false', logPath, JSON.stringify(config.allowedHosts)];
   if (providerUsagePath) forwarderArgs.push(providerUsagePath);
-  const forwarder = spawn(process.execPath, forwarderArgs, { stdio: ['ignore', 'pipe', 'pipe'] });
+  const forwarderLogPath = join(tmpDir, 'forwarder.log');
+  const forwarderLogFd = openSync(forwarderLogPath, 'a');
+  const forwarder = spawn(process.execPath, forwarderArgs, {
+    stdio: ['ignore', forwarderLogFd, forwarderLogFd],
+    env: { ...process.env, ...(opts.forwarderEnv ?? {}) },
+  });
+  closeSync(forwarderLogFd);
   await waitForListen(socketPath);
 
   const relayPort = await getFreePort();
   const relay = spawn(process.execPath, [relayPath, String(relayPort), socketPath], { stdio: ['ignore', 'pipe', 'pipe'] });
   await waitForListen(relayPort);
 
-  return { tmpDir, stub, stubHost, stubPort, relayPort, forwarder, relay, config, providerUsagePath };
+  return { tmpDir, stub, stubHost, stubPort, relayPort, forwarder, relay, config, providerUsagePath, forwarderLogPath };
 }
 
 function killAndWait(child: ChildProcess, timeoutMs = 2000): Promise<void> {
@@ -501,6 +513,142 @@ describe.skipIf(process.platform === 'win32')('WK-0160: real forwarder+relay+stu
         expect(received).toHaveLength(1);
         expect(received[0].headers['x-test-marker']).toBe('abc123');
         expect(received[0].headers['proxy-connection']).toBeUndefined();
+      },
+      10_000,
+    );
+  });
+
+  describe('forwarder key injection -- pi backend key rides the host-side forwarder, never the jail', () => {
+    const PLANTED_KEY = 'planted-pi-backend-key-0123456789';
+    let harness: TunnelHarness | undefined;
+    let received: ReceivedRequest[] = [];
+
+    async function startKeyHarness(forwarderEnv: NodeJS.ProcessEnv): Promise<void> {
+      received = [];
+      harness = await startTunnelHarness({
+        requestHandler: (req, res) => {
+          received.push({ url: req.url, method: req.method, headers: req.headers });
+          res.writeHead(200, { 'content-type': 'text/plain' });
+          res.end('STUB_OK');
+        },
+        forwarderEnv,
+      });
+    }
+
+    // Pi sends a literal `placeholder` Bearer (models.json holds no var), so
+    // every client request below carries that shape; the forwarder's job is to
+    // replace it for exactly one request shape.
+    const INCOMING_AUTH = 'Bearer placeholder';
+
+    function sendRequest(path: string, method: 'GET' | 'POST'): Promise<void> {
+      const h = harness!;
+      const headers: Record<string, string> = { authorization: INCOMING_AUTH };
+      if (method === 'POST') headers['content-length'] = '0';
+      return new Promise((resolve, reject) => {
+        const req = httpRequest({ host: '127.0.0.1', port: h.relayPort, path, method, headers }, (res) => {
+          res.resume();
+          res.on('end', resolve);
+        });
+        req.on('error', reject);
+        req.end();
+      });
+    }
+
+    afterEach(async () => {
+      if (harness) await stopTunnelHarness(harness);
+      harness = undefined;
+    });
+
+    it(
+      'replaces the placeholder with the planted key on an origin-form POST <base path>/chat/completions',
+      async () => {
+        await startKeyHarness({ [FORWARDER_API_KEY_ENV]: PLANTED_KEY });
+        await sendRequest('/v1/chat/completions', 'POST');
+        expect(received).toHaveLength(1);
+        expect(received[0].url).toBe('/v1/chat/completions');
+        expect(received[0].headers.authorization).toBe(`Bearer ${PLANTED_KEY}`);
+      },
+      10_000,
+    );
+
+    it(
+      'matches the path before any query string (POST /v1/chat/completions?x=1)',
+      async () => {
+        await startKeyHarness({ [FORWARDER_API_KEY_ENV]: PLANTED_KEY });
+        await sendRequest('/v1/chat/completions?x=1', 'POST');
+        expect(received).toHaveLength(1);
+        expect(received[0].headers.authorization).toBe(`Bearer ${PLANTED_KEY}`);
+      },
+      10_000,
+    );
+
+    it(
+      'leaves a POST on a different path at the placeholder',
+      async () => {
+        await startKeyHarness({ [FORWARDER_API_KEY_ENV]: PLANTED_KEY });
+        await sendRequest('/v1/models', 'POST');
+        expect(received).toHaveLength(1);
+        expect(received[0].headers.authorization).toBe(INCOMING_AUTH);
+      },
+      10_000,
+    );
+
+    it(
+      'leaves a GET on the completion path at the placeholder',
+      async () => {
+        await startKeyHarness({ [FORWARDER_API_KEY_ENV]: PLANTED_KEY });
+        await sendRequest('/v1/chat/completions', 'GET');
+        expect(received).toHaveLength(1);
+        expect(received[0].headers.authorization).toBe(INCOMING_AUTH);
+      },
+      10_000,
+    );
+
+    it(
+      'leaves an absolute-URI POST naming the same path at the placeholder (a proxy client names its own destination)',
+      async () => {
+        await startKeyHarness({ [FORWARDER_API_KEY_ENV]: PLANTED_KEY });
+        const h = harness!;
+        await sendRequest(`http://${h.stubHost}:${h.stubPort}/v1/chat/completions`, 'POST');
+        expect(received).toHaveLength(1);
+        expect(received[0].headers.authorization).toBe(INCOMING_AUTH);
+      },
+      10_000,
+    );
+
+    it(
+      'leaves every request at the placeholder when the variable is empty',
+      async () => {
+        await startKeyHarness({ [FORWARDER_API_KEY_ENV]: '' });
+        await sendRequest('/v1/chat/completions', 'POST');
+        expect(received).toHaveLength(1);
+        expect(received[0].headers.authorization).toBe(INCOMING_AUTH);
+      },
+      10_000,
+    );
+
+    it(
+      'leaves every request at the placeholder when the variable is unset',
+      async () => {
+        await startKeyHarness({ [FORWARDER_API_KEY_ENV]: undefined });
+        await sendRequest('/v1/chat/completions', 'POST');
+        expect(received).toHaveLength(1);
+        expect(received[0].headers.authorization).toBe(INCOMING_AUTH);
+      },
+      10_000,
+    );
+
+    it(
+      'never writes the key to forwarder.log or tunnel-destinations.log',
+      async () => {
+        await startKeyHarness({ [FORWARDER_API_KEY_ENV]: PLANTED_KEY });
+        await sendRequest('/v1/chat/completions', 'POST');
+        const h = harness!;
+        const forwarderLog = readFileSync(h.forwarderLogPath, 'utf8');
+        const destinationsLog = readFileSync(join(h.tmpDir, 'tunnel-destinations.log'), 'utf8');
+        expect(received[0].headers.authorization).toBe(`Bearer ${PLANTED_KEY}`);
+        expect(forwarderLog).not.toContain(PLANTED_KEY);
+        expect(destinationsLog).not.toContain(PLANTED_KEY);
       },
       10_000,
     );
@@ -1002,7 +1150,15 @@ describe.skipIf(process.platform === 'win32')('WK-0160: real forwarder+relay+stu
  * writes under `<repoRoot>/.agent-runs/runs/<ho>/<run>/` resolve their module
  * type from THIS file, the nearest one above that directory.
  */
-async function setupEnvWiringRepo(opts: { esModule?: boolean } = {}): Promise<string> {
+async function setupEnvWiringRepo(
+  opts: {
+    esModule?: boolean;
+    /** Backend family to configure; defaults to the pi fixture above. */
+    family?: 'pi' | 'claude';
+    /** Backend-owned key: its env var name and the absolute secrets file holding `NAME=value`. */
+    backendApiKey?: { name: string; secretsFile: string };
+  } = {},
+): Promise<string> {
   const repoRoot = await createTempDir('kb-wk0160-envwiring-');
   execFileSync('git', ['init'], { cwd: repoRoot });
   execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: repoRoot });
@@ -1054,9 +1210,16 @@ mocked below, so this body is never read by a real worker.
     );
 
     await mkdir(join(repoRoot, 'wiki', '.dispatch'), { recursive: true });
-    const models = { deepseek: { available_on: ['openrouter'], model_id: 'deepseek/deepseek-v4-flash-0731' } };
+    const family = opts.family ?? 'pi';
+    const backendName = family === 'claude' ? 'anthropic' : 'openrouter';
+    const models = { deepseek: { available_on: [backendName], model_id: 'deepseek/deepseek-v4-flash-0731' } };
     const backends = {
-      openrouter: { family: 'pi', base_url: 'https://openrouter.ai/api/v1', api_key_env: null, secrets_file: null },
+      [backendName]: {
+        family,
+        base_url: family === 'claude' ? 'https://api.anthropic.com' : 'https://openrouter.ai/api/v1',
+        api_key_env: opts.backendApiKey?.name ?? null,
+        secrets_file: opts.backendApiKey?.secretsFile ?? null,
+      },
     };
     const profiles = { schema_version: 1 };
     await writeFile(join(repoRoot, 'wiki', '.dispatch', 'models.json'), JSON.stringify(models, null, 2), 'utf8');
@@ -1121,6 +1284,113 @@ describe('WK-0160 D8: env wiring -- runDispatch() real workerEnv carries NO_PROX
       await rm(repoRoot, { recursive: true, force: true });
     }
   });
+
+  it('pi: the backend key stays out of plan.env but remains in secretValues, and models.json holds placeholder', async () => {
+    const PLANTED_KEY = 'planted-openrouter-key-0123456789';
+    const secretsDir = await mkdtemp(join(tmpdir(), 'kb-wk0160-secrets-'));
+    const secretsFile = join(secretsDir, 'openrouter.env');
+    await writeFile(secretsFile, `OPENROUTER_API_KEY=${PLANTED_KEY}\n`, 'utf8');
+    const repoRoot = await setupEnvWiringRepo({
+      backendApiKey: { name: 'OPENROUTER_API_KEY', secretsFile },
+    });
+    stubToolchainProbes({ name: 'pi', path: '/usr/bin/pi' });
+    let capturedEnv: Record<string, string> | undefined;
+    let capturedSecretValues: ReadonlyArray<{ name: string; value: string }> | undefined;
+    let capturedModelsJson: string | undefined;
+    vi.spyOn(spawnIsolatedModule, 'spawnIsolated').mockImplementation(async (plan, opts) => {
+      capturedEnv = plan.env;
+      capturedSecretValues = opts?.secretValues;
+      capturedModelsJson = plan.injectedFiles.find((f) => f.dest.endsWith('/models.json'))?.content;
+      if (opts?.stdoutLogPath) {
+        await writeFile(opts.stdoutLogPath, readFixtureFile('pi-output-vllm-qwen25.jsonl'), 'utf8');
+      }
+      return {
+        ok: true,
+        data: { stdout: '', stderr: '', exitCode: 0, signal: null, truncated: false, timedOut: false, streamDrainTimedOut: false },
+      };
+    });
+
+    try {
+      const result = await runDispatch({
+        dir: repoRoot,
+        handoff: 'wiki/handoffs/HO-WK0160-ENV.md',
+        model: 'deepseek',
+        backend: 'openrouter',
+        preflight: false,
+      });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      // The key leaves the jail env entirely ...
+      expect(capturedEnv).toBeDefined();
+      expect(capturedEnv!.OPENROUTER_API_KEY).toBeUndefined();
+      expect(Object.values(capturedEnv!).includes(PLANTED_KEY)).toBe(false);
+
+      // ... models.json carries the literal placeholder instead of a var name ...
+      expect(capturedModelsJson).toBeDefined();
+      const models = JSON.parse(capturedModelsJson!) as { providers: Record<string, { apiKey: string }> };
+      expect(models.providers.openrouter.apiKey).toBe('placeholder');
+
+      // ... and the scrubber still knows the key by name.
+      expect(capturedSecretValues?.some((v) => v.name === 'OPENROUTER_API_KEY' && v.value === PLANTED_KEY)).toBe(true);
+    } finally {
+      await rm(repoRoot, { recursive: true, force: true });
+      await rm(secretsDir, { recursive: true, force: true });
+    }
+  });
+
+  it('claude: the backend key variable still rides plan.env (scrubber covers it)', async () => {
+    const PLANTED_KEY = 'planted-anthropic-key-0123456789';
+    const secretsDir = await mkdtemp(join(tmpdir(), 'kb-wk0160-secrets-'));
+    const secretsFile = join(secretsDir, 'anthropic.env');
+    await writeFile(secretsFile, `ANTHROPIC_API_KEY=${PLANTED_KEY}\n`, 'utf8');
+    const repoRoot = await setupEnvWiringRepo({
+      family: 'claude',
+      backendApiKey: { name: 'ANTHROPIC_API_KEY', secretsFile },
+    });
+    stubToolchainProbes({ name: 'claude', path: '/usr/bin/claude' });
+    // Claude's host auth leaf ($HOME/.claude/.credentials.json) is bind-injected
+    // read-only and must be readable, so point $HOME at a throwaway dir holding it.
+    const homeDir = await mkdtemp(join(tmpdir(), 'kb-wk0160-home-'));
+    await mkdir(join(homeDir, '.claude'), { recursive: true });
+    await writeFile(
+      join(homeDir, '.claude', '.credentials.json'),
+      JSON.stringify({ token: 'planted-claude-auth-token-0123456789' }),
+      'utf8',
+    );
+    const previousHome = process.env.HOME;
+    process.env.HOME = homeDir;
+    let capturedEnv: Record<string, string> | undefined;
+    vi.spyOn(spawnIsolatedModule, 'spawnIsolated').mockImplementation(async (plan, opts) => {
+      capturedEnv = plan.env;
+      if (opts?.stdoutLogPath) {
+        await writeFile(opts.stdoutLogPath, readFixtureFile('claude-p-output.txt'), 'utf8');
+      }
+      return {
+        ok: true,
+        data: { stdout: '', stderr: '', exitCode: 0, signal: null, truncated: false, timedOut: false, streamDrainTimedOut: false },
+      };
+    });
+
+    try {
+      const result = await runDispatch({
+        dir: repoRoot,
+        handoff: 'wiki/handoffs/HO-WK0160-ENV.md',
+        model: 'deepseek',
+        backend: 'anthropic',
+        preflight: false,
+      });
+      expect(result.ok, JSON.stringify(result)).toBe(true);
+      if (!result.ok) return;
+      expect(capturedEnv!.ANTHROPIC_API_KEY).toBe(PLANTED_KEY);
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      await rm(repoRoot, { recursive: true, force: true });
+      await rm(secretsDir, { recursive: true, force: true });
+      await rm(homeDir, { recursive: true, force: true });
+    }
+  }, 10_000);
 });
 
 // ---------------------------------------------------------------------------

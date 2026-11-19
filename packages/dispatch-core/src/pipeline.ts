@@ -92,6 +92,7 @@ import {
   type CredentialResolution,
 } from './credentials.js';
 import {
+  buildForwarderEnv,
   buildTunnelScripts,
   TUNNEL_RELAY_PORT,
   TUNNEL_SOCKET_NAME,
@@ -1367,7 +1368,11 @@ async function runDispatchCore(opts: DispatchOpts, ctx: DispatchRunCtx): Promise
         displayName: `${model.slug} (${model.backend})`,
         baseUrl: piBaseUrl,
         api: 'openai-completions',
-        apiKeyEnv: model.apiKeyEnv,
+        // Pi's backend key never enters the jail.
+        // A null apiKeyEnv makes buildModelsJson emit the literal
+        // `placeholder` (adapters/pi.ts) and buildInvocation add no key
+        // variable; the host-side forwarder supplies the real key instead.
+        apiKeyEnv: null,
         contextWindow: model.contextWindow,
         maxTokens: model.maxTokens ?? DEFAULT_MAX_TOKENS,
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
@@ -1557,6 +1562,19 @@ async function runDispatchCore(opts: DispatchOpts, ctx: DispatchRunCtx): Promise
     // contract.
     const credentialEnvResult = await resolveCredentialEnv(credResult.data);
     if (!credentialEnvResult.ok) return credentialEnvResult;
+    // The backend key leaves the jail for pi and
+    // rides the host-side forwarder's spawn env instead. Granted profile
+    // values stay; the value list below still includes the backend key, so
+    // every kb-written surface still scrubs it if it ever appears. Other
+    // families keep it in the jail env, covered by the scrubber.
+    const backendApiKeyEnvName = credResult.data.backendApiKeyEnv;
+    const backendApiKeyValue = backendApiKeyEnvName ? credentialEnvResult.data[backendApiKeyEnvName] : undefined;
+    const workerCredentialEnv: Record<string, string> =
+      model.family === 'pi' && backendApiKeyEnvName
+        ? Object.fromEntries(
+            Object.entries(credentialEnvResult.data).filter(([name]) => name !== backendApiKeyEnvName),
+          )
+        : credentialEnvResult.data;
     // 12b-ii. Credential snapshots. Each family file is read
     // once here on the host as UTF-8; the same bytes are materialized at the
     // same path in the jail read-only (`--ro-bind-data`, via the injected
@@ -1591,7 +1609,7 @@ async function runDispatchCore(opts: DispatchOpts, ctx: DispatchRunCtx): Promise
     const proxyUrl = `http://127.0.0.1:${TUNNEL_RELAY_PORT}`;
     const baseWorkerEnv: Record<string, string> = {
       ...buildWorkerEnv({}),
-      ...credentialEnvResult.data,
+      ...workerCredentialEnv,
       ...parseHandoffVarsEnv(handoff.vars),
       HTTP_PROXY: proxyUrl,
       HTTPS_PROXY: proxyUrl,
@@ -1691,16 +1709,44 @@ async function runDispatchCore(opts: DispatchOpts, ctx: DispatchRunCtx): Promise
     // forwarder's own tap (tunnel.ts).
     const providerUsagePath = join(runDir, 'provider-usage.jsonl');
     const forwarderLogFd = openSync(forwarderLogPath, 'a');
+    // The forwarder is the one process outside
+    // bwrap that can hold the pi backend key, so it is handed the key in its
+    // OWN spawn env (buildForwarderEnv), never on argv and never inside the
+    // generated script text. For every other family the key is undefined and
+    // the name is deleted from the forwarder's env copy. `process.execPath`
+    // replaces the bare `'node'` name (argv is otherwise unchanged) so the
+    // forwarder runs under the same interpreter as this process regardless of
+    // the jail's curated PATH.
+    const forwarderApiKey = model.family === 'pi' ? backendApiKeyValue : undefined;
     const forwarder = spawn(
-      'node',
+      process.execPath,
       [forwarderScriptPath, tunnelSocketPath, resolvedTargetUrl, handoff.web ? 'true' : 'false', tunnelDestinationsLogPath, JSON.stringify(allowedHosts), providerUsagePath],
-      { stdio: ['ignore', forwarderLogFd, forwarderLogFd] },
+      { stdio: ['ignore', forwarderLogFd, forwarderLogFd], env: buildForwarderEnv(process.env, forwarderApiKey) },
     );
     forwarderChild = forwarder;
     closeSync(forwarderLogFd);
     opts.registerCancelCleanup?.(runCancelCleanup);
-    forwarder.on('error', (err) => logVerbose(verbose, `warning: tunnel forwarder process error: ${err.message}`));
+    // A forwarder that cannot start must stop the
+    // run before the worker spawns. Record the FIRST 'error' event (a spawn
+    // failure, e.g. ENOENT) and, after the existing 300ms readiness wait,
+    // fail closed when either that error or an early child exit is observed.
+    // The outer `finally` still runs its s2 cleanup closure, so no forwarder
+    // or run-dir secret file is left behind.
+    const forwarderStartErrors: Error[] = [];
+    forwarder.on('error', (err) => {
+      if (forwarderStartErrors.length === 0) forwarderStartErrors.push(err);
+    });
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 300));
+    const forwarderStartError = forwarderStartErrors[0] ?? null;
+    if (forwarderStartError !== null || forwarder.exitCode !== null || forwarder.signalCode !== null) {
+      const reason =
+        forwarderStartError !== null
+          ? forwarderStartError.message
+          : forwarder.exitCode !== null
+            ? `exit code ${forwarder.exitCode}`
+            : `signal ${forwarder.signalCode}`;
+      return fail('PIPELINE_FAILED', `Tunnel forwarder failed to start: ${reason}`);
+    }
 
     // 13/14. Spawn the jailed worker directly (D6 ruling 7 components 5-8).
     let spawnData: SpawnResult;

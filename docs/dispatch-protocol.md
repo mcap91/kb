@@ -295,6 +295,18 @@ Because the jail has no network stack, two small Node.js processes bridge a sing
 refused and logged to the run's destination log. SaaS backends (Codex/Claude) work under `web: false` —
 their vendor sets are built in. `web: true` is never required just to make a SaaS family function.
 
+**The pi backend key and the forwarder.** For the pi family the backend key never enters the jail at all.
+The per-worker `models.json` dispatch injects holds the literal `placeholder` for the provider's `apiKey`,
+and the key's variable is left out of the worker env. The host-side forwarder receives the value in its own
+spawn environment instead, and adds `Authorization: Bearer <key>` to a request only when it is an
+origin-form `POST` whose path (before any query string) is the target base path followed by
+`/chat/completions`. Every other request — a `GET`, a different path, or an absolute-URI request from a proxy
+client — and every CONNECT keeps the client's own headers unchanged. The key is never written to argv, the
+generated script text, or any log line. The SaaS families (Codex/Claude) keep their backend key variable in
+the jail env, where the resolved-value scrubber covers it. A forwarder that cannot start — a spawn error,
+or a child that has already exited — fails the run (`PIPELINE_FAILED`) before the worker is ever launched;
+the run's cleanup still scrubs the run dir.
+
 ## Credentials
 
 Credential profiles live in `wiki/.dispatch/profiles.json` (scaffolded by `init-dispatch`):
