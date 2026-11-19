@@ -71,7 +71,7 @@ export const INSTRUCTIONS = [
   '|------|------|----------------------|',
   '| implement | New code / feature work, from a slice | Writes code, runs validation |',
   '| code_review | Post-delivery review | Reviews branch diff against spec + acceptance; writes no code |',
-  '| redteam | Adversarial testing | Actively tries to break the implementation |',
+  '| redteam | A plan or spec before the build, or on the operator\'s order | Adversarial findings against the named target; writes no code |',
   '| research | Web-aided investigation | Read-only, web tools if granted; reports findings + sources |',
   '| explore_code | Read-only codebase investigation | Read-only, no web; reports structured findings |',
   '',

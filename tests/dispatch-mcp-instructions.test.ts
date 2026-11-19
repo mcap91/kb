@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 
 import { INSTRUCTIONS } from '../packages/dispatch-mcp/src/create-server.js';
+
+const repoRoot = path.resolve(__dirname, '..');
+const orchestratorPath = path.join(repoRoot, 'contract/roles/orchestrator.md');
 
 // The MCP client delivers only the first 2,048 characters of the server instructions.
 const DELIVERED_CHARS = 2048;
@@ -68,5 +73,20 @@ describe('kb-dispatch MCP instructions', () => {
     expect(INSTRUCTIONS).not.toContain('On review pass');
     expect(INSTRUCTIONS).not.toContain('passed_no_blocking_or_medium_findings');
     expect(INSTRUCTIONS).not.toContain('gates on review evidence');
+  });
+
+  // Why: three sessions added a redteam of built code to a build chain because the shipped text said a redteam
+  // breaks "the implementation"; the rule must ship in both the server instructions and the orchestrator role.
+  it("says a redteam is for a plan or spec before the build, or the operator's order, and not a build-chain step", () => {
+    const newRedteamRow =
+      "| redteam | A plan or spec before the build, or on the operator's order | Adversarial findings against the named target; writes no code |";
+    const buildChainSentence =
+      "A work item's build chain is implement, code_review, merge; a redteam runs on a plan or spec before the build, or on the operator's order, never as a step you add to a build chain.";
+
+    expect(INSTRUCTIONS).toContain(newRedteamRow);
+    expect(INSTRUCTIONS).not.toContain('Actively tries to break the implementation');
+
+    const orchestratorText = fs.readFileSync(orchestratorPath, 'utf-8');
+    expect(orchestratorText).toContain(buildChainSentence);
   });
 });

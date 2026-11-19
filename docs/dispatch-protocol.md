@@ -130,6 +130,9 @@ Five mode ceilings (DEC-0007 D4); a handoff may narrow a ceiling, never widen it
 regardless of what it attempts, and any stray mutation is discarded with a warning rather than fed
 into delivery.
 
+A work item's build chain is implement, code_review, merge. A redteam runs against a plan or spec
+before the build, or on the operator's order; it is not a step of a build chain.
+
 ## Admission Gate
 
 Every `dispatch` call runs the same checks, in order, failing closed on the first violation. Nothing
