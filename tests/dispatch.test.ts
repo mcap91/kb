@@ -17,10 +17,10 @@ import { randomUUID } from 'node:crypto';
 import type { BwrapProbeResult, Handoff, V2HandoffMode } from '@kb/dispatch-core';
 import { assemblePrompt, parseHandoffContent } from '@kb/dispatch-core';
 import * as spawnIsolatedModule from '../packages/dispatch-core/src/spawn-isolated.js';
-import * as execDirectModule from '../packages/dispatch-core/src/exec-direct.js';
 import { ok as dispatchOk } from '../packages/dispatch-core/src/errors.js';
 import { runDispatch } from '../packages/dispatch-core/src/pipeline.js';
 import { SLICE_ID, slicesSection, writeSliceWorkItem } from './helpers/slice-fixture.js';
+import { stubToolchainProbes } from './helpers/toolchain-stub.js';
 
 const TESTS_DIR = resolve(process.cwd(), 'tests');
 
@@ -779,16 +779,6 @@ describe('runProcess timeout guard', () => {
 // literally waiting past 1800s of wall time.
 // ---------------------------------------------------------------------------
 
-function stubClaudeCliOnPath(): void {
-  const real = execDirectModule.execBash;
-  vi.spyOn(execDirectModule, 'execBash').mockImplementation(async (opts) => {
-    if (opts.scriptContent === 'command -v claude 2>/dev/null') {
-      return dispatchOk({ stdout: '/usr/bin/claude', stderr: '', exitCode: 0 });
-    }
-    return real(opts);
-  });
-}
-
 interface TimeoutRepoOpts {
   /** Extra frontmatter line (e.g. `timeout_secs: 3600`) spliced into the fixture HO. */
   timeoutSecsLine?: string;
@@ -927,7 +917,7 @@ describe('pipeline.ts — WK-0244 per-HO worker timeout (stubbed-clock seam: moc
 
   it('AC2 regression: no timeout_secs keeps the 1800s default watchdog bound, and the kill message reports 1800s', async () => {
     const repoRoot = await setupTimeoutRepo();
-    stubClaudeCliOnPath();
+    stubToolchainProbes({ name: 'claude', path: '/usr/bin/claude' });
     const { getTimeoutMs } = mockSpawnIsolatedForTimeout('timed_out');
     try {
       const result = await runDispatch({
@@ -952,7 +942,7 @@ describe('pipeline.ts — WK-0244 per-HO worker timeout (stubbed-clock seam: moc
       timeoutSecsLine: 'timeout_secs: 3600',
       limitsJson: { schema_version: 1, max_worker_timeout_secs: 3600 },
     });
-    stubClaudeCliOnPath();
+    stubToolchainProbes({ name: 'claude', path: '/usr/bin/claude' });
     const { getTimeoutMs } = mockSpawnIsolatedForTimeout('timed_out');
     try {
       const result = await runDispatch({

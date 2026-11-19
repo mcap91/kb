@@ -64,42 +64,9 @@ import * as preflightModule from '../packages/dispatch-core/src/preflight.js';
 import * as tierModule from '../packages/dispatch-core/src/tier.js';
 import * as spawnIsolatedModule from '../packages/dispatch-core/src/spawn-isolated.js';
 import * as execDirectModule from '../packages/dispatch-core/src/exec-direct.js';
-import { ok as dispatchOk } from '../packages/dispatch-core/src/errors.js';
-import { runDispatch } from '../packages/dispatch-core/src/pipeline.js';
+import { resolveToolchainPaths, runDispatch } from '../packages/dispatch-core/src/pipeline.js';
 import { slicesSection } from './helpers/slice-fixture.js';
-
-/**
- * Stub the one host dependency `resolveToolchainPaths` (pipeline.ts) has:
- * `command -v <cliName>` via exec-direct.ts's `execBash`, used to resolve
- * the CLI's real absolute path. On a dev host with the CLI installed this
- * resolves for real; inside the validation jail's allowlisted PATH it does
- * not — a host fact unrelated to what these mocked-spawnIsolated
- * tests actually check (exec-line splicing, schema injection, response-doc
- * fields). Intercepts only the exact `command -v <cliName>` probe and lets
- * every other `execBash` call (fingerprinting, stage, land, preflight) run
- * for real, preserving this file's "mostly real runDispatch()" contract.
- *
- * One spy is installed for the whole file and consults a name→path map, so
- * a global default (`pi` under a throwaway `$HOME`, see the beforeEach
- * below) and a per-test override compose instead of nesting spies — nesting
- * would make the outer spy the captured `real`, i.e. recurse forever.
- */
-const cliPathStubs = new Map<string, string>();
-let installedCliStub: unknown;
-
-function stubCliOnPath(cliName: string, cliPath: string): void {
-  if (installedCliStub !== execDirectModule.execBash) {
-    cliPathStubs.clear();
-    const real = execDirectModule.execBash;
-    installedCliStub = vi.spyOn(execDirectModule, 'execBash').mockImplementation(async (opts) => {
-      if (cliPathStubs.has(opts.scriptContent)) {
-        return dispatchOk({ stdout: cliPathStubs.get(opts.scriptContent)!, stderr: '', exitCode: 0 });
-      }
-      return real(opts);
-    });
-  }
-  cliPathStubs.set(`command -v ${cliName} 2>/dev/null`, cliPath);
-}
+import { stubToolchainProbes } from './helpers/toolchain-stub.js';
 
 function readFixtureFile(name: string): string {
   return readFileSync(join(__dirname, 'fixtures', name), 'utf8');
@@ -141,8 +108,8 @@ beforeEach(async () => {
   // outside every mountable root and runDispatch refuses CLI_PATH_NOT_MOUNTABLE
   // before the gate under test. spawnIsolated is mocked in this file, so pin
   // the CLI to a SYSTEM_ROOTS path; real `node` and `npm prefix -g` already
-  // resolve under /usr. Claude/codex tests add their own `stubCliOnPath`.
-  stubCliOnPath('pi', '/usr/bin/pi');
+  // resolve under /usr. Claude/codex tests add their own `stubToolchainProbes` call.
+  stubToolchainProbes({ name: 'pi', path: '/usr/bin/pi' });
 });
 
 afterEach(async () => {
@@ -1074,7 +1041,7 @@ describe('dispatch v2 e2e (fake-tier) — isolation route (mocked bwrap probe)',
     // Hermetic toolchain: this test runs with a throwaway $HOME (see the
     // file-level beforeEach), so the host `claude` under the real $HOME would
     // resolve outside every mountable root. Pin it to SYSTEM_ROOTS.
-    stubCliOnPath('claude', '/usr/bin/claude');
+    stubToolchainProbes({ name: 'claude', path: '/usr/bin/claude' });
 
     const repoRoot = await setupS3Repo({
       backends: {
@@ -1215,7 +1182,7 @@ describe('dispatch v2 e2e (fake-tier) — WK-0122 effort passthrough (mocked spa
       },
     });
     const { getInnerScript } = mockSpawnIsolated(readFixtureFile('claude-p-output.txt'));
-    stubCliOnPath('claude', '/usr/bin/claude');
+    stubToolchainProbes({ name: 'claude', path: '/usr/bin/claude' });
     try {
       const result = await runDispatch({
         dir: repoRoot,
@@ -1264,7 +1231,7 @@ describe('dispatch v2 e2e (fake-tier) — WK-0122 effort passthrough (mocked spa
       },
     });
     const { getInnerScript } = mockSpawnIsolated(readFixtureFile('codex-exec-output-stream-json.jsonl'));
-    stubCliOnPath('codex', '/usr/bin/codex');
+    stubToolchainProbes({ name: 'codex', path: '/usr/bin/codex' });
     try {
       const result = await runDispatch({
         dir: repoRoot,
@@ -1306,7 +1273,7 @@ describe('dispatch v2 e2e (fake-tier) — WK-0122 effort passthrough (mocked spa
       },
     });
     const { getInnerScript } = mockSpawnIsolated(readFixtureFile('claude-p-output.txt'));
-    stubCliOnPath('claude', '/usr/bin/claude');
+    stubToolchainProbes({ name: 'claude', path: '/usr/bin/claude' });
     try {
       const result = await runDispatch({
         dir: repoRoot,
@@ -1499,7 +1466,7 @@ describe('dispatch v2 e2e (fake-tier) — WK-0156 relay cleanup (mocked spawnIso
       },
     });
     const { getInnerScript } = mockSpawnIsolated(readFixtureFile('claude-p-output.txt'));
-    stubCliOnPath('claude', '/usr/bin/claude');
+    stubToolchainProbes({ name: 'claude', path: '/usr/bin/claude' });
     try {
       const result = await runDispatch({
         dir: repoRoot,
@@ -1547,7 +1514,7 @@ describe('dispatch v2 e2e (fake-tier) — WK-0156 relay cleanup (mocked spawnIso
       },
     });
     const { getInnerScript } = mockSpawnIsolated(readFixtureFile('codex-exec-output-stream-json.jsonl'));
-    stubCliOnPath('codex', '/usr/bin/codex');
+    stubToolchainProbes({ name: 'codex', path: '/usr/bin/codex' });
     try {
       const result = await runDispatch({
         dir: repoRoot,
@@ -1781,7 +1748,7 @@ describe('dispatch v2 e2e (fake-tier) — WK-0125 implement-mode constrained dec
   it('implement + claude: --json-schema "$SCHEMA" is spliced into the exec line (schema read via $(cat <injected-path>), same convention as $PROMPT), and the REAL contract schema content is injected into the jail', async () => {
     const repoRoot = await setupS3Repo({ backends: CLAUDE_BACKENDS, models: CLAUDE_MODELS, mode: 'implement' });
     const { getInnerScript, getInjectedFiles } = mockSpawnIsolatedCapturePlan(readFixtureFile('claude-p-output.txt'));
-    stubCliOnPath('claude', '/usr/bin/claude');
+    stubToolchainProbes({ name: 'claude', path: '/usr/bin/claude' });
     try {
       const result = await runDispatch({
         dir: repoRoot,
@@ -1818,7 +1785,7 @@ describe('dispatch v2 e2e (fake-tier) — WK-0125 implement-mode constrained dec
     const { getInnerScript, getInjectedFiles } = mockSpawnIsolatedCapturePlan(
       readFixtureFile('codex-exec-output-stream-json.jsonl'),
     );
-    stubCliOnPath('codex', '/usr/bin/codex');
+    stubToolchainProbes({ name: 'codex', path: '/usr/bin/codex' });
     try {
       const result = await runDispatch({
         dir: repoRoot,
@@ -1874,7 +1841,7 @@ describe('dispatch v2 e2e (fake-tier) — WK-0125 implement-mode constrained dec
   it('code_review (advisory mode) + claude: NO schema flag and NO schema injection even though claude supports constrained decoding — advisory modes stay opportunistic prose (DEC-0037 part 2)', async () => {
     const repoRoot = await setupS3Repo({ backends: CLAUDE_BACKENDS, models: CLAUDE_MODELS, mode: 'code_review' });
     const { getInnerScript, getInjectedFiles } = mockSpawnIsolatedCapturePlan(readFixtureFile('claude-p-output.txt'));
-    stubCliOnPath('claude', '/usr/bin/claude');
+    stubToolchainProbes({ name: 'claude', path: '/usr/bin/claude' });
     try {
       const result = await runDispatch({
         dir: repoRoot,
@@ -1903,7 +1870,7 @@ describe('dispatch v2 e2e (fake-tier) — WK-0125 implement-mode constrained dec
     const { getInnerScript, getInjectedFiles } = mockSpawnIsolatedCapturePlan(
       readFixtureFile('codex-exec-output-stream-json.jsonl'),
     );
-    stubCliOnPath('codex', '/usr/bin/codex');
+    stubToolchainProbes({ name: 'codex', path: '/usr/bin/codex' });
     try {
       const result = await runDispatch({
         dir: repoRoot,
@@ -1957,7 +1924,7 @@ describe('dispatch v2 e2e (fake-tier) — value-list secret scrubber wiring (moc
       },
     });
     const { getSecretValues } = mockSpawnIsolatedCaptureSecrets(readFixtureFile('claude-p-output.txt'));
-    stubCliOnPath('claude', '/usr/bin/claude');
+    stubToolchainProbes({ name: 'claude', path: '/usr/bin/claude' });
     try {
       const result = await runDispatch({
         dir: repoRoot,
@@ -1996,7 +1963,7 @@ describe('dispatch v2 e2e (fake-tier) — value-list secret scrubber wiring (moc
     const { getSecretValues } = mockSpawnIsolatedCaptureSecrets(
       readFixtureFile('codex-exec-output-stream-json.jsonl'),
     );
-    stubCliOnPath('codex', '/usr/bin/codex');
+    stubToolchainProbes({ name: 'codex', path: '/usr/bin/codex' });
     try {
       const result = await runDispatch({
         dir: repoRoot,
@@ -2029,7 +1996,7 @@ describe('dispatch v2 e2e (fake-tier) — value-list secret scrubber wiring (moc
     const { getSecretValues, getBwrapArgs, getInjectedFiles } = mockSpawnIsolatedCaptureSecrets(
       readFixtureFile('claude-p-output.txt'),
     );
-    stubCliOnPath('claude', '/usr/bin/claude');
+    stubToolchainProbes({ name: 'claude', path: '/usr/bin/claude' });
     try {
       const result = await runDispatch({
         dir: repoRoot,
@@ -2083,7 +2050,7 @@ describe('dispatch v2 e2e (fake-tier) — value-list secret scrubber wiring (moc
     const { getSecretValues, getInjectedFiles, getBwrapArgs } = mockSpawnIsolatedCaptureSecrets(
       readFixtureFile('codex-exec-output-stream-json.jsonl'),
     );
-    stubCliOnPath('codex', '/usr/bin/codex');
+    stubToolchainProbes({ name: 'codex', path: '/usr/bin/codex' });
     try {
       const result = await runDispatch({
         dir: repoRoot,
@@ -2132,7 +2099,7 @@ describe('dispatch v2 e2e (fake-tier) — value-list secret scrubber wiring (moc
       },
     });
     const spawn = vi.spyOn(spawnIsolatedModule, 'spawnIsolated');
-    stubCliOnPath('claude', '/usr/bin/claude');
+    stubToolchainProbes({ name: 'claude', path: '/usr/bin/claude' });
     try {
       const result = await runDispatch({
         dir: repoRoot,
@@ -2398,5 +2365,25 @@ describe('dispatch v2 e2e (fake-tier) — kb-written surfaces (real forwarder, m
     } finally {
       await rm(repoRoot, { recursive: true, force: true });
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Hermetic toolchain probes — the stub every $HOME-swapping test relies on.
+// ---------------------------------------------------------------------------
+
+describe('resolveToolchainPaths — hermetic toolchain probes', () => {
+  it('resolves claude, node and the npm prefix under SYSTEM_ROOTS with HOME pointed at a throwaway dir', async () => {
+    // The file-level beforeEach already points HOME at a throwaway dir; this
+    // pins claude's CLI path alongside that default and asserts the resolved
+    // paths stay under SYSTEM_ROOTS regardless of the host toolchain.
+    stubToolchainProbes({ name: 'claude', path: '/usr/bin/claude' });
+
+    const result = await resolveToolchainPaths('claude');
+
+    expect(result.unmountable).toBeNull();
+    expect(result.cliRealPath).toBe('/usr/bin/claude');
+    expect(result.nodeRealDir).toBe('/usr/bin');
+    expect(result.npmPrefix).toBe('/usr');
   });
 });

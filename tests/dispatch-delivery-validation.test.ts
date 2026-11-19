@@ -15,11 +15,10 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
 import { runDispatch } from '../packages/dispatch-core/src/pipeline.js';
-import * as execDirectModule from '../packages/dispatch-core/src/exec-direct.js';
 import * as spawnIsolatedModule from '../packages/dispatch-core/src/spawn-isolated.js';
-import { ok as dispatchOk } from '../packages/dispatch-core/src/errors.js';
 import { VALIDATION_EVIDENCE_FILE } from '../packages/dispatch-core/src/host-validation.js';
 import { slicesSection } from './helpers/slice-fixture.js';
+import { stubToolchainProbes } from './helpers/toolchain-stub.js';
 
 const SUITE_COMMAND = 'check-suite';
 
@@ -127,16 +126,6 @@ function mockSpawns(suite: 'pass' | 'fail' | 'fail_then_pass' | 'spawn_error'): 
   return { suiteCalls: () => suiteCalls };
 }
 
-function stubClaudeOnPath(): void {
-  const real = execDirectModule.execBash;
-  vi.spyOn(execDirectModule, 'execBash').mockImplementation(async (opts) => {
-    if (opts.scriptContent === 'command -v claude 2>/dev/null') {
-      return dispatchOk({ stdout: '/usr/bin/claude', stderr: '', exitCode: 0 });
-    }
-    return real(opts);
-  });
-}
-
 async function dispatchFixture(repo: string) {
   return runDispatch({
     dir: repo,
@@ -183,7 +172,7 @@ describe('host validation at delivery (mocked spawnIsolated)', () => {
     const repo = await setupRepo({ mode: 'implement', registry: REGISTRY });
     repos.push(repo);
     const spawns = mockSpawns('pass');
-    stubClaudeOnPath();
+    stubToolchainProbes({ name: 'claude', path: '/usr/bin/claude' });
     const result = await dispatchFixture(repo);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
@@ -205,7 +194,7 @@ describe('host validation at delivery (mocked spawnIsolated)', () => {
     const repo = await setupRepo({ mode: 'implement', registry: REGISTRY });
     repos.push(repo);
     const spawns = mockSpawns('fail');
-    stubClaudeOnPath();
+    stubToolchainProbes({ name: 'claude', path: '/usr/bin/claude' });
     const result = await dispatchFixture(repo);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
@@ -229,7 +218,7 @@ describe('host validation at delivery (mocked spawnIsolated)', () => {
     const repo = await setupRepo({ mode: 'implement', registry: REGISTRY });
     repos.push(repo);
     mockSpawns('fail_then_pass');
-    stubClaudeOnPath();
+    stubToolchainProbes({ name: 'claude', path: '/usr/bin/claude' });
     const result = await dispatchFixture(repo);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
@@ -243,7 +232,7 @@ describe('host validation at delivery (mocked spawnIsolated)', () => {
     const repo = await setupRepo({ mode: 'implement', registry: REGISTRY });
     repos.push(repo);
     mockSpawns('spawn_error');
-    stubClaudeOnPath();
+    stubToolchainProbes({ name: 'claude', path: '/usr/bin/claude' });
     const result = await dispatchFixture(repo);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
@@ -257,7 +246,7 @@ describe('host validation at delivery (mocked spawnIsolated)', () => {
     const repo = await setupRepo({ mode: 'implement', registry: '{ not json' });
     repos.push(repo);
     const spawns = mockSpawns('pass');
-    stubClaudeOnPath();
+    stubToolchainProbes({ name: 'claude', path: '/usr/bin/claude' });
     const result = await dispatchFixture(repo);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
@@ -271,7 +260,7 @@ describe('host validation at delivery (mocked spawnIsolated)', () => {
     const repo = await setupRepo({ mode: 'implement' });
     repos.push(repo);
     const spawns = mockSpawns('pass');
-    stubClaudeOnPath();
+    stubToolchainProbes({ name: 'claude', path: '/usr/bin/claude' });
     const result = await dispatchFixture(repo);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
@@ -285,7 +274,7 @@ describe('host validation at delivery (mocked spawnIsolated)', () => {
     const repo = await setupRepo({ mode: 'code_review', registry: REGISTRY });
     repos.push(repo);
     const spawns = mockSpawns('pass');
-    stubClaudeOnPath();
+    stubToolchainProbes({ name: 'claude', path: '/usr/bin/claude' });
     const result = await dispatchFixture(repo);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
